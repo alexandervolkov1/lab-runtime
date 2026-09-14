@@ -7,7 +7,7 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-handoff: M3 and M4 complete; waiting for SOL_HIGH -> ASTRA_HIGH
+design: ASTRA_HIGH M4 lifecycle corrections and M5 Lua boundary only
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -18,11 +18,12 @@ implement M3 before the user switches models. This direct user instruction overr
 IMPLEMENTATION_ROADMAP_M2_M6.md section 16's prohibition on M3 design. Later model
 handoffs also require an explicit stop; authorization through M6 never bypasses them.
 
-The first gate has been crossed by the user. SOL_M3_M4_INSTRUCTIONS.md is the
-authoritative instruction for the current phase. Complete M3, then M4, update the
-handoff, request SOL_HIGH -> ASTRA_HIGH, and stop before any M5 design or code.
-That SOL phase is now complete. The next authorized action is Astra High review and
-M5 design only; do not begin M5 design or implementation before the user switches.
+The user crossed the M4 gate. ASTRA_M5_DESIGN_INSTRUCTIONS.md is authoritative for
+this phase. Consume the external reviewer response in AI_HANDOFF.md, design the two
+M4 lifecycle corrections, then the M5 Lua boundary and Sol acceptance contract.
+Do not implement M4 corrections, add Lua dependencies, implement M5, or design M6
+during this Astra phase. Finish the design, update AI_HANDOFF.md, request
+ASTRA_HIGH -> SOL_HIGH and STOP. Sol must fix/verify M4 before implementing M5.
 
 Read AI_HANDOFF.md before each milestone. It is the only dedicated external-review handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6 mark READY_FOR_EXTERNAL_REVIEW and stop.
 

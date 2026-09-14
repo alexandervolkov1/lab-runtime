@@ -135,3 +135,80 @@ received in this phase.
 The user manually switches Sol High -> Astra High. Astra High reads this file first, then
 the current project/plans and produces/reviews only the M5 design and acceptance contract.
 Do not begin Lua implementation until the next explicit authorization/model handoff.
+
+
+External review: M3 accepted. M4 accepted as the current deterministic POC, with two mandatory lifecycle issues to resolve before M5 implementation.
+
+STATUS: APPROVED_FOR_ASTRA_HIGH_M5_DESIGN_WITH_M4_CORRECTIONS
+
+### M4 issue 1: EMA warm-up lifecycle
+
+The standalone EMA correctly supports `warmup_samples > 1`, but `StartController` currently resets EMA, submits exactly one sample, and requires `EmaStatus::Ready`.
+
+Therefore a controller configured with `warmup_samples > 1` cannot successfully start.
+
+Astra High must define the intended lifecycle before further implementation.
+
+Preferred direction:
+
+* do not acquire output authority while processing warm-up samples;
+* represent warm-up/preparation explicitly enough that the controller can accumulate required Good samples before becoming Running;
+* stale/unavailable input during warm-up must not acquire or retain output authority;
+* resume/reinitialize must use the same explicit policy.
+
+If the architecture deliberately chooses to support only `warmup_samples == 1` for controller-owned EMA, this must instead be validated explicitly at configuration time and documented as a deliberate limitation. Do not leave the current implicit contradiction.
+
+### M4 issue 2: long-running controller lease renewal
+
+A native Runtime-owned controller obtains a bounded OutputLease with `lease_lifetime`, but the current controller lifecycle has no explicit renewal mechanism.
+
+A healthy native controller must not inevitably fail merely because the original lease reaches its expiry during a long-running experiment.
+
+Astra High must define bounded lease renewal semantics.
+
+Required properties:
+
+* leases remain finite;
+* renewal must occur only while the Runtime-owned controller is healthy and Running;
+* renewal must not create a new way to bypass freshness, controller lifecycle or OutputAuthority;
+* stale/failed controller execution must stop renewal and allow expiry/revoke;
+* external/manual client leases must NOT inherit automatic Runtime-controller renewal semantics;
+* Babashka starting a Runtime-owned PID later must not make that PID dependent on the Babashka session lifetime;
+* epoch/ownership fencing must remain valid;
+* do not solve this by assigning effectively infinite leases.
+
+Prefer a small explicit renewal/heartbeat contract rather than rebuilding OutputAuthority ownership.
+
+### Physical evidence constraint
+
+M3 correctly keeps protocol acknowledgement distinct from readback. Preserve this.
+
+Do not allow Lua or any later external API to fabricate `ReadbackVerified`.
+
+If an actual physical SafeProfile requires readback, successful write ACK alone must remain insufficient until a trusted Rust-owned readback/reconciliation path exists.
+
+### General review result
+
+Preserve:
+
+* Runtime as the single mutable owner;
+* extensible engineering units;
+* actual-first-byte authority revalidation;
+* partial-write ambiguity;
+* no blind write retry;
+* independent Reference;
+* PID/EMA without transport/output access;
+* safe failure on stale/unavailable input;
+* English teaching-oriented rustdoc/comments.
+
+Next model:
+ASTRA_HIGH
+
+Authorized next work:
+
+1. design the two M4 lifecycle corrections above;
+2. design the M5 bounded Lua trust/isolation contract;
+3. write acceptance criteria for Sol High;
+4. STOP before production implementation.
+
+Do not begin M5 implementation.
