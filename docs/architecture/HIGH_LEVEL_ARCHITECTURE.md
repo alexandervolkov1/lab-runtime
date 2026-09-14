@@ -1,8 +1,8 @@
 # Высокоуровневая архитектура lab-runtime
 
-Статус: архитектурное предложение для review, без реализации. Дата: 2026-09-14.
+Статус: target baseline, foundation reconciliation 2026-09-14. Разрешена реализация только Milestone 1, не всех описанных подсистем.
 
-Основание: полностью прочитанные [AGENTS.md](../../AGENTS.md), [PROJECT_BRIEF.md](../../PROJECT_BRIEF.md) и [ARCHITECTURE_PLAN.md](../../ARCHITECTURE_PLAN.md), включая добавленное содержимое первых двух файлов. Код `com_port_reader` не исследовался. Совместимость и перенос v1 относятся к отдельному этапу после утверждения архитектуры.
+Основание: [AGENTS.md](../../AGENTS.md), [PROJECT_BRIEF.md](../../PROJECT_BRIEF.md), [ARCHITECTURE_PLAN.md](../../ARCHITECTURE_PLAN.md), завершённый [migration mapping](../migration/V1_TO_LAB_RUNTIME_MAP.md) и [architecture feedback](../migration/ARCHITECTURE_FEEDBACK.md). Исходный архитектурный этап выполнялся независимо от donor; нынешние уточнения явно внесены перед implementation.
 
 ## 1. Цели и границы этапа
 
@@ -59,11 +59,11 @@ Descriptor содержит:
 
 - Schema/definition version, type ID, instance ID, identity/model/serial при наличии, display name, provenance и implementation kind. Адрес шины и credentials относятся к instance configuration; read-only introspection не обязан раскрывать все настройки доступа.
 - Parameters: стабильный ID, label, value type (число, boolean, enum, string и необходимые явно поддержанные составные типы), units, readable/writable, значение по умолчанию только если оно имеет смысл, диапазоны, разрешение и режим изменения.
-- Семантическая роль: measurement, configuration, control output или action. Запись setpoint внутреннего регулятора прибора тоже является воздействием. Команды enable, calibration, mode change и reset классифицируются по side effects.
+- Семантическая роль: measurement, configuration, actuator, action или diagnostic. `numeric + writable` не определяет actuator capability. Device setpoint, enable, calibration, mode change и reset классифицируются по явным side effects операции; access flags не заменяют эту классификацию.
 - Capabilities: polling/read, write configuration, control output, readback/acknowledgement, health, simulation/replay, объявленные специфические операции. Для операции указаны параметры, ограничения, preconditions, side effects и модель подтверждения. Неизвестная capability не подразумевает разрешение на действие.
 - Требования свежести/частоты и технические пределы — как сведения для валидации. Safety policy установки хранится отдельно; driver limits не являются окончательным разрешением.
 
-Parameter definition и observed parameter state различаются. State включает последнее успешно наблюдённое значение, время наблюдения, quality и последнюю ошибку; desired output, transport acknowledgement и measured/readback output хранятся раздельно. Query текущего значения не инициирует скрытый I/O; явный refresh — Command с последующим результатом.
+Parameter definition и observed parameter state различаются. State включает последнее наблюдение с quality/error и временем; failed refresh не превращается в старое значение с новым timestamp. Desired/sent/ACK/readback различаются. Query не инициирует скрытый I/O и не продвигает virtual model: GetLatest/Describe/GetStatus читают известное состояние; RefreshMeasurement/ReadPhysicalParameterNow — явные Commands/Operations.
 
 GUI/Babashka выполняют discover → describe → query/subscribe → domain command. Клиент строит поля по типам/units/capabilities и отображает причину недоступности операции. Валидация всегда повторяется Runtime. Device-specific presentation возможна как дополнение GUI, но не переносит instrument semantics из Runtime.
 
@@ -185,7 +185,7 @@ Reference — хорошая базовая абстракция: желаемо
 
 ## 7. Controllers и клиенты
 
-Controller получает согласованный snapshot измерений/reference, dt и информацию о принятом/ограниченном воздействии; возвращает OutputProposal и diagnostics. Алгоритм не пишет в прибор. PID и On/Off — native implementations. Furnace сохраняется как требование к native controller с внутренним состоянием или композицией; его фактическое поведение и перенос определяются только на следующем этапе анализа v1. Общая граница должна позволять более одного входа/предложения, но атомарная запись нескольких физических выходов не обещается.
+Controller получает согласованный snapshot measurements/reference, dt и сведения о разрешённом воздействии; возвращает OutputProposal и diagnostics, не пишет hardware. PID, On/Off и Furnace — native implementations. Furnace по внешнему контракту один Controller: private thermal-loss model/feed-forward + measurement-rate predictor + PI + sum/limits. Reference — отдельный Runtime component; публичного subgraph внутренних частей Furnace не требуется. Несколько inputs/proposals возможны позже, но v1 Furnace этого не требует; atomic multi-output writes не обещаются.
 
 Lifecycle включает creation, configuration, running, pause, resume, reset, removal и failure. Pause/removal отзывают владение выходом и запускают safe transition; resume требует повторной проверки и нового lease. Состояние алгоритма, состояние Reference и разрешение на выход различаются. Подробные переходы — в [RUNTIME_AND_SAFETY_MODEL.md](RUNTIME_AND_SAFETY_MODEL.md).
 
@@ -248,7 +248,15 @@ lab-lua        — optional adapter: VM lifecycle, budgets, component execution;
 lab-gui        — позже, отдельный клиент; не нужен первому POC
 ```
 
-Для первого POC достаточно первых трёх единиц сборки; `lab-lua` можно подключать опционально. Core отделён для headless tests и отсутствия Lua/GUI/OS dependencies; host объединяет инфраструктурные adapters без десятка микро-crates; Lua выделена из-за отдельной зависимости, lifecycle и ограничений исполнения. Native drivers, filters и protocols первоначально являются modules, а не plugin SDK. GUI получает собственный package, когда появится UI. Выделение wire schema/shared client library отложено до реального второго клиента. Запуск с GUI всё равно использует самостоятельный Runtime process.
+Milestone 1 создаёт только `lab-core` и `lab-runtime`; `lab-lua` добавляется при bounded Lua milestone, GUI — позже. Core отделён для deterministic tests и отсутствия GUI/VM/OS dependencies. Native algorithms/drivers/protocols первоначально modules, не plugin SDK. Wire schema/client library откладываются до реального IPC slice; GUI остаётся отдельным процессом.
+
+### Foundation: identity, reconfiguration, recording
+
+Stable logical ID, display name, instance generation и configuration revision различаются. Rename меняет name. Restart/rebind меняет generation независимо от equality descriptors; catalog refresh явно обозначает unavailable/removed entries. Вводить version concepts только при реальной необходимости: M1 без async replacement не нуждается в generation; config revision нужна при mutation/version semantics.
+
+Configuration имеет явную policy preserve/reset/reinitialize, без generic framework в M1. EMA retune может сохранить value/time; partial window требует explicit warm-up quality/policy. Ошибка ветви DAG локализуется; validate-before-commit не означает transactional rollback всего graph. Shared Reference progress независим от pause одного consumer. Integrator retention/bumpless transfer — отдельная проверенная policy, не default promise.
+
+SQLite — кандидат adapter, не core dependency/frozen schema. Будущая schema различает runtime session/experiment run, config provenance, generic diagnostics/quality/gaps и sent/ACK/readback/unknown. Safety/lifecycle/validation одинаковы для всех client adapters: origin задаёт permissions/audit, не отключает обязательный transition.
 
 ## 11. Решения и оставшаяся работа
 

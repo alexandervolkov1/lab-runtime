@@ -1,6 +1,6 @@
 # Extension model
 
-Статус: предложение. Основание и общая модель — [HIGH_LEVEL_ARCHITECTURE.md](HIGH_LEVEL_ARCHITECTURE.md). Никакие расширения на этом этапе не реализуются.
+Статус: target extension baseline с foundation reconciliation 2026-09-14. Реализация M1 не включает Lua, внешний API или plugins.
 
 ## 1. Минимальный набор
 
@@ -82,7 +82,7 @@ Native и script processing используют одинаковые входн
 
 Fixed/Ramp/Program Reference — native определения; Script Reference — ограниченное вычисление desired value. Для обоих одно понятие времени и качества. Script Reference не может продлевать lease или отменять interlock.
 
-Native PID, On/Off и будущий Furnace работают через OutputProposal. Lua controller получает измерения/reference/dt и возвращает proposals/diagnostics; он не получает другой output API. Это экспериментальный controller: admissibility зависит от измеренного бюджета исполнения и назначения установки. Сам protective interlock и финальная output policy всегда остаются Rust. Lua-derived measurements не считаются независимой защитой от ошибки Lua; критичный interlock должен иметь пригодный независимый источник.
+Native PID, On/Off и Furnace работают через OutputProposal. Furnace — один native component с private thermal model/feed-forward/predictor/PI, Reference отдельно. Lua controller возвращает proposals/diagnostics, не получает другой write API. Admissibility зависит от execution budget и установки; protective interlocks/final policy остаются Rust, Lua measurement не является независимой защитой от ошибки Lua.
 
 External controller представлен в Runtime как зарегистрированный producer с lifecycle, declared inputs/output bindings, deadlines и lease. Алгоритм исполняется в Babashka/другом процессе, но Runtime владеет полномочиями и последним принятым результатом. Клиент отправляет proposals со ссылкой на входные sequences; host проверяет их пригодность. Heartbeat не заменяет свежие proposals и свежие измерения. Это supervisory/experimental control, не обещание детерминированного сетевого loop.
 
@@ -100,7 +100,7 @@ Reload не выполняется внутри активного callback. С�
 
 ## 6. Нужны ли одновременно Lua и Babashka
 
-Для требований brief оба уровня полезны, но обязательная одновременная установка двух языков не нужна. Lua закрывает локальный быстрый extension без отдельного процесса. Babashka закрывает внешний REPL и recipes без встраивания orchestration VM в Core. Runtime способен работать без обоих; первый POC проверяет Lua, следующий небольшой slice — Babashka через общий external API.
+Для требований brief оба уровня полезны, но optional: Runtime работает без них. Lua — bounded local component callbacks, Babashka — external REPL/recipes. Уточнённый POC проверяет маленький реальный Babashka slice на virtual fixture после bounded Lua и до recorder; это не перенос orchestration внутрь Core.
 
 | Возможность | Lua component context | Babashka / external client |
 | --- | --- | --- |
@@ -117,6 +117,8 @@ Reload не выполняется внутри активного callback. С�
 Не создаём по большому объектному SDK для каждого языка. Есть один набор domain messages/semantics и маленький component host contract. Lua-host обращения к management boundary используют существующие handlers с ограниченными capabilities; bindings преобразуют значения, не повторяют бизнес-валидацию. Babashka helper предоставляет discover/query/command/subscribe и удобства REPL поверх тех же понятий. Callback не может синхронно реентерабельно изменить graph посреди controller tick; разрешённые обращения поступают в обычную очередь commands.
 
 Если практика покажет, что локальные extensions не нужны, Lua host можно не поставлять. Если нужны только локальные adapters и CLI, Babashka остаётся внешним выбором пользователя. Не заменяем два чётких уровня одним огромным embedded orchestration API.
+
+Reconfiguration явно выбирает preserve/reset/reinitialize; generic schema framework не требуется. Side effects и roles measurement/configuration/actuator/action/diagnostic задаются metadata, не эвристикой writable numeric. Query — snapshot без hidden I/O или model advance; refresh — Command. Shared handlers обеспечивают одинаковые validation/lifecycle semantics для каждого adapter.
 
 ## 7. Условия расширения модели позже
 

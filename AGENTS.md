@@ -7,12 +7,14 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-high-level architecture design
+implementation: milestone 1 domain foundation
 ```
 
-Do not implement the runtime yet.
+Implement only Milestone 1 from FOUNDATION_MILESTONE1_PLAN.md: minimal Rust workspace, native virtual Instrument, typed descriptors/validation, stable identity, deterministic time, bounded Signal state and local Commands/Queries.
 
-Do not create Rust crates, Cargo workspace structure, Lua modules, Babashka modules or GUI code unless the user explicitly moves the project to the implementation phase.
+Do not proceed to Milestone 2 or implement OutputArbiter, output execution, serial/Metakon runtime, controllers, Lua, Babashka, IPC, recorder or GUI without a separate user instruction.
+
+Implement only concepts required by the current milestone. A concept in the target architecture is not a reason to implement it ahead of time.
 
 ## Source of truth
 
@@ -30,9 +32,9 @@ The existing `com_port_reader` project is a separate stable v1 implementation.
 
 Do not copy its architecture automatically.
 
-At this phase the purpose is to design lab-runtime from the product requirements.
+Architecture and migration analysis in docs/architecture and docs/migration form the target baseline, not permission to copy the donor structure.
 
-A later dedicated phase will compare lab-runtime architecture with v1 code and decide what should be reused.
+The donor is read-only and never a workspace dependency. Milestone 1 uses newly written production code; document reused test intent/validation knowledge.
 
 ## Design priorities
 
@@ -99,7 +101,7 @@ Use:
 1 logical architectural change = 1 commit
 ```
 
-During the initial architecture phase, modify only documentation and architecture decision files.
+Keep documentation/baseline commits separate from implementation commits. Preserve unrelated user files and stop after the authorized milestone.
 
 Do not commit automatically unless the current user instructions permit commits.
 

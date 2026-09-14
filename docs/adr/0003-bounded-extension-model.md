@@ -14,7 +14,7 @@ Brief требует добавлять известные приборы, не�
 
 Lua host расположен вокруг Core и имеет ограниченный component context: inputs/windows/configuration, typed results, scoped queries/events и разрешённые именованные instrument operations. Нет raw COM/OS access, FFI, снятия budgets и владения experiment lifecycle. Физические requests ограничены проверенными Rust-executable profiles; safe output path не зависит от Lua VM. Reload создаёт новую generation через quiescent/safe boundary; private state по умолчанию сбрасывается.
 
-Babashka — необязательный внешний клиент общего versioned Commands/Queries/Events API. Она выполняет high-level recipes, composition и supervisory logic; external control требует зарегистрированного producer и lease. Общие domain handlers не дублируются в bindings. Первый POC проверяет Lua/port/output/recording boundaries; реальный Babashka/IPC добавляется следующим небольшим slice.
+Babashka — необязательный внешний клиент общего C/Q/E API. Foundation reconciliation по migration AF08 уточняет порядок, не boundary: после bounded Lua выполняется небольшой реальный Babashka slice на virtual fixture, затем recorder/fault verification. Никакого BB/IPC в Milestone 1; прежнее откладывание после полного POC заменено явным staged plan.
 
 Compiled plugins без rebuild в v1 не нужны. Для будущих process/WASM adapters сохраняются typed component contracts, lifecycle, deadlines, generation и central authority. Stable C ABI или другой SDK принимается только после конкретного требования; Rust dylib не предлагается как внешний стабильный ABI.
 

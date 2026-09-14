@@ -1,6 +1,6 @@
 # Открытые вопросы и самопроверка архитектуры
 
-Статус: предложение для review. Источники требований заполнены и учтены; отсутствие конкретных hardware/timing данных ниже не является отсутствием PROJECT_BRIEF.md. Документы описывают архитектуру, а не результаты реализованного POC.
+Статус: target baseline после foundation reconciliation 2026-09-14. Исходный архитектурный review завершён; implementation разрешена только для Milestone 1.
 
 ## 1. Что уже решено в предложении
 
@@ -16,14 +16,14 @@ Runtime владеет долгоживущим состоянием, Rust — �
 | Q02. Safe action и допустимое evidence по каждому actuator | Ноль/выключение не универсально безопасны; write ACK не подтверждает физический эффект | Off/zero; закрытие; bounded охлаждение/последовательность; readback либо явно допустимый ACK с независимой защитой | До arming любого физического выхода. Без утверждённого profile — запрет arming |
 | Q03. Аппаратная защита при потере Runtime/порта | Программа не исполнит safe command при crash/power/COM failure | Device watchdog, независимый interlock/контактор, безопасное аппаратное состояние, ограничение класса допустимых опытов | До physical-control slice; software arbiter её не заменяет |
 | Q04. Timing и freshness budgets | Определяют пригодность общей шины и script path; приоритет не прерывает in-flight transaction | Разные periods/TTL на контуры; выделенный ресурс; более простой контроллер/аппаратное управление | POC budgets — перед timing tests, реальные — до hardware admission. Нет заранее выбранных чисел |
-| Q05. Furnace semantics и совместимость v1 | Неизвестны режимы, inputs/outputs, reset/resume и зависимости старой реализации | Один stateful native controller; composition из native nodes; специализированный supervisory component | В отдельном анализе v1 после архитектурного review. Код v1 сейчас не читается |
+| Q05. Furnace semantics — закрыт migration analysis | Один scalar input/output, feed-forward + predictor + PI | Один native Controller с private composition, Reference отдельно; public internal subgraph не нужен | Решено; алгоритм и runtime перенос позже, не M1 |
 | Q06. Lua engine/binding и гарантии budgets | От этого зависит прерываемость CPU/memory/host operations | Ограниченный embedded VM host; ещё более узкий callback набор; process host при неудовлетворительном isolation | До/на этапе 5 POC. FFI/raw OS недоступны; неограниченный embedded callback не допускается |
 | Q07. Достаточность bounded transaction profiles | Нужно поддержать две нестандартные команды, не открывая raw-write обход | Fixed text templates + Rust response checks; небольшой набор binary primitives; новый native protocol adapter | Выбрать минимальный профиль перед этапами 3/5 POC. Произвольный Lua serializer actuator writes не принят |
 | Q08. Definition format, versioning и local deployment trust | Ошибка registers/side effects/scaling влияет на hardware, introspection требует совместимости | Один schema-validated JSON/TOML/другой формат; пакеты с manifest; local allowlist/installation permissions | Формат — до data-driven POC; permissions/процедура допуска — до physical deployment. Definitions не изменяются callback на лету |
-| Q09. Multi-output и межконтурные interlocks | Несколько writes нельзя считать атомарными; Furnace может требовать связанную реакцию | Независимые каналы; fail-together group; native аппаратная атомарность/локальная защита | До первого реального связанного multi-output controller. V1 не обещает atomic multi-device output |
+| Q09. Multi-output и межконтурные interlocks | Несколько writes нельзя считать атомарными; v1 Furnace не требует multi-output | Независимые каналы; fail-together group; аппаратная атомарность/защита | До первого реального связанного multi-output controller |
 | Q10. Присутствие supervisor и длительность внешней процедуры | Автономный native loop не продолжает неотправленные шаги Babashka recipe | Продолжать текущий native plan; explicit supervisor lease; checkpoint/recovery во внешнем сценарии | Policy выбирается при configuration эксперимента; общий default — независимый Runtime. Durable workflow engine только при новом требовании |
-| Q11. Recorder format, durability и допустимая потеря хвоста | Нужны многодневная запись и честный crash outcome; fsync/объём влияют на исполнение | Append log + samples files; embedded database; batching с watermark; write-ahead для обычных действий при строгом требовании | Формат/POC loss window — до этапа 6; реальные durability требования — до physical-control slice. Safe action не ждёт storage |
-| Q12. Retention, rotation и export | Многодневная сессия не должна исчерпать память/диск или потерять историю молча | Файлы на сессию/сегменты; архивирование; явная quota/stop policy; отдельные export formats | Минимум для soak — до этапа 8; эксплуатационная политика — до длительных реальных опытов |
+| Q11. Recorder format/durability | Нужна честная persisted граница; v1 SQLite writer — кандидат, не frozen schema | Bounded writer, explicit gaps, session/run/config provenance и typed evidence | До stage 7 уточнённого POC и physical acceptance |
+| Q12. Retention/rotation/export | Многодневная работа не должна молча терять данные | Explicit quota/stop/archive policy | К recorder/stress stages 7–8; 24/72h stage9, не gate M1 |
 | Q13. IPC transport и compatibility window | Нужны локальные reconnect/multi-client и будущий remote adapter | TCP + NDJSON; другой framed protocol; OS-local IPC | До Babashka slice. Зафиксированы domain semantics, bounds и loopback/local-only, не полный JSON schema |
 | Q14. Local authentication / permissions | Loopback сам по себе не различает локальных клиентов; read и output acquire имеют разные права | OS-local permissions; local token/session capabilities; сочетание | До первого IPC listener. Internet authentication/TLS — до remote exposure, не текущая реализация |
 | Q15. Restart recovery сверх configuration/history | Иногда нужно продолжить опыт после сбоя, но слепой restore output опасен | Ручной restart с прогревом; явные checkpoints алгоритмов; согласованный recovery protocol | Отложить до реального требования. V1: Unverified, новые epochs, никакого automatic rearm |
@@ -77,7 +77,7 @@ Runtime владеет долгоживущим состоянием, Rust — �
 | 17. Configuration | HIGH_LEVEL_ARCHITECTURE §9: hardware/definition/safety/procedure separation |
 | 18. Failures | RUNTIME_AND_SAFETY_MODEL §7: все перечисленные отказы, recovery owner и safe behavior |
 | 19. Project structure | HIGH_LEVEL_ARCHITECTURE §10, после domain model; только предложение |
-| 20. POC | POC_PLAN: восемь этапов, acceptance criteria, решение отложить Babashka до следующего slice |
+| 20. POC | POC_PLAN: девять уточнённых stages, реальный небольшой Babashka stage6; architecture acceptance 30–60min, 24/72h candidate stage9 |
 | 21. Без production code | Только Markdown; никакие crates/bindings/server/GUI не создаются |
 | 22. Deliverables | Пять требуемых файлов в docs/architecture |
 | 23. ADR | Три определяющих решения в docs/adr, статус Proposed, Context/Decision/Consequences/Rejected alternatives |
@@ -86,4 +86,4 @@ Runtime владеет долгоживущим состоянием, Rust — �
 
 ## 5. Следующая точка решения
 
-Архитектурный review должен оценить прежде всего central output authority, ограничение Lua physical operations, semantics продолжения без клиентов и выбранный POC scope. Конкретные VM, IPC encoding, storage engine, GUI framework и compiled plugin SDK не нужны для утверждения этих границ. После review реализация или анализ v1 начинаются только по отдельному запросу пользователя.
+Foundation reconciliation внесло согласованные AF01–AF08: Furnace закрыт; roles/side effects, Query purity, configuration policies, identity staging, recorder metadata и POC sequencing уточнены. См. [Milestone 1 design](../implementation/MILESTONE_1_DESIGN.md). Hardware budgets/profiles, IPC/storage engines и GUI choice не решаются этим milestone. Историческая coverage таблица выше описывает исходный архитектурный этап; актуальные ограничения implementation задаёт AGENTS.md.

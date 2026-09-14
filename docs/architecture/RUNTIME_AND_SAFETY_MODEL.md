@@ -1,6 +1,6 @@
 # Runtime, execution и output safety
 
-Статус: архитектурное предложение. Общие сущности определены в [HIGH_LEVEL_ARCHITECTURE.md](HIGH_LEVEL_ARCHITECTURE.md), ограничения extensions — в [EXTENSION_MODEL.md](EXTENSION_MODEL.md). Здесь определены обязательные semantics будущей реализации; соответствие им ещё должно быть проверено POC.
+Статус: target safety baseline; foundation reconciliation 2026-09-14. Milestone 1 не реализует output safety или физическое воздействие; эти инварианты остаются требованиями следующих stages.
 
 ## 1. Владение и модель исполнения
 
@@ -152,7 +152,7 @@ Reconnect создаёт новую client session, получает snapshot/д
 
 Start/Resume не является полностью выполненным действием, пока preconditions не пройдены; command outcome отражает отказ. Конкретный PID может поддержать bumpless initialization через свой validated native алгоритм; универсальное сохранение интегратора после произвольной паузы не обещается. Controller получает сведения об ограниченном выходе, чтобы не накапливать интегратор в предположении, что всё запрошенное было применено.
 
-Furnace может иметь внутреннюю state machine и несколько bindings. Его предметные режимы предстоит определить при отдельном анализе v1; они не должны владеть портом или обходить arbiter. External controller имеет этот lifecycle в Runtime, даже если алгоритмическая память находится в другом процессе.
+Furnace — один native Controller с private model/feed-forward/predictor/PI composition и отдельной Reference. По результатам migration его внешний контракт имеет один measurement и один output; публичный internal subgraph не нужен. Private state не владеет портом и не обходит arbiter. External controller имеет тот же Runtime lifecycle, даже если algorithm memory находится в другом процессе.
 
 ## 6. Recording и authoritative history
 
@@ -205,6 +205,12 @@ Safety и flush deadlines не должны превращать shutdown в б�
 Startup после штатного или аварийного завершения загружает configuration, восстанавливает доступную историю и обозначает прошлую незавершённую сессию. Состояние outputs начинается Unverified, polling/controller windows заново прогреваются, identity и safety profile проверяются. Даже safe command нельзя вслепую отправлять неизвестному устройству на переиспользованном адресе: требуемая profile проверка соответствия physical binding предшествует воздействию. Если прибор не предоставляет надёжной identity, допустимый способ проверки подключения определяется для установки; несовпадение оставляет fault/unknown. Продолжение активного управления — явное действие после reconciliation; сохранять конфигурацию не означает сохранять live lease.
 
 Для часов/дней работы нужны ограниченная память/очереди, проверка recorder lag/disk space, наблюдаемость execution latency/deadlines и connection health, bounded reconnect и ротация. Lifecycle clients независим от Runtime. Внешняя процедура, которую требуется продолжать после падения Babashka, либо заранее выражается через Runtime Reference/Program и native controllers, либо отдельно проектирует свой checkpoint/recovery; автоматического durable workflow engine в v1 нет.
+
+### Уточнения после migration
+
+Состояния authority, алгоритма, Reference и configuration revision независимы. Preserve/reset/reinitialize — явный контракт reconfiguration. Rename сохраняет logical ID; recreate/rebind меняет generation, даже если descriptor прежний. Выбор client adapter не меняет обязательные safety transitions. V1 API-specific emulator-stop barrier не переносится как допустимое различие GUI/Lua/external semantics.
+
+Recorder implementation может адаптировать SQLite writer, но не nullable actual_output как универсальное evidence. Session/run/config provenance, generic diagnostics и explicit gaps входят в будущий storage contract; action completion не ждёт disk I/O, required recording health всё равно влияет на authority.
 
 ## 9. Инварианты для будущей проверки
 
