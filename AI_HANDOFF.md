@@ -101,3 +101,17 @@ No external response received.
 User manually switches Astra High -> Sol High. Then read this file, AGENTS.md, current
 project/plans and MILESTONE_3_DESIGN.md; verify the 38-test baseline and implement M3
 sequentially with tests first. Current Astra phase is finished and must stop here.
+
+External review: M2 APPROVED.
+
+Mandatory M3 correction:
+- engineering units must become extensible;
+- OutputAuthority must not hard-code Unit::Percent;
+- expected actuator unit must come from trusted descriptor/binding metadata;
+- data-driven instruments must be able to introduce units such as sccm, mA, rpm, mbar without modifying lab-core;
+- no dimensional analysis or automatic unit conversion in M3.
+
+Detailed Sol instructions:
+SOL_M3_M4_INSTRUCTIONS.md
+
+STATUS: APPROVED_FOR_SOL_HIGH_M3_M4

@@ -30,6 +30,18 @@ Metakon definitions expose the same typed IDs, units, roles, effects and quality
 No generic discovery client branches on an instrument family. Parameter configuration
 remains distinct from actuation, and queries never initiate I/O.
 
+Engineering units use a bounded extensible value object with a canonical identity
+and display symbol. Built-in Celsius/percent/pascal/unitless values and units loaded
+from definitions use the same representation. Equality compares canonical identity;
+there is no dimensional analysis or conversion. Adding `sccm`, `mA`, `rpm` or another
+validated identity must not require a new lab-core enum variant.
+
+OutputAuthority stores the trusted actuator unit supplied with its descriptor binding
+and compares every proposal against it. It has no Percent-specific branch. SafeProfile
+numbers are interpreted in that same bound unit and do not carry a competing unit.
+Only finite numeric scalar actuators are admitted in M3/M4; unsupported actuator kinds
+fail atomically before an authority is registered.
+
 ## 2. Byte executor and bounded work
 
 The byte adapter exposes nonblocking/bounded attempt-to-write, poll-read and recovery
@@ -234,6 +246,7 @@ domain integration tests; keep original 38 tests passing throughout.
 | D1 discovery | Native virtual, native Metakon and both declarative fixtures share introspection without family-specific client code |
 | D2 strict data | Unknown/duplicate keys, depth/size/count bounds, bad type/unit/range/scale, unknown operation and output-role disguise reject atomically |
 | D3 extension | Second definition loads and works through fake bytes with no Rust core changes; no arbitrary executable expressions or raw frames |
+| U1–U6 units | Existing percent heater; wrong-unit rejection; custom sccm and second custom unit; bounded metadata; atomic descriptor/profile mismatch rejection |
 
 Use deterministic fake time and a scripted fault-injected byte adapter with observable
 transmitted bytes, not sleeps or only domain mock results. Cover actual final-check

@@ -7,7 +7,7 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-implementation: milestone 2 output authority (M2–M6 authorized sequentially)
+implementation: SOL_HIGH milestones 3 and 4 only
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -17,6 +17,10 @@ update AI_HANDOFF.md, explicitly request Astra High -> Sol High, and STOP. Do no
 implement M3 before the user switches models. This direct user instruction overrides
 IMPLEMENTATION_ROADMAP_M2_M6.md section 16's prohibition on M3 design. Later model
 handoffs also require an explicit stop; authorization through M6 never bypasses them.
+
+The first gate has been crossed by the user. SOL_M3_M4_INSTRUCTIONS.md is the
+authoritative instruction for the current phase. Complete M3, then M4, update the
+handoff, request SOL_HIGH -> ASTRA_HIGH, and stop before any M5 design or code.
 
 Read AI_HANDOFF.md before each milestone. It is the only dedicated external-review handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6 mark READY_FOR_EXTERNAL_REVIEW and stop.
 
