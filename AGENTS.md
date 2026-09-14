@@ -7,14 +7,14 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-implementation: milestone 1 domain foundation
+implementation: milestone 2 output authority (M2–M6 authorized sequentially)
 ```
 
-Implement only Milestone 1 from FOUNDATION_MILESTONE1_PLAN.md: minimal Rust workspace, native virtual Instrument, typed descriptors/validation, stable identity, deterministic time, bounded Signal state and local Commands/Queries.
+Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
 
-Milestone 1 is complete; see docs/implementation/MILESTONE_1_REPORT.md. Stop at this boundary. A new milestone requires a separate user instruction.
+Read AI_HANDOFF.md before each milestone. It is the only dedicated external-review handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6 mark READY_FOR_EXTERNAL_REVIEW and stop.
 
-Do not proceed to Milestone 2 or implement OutputArbiter, output execution, serial/Metakon runtime, controllers, Lua, Babashka, IPC, recorder or GUI without a separate user instruction.
+Do not implement M7 recorder, GUI, physical production deployment, long soak or full product parity. No dangerous physical actuator tests; donor remains read-only.
 
 Implement only concepts required by the current milestone. A concept in the target architecture is not a reason to implement it ahead of time.
 
@@ -111,4 +111,4 @@ Do not commit automatically unless the current user instructions permit commits.
 
 Conversation and architecture-review output may be in Russian during the design phase.
 
-Production source documentation can be standardized to English when implementation begins.
+All Rust module docs, rustdoc, source comments, TODO/FIXME and documentation examples must be in English. Document every public API and important private ownership/state/time/safety invariant meaningfully. Enforce missing-docs; prefer clear teaching code over compressed cleverness.
