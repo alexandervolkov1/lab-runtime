@@ -7,7 +7,7 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-implementation: SOL_HIGH milestones 3 and 4 only
+handoff: M3 and M4 complete; waiting for SOL_HIGH -> ASTRA_HIGH
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -21,6 +21,8 @@ handoffs also require an explicit stop; authorization through M6 never bypasses 
 The first gate has been crossed by the user. SOL_M3_M4_INSTRUCTIONS.md is the
 authoritative instruction for the current phase. Complete M3, then M4, update the
 handoff, request SOL_HIGH -> ASTRA_HIGH, and stop before any M5 design or code.
+That SOL phase is now complete. The next authorized action is Astra High review and
+M5 design only; do not begin M5 design or implementation before the user switches.
 
 Read AI_HANDOFF.md before each milestone. It is the only dedicated external-review handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6 mark READY_FOR_EXTERNAL_REVIEW and stop.
 

@@ -1,14 +1,16 @@
 # lab-runtime
 
-Milestones 1–3: a synchronous Rust owner with typed descriptors,
+Milestones 1–4: a synchronous Rust owner with typed descriptors,
 stable local identity, deterministic virtual measurements, pure queries and bounded
 recent signal state, bounded output authority, strict Metakon framing and a
-single-owner fault-injected byte executor. **No physical hardware I/O was tested.**
+single-owner fault-injected byte executor. M4 adds a deterministic thermal plant and
+native EMA/Reference/PID control lifecycle. **No physical hardware I/O was tested.**
 
 ## Run and verify
 
 The workspace uses Rust edition 2024; verified with rustc/cargo 1.95.0 on Windows.
-There are exactly two packages and no third-party dependencies.
+There are exactly two packages. Core remains std-only; the host uses serde/serde_json
+only for strict data-definition loading.
 
 ```powershell
 cargo run -p lab-runtime
@@ -37,11 +39,16 @@ background service, clock polling, sleep, serial port or network listener.
   simulated send. Requested, sent, ACK and readback are separate observations.
 - Output time is explicit and nondecreasing. Commands tick the watchdog before
   producer validation; even rejected producer work may expire an existing lease.
+- Native controllers have Created/Ready/Running/Paused/Failed lifecycle. They consume
+  fresh typed samples, evaluate an independent Reference, and can affect the M4 plant
+  only by proposing through the same lease/epoch/final-dispatch authority as clients.
+- Pause and controller failure revoke authority and complete the virtual safe action;
+  resume resets EMA/PID memory and obtains a new lease epoch.
 
-No controller, physical serial adapter, Lua, Babashka/IPC, recorder or GUI is included. The executable
-remains the finite M1 demo; M2 is exercised with `cargo test -p lab-core --test milestone2`.
+No physical serial adapter, Lua, Babashka/IPC, recorder or GUI is included. The executable
+remains the finite M1 demo; M2–M4 are exercised by milestone integration tests.
 This is not an autonomous runtime and does not prove physical safety or multi-day
-operation. M3 uses deterministic fake byte adapters; M4 is the current SOL_HIGH scope.
+operation. M3 uses deterministic fake byte adapters; M4 uses a deterministic virtual plant.
 
 See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
 [completion report](docs/implementation/MILESTONE_1_REPORT.md),
@@ -49,6 +56,8 @@ See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
 [M2 report](docs/implementation/MILESTONE_2_REPORT.md),
 [M3 contract](docs/implementation/MILESTONE_3_DESIGN.md),
 [M3 report](docs/implementation/MILESTONE_3_REPORT.md),
+[M4 contract](docs/implementation/MILESTONE_4_DESIGN.md),
+[M4 report](docs/implementation/MILESTONE_4_REPORT.md),
 [target architecture](docs/architecture/HIGH_LEVEL_ARCHITECTURE.md),
 [migration analysis](docs/migration/V1_TO_LAB_RUNTIME_MAP.md), and
 [donor baseline](docs/migration/DONOR_BASELINE.md).
