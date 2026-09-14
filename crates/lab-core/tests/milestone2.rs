@@ -152,8 +152,8 @@ fn one_owner_and_one_bounded_pending_proposal() {
         )
         .is_err()
     );
-    propose(&mut runtime, lease, Value::Float(40.0), Unit::Percent, 1).unwrap();
-    assert!(propose(&mut runtime, lease, Value::Float(50.0), Unit::Percent, 1).is_err());
+    propose(&mut runtime, lease, Value::Float(40.0), Unit::PERCENT, 1).unwrap();
+    assert!(propose(&mut runtime, lease, Value::Float(50.0), Unit::PERCENT, 1).is_err());
     let sent = dispatch(&mut runtime, 2);
     assert_eq!(sent.value(), 40.0);
     assert!(action(&mut runtime, OutputCommand::BeginDispatch, 2).is_err());
@@ -166,12 +166,12 @@ fn both_modes_share_strict_validation_and_generic_setter_is_not_a_bypass() {
         make_safe(&mut runtime, 0);
         let lease = acquire(&mut runtime, owner, 0);
         for (value, unit) in [
-            (Value::Boolean(true), Unit::Percent),
-            (Value::Float(-1.0), Unit::Percent),
-            (Value::Float(101.0), Unit::Percent),
-            (Value::Float(f64::NAN), Unit::Percent),
-            (Value::Float(f64::INFINITY), Unit::Percent),
-            (Value::Float(5.0), Unit::Celsius),
+            (Value::Boolean(true), Unit::PERCENT),
+            (Value::Float(-1.0), Unit::PERCENT),
+            (Value::Float(101.0), Unit::PERCENT),
+            (Value::Float(f64::NAN), Unit::PERCENT),
+            (Value::Float(f64::INFINITY), Unit::PERCENT),
+            (Value::Float(5.0), Unit::CELSIUS),
         ] {
             assert!(propose(&mut runtime, lease, value, unit, 0).is_err());
             assert!(!snapshot(&runtime).pending);
@@ -184,7 +184,7 @@ fn both_modes_share_strict_validation_and_generic_setter_is_not_a_bypass() {
             }),
             Err(Error::OperationNotAllowed(HEATER_POWER))
         );
-        propose(&mut runtime, lease, Value::Float(5.0), Unit::Percent, 0).unwrap();
+        propose(&mut runtime, lease, Value::Float(5.0), Unit::PERCENT, 0).unwrap();
         let sent = dispatch(&mut runtime, 0);
         complete(&mut runtime, sent, DispatchOutcome::Acknowledged, 0);
         assert_eq!(snapshot(&runtime).acknowledged.unwrap().value, 5.0);
@@ -198,7 +198,7 @@ fn expiry_and_revoke_fence_queued_work_at_final_send() {
         let mut runtime = setup(0.0);
         make_safe(&mut runtime, 0);
         let lease = acquire(&mut runtime, OutputOwner::Automatic(1), 0);
-        propose(&mut runtime, lease, Value::Float(90.0), Unit::Percent, 0).unwrap();
+        propose(&mut runtime, lease, Value::Float(90.0), Unit::PERCENT, 0).unwrap();
         if revoke {
             action(&mut runtime, OutputCommand::Release(lease), 1).unwrap();
         }
@@ -215,7 +215,7 @@ fn expiry_and_revoke_fence_queued_work_at_final_send() {
     let mut runtime = setup(0.0);
     make_safe(&mut runtime, 0);
     let lease = acquire(&mut runtime, OutputOwner::Manual(1), 0);
-    assert!(propose(&mut runtime, lease, Value::Float(10.0), Unit::Percent, 1000).is_err());
+    assert!(propose(&mut runtime, lease, Value::Float(10.0), Unit::PERCENT, 1000).is_err());
     assert!(snapshot(&runtime).lease.is_none());
     assert_eq!(snapshot(&runtime).state, OutputState::SafePending);
 }
@@ -225,7 +225,7 @@ fn old_epoch_and_late_result_cannot_restore_authority_or_confirm_new_safe() {
     let mut runtime = setup(0.0);
     make_safe(&mut runtime, 0);
     let old = acquire(&mut runtime, OutputOwner::Automatic(1), 0);
-    propose(&mut runtime, old, Value::Float(90.0), Unit::Percent, 0).unwrap();
+    propose(&mut runtime, old, Value::Float(90.0), Unit::PERCENT, 0).unwrap();
     let ordinary = dispatch(&mut runtime, 1);
     action(&mut runtime, OutputCommand::Release(old), 2).unwrap();
     assert!(action(&mut runtime, OutputCommand::BeginDispatch, 2).is_err());
@@ -236,7 +236,7 @@ fn old_epoch_and_late_result_cannot_restore_authority_or_confirm_new_safe() {
     complete(&mut runtime, safe, DispatchOutcome::ReadbackVerified, 4);
     let new = acquire(&mut runtime, OutputOwner::Manual(2), 4);
     assert_ne!(old.epoch(), new.epoch());
-    assert!(propose(&mut runtime, old, Value::Float(80.0), Unit::Percent, 4).is_err());
+    assert!(propose(&mut runtime, old, Value::Float(80.0), Unit::PERCENT, 4).is_err());
     assert!(
         action(
             &mut runtime,
@@ -324,13 +324,13 @@ fn tokens_and_completions_from_another_runtime_instance_are_rejected() {
     let mut first = setup(0.0);
     make_safe(&mut first, 0);
     let old_lease = acquire(&mut first, OutputOwner::Manual(1), 0);
-    propose(&mut first, old_lease, Value::Float(10.0), Unit::Percent, 0).unwrap();
+    propose(&mut first, old_lease, Value::Float(10.0), Unit::PERCENT, 0).unwrap();
     let old_send = dispatch(&mut first, 0);
     let mut second = setup(0.0);
     make_safe(&mut second, 0);
     let new_lease = acquire(&mut second, OutputOwner::Manual(1), 0);
-    assert!(propose(&mut second, old_lease, Value::Float(10.0), Unit::Percent, 0).is_err());
-    propose(&mut second, new_lease, Value::Float(20.0), Unit::Percent, 0).unwrap();
+    assert!(propose(&mut second, old_lease, Value::Float(10.0), Unit::PERCENT, 0).is_err());
+    propose(&mut second, new_lease, Value::Float(20.0), Unit::PERCENT, 0).unwrap();
     let new_send = dispatch(&mut second, 0);
     assert_ne!(old_send.id(), new_send.id());
     let before = snapshot(&second);
@@ -386,7 +386,7 @@ fn normal_failure_revokes_and_requires_safe_recovery_without_rearming() {
         let mut runtime = setup(0.0);
         make_safe(&mut runtime, 0);
         let lease = acquire(&mut runtime, OutputOwner::Automatic(1), 0);
-        propose(&mut runtime, lease, Value::Float(70.0), Unit::Percent, 0).unwrap();
+        propose(&mut runtime, lease, Value::Float(70.0), Unit::PERCENT, 0).unwrap();
         let normal = dispatch(&mut runtime, 0);
         complete(&mut runtime, normal, result, 1);
         let failed = snapshot(&runtime);
@@ -396,7 +396,7 @@ fn normal_failure_revokes_and_requires_safe_recovery_without_rearming() {
         let safe = dispatch(&mut runtime, 1);
         complete(&mut runtime, safe, DispatchOutcome::ReadbackVerified, 2);
         assert_eq!(snapshot(&runtime).state, OutputState::FaultLatched);
-        assert!(propose(&mut runtime, lease, Value::Float(70.0), Unit::Percent, 2).is_err());
+        assert!(propose(&mut runtime, lease, Value::Float(70.0), Unit::PERCENT, 2).is_err());
     }
 }
 
@@ -424,7 +424,7 @@ fn acknowledgement_policy_is_explicit_and_not_readback() {
     assert_eq!(snapshot(&runtime).acknowledged.unwrap().value, 10.0);
     let lease = acquire(&mut runtime, OutputOwner::Manual(1), 1);
     assert_eq!(
-        propose(&mut runtime, lease, Value::Float(5.0), Unit::Percent, 1),
+        propose(&mut runtime, lease, Value::Float(5.0), Unit::PERCENT, 1),
         Err(Error::OutOfRange)
     );
     assert!(
@@ -449,13 +449,13 @@ fn proposal_deadline_is_exclusive_and_cannot_outlive_the_lease() {
     let mut runtime = setup(0.0);
     make_safe(&mut runtime, 0);
     let lease = acquire(&mut runtime, OutputOwner::Manual(1), 0);
-    propose(&mut runtime, lease, Value::Float(60.0), Unit::Percent, 0).unwrap();
+    propose(&mut runtime, lease, Value::Float(60.0), Unit::PERCENT, 0).unwrap();
     assert_eq!(
         action(&mut runtime, OutputCommand::BeginDispatch, 100),
         Err(Error::Output(OutputError::Expired))
     );
     assert!(!snapshot(&runtime).pending);
-    propose(&mut runtime, lease, Value::Float(80.0), Unit::Percent, 999).unwrap();
+    propose(&mut runtime, lease, Value::Float(80.0), Unit::PERCENT, 999).unwrap();
     let at_expiry = dispatch(&mut runtime, 1000);
     assert!(at_expiry.is_safe());
     assert_eq!(at_expiry.value(), 0.0);

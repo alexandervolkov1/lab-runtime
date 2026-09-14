@@ -124,7 +124,7 @@ fn units_and_descriptor_semantics_are_explicit() {
         id: ParameterId::new(1),
         name: "value".into(),
         value_spec: ValueSpec::Boolean,
-        unit: Unit::Unitless,
+        unit: Unit::UNITLESS,
         access: AccessMode::ReadWrite,
         role: ParameterRole::Configuration,
         write_effect: WriteEffect::ConfigurationOnly,
@@ -132,7 +132,7 @@ fn units_and_descriptor_semantics_are_explicit() {
     };
     descriptor.validate_definition().unwrap();
     let mut invalid = descriptor.clone();
-    invalid.unit = Unit::Celsius;
+    invalid.unit = Unit::CELSIUS;
     assert!(matches!(
         invalid.validate_definition(),
         Err(Error::InvalidConfiguration(_))
@@ -143,10 +143,10 @@ fn units_and_descriptor_semantics_are_explicit() {
     invalid = descriptor.clone();
     invalid.role = ParameterRole::Actuator;
     assert!(invalid.validate_definition().is_err());
-    assert_eq!(Unit::Celsius.symbol(), "°C");
-    assert_eq!(Unit::Percent.symbol(), "%");
-    assert_eq!(Unit::Pascal.symbol(), "Pa");
-    assert_eq!(Unit::Unitless.symbol(), "1");
+    assert_eq!(Unit::CELSIUS.symbol(), "°C");
+    assert_eq!(Unit::PERCENT.symbol(), "%");
+    assert_eq!(Unit::PASCAL.symbol(), "Pa");
+    assert_eq!(Unit::UNITLESS.symbol(), "1");
 }
 
 #[test]

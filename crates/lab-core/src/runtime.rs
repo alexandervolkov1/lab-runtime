@@ -193,7 +193,8 @@ impl Runtime {
                 {
                     return Err(OutputError::UnknownActuator.into());
                 }
-                let authority = OutputAuthority::new(actuator, parameter.value_spec.clone())?;
+                let authority =
+                    OutputAuthority::new(actuator, parameter.value_spec.clone(), parameter.unit)?;
                 self.instruments.insert(id, instrument);
                 self.outputs.insert(actuator, authority);
                 Ok(CommandResult::Registered(id))

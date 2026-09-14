@@ -160,7 +160,7 @@ fn descriptor_exposes_type_units_access_roles_and_side_effects() {
             max: 110.0
         }
     );
-    assert_eq!(measurement.unit, Unit::Celsius);
+    assert_eq!(measurement.unit, Unit::CELSIUS);
     assert_eq!(measurement.access, AccessMode::ReadOnly);
     assert_eq!(measurement.role, ParameterRole::Measurement);
     assert_eq!(measurement.write_effect, WriteEffect::None);
@@ -169,7 +169,7 @@ fn descriptor_exposes_type_units_access_roles_and_side_effects() {
     assert_eq!(output.role, ParameterRole::Actuator);
     assert_eq!(output.access, AccessMode::ReadWrite);
     assert_eq!(output.write_effect, WriteEffect::OutputAffecting);
-    assert_eq!(output.unit, Unit::Percent);
+    assert_eq!(output.unit, Unit::PERCENT);
     assert!(output.signal.is_none());
     let before = state(&runtime);
     assert_eq!(
@@ -295,7 +295,7 @@ fn explicit_refresh_uses_supplied_time_and_configuration_preserves_old_observati
     let old = latest(&runtime).unwrap();
     assert_eq!(old.value(), Some(&Value::Float(20.0)));
     assert_eq!(old.at(), Duration::ZERO);
-    assert_eq!(old.unit(), Unit::Celsius);
+    assert_eq!(old.unit(), Unit::CELSIUS);
     assert_eq!(old.signal(), signal());
     configure(&mut runtime, BASE_TEMPERATURE, Value::Float(25.0)).unwrap();
     assert_eq!(latest(&runtime), Some(old));

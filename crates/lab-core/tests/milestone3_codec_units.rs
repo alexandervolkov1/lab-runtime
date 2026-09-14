@@ -3,9 +3,8 @@
 use lab_core::{
     Unit, Value,
     metakon::{
-        Address, CodecError, ExpectedRead, MetakonType, MetakonValue, TemperatureReading,
-        crc, decode_ack, decode_read, encode_read, encode_scaled_i8, encode_write,
-        scale_temperature,
+        Address, CodecError, ExpectedRead, MetakonType, MetakonValue, TemperatureReading, crc,
+        decode_ack, decode_read, encode_read, encode_scaled_i8, encode_write, scale_temperature,
     },
 };
 
@@ -16,7 +15,7 @@ fn custom_units_are_bounded_values_not_core_enum_variants() {
     assert_eq!(sccm.id(), "sccm");
     assert_eq!(sccm.symbol(), "sccm");
     assert_ne!(sccm, milliamp);
-    assert_eq!(Unit::new("sccm", "standard cm³/min").unwrap(), sccm);
+    assert_eq!(Unit::new("sccm", "std cm3/min").unwrap(), sccm);
 
     assert!(Unit::new("", "x").is_err());
     assert!(Unit::new("blank id", "x").is_err());
@@ -81,8 +80,14 @@ fn read_and_ack_decoding_is_strict() {
     let mut corrupt_crc = frame;
     corrupt_crc[7] ^= 1;
     assert_eq!(decode_read(&corrupt_crc, expected), Err(CodecError::BadCrc));
-    assert_eq!(decode_read(&frame[..7], expected), Err(CodecError::WrongLength));
-    assert_eq!(decode_read(&[0; 39], expected), Err(CodecError::FrameTooLong));
+    assert_eq!(
+        decode_read(&frame[..7], expected),
+        Err(CodecError::WrongLength)
+    );
+    assert_eq!(
+        decode_read(&[0; 39], expected),
+        Err(CodecError::FrameTooLong)
+    );
 }
 
 #[test]

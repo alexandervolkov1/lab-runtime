@@ -2,7 +2,7 @@
 //! Descriptors are data, not device drivers or output permissions. Validation
 //! precedes mutation so a rejected candidate cannot damage an existing configuration.
 
-use std::{fmt, time::Duration};
+use std::{cmp::Ordering, fmt, hash::Hash, time::Duration};
 
 /// Maximum UTF-8 bytes in a nonblank display name.
 pub const MAX_NAME_BYTES: usize = 128;
@@ -208,28 +208,136 @@ impl ValueSpec {
     }
 }
 
-/// Small vocabulary, not dimensional analysis or a physical safety profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unit {
-    /// Temperature in degrees Celsius, without automatic Kelvin conversion.
-    Celsius,
-    /// A percentage; allowed limits are supplied by the descriptor/profile.
-    Percent,
-    /// Pressure in pascals.
-    Pascal,
-    /// No physical dimension, including Boolean and text metadata.
-    Unitless,
+/// Maximum bytes in a stable engineering-unit identity.
+pub const MAX_UNIT_ID_BYTES: usize = 32;
+/// Maximum UTF-8 bytes in an engineering-unit display symbol.
+pub const MAX_UNIT_SYMBOL_BYTES: usize = 16;
+
+#[derive(Clone, Copy)]
+struct UnitText {
+    bytes: [u8; MAX_UNIT_ID_BYTES],
+    len: u8,
+}
+
+impl UnitText {
+    const fn literal(value: &str) -> Self {
+        let source = value.as_bytes();
+        assert!(source.len() <= MAX_UNIT_ID_BYTES);
+        let mut bytes = [0; MAX_UNIT_ID_BYTES];
+        let mut index = 0;
+        while index < source.len() {
+            bytes[index] = source[index];
+            index += 1;
+        }
+        Self {
+            bytes,
+            len: source.len() as u8,
+        }
+    }
+
+    fn checked(value: &str, maximum: usize) -> Result<Self, Error> {
+        if value.trim().is_empty() || value.len() > maximum {
+            return Err(Error::InvalidConfiguration("invalid engineering unit"));
+        }
+        let mut bytes = [0; MAX_UNIT_ID_BYTES];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        Ok(Self {
+            bytes,
+            len: value.len() as u8,
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)])
+            .expect("UnitText is built only from validated UTF-8")
+    }
+}
+
+/// Bounded, extensible engineering-unit metadata.
+///
+/// Equality and ordering use the canonical identity only. Symbols are presentation
+/// metadata: `Unit::new("percent", "pct")` identifies the same unit as [`Unit::PERCENT`].
+/// The type intentionally performs no dimensional analysis or automatic conversion.
+#[derive(Clone, Copy)]
+pub struct Unit {
+    id: UnitText,
+    symbol: UnitText,
 }
 
 impl Unit {
-    /// Return the engineering-unit label for generic presentation, not a conversion rule.
-    pub const fn symbol(self) -> &'static str {
-        match self {
-            Self::Celsius => "°C",
-            Self::Percent => "%",
-            Self::Pascal => "Pa",
-            Self::Unitless => "1",
+    /// Degrees Celsius, represented by the canonical identity `degC`.
+    pub const CELSIUS: Self = Self::literal("degC", "°C");
+    /// Percent, represented by the canonical identity `percent`.
+    pub const PERCENT: Self = Self::literal("percent", "%");
+    /// Pascals, represented by the canonical identity `Pa`.
+    pub const PASCAL: Self = Self::literal("Pa", "Pa");
+    /// Dimensionless metadata, represented by the canonical identity `1`.
+    pub const UNITLESS: Self = Self::literal("1", "1");
+
+    const fn literal(id: &str, symbol: &str) -> Self {
+        Self {
+            id: UnitText::literal(id),
+            symbol: UnitText::literal(symbol),
         }
+    }
+
+    /// Build a unit supplied by trusted configuration without a new Core enum variant.
+    ///
+    /// Identities are 1..=32 printable ASCII bytes without whitespace. Symbols are
+    /// nonblank UTF-8 up to 16 bytes. These deliberately small rules bound metadata
+    /// without claiming a universal engineering-unit grammar.
+    pub fn new(id: &str, symbol: &str) -> Result<Self, Error> {
+        if !id
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace())
+        {
+            return Err(Error::InvalidConfiguration("invalid engineering unit"));
+        }
+        Ok(Self {
+            id: UnitText::checked(id, MAX_UNIT_ID_BYTES)?,
+            symbol: UnitText::checked(symbol, MAX_UNIT_SYMBOL_BYTES)?,
+        })
+    }
+
+    /// Return the stable identity used for exact compatibility checks.
+    pub fn id(&self) -> &str {
+        self.id.as_str()
+    }
+
+    /// Return the generic presentation symbol, never a conversion rule.
+    pub fn symbol(&self) -> &str {
+        self.symbol.as_str()
+    }
+}
+
+impl PartialEq for Unit {
+    fn eq(&self, other: &Self) -> bool {
+        self.id.bytes == other.id.bytes && self.id.len == other.id.len
+    }
+}
+impl Eq for Unit {}
+impl PartialOrd for Unit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Unit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id().cmp(other.id())
+    }
+}
+impl Hash for Unit {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id().hash(state);
+    }
+}
+impl fmt::Debug for Unit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Unit")
+            .field("id", &self.id())
+            .field("symbol", &self.symbol())
+            .finish()
     }
 }
 
@@ -296,7 +404,7 @@ impl ParameterDescriptor {
     pub fn validate_definition(&self) -> Result<(), Error> {
         validate_name(&self.name)?;
         self.value_spec.validate_definition()?;
-        if self.unit != Unit::Unitless
+        if self.unit != Unit::UNITLESS
             && !matches!(
                 self.value_spec.value_type(),
                 ValueType::Float | ValueType::Integer

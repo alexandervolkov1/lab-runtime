@@ -6,6 +6,7 @@
 //! is not evidence that an actuator received it. No OS transport or worker thread is
 //! hidden behind this boundary.
 
+pub mod metakon;
 mod model;
 pub mod output;
 mod runtime;

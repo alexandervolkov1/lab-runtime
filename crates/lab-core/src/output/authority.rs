@@ -24,6 +24,7 @@ pub(crate) struct OutputAuthority {
     actuator: ActuatorId,
     instance: u64,
     limits: ValueSpec,
+    unit: Unit,
     profile: Option<SafeProfile>,
     snapshot: OutputSnapshot,
     pending: Option<Pending>,
@@ -32,7 +33,7 @@ pub(crate) struct OutputAuthority {
 }
 
 impl OutputAuthority {
-    pub(crate) fn new(actuator: ActuatorId, limits: ValueSpec) -> Result<Self, Error> {
+    pub(crate) fn new(actuator: ActuatorId, limits: ValueSpec, unit: Unit) -> Result<Self, Error> {
         let instance = NEXT_INSTANCE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
@@ -42,6 +43,7 @@ impl OutputAuthority {
             actuator,
             instance,
             limits,
+            unit,
             profile: None,
             snapshot: OutputSnapshot {
                 state: OutputState::Unverified,
@@ -199,7 +201,7 @@ impl OutputAuthority {
 
     fn propose(&mut self, proposal: OutputProposal, at: Duration) -> Result<OutputResult, Error> {
         self.check_lease(proposal.lease, at)?;
-        if proposal.unit != Unit::Percent {
+        if proposal.unit != self.unit {
             return Err(OutputError::WrongUnit.into());
         }
         let profile = self.profile()?;
@@ -385,6 +387,7 @@ mod tests {
                 min: 0.0,
                 max: 100.0,
             },
+            Unit::PERCENT,
         )
         .unwrap();
         authority
@@ -424,7 +427,7 @@ mod tests {
                 OutputProposal {
                     lease,
                     value: Value::Float(90.0),
-                    unit: Unit::Percent,
+                    unit: Unit::PERCENT,
                     ttl: Duration::from_millis(100),
                 },
                 Duration::ZERO,
