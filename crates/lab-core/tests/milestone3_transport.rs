@@ -1,15 +1,10 @@
 //! M3 acceptance for bounded single-owner byte transport execution.
 
 use lab_core::transport::{
-    ByteTransport, ExecutorState, RecoveryStatus, ResourceExecutor, ResourceId, TransportError,
-    TransportIoError, TransactionOutcome, MAX_QUEUED_TRANSACTIONS,
+    ByteTransport, ExecutorState, MAX_QUEUED_TRANSACTIONS, RecoveryStatus, ResourceExecutor,
+    ResourceId, TransactionOutcome, TransportError, TransportIoError,
 };
-use std::{
-    cell::RefCell,
-    collections::VecDeque,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Duration};
 
 #[derive(Default)]
 struct Script {
@@ -61,7 +56,7 @@ impl ByteTransport for FakeTransport {
     }
 }
 
-fn executor(script: Rc<RefCell<Script>>) -> ResourceExecutor {
+fn make_executor(script: Rc<RefCell<Script>>) -> ResourceExecutor {
     ResourceExecutor::new(ResourceId::new(1), Box::new(FakeTransport(script)))
 }
 
@@ -88,7 +83,7 @@ fn partial_io_serializes_two_instruments_without_byte_interleaving() {
         responses: VecDeque::from([vec![1, 2, 3], vec![4, 5, 6]]),
         ..Script::default()
     }));
-    let mut executor = executor(script.clone());
+    let mut executor = make_executor(script.clone());
     queue_read(&mut executor, &[10, 11, 12, 13], 0);
     queue_read(&mut executor, &[20, 21, 22, 23], 0);
 
@@ -117,11 +112,9 @@ fn separate_resource_owners_progress_independently() {
         responses: VecDeque::from([vec![7, 8, 9]]),
         ..Script::default()
     }));
-    let mut first = executor(stalled);
-    let mut second = ResourceExecutor::new(
-        ResourceId::new(2),
-        Box::new(FakeTransport(flowing.clone())),
-    );
+    let mut first = make_executor(stalled);
+    let mut second =
+        ResourceExecutor::new(ResourceId::new(2), Box::new(FakeTransport(flowing.clone())));
     queue_read(&mut first, &[1, 1], 0);
     queue_read(&mut second, &[2, 2], 0);
     for millisecond in 0..3 {
@@ -139,7 +132,7 @@ fn queue_capacity_and_exact_deadline_are_explicit() {
         max_write: 0,
         ..Script::default()
     }));
-    let mut executor = executor(script.clone());
+    let mut executor = make_executor(script.clone());
     for index in 0..MAX_QUEUED_TRANSACTIONS {
         executor
             .enqueue_read(
@@ -168,7 +161,7 @@ fn queue_capacity_and_exact_deadline_are_explicit() {
         Err(TransportError::QueueFull)
     );
 
-    let mut exact = executor(script.clone());
+    let mut exact = make_executor(script.clone());
     exact
         .enqueue_read(
             &[42],
@@ -196,7 +189,7 @@ fn timeout_after_a_prefix_requires_recovery_before_next_work() {
         recoveries: VecDeque::from([Ok(RecoveryStatus::Pending), Ok(RecoveryStatus::Complete)]),
         ..Script::default()
     }));
-    let mut executor = executor(script.clone());
+    let mut executor = make_executor(script.clone());
     executor
         .enqueue_read(
             &[1, 2, 3],
@@ -233,7 +226,7 @@ fn retryable_read_gets_at_most_one_retry_after_recovery() {
         responses: VecDeque::from([vec![1, 2, 3]]),
         ..Script::default()
     }));
-    let mut executor = executor(script.clone());
+    let mut executor = make_executor(script.clone());
     executor
         .enqueue_read(
             &[7, 7],

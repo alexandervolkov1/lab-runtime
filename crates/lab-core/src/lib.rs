@@ -11,6 +11,7 @@ mod model;
 pub mod output;
 mod runtime;
 mod signal;
+pub mod transport;
 mod virtual_instrument;
 
 pub use model::*;
