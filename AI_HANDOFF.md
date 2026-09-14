@@ -2,18 +2,19 @@
 
 ## Current milestone
 
-M2 complete; M3 design/acceptance contract fixed, implementation NOT started.
-Model used: ASTRA_HIGH.
-Status: WAITING_FOR_MODEL_SWITCH.
-Verified M2/report checkpoint: 5fa25b2. Final handoff commit: see `git log -1`.
-Working tree: intended clean after final documentation commit; verify with git status.
+M3 complete; M4 design and implementation not started.
+Model used: SOL_HIGH.
+Status: APPROVED_FOR_SOL_HIGH_M4.
+Verified M3 checkpoint: 5f3e61d plus the following report commit.
+Working tree: clean at the M3 report boundary; verify with git status.
 
 ## Completed
 
 Read the full current project and plans. Implemented deterministic M2 authority,
 preserved M1, added English teaching documentation and missing-docs enforcement.
-38 tests pass. Fixed late-safe recovery and added final-check/instance/overflow
-regressions. Fixed M3 documentation only; no M3 tests or production code.
+60 tests pass after M3. Runtime now owns bounded byte executors, strict Metakon
+framing/mapping, declarative known-profile instruments and the actual-byte output
+gate. Units are bounded extensible identities. No physical COM test was performed.
 
 ## Important decisions
 
@@ -95,6 +96,13 @@ to Astra High for M5 design only, not immediate Lua implementation.
 ## Reviewer response
 
 No external response received.
+
+## M3 phase update
+
+M3 verification is complete; see docs/implementation/MILESTONE_3_REPORT.md. Continue
+directly under SOL_HIGH with M4 design, tests first and M4 implementation. This is
+not a model handoff. The final handoff section below remains the prior record until
+M4 replaces it.
 
 ## Next step
 

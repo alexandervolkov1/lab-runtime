@@ -1,9 +1,9 @@
 # lab-runtime
 
-Milestones 1–2: a synchronous Rust owner with typed descriptors,
+Milestones 1–3: a synchronous Rust owner with typed descriptors,
 stable local identity, deterministic virtual measurements, pure queries and bounded
-recent signal state, plus bounded output authority and deterministic simulated
-dispatch. **No hardware I/O.**
+recent signal state, bounded output authority, strict Metakon framing and a
+single-owner fault-injected byte executor. **No physical hardware I/O was tested.**
 
 ## Run and verify
 
@@ -38,17 +38,17 @@ background service, clock polling, sleep, serial port or network listener.
 - Output time is explicit and nondecreasing. Commands tick the watchdog before
   producer validation; even rejected producer work may expire an existing lease.
 
-No controllers, serial, Lua, Babashka/IPC, recorder or GUI is included. The executable
+No controller, physical serial adapter, Lua, Babashka/IPC, recorder or GUI is included. The executable
 remains the finite M1 demo; M2 is exercised with `cargo test -p lab-core --test milestone2`.
 This is not an autonomous runtime and does not prove physical safety or multi-day
-operation. M3 has a documentation-only contract; implementation waits for the
-mandatory Astra High -> Sol High handoff in AI_HANDOFF.md.
+operation. M3 uses deterministic fake byte adapters; M4 is the current SOL_HIGH scope.
 
 See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
 [completion report](docs/implementation/MILESTONE_1_REPORT.md),
 [M2 design](docs/implementation/MILESTONE_2_DESIGN.md),
 [M2 report](docs/implementation/MILESTONE_2_REPORT.md),
 [M3 contract](docs/implementation/MILESTONE_3_DESIGN.md),
+[M3 report](docs/implementation/MILESTONE_3_REPORT.md),
 [target architecture](docs/architecture/HIGH_LEVEL_ARCHITECTURE.md),
 [migration analysis](docs/migration/V1_TO_LAB_RUNTIME_MAP.md), and
 [donor baseline](docs/migration/DONOR_BASELINE.md).
