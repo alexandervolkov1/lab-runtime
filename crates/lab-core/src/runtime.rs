@@ -1009,10 +1009,18 @@ impl Runtime {
                 .lease
                 .take()
                 .ok_or(ControllerError::InvalidState)?;
-            self.outputs
+            let authority = self
+                .outputs
                 .get_mut(&controller.config.output)
-                .ok_or(OutputError::UnknownActuator)?
-                .command(OutputCommand::Release(lease), at)?;
+                .ok_or(OutputError::UnknownActuator)?;
+            if authority.snapshot().lease == Some(lease) {
+                authority.command(OutputCommand::Release(lease), at)?;
+            } else {
+                // The Runtime watchdog may already have revoked an expired lease.
+                // Pausing must still settle the reserved safe action and must not
+                // leave the controller claiming authority it no longer owns.
+                authority.command(OutputCommand::RequestSafe, at)?;
+            }
             self.complete_simulated_safe(controller.config.output, at)?;
             controller.state = ControllerState::Paused;
             Ok(CommandResult::ControllerUpdated(controller.snapshot()))
@@ -1052,7 +1060,7 @@ impl Runtime {
         if at < sample.at() {
             return Err(ControllerError::InvalidTickTime);
         }
-        if at - sample.at() >= max_age {
+        if at - sample.at() > max_age {
             return Err(ControllerError::StaleInput);
         }
         let Some(Value::Float(value)) = sample.value() else {

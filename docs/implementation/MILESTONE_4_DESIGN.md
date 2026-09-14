@@ -19,8 +19,9 @@ ThermalPlant temperature Sample -> controller-owned native EMA
     -> simulated trusted Begin/Complete -> ThermalPlant heater power
 ```
 
-The virtual effect is applied only for a Dispatch that passed BeginDispatch and then
-receives successful simulated evidence. Generic ConfigureParameter cannot actuate.
+The virtual effect is applied only when a Dispatch passes BeginDispatch. Its separate
+completion then records successful simulated evidence; a failed/ambiguous completion
+cannot prove that an already accepted effect did not occur. Generic ConfigureParameter cannot actuate.
 This fixture is deterministic test evidence for authority composition, not hardware
 safety or a physically accurate furnace model.
 
