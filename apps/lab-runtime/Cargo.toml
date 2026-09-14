@@ -1,0 +1,11 @@
+[package]
+name = "lab-runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+lab-core = { path = "../../crates/lab-core" }
+
+[lints]
+workspace = true
