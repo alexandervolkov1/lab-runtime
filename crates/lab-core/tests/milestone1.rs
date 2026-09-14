@@ -1,5 +1,49 @@
 //! Acceptance tests written before the primary implementation.
 //! Rename and atomic-validation intent: docs/implementation/MILESTONE_1_DESIGN.md §8.
+//! Boundary regression tests below were added during the implementation review.
+
+#[test]
+fn initial_failure_and_failed_time_validation_preserve_quality_contract() {
+    let mut runtime = setup(2);
+    configure(&mut runtime, MEASUREMENT_ENABLED, Value::Boolean(false)).unwrap();
+    assert!(latest(&runtime).is_none());
+    assert!(matches!(
+        refresh(&mut runtime, 0),
+        Err(Error::MeasurementUnavailable { .. })
+    ));
+    let before = state(&runtime);
+    let history = window(&runtime);
+    assert!(latest(&runtime).unwrap().value().is_none());
+    assert!(matches!(
+        refresh(&mut runtime, 0),
+        Err(Error::NonMonotonicTime { .. })
+    ));
+    assert_eq!(state(&runtime), before);
+    assert_eq!(window(&runtime), history);
+}
+
+#[test]
+fn maximum_window_capacity_accepts_boundary_and_evicts_failed_samples() {
+    let mut runtime = setup(MAX_HISTORY_CAPACITY);
+    configure(&mut runtime, MEASUREMENT_ENABLED, Value::Boolean(false)).unwrap();
+    assert!(matches!(
+        refresh(&mut runtime, 0),
+        Err(Error::MeasurementUnavailable { .. })
+    ));
+    configure(&mut runtime, MEASUREMENT_ENABLED, Value::Boolean(true)).unwrap();
+    for tick in 1..=MAX_HISTORY_CAPACITY as u64 {
+        refresh(&mut runtime, tick).unwrap();
+    }
+    let samples = window(&runtime);
+    assert_eq!(samples.len(), MAX_HISTORY_CAPACITY);
+    assert_eq!(samples[0].at(), Duration::from_millis(1));
+    assert!(
+        samples
+            .iter()
+            .all(|sample| sample.quality() == SampleQuality::Good)
+    );
+    assert_eq!(latest(&runtime), samples.last().cloned());
+}
 use lab_core::*;
 use std::time::Duration;
 
