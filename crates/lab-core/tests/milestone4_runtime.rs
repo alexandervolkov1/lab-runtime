@@ -186,6 +186,32 @@ fn controller_start_pause_and_resume_use_distinct_output_authority() {
 }
 
 #[test]
+fn pause_settles_safe_output_when_watchdog_already_expired_the_lease() {
+    let mut runtime = setup(fixed(60.0));
+    refresh(&mut runtime, 0);
+    runtime
+        .command(Command::StartController {
+            controller: CONTROLLER,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+
+    runtime
+        .command(Command::PauseController {
+            controller: CONTROLLER,
+            at: Duration::from_secs(100),
+        })
+        .unwrap();
+
+    assert_eq!(state(&runtime).state, ControllerState::Paused);
+    let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator())).unwrap() else {
+        panic!()
+    };
+    assert_eq!(snapshot.state, OutputState::Disarmed);
+    assert_eq!(snapshot.readback.unwrap().value, 0.0);
+}
+
+#[test]
 fn stale_input_faults_controller_revokes_and_completes_safe() {
     let mut runtime = setup(fixed(60.0));
     refresh(&mut runtime, 0);
