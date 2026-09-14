@@ -1,7 +1,14 @@
+//! Domain identity, scalar schemas and validation shared by all adapters.
+//! Descriptors are data, not device drivers or output permissions. Validation
+//! precedes mutation so a rejected candidate cannot damage an existing configuration.
+
 use std::{fmt, time::Duration};
 
+/// Maximum UTF-8 bytes in a nonblank display name.
 pub const MAX_NAME_BYTES: usize = 128;
+/// Maximum declared byte bound for a text value or enum choice.
 pub const MAX_TEXT_BYTES: usize = 1024;
+/// Maximum choices in a validated enum definition.
 pub const MAX_ENUM_CHOICES: usize = 64;
 
 /// Local identity, independent of a display name.
@@ -9,9 +16,11 @@ pub const MAX_ENUM_CHOICES: usize = 64;
 pub struct InstrumentId(u64);
 
 impl InstrumentId {
+    /// Construct a local identifier; registration, not this wrapper, enforces uniqueness.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
+    /// Return the numeric local identity for display or adapter encoding, not a display name.
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -22,9 +31,11 @@ impl InstrumentId {
 pub struct ParameterId(u64);
 
 impl ParameterId {
+    /// Construct a local identifier; registration, not this wrapper, enforces uniqueness.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
+    /// Return the numeric local identity for display or adapter encoding, not a display name.
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -33,44 +44,62 @@ impl ParameterId {
 /// One measurement stream per parameter; no replacement/generation semantics in M1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignalId {
+    /// Target instrument identity, independent of its display name.
     instrument: InstrumentId,
+    /// Parameter identity scoped to the target instrument.
     parameter: ParameterId,
 }
 
 impl SignalId {
+    /// Construct a local identifier; registration, not this wrapper, enforces uniqueness.
     pub const fn new(instrument: InstrumentId, parameter: ParameterId) -> Self {
         Self {
             instrument,
             parameter,
         }
     }
+    /// Return the instrument part of this stream identity.
     pub const fn instrument(self) -> InstrumentId {
         self.instrument
     }
+    /// Return the parameter part of this stream identity.
     pub const fn parameter(self) -> ParameterId {
         self.parameter
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The exact scalar kind used by descriptors; clients must not infer it from formatting.
 pub enum ValueType {
+    /// A floating-point scalar; values must be finite when validated.
     Float,
+    /// A signed integer scalar; no implicit conversion to floating point.
     Integer,
+    /// A logical value, distinct from integer zero or one.
     Boolean,
+    /// UTF-8 text subject to the descriptor's byte bound.
     Text,
+    /// A named choice, distinct from free-form text.
     Enum,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Owned scalar data crossing the domain boundary. Validation is explicit, never an implicit conversion.
 pub enum Value {
+    /// A floating-point scalar; values must be finite when validated.
     Float(f64),
+    /// A signed integer scalar; no implicit conversion to floating point.
     Integer(i64),
+    /// A logical value, distinct from integer zero or one.
     Boolean(bool),
+    /// UTF-8 text subject to the descriptor's byte bound.
     Text(String),
+    /// A named choice, distinct from free-form text.
     Enum(String),
 }
 
 impl Value {
+    /// Return the exact scalar kind without converting or validating the payload.
     pub fn value_type(&self) -> ValueType {
         match self {
             Self::Float(_) => ValueType::Float,
@@ -85,14 +114,36 @@ impl Value {
 /// Declarative type and inclusive bounds. No implicit coercion or unit conversion.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ValueSpec {
-    Float { min: f64, max: f64 },
-    Integer { min: i64, max: i64 },
+    /// A floating-point scalar; values must be finite when validated.
+    Float {
+        /// Inclusive lower bound; floating-point bounds must be finite.
+        min: f64,
+        /// Inclusive upper bound, no smaller than the lower bound.
+        max: f64,
+    },
+    /// A signed integer scalar; no implicit conversion to floating point.
+    Integer {
+        /// Inclusive lower bound; floating-point bounds must be finite.
+        min: i64,
+        /// Inclusive upper bound, no smaller than the lower bound.
+        max: i64,
+    },
+    /// A logical value, distinct from integer zero or one.
     Boolean,
-    Text { max_bytes: usize },
-    Enum { choices: Vec<String> },
+    /// UTF-8 text subject to the descriptor's byte bound.
+    Text {
+        /// Maximum UTF-8 byte length, bounded by MAX_TEXT_BYTES.
+        max_bytes: usize,
+    },
+    /// A named choice, distinct from free-form text.
+    Enum {
+        /// Nonempty, unique, nonblank allowed names, bounded in count and byte length.
+        choices: Vec<String>,
+    },
 }
 
 impl ValueSpec {
+    /// Return the exact scalar kind without converting or validating the payload.
     pub fn value_type(&self) -> ValueType {
         match self {
             Self::Float { .. } => ValueType::Float,
@@ -103,6 +154,7 @@ impl ValueSpec {
         }
     }
 
+    /// Check declared bounds and constraints without mutating any state. Invalid definitions return InvalidConfiguration.
     pub fn validate_definition(&self) -> Result<(), Error> {
         let valid = match self {
             Self::Float { min, max } => min.is_finite() && max.is_finite() && min <= max,
@@ -126,6 +178,7 @@ impl ValueSpec {
         }
     }
 
+    /// Check definition, exact type, finiteness and constraints without mutation; return a typed rejection on failure.
     pub fn validate(&self, value: &Value) -> Result<(), Error> {
         self.validate_definition()?;
         if self.value_type() != value.value_type() {
@@ -158,13 +211,18 @@ impl ValueSpec {
 /// Small vocabulary, not dimensional analysis or a physical safety profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
+    /// Temperature in degrees Celsius, without automatic Kelvin conversion.
     Celsius,
+    /// A percentage; allowed limits are supplied by the descriptor/profile.
     Percent,
+    /// Pressure in pascals.
     Pascal,
+    /// No physical dimension, including Boolean and text metadata.
     Unitless,
 }
 
 impl Unit {
+    /// Return the engineering-unit label for generic presentation, not a conversion rule.
     pub const fn symbol(self) -> &'static str {
         match self {
             Self::Celsius => "°C",
@@ -176,41 +234,65 @@ impl Unit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Declared device access capability, not permission to bypass output authority.
 pub enum AccessMode {
+    /// Observation is supported; configuration writes are rejected.
     ReadOnly,
+    /// Reads and writes are declared, but writes still require semantic authorization.
     ReadWrite,
+    /// An operation may be requested without claiming a readable state.
     WriteOnly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Semantic purpose of a parameter; writable numeric configuration is not automatically an actuator.
 pub enum ParameterRole {
+    /// A measured quantity that can produce a Signal.
     Measurement,
+    /// A setting whose declared effects must be checked before mutation.
     Configuration,
+    /// A quantity that can affect the process, requiring output authority.
     Actuator,
+    /// An explicit operation rather than an ordinary measurement.
     Action,
+    /// Information about computation or device health, not output authority.
     Diagnostic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Declared consequences of a write. Output-affecting operations require centralized authority.
 pub enum WriteEffect {
+    /// No write side effects are declared; appropriate for read-only parameters.
     None,
+    /// A configuration change with no actuator effect.
     ConfigurationOnly,
+    /// A write can affect the controlled process and must not use the generic configuration path.
     OutputAffecting,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Owned parameter metadata used for generic introspection and validation, separate from observations.
 pub struct ParameterDescriptor {
+    /// Stable local identity; display-name changes do not replace it.
     pub id: ParameterId,
+    /// Human-readable display name, not an identity or lookup key.
     pub name: String,
+    /// Declared scalar type and inclusive range or bounded text/choice constraints.
     pub value_spec: ValueSpec,
+    /// Engineering unit attached to the declared value; no implicit conversion.
     pub unit: Unit,
+    /// Device access declaration, distinct from runtime authorization.
     pub access: AccessMode,
+    /// Explicit semantic classification used to distinguish configuration from actuation.
     pub role: ParameterRole,
+    /// Consequences of writing this parameter, checked independently of its type.
     pub write_effect: WriteEffect,
+    /// Identity of the associated measurement stream, when one exists.
     pub signal: Option<SignalId>,
 }
 
 impl ParameterDescriptor {
+    /// Validate type/unit/access/effect and signal consistency before registration; does not mutate state.
     pub fn validate_definition(&self) -> Result<(), Error> {
         validate_name(&self.name)?;
         self.value_spec.validate_definition()?;
@@ -256,13 +338,18 @@ impl ParameterDescriptor {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// An owned catalog snapshot. Changing this copy never mutates the registered instrument.
 pub struct InstrumentDescriptor {
+    /// Stable local identity; display-name changes do not replace it.
     pub id: InstrumentId,
+    /// Human-readable display name, not an identity or lookup key.
     pub name: String,
+    /// Parameter metadata in stable descriptor order.
     pub parameters: Vec<ParameterDescriptor>,
 }
 
 impl InstrumentDescriptor {
+    /// Look up metadata by stable parameter ID; a missing ID returns None without side effects.
     pub fn parameter(&self, id: ParameterId) -> Option<&ParameterDescriptor> {
         self.parameters.iter().find(|parameter| parameter.id == id)
     }
@@ -279,36 +366,59 @@ pub(crate) fn validate_name(name: &str) -> Result<(), Error> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why an explicit measurement attempt could not produce a usable value.
 pub enum MeasurementFailure {
+    /// Measurement was explicitly disabled in the virtual configuration.
     Disabled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Typed domain rejection or observation failure; MeasurementUnavailable alone commits a failed sample.
 pub enum Error {
+    /// The requested instrument is not registered.
     UnknownInstrument(InstrumentId),
+    /// The instrument exists but has no parameter with the requested identity.
     UnknownParameter {
+        /// Target instrument identity, independent of its display name.
         instrument: InstrumentId,
+        /// Parameter identity scoped to the target instrument.
         parameter: ParameterId,
     },
+    /// No stream is bound to this signal identity.
     UnknownSignal(SignalId),
+    /// Registration would replace an existing identity and is rejected.
     DuplicateInstrument(InstrumentId),
+    /// The supplied scalar kind differs from the descriptor; coercion is not performed.
     WrongType {
+        /// Scalar kind required by the descriptor.
         expected: ValueType,
+        /// Scalar kind supplied by the caller.
         actual: ValueType,
     },
+    /// NaN and infinities cannot enter a numeric signal/configuration path.
     NonFinite,
+    /// A scalar violates its inclusive range or text/choice constraint.
     OutOfRange,
+    /// The requested write targets read-only metadata.
     ReadOnlyParameter(ParameterId),
+    /// The operation is unsupported or would cross the output authority boundary.
     OperationNotAllowed(ParameterId),
+    /// A configuration is inconsistent or exceeds a declared resource limit.
     InvalidConfiguration(&'static str),
+    /// The attempted observation does not follow the previous one in monotonic time.
     NonMonotonicTime {
+        /// Identity of the associated measurement stream, when one exists.
         signal: SignalId,
+        /// Timestamp of the last committed observation.
         previous: Duration,
+        /// Rejected elapsed timestamp supplied by the caller.
         requested: Duration,
     },
     /// An unavailable observation WAS committed; unlike validation errors.
     MeasurementUnavailable {
+        /// Identity of the associated measurement stream, when one exists.
         signal: SignalId,
+        /// Explicit cause of the failed attempt, not a substitute numeric value.
         reason: MeasurementFailure,
     },
 }

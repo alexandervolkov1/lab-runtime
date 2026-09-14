@@ -1,11 +1,19 @@
+//! Bounded recent observations, not durable experiment history.
+//! A sample couples identity, value-or-failure, units and monotonic time. The
+//! buffer owns ordering and oldest-first eviction; latest is its back element.
+
 use crate::{Error, MeasurementFailure, SignalId, Unit, Value};
 use std::{collections::VecDeque, time::Duration};
 
+/// Maximum configured samples retained per signal; full history belongs to a future recorder.
 pub const MAX_HISTORY_CAPACITY: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Whether an observation contains a usable value, independent of its age.
 pub enum SampleQuality {
+    /// A validated value exists; consumers must additionally check freshness.
     Good,
+    /// The measurement attempt failed and contains no successful value.
     Unavailable,
 }
 
@@ -18,8 +26,11 @@ enum Reading {
 /// An immutable observation: a failed measurement cannot carry a successful value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sample {
+    /// Identity of the associated measurement stream, when one exists.
     signal: SignalId,
+    /// Engineering unit attached to the declared value; no implicit conversion.
     unit: Unit,
+    /// Elapsed monotonic runtime time of this explicit measurement attempt.
     at: Duration,
     reading: Reading,
 }
@@ -46,27 +57,33 @@ impl Sample {
             reading: Reading::Unavailable(reason),
         }
     }
+    /// Return the immutable stream identity captured with this observation.
     pub fn signal(&self) -> SignalId {
         self.signal
     }
+    /// Return the engineering unit captured at observation time.
     pub fn unit(&self) -> Unit {
         self.unit
     }
+    /// Return the monotonic time of this attempt; a failed attempt also has its own timestamp.
     pub fn at(&self) -> Duration {
         self.at
     }
+    /// Report whether a value exists; Good alone does not establish freshness for control.
     pub fn quality(&self) -> SampleQuality {
         match self.reading {
             Reading::Good(_) => SampleQuality::Good,
             Reading::Unavailable(_) => SampleQuality::Unavailable,
         }
     }
+    /// Borrow the successful observed value, or None for a failed attempt; never substitute stale data.
     pub fn value(&self) -> Option<&Value> {
         match &self.reading {
             Reading::Good(value) => Some(value),
             Reading::Unavailable(_) => None,
         }
     }
+    /// Return the unavailable reason, or None for a good observation.
     pub fn failure(&self) -> Option<MeasurementFailure> {
         match self.reading {
             Reading::Good(_) => None,

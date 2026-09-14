@@ -1,3 +1,4 @@
+//! Scalar schema and descriptor validation contracts, independent of instrument execution.
 use lab_core::*;
 
 #[test]

@@ -1,3 +1,7 @@
+//! The synchronous application boundary and sole owner of registered state.
+//! Commands mutate owned instances; queries clone bounded snapshots. No GUI,
+//! transport, clock polling or external client owns these instruments.
+
 use crate::{
     Error, InstrumentDescriptor, InstrumentId, ParameterId, Sample, SignalId, TEMPERATURE, Value,
     VirtualInstrumentConfig, model::validate_name, signal::SignalBuffer,
@@ -5,68 +9,108 @@ use crate::{
 };
 use std::{collections::BTreeMap, time::Duration};
 
+/// Maximum retained instruments per Runtime, bounding registry and observation ownership.
 pub const MAX_INSTRUMENTS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
+/// Local mutation requests serialized by the Runtime owner; no networking or hidden query effects.
 pub enum Command {
+    /// Validate and register a native virtual instrument without producing a measurement.
     RegisterVirtual(VirtualInstrumentConfig),
+    /// Change only the display name; preserve all identities and observations.
     RenameInstrument {
+        /// Target instrument identity, independent of its display name.
         instrument: InstrumentId,
+        /// Human-readable display name, not an identity or lookup key.
         name: String,
     },
+    /// Validate a configuration-only value before committing it; preserve observations.
     ConfigureParameter {
+        /// Target instrument identity, independent of its display name.
         instrument: InstrumentId,
+        /// Parameter identity scoped to the target instrument.
         parameter: ParameterId,
+        /// Candidate configuration value, validated before replacing the previous setting.
         value: Value,
     },
+    /// Create one explicit observation at caller-supplied monotonic elapsed time.
     RefreshMeasurement {
+        /// Target instrument identity, independent of its display name.
         instrument: InstrumentId,
+        /// Parameter identity scoped to the target instrument.
         parameter: ParameterId,
+        /// Elapsed monotonic runtime time of this explicit measurement attempt.
         at: Duration,
     },
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Completed local command outcomes, not a claim of physical hardware or durable storage success.
 pub enum CommandResult {
+    /// Registration completed without starting acquisition or output authority.
     Registered(InstrumentId),
+    /// The display name changed without replacing the instance.
     Renamed(InstrumentId),
+    /// One configuration value was committed; no new observation was fabricated.
     Configured {
+        /// Target instrument identity, independent of its display name.
         instrument: InstrumentId,
+        /// Parameter identity scoped to the target instrument.
         parameter: ParameterId,
     },
+    /// An explicit attempt produced this good sample.
     MeasurementRefreshed(Sample),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Pure snapshot requests. Reading a query neither refreshes measurements nor advances time.
 pub enum Query {
+    /// Return all instrument descriptors in stable ID order.
     Discover,
+    /// Return metadata for one existing instrument without accessing hardware.
     DescribeInstrument(InstrumentId),
+    /// Return configured values separately from the latest observation attempts.
     GetInstrumentState(InstrumentId),
+    /// Return the latest attempt or None if no attempt has occurred.
     GetLatestSignal(SignalId),
+    /// Copy the bounded recent window in oldest-to-newest order.
     GetSignalWindow(SignalId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Owned query responses; callers may retain or edit their copies without affecting Runtime.
 pub enum QueryResult {
+    /// Catalog descriptors in stable instrument-ID order.
     Instruments(Vec<InstrumentDescriptor>),
+    /// Metadata for one instrument; this copy has no authority to mutate Runtime.
     Descriptor(InstrumentDescriptor),
+    /// Configured state and observations captured by the synchronous owner.
     State(InstrumentState),
+    /// The last attempted observation, including failure; None means never refreshed.
     Latest(Option<Sample>),
+    /// A bounded copy of recent attempts, ordered by monotonic timestamp.
     Window(Vec<Sample>),
 }
 
 /// Configured values are separate from observations. Metadata-only actuators have neither.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentState {
+    /// Target instrument identity, independent of its display name.
     pub instrument: InstrumentId,
+    /// Current configuration values; these are not sensor observations or commanded outputs.
     pub configured: Vec<(ParameterId, Value)>,
+    /// Latest measurement attempts; metadata-only actuators have no fabricated entry.
     pub observations: Vec<ParameterObservation>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Latest known attempt for a measurement parameter, including explicit failure or no attempt yet.
 pub struct ParameterObservation {
+    /// Parameter identity scoped to the target instrument.
     pub parameter: ParameterId,
+    /// Identity of the associated measurement stream, when one exists.
     pub signal: SignalId,
+    /// Latest attempt, including unavailable quality; None means no refresh has occurred.
     pub latest: Option<Sample>,
 }
 
@@ -77,6 +121,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Create an empty owner with no registered instruments, measurements or active work.
     pub fn new() -> Self {
         Self::default()
     }

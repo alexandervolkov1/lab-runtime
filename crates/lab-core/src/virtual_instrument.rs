@@ -1,3 +1,7 @@
+//! Native M1 virtual instrument behind the common Runtime boundary.
+//! Configuration changes preserve observations. Only explicit refresh evaluates
+//! the time function; heater_power is metadata, never a generic write escape hatch.
+
 use crate::{
     AccessMode, Error, InstrumentDescriptor, InstrumentId, MeasurementFailure, ParameterDescriptor,
     ParameterId, ParameterRole, Sample, SignalId, Unit, Value, ValueSpec, WriteEffect,
@@ -5,18 +9,27 @@ use crate::{
 };
 use std::time::Duration;
 
+/// Stable measurement parameter ID in the native virtual instrument.
 pub const TEMPERATURE: ParameterId = ParameterId::new(1);
+/// Stable actuator parameter ID; generic configuration writes must not actuate it.
 pub const HEATER_POWER: ParameterId = ParameterId::new(2);
+/// Stable ID of the configuration-only generator baseline.
 pub const BASE_TEMPERATURE: ParameterId = ParameterId::new(3);
+/// Stable ID of the measurement fault-injection switch.
 pub const MEASUREMENT_ENABLED: ParameterId = ParameterId::new(4);
 
 /// Explicit creation command data, not a persisted or wire-format configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VirtualInstrumentConfig {
+    /// Stable local identity; display-name changes do not replace it.
     pub id: InstrumentId,
+    /// Human-readable display name, not an identity or lookup key.
     pub name: String,
+    /// Maximum retained attempts, validated in 1..=MAX_HISTORY_CAPACITY.
     pub history_capacity: usize,
+    /// Generator baseline in Celsius, validated in the inclusive range -100..=100.
     pub base_temperature: f64,
+    /// False makes explicit refresh produce Unavailable, for deterministic fault injection.
     pub measurement_enabled: bool,
 }
 

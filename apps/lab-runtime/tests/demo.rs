@@ -1,3 +1,4 @@
+//! Executable-level proof that the finite demo is deterministic and descriptor-driven.
 use std::process::Command;
 
 #[test]
