@@ -6,10 +6,13 @@
 //! is not evidence that an actuator received it. No OS transport or worker thread is
 //! hidden behind this boundary.
 
+pub mod control;
 pub mod instrument;
 pub mod metakon;
 mod model;
 pub mod output;
+pub mod processing;
+pub mod reference;
 mod runtime;
 mod signal;
 pub mod transport;
