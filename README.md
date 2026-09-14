@@ -39,6 +39,7 @@ M1 is not a complete autonomous runtime and does not prove physical safety or
 multi-day operation. Later milestones require separate authorization.
 
 See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
+[completion report](docs/implementation/MILESTONE_1_REPORT.md),
 [target architecture](docs/architecture/HIGH_LEVEL_ARCHITECTURE.md),
 [migration analysis](docs/migration/V1_TO_LAB_RUNTIME_MAP.md), and
 [donor baseline](docs/migration/DONOR_BASELINE.md).

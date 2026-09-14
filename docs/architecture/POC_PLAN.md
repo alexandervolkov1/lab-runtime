@@ -38,6 +38,9 @@
 
 ### Этап 1. Domain harness и virtual instrument
 
+Срез M1 завершён 2026-09-14: [отчёт и acceptance evidence](../implementation/MILESTONE_1_REPORT.md).
+Это не означает прохождение остальных этапов POC.
+
 Создать только два crate: lab-core и lab-runtime. Минимальные registry, descriptor/introspection, локальные синхронные Commands/Queries и native virtual temperature instrument. Power пока только actuator metadata, без write execution. Ввести стабильные локальные IDs, typed values, units, roles/access/side effects, quality, monotonic timestamps и bounded window. Events/cursors, async generations, leases и request deduplication в M1 не нужны; configuration revision — только при реальной потребности, не общий framework.
 
 Проверить: generic client отображает descriptor без instrument-specific branching; rename сохраняет IDs; Query не запускает I/O и не продвигает virtual state; explicit refresh использует заданное monotonic time; invalid type/range/access отклоняются атомарно; failure имеет явное quality и не маскируется старым значением; window ограничен; одинаковый сценарий воспроизводим. Подробный контракт: [MILESTONE_1_DESIGN.md](../implementation/MILESTONE_1_DESIGN.md).

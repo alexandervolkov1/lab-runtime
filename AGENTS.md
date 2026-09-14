@@ -12,6 +12,8 @@ implementation: milestone 1 domain foundation
 
 Implement only Milestone 1 from FOUNDATION_MILESTONE1_PLAN.md: minimal Rust workspace, native virtual Instrument, typed descriptors/validation, stable identity, deterministic time, bounded Signal state and local Commands/Queries.
 
+Milestone 1 is complete; see docs/implementation/MILESTONE_1_REPORT.md. Stop at this boundary. A new milestone requires a separate user instruction.
+
 Do not proceed to Milestone 2 or implement OutputArbiter, output execution, serial/Metakon runtime, controllers, Lua, Babashka, IPC, recorder or GUI without a separate user instruction.
 
 Implement only concepts required by the current milestone. A concept in the target architecture is not a reason to implement it ahead of time.
