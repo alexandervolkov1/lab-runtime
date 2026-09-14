@@ -1,6 +1,7 @@
 //! Synchronous, deterministic Milestone 1 domain boundary.
 
 mod model;
+pub mod output;
 mod runtime;
 mod signal;
 mod virtual_instrument;

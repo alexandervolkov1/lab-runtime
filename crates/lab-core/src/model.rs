@@ -375,6 +375,8 @@ pub enum MeasurementFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Typed domain rejection or observation failure; MeasurementUnavailable alone commits a failed sample.
 pub enum Error {
+    /// A central output-authority operation was rejected.
+    Output(crate::output::OutputError),
     /// The requested instrument is not registered.
     UnknownInstrument(InstrumentId),
     /// The instrument exists but has no parameter with the requested identity.
@@ -426,6 +428,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Output(error) => write!(f, "output authority: {error:?}"),
             Self::UnknownInstrument(id) => write!(f, "unknown instrument {}", id.get()),
             Self::UnknownParameter {
                 instrument,

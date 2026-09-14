@@ -2,6 +2,9 @@
 //! Commands mutate owned instances; queries clone bounded snapshots. No GUI,
 //! transport, clock polling or external client owns these instruments.
 
+use crate::output::{
+    ActuatorId, OutputAuthority, OutputCommand, OutputError, OutputResult, OutputSnapshot,
+};
 use crate::{
     Error, InstrumentDescriptor, InstrumentId, ParameterId, Sample, SignalId, TEMPERATURE, Value,
     VirtualInstrumentConfig, model::validate_name, signal::SignalBuffer,
@@ -15,6 +18,15 @@ pub const MAX_INSTRUMENTS: usize = 64;
 #[derive(Clone, Debug, PartialEq)]
 /// Local mutation requests serialized by the Runtime owner; no networking or hidden query effects.
 pub enum Command {
+    /// Mutate output authority or step the trusted deterministic simulated executor.
+    Output {
+        /// Canonical actuator binding, validated against its explicit descriptor.
+        actuator: ActuatorId,
+        /// Lifecycle, proposal or simulated-dispatch operation.
+        command: OutputCommand,
+        /// Nondecreasing elapsed time shared by all output authorities in this Runtime.
+        at: Duration,
+    },
     /// Validate and register a native virtual instrument without producing a measurement.
     RegisterVirtual(VirtualInstrumentConfig),
     /// Change only the display name; preserve all identities and observations.
@@ -47,6 +59,8 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq)]
 /// Completed local command outcomes, not a claim of physical hardware or durable storage success.
 pub enum CommandResult {
+    /// Authority outcome; queue acceptance is not delivery or safe-state confirmation.
+    Output(OutputResult),
     /// Registration completed without starting acquisition or output authority.
     Registered(InstrumentId),
     /// The display name changed without replacing the instance.
@@ -65,6 +79,8 @@ pub enum CommandResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Pure snapshot requests. Reading a query neither refreshes measurements nor advances time.
 pub enum Query {
+    /// Copy current output authority/evidence without executing watchdog work.
+    Output(ActuatorId),
     /// Return all instrument descriptors in stable ID order.
     Discover,
     /// Return metadata for one existing instrument without accessing hardware.
@@ -80,6 +96,8 @@ pub enum Query {
 #[derive(Clone, Debug, PartialEq)]
 /// Owned query responses; callers may retain or edit their copies without affecting Runtime.
 pub enum QueryResult {
+    /// Bounded output snapshot, distinct from measurement/configuration state.
+    Output(OutputSnapshot),
     /// Catalog descriptors in stable instrument-ID order.
     Instruments(Vec<InstrumentDescriptor>),
     /// Metadata for one instrument; this copy has no authority to mutate Runtime.
@@ -118,6 +136,8 @@ pub struct ParameterObservation {
 #[derive(Default)]
 pub struct Runtime {
     instruments: BTreeMap<InstrumentId, VirtualInstrument>,
+    outputs: BTreeMap<ActuatorId, OutputAuthority>,
+    output_time: Duration,
 }
 
 impl Runtime {
@@ -126,10 +146,37 @@ impl Runtime {
         Self::default()
     }
 
-    /// Validation failures are atomic. MeasurementUnavailable is different:
-    /// it commits a failed observation with the time of the explicit attempt.
+    /// Configuration/registration validation failures are atomic.
+    /// MeasurementUnavailable commits a failed observation with the attempt time.
+    /// Output commands first advance the explicit watchdog: expired authority may
+    /// be revoked even when the requested producer action is then rejected.
     pub fn command(&mut self, command: Command) -> Result<CommandResult, Error> {
         match command {
+            Command::Output {
+                actuator,
+                command,
+                at,
+            } => {
+                if !self.outputs.contains_key(&actuator) {
+                    return Err(OutputError::UnknownActuator.into());
+                }
+                if at < self.output_time {
+                    return Err(OutputError::InvalidTime.into());
+                }
+                // Output commands carry trusted Runtime time. Watchdog transitions
+                // occur even if the requested producer action subsequently fails.
+                // A client therefore cannot keep another expired owner alive by
+                // submitting invalid proposals instead of explicit Tick commands.
+                self.output_time = at;
+                for authority in self.outputs.values_mut() {
+                    authority.tick(at)?;
+                }
+                self.outputs
+                    .get_mut(&actuator)
+                    .ok_or(OutputError::UnknownActuator)?
+                    .command(command, at)
+                    .map(CommandResult::Output)
+            }
             Command::RegisterVirtual(config) => {
                 let id = config.id;
                 if self.instruments.contains_key(&id) {
@@ -139,7 +186,16 @@ impl Runtime {
                     return Err(Error::InvalidConfiguration("instrument limit reached (64)"));
                 }
                 let instrument = VirtualInstrument::new(config)?;
+                let actuator = ActuatorId::new(id, crate::HEATER_POWER);
+                let parameter = instrument.parameter(crate::HEATER_POWER)?;
+                if parameter.role != crate::ParameterRole::Actuator
+                    || parameter.write_effect != crate::WriteEffect::OutputAffecting
+                {
+                    return Err(OutputError::UnknownActuator.into());
+                }
+                let authority = OutputAuthority::new(actuator, parameter.value_spec.clone())?;
                 self.instruments.insert(id, instrument);
+                self.outputs.insert(actuator, authority);
                 Ok(CommandResult::Registered(id))
             }
             Command::RenameInstrument { instrument, name } => {
@@ -174,6 +230,11 @@ impl Runtime {
     /// Reads owned snapshots only. Never refreshes, reads a clock or advances simulation.
     pub fn query(&self, query: Query) -> Result<QueryResult, Error> {
         match query {
+            Query::Output(id) => self
+                .outputs
+                .get(&id)
+                .map(|authority| QueryResult::Output(authority.snapshot()))
+                .ok_or(OutputError::UnknownActuator.into()),
             Query::Discover => Ok(QueryResult::Instruments(
                 self.instruments
                     .values()
