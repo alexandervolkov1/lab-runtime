@@ -1,8 +1,9 @@
 # lab-runtime
 
-Milestone 1 domain foundation: a synchronous Rust owner with typed descriptors,
+Milestones 1–2: a synchronous Rust owner with typed descriptors,
 stable local identity, deterministic virtual measurements, pure queries and bounded
-recent signal state. **No hardware or output execution.**
+recent signal state, plus bounded output authority and deterministic simulated
+dispatch. **No hardware I/O.**
 
 ## Run and verify
 
@@ -31,15 +32,23 @@ background service, clock polling, sleep, serial port or network listener.
   until the next refresh. MeasurementUnavailable is a typed error **after** storing
   the failed observation, unlike validation errors.
 - History capacity is 1..=4096 per instrument, with at most 64 instruments.
-- Actuator metadata is visible for introspection, but output-affecting commands are
-  rejected. Access flags alone are not permission to actuate.
+- Generic parameter configuration rejects actuation. Explicit output commands use
+  a safe profile, exclusive manual/automatic lease, epoch and deadline checks at
+  simulated send. Requested, sent, ACK and readback are separate observations.
+- Output time is explicit and nondecreasing. Commands tick the watchdog before
+  producer validation; even rejected producer work may expire an existing lease.
 
-No OutputArbiter, controllers, serial, Lua, Babashka/IPC, recorder or GUI is included.
-M1 is not a complete autonomous runtime and does not prove physical safety or
-multi-day operation. Later milestones require separate authorization.
+No controllers, serial, Lua, Babashka/IPC, recorder or GUI is included. The executable
+remains the finite M1 demo; M2 is exercised with `cargo test -p lab-core --test milestone2`.
+This is not an autonomous runtime and does not prove physical safety or multi-day
+operation. M3 has a documentation-only contract; implementation waits for the
+mandatory Astra High -> Sol High handoff in AI_HANDOFF.md.
 
 See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
 [completion report](docs/implementation/MILESTONE_1_REPORT.md),
+[M2 design](docs/implementation/MILESTONE_2_DESIGN.md),
+[M2 report](docs/implementation/MILESTONE_2_REPORT.md),
+[M3 contract](docs/implementation/MILESTONE_3_DESIGN.md),
 [target architecture](docs/architecture/HIGH_LEVEL_ARCHITECTURE.md),
 [migration analysis](docs/migration/V1_TO_LAB_RUNTIME_MAP.md), and
 [donor baseline](docs/migration/DONOR_BASELINE.md).

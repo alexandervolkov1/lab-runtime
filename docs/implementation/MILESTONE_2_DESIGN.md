@@ -64,4 +64,29 @@ and ambiguity. Missing-docs becomes a workspace lint; document the M1 public sur
 as a separate foundation change, without redesigning it.
 
 Run fmt, workspace debug/release tests, clippy -D warnings, rustdoc, diff checks
-and the existing finite host demo. Then report/update AI_HANDOFF and proceed to M3.
+and the existing finite host demo. Then report/update AI_HANDOFF, fix the M3
+design/acceptance contract only, and STOP for Astra High -> Sol High.
+
+## Final implementation clarifications
+
+Each authority has a process-local unique instance number; both lease tokens and
+dispatch IDs are instance-scoped. Checked epoch counters never wrap into old authority.
+The only shared atomic state allocates identities, not mutable instrument state.
+Every accepted output timestamp ticks all registered authorities before evaluating
+the requested command: an invalid producer command may still trigger watchdog expiry.
+Queries never run this watchdog. Proposal TTL above the profile maximum is rejected;
+an accepted deadline is clipped to lease expiry.
+
+Trip is an explicit simulated fault notification, not a persistent interlock input.
+Explicit successful safe recovery resolves the simulated cause; acknowledging the
+latch never acquires a lease. Fresh ACK/readback fields are cleared at each send.
+A newer safe request survives failure of an older safe dispatch and still requires
+its own completion. Failed safe actions are not retried automatically.
+
+Complete is a trusted simulated executor input, not a future external-client API.
+A Dispatch is an observation of an already initiated simulated send, not a permit
+that a transport may queue and use later. M3 must perform authorization at actual
+transport initiation. M2 has no autonomous clock, transport timeout or evidence-age
+policy; an unfinished simulation remains pending and cannot claim confirmed safety.
+
+Implementation evidence: [M2 report](MILESTONE_2_REPORT.md).

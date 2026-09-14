@@ -1,6 +1,6 @@
 # План архитектурного proof-of-concept
 
-Статус: целевой план, согласованный с migration analysis и Foundation 2026-09-14. Сейчас разрешён только этап 1 по [FOUNDATION_MILESTONE1_PLAN.md](../../FOUNDATION_MILESTONE1_PLAN.md); остальные этапы требуют отдельной команды. Архитектура: [HIGH_LEVEL_ARCHITECTURE.md](HIGH_LEVEL_ARCHITECTURE.md), проверяемые инварианты: [RUNTIME_AND_SAFETY_MODEL.md](RUNTIME_AND_SAFETY_MODEL.md). Ниже описаны критерии, а не заявление об их прохождении.
+Статус: целевой план, 2026-09-14. M1–M2 завершены; [отчёт M2](../implementation/MILESTONE_2_REPORT.md). NEXT_IMPLEMENTATION_PLAN.md разрешает M2–M6 последовательно с обязательными MODEL HANDOFF. Сейчас остановка после M2 и контракта M3, до переключения Astra High → Sol High. Архитектура: [HIGH_LEVEL_ARCHITECTURE.md](HIGH_LEVEL_ARCHITECTURE.md), проверяемые инварианты: [RUNTIME_AND_SAFETY_MODEL.md](RUNTIME_AND_SAFETY_MODEL.md). Ниже описаны критерии, а не заявление об их прохождении.
 
 ## 1. Что должен доказать POC
 

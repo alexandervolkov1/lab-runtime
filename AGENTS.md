@@ -12,6 +12,12 @@ implementation: milestone 2 output authority (M2–M6 authorized sequentially)
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
 
+Mandatory user model gate: after M2 completion and the M3 design/acceptance contract,
+update AI_HANDOFF.md, explicitly request Astra High -> Sol High, and STOP. Do not
+implement M3 before the user switches models. This direct user instruction overrides
+IMPLEMENTATION_ROADMAP_M2_M6.md section 16's prohibition on M3 design. Later model
+handoffs also require an explicit stop; authorization through M6 never bypasses them.
+
 Read AI_HANDOFF.md before each milestone. It is the only dedicated external-review handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6 mark READY_FOR_EXTERNAL_REVIEW and stop.
 
 Do not implement M7 recorder, GUI, physical production deployment, long soak or full product parity. No dangerous physical actuator tests; donor remains read-only.
