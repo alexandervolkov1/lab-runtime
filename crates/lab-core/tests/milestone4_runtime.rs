@@ -1,8 +1,7 @@
 //! M4 acceptance for Runtime-owned plant and native controller lifecycle.
 
 use lab_core::{
-    Command, CommandResult, InstrumentId, ParameterId, Query, QueryResult, Runtime, SignalId, Unit,
-    Value,
+    Command, CommandResult, InstrumentId, Query, QueryResult, Runtime, SignalId, Unit, Value,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputResult, OutputState,
@@ -61,16 +60,10 @@ fn setup(reference: ReferenceConfig) -> Runtime {
         }),
         Duration::ZERO,
     );
-    output(
-        &mut runtime,
-        OutputCommand::RequestSafe,
-        Duration::ZERO,
-    );
-    let OutputResult::Dispatched(safe) = output(
-        &mut runtime,
-        OutputCommand::BeginDispatch,
-        Duration::ZERO,
-    ) else {
+    output(&mut runtime, OutputCommand::RequestSafe, Duration::ZERO);
+    let OutputResult::Dispatched(safe) =
+        output(&mut runtime, OutputCommand::BeginDispatch, Duration::ZERO)
+    else {
         panic!()
     };
     output(
@@ -81,7 +74,9 @@ fn setup(reference: ReferenceConfig) -> Runtime {
         },
         Duration::ZERO,
     );
-    runtime.command(Command::RegisterReference(reference)).unwrap();
+    runtime
+        .command(Command::RegisterReference(reference))
+        .unwrap();
     runtime
         .command(Command::RegisterController(NativeControllerConfig {
             id: CONTROLLER,
@@ -200,12 +195,14 @@ fn stale_input_faults_controller_revokes_and_completes_safe() {
             at: Duration::ZERO,
         })
         .unwrap();
-    assert!(runtime
-        .command(Command::TickController {
-            controller: CONTROLLER,
-            at: Duration::from_secs(3),
-        })
-        .is_err());
+    assert!(
+        runtime
+            .command(Command::TickController {
+                controller: CONTROLLER,
+                at: Duration::from_secs(3),
+            })
+            .is_err()
+    );
     assert_eq!(state(&runtime).state, ControllerState::Failed);
     let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator())).unwrap() else {
         panic!()
@@ -226,12 +223,14 @@ fn large_tick_gap_faults_even_with_a_fresh_sample() {
         })
         .unwrap();
     refresh(&mut runtime, 3);
-    assert!(runtime
-        .command(Command::TickController {
-            controller: CONTROLLER,
-            at: Duration::from_secs(3),
-        })
-        .is_err());
+    assert!(
+        runtime
+            .command(Command::TickController {
+                controller: CONTROLLER,
+                at: Duration::from_secs(3),
+            })
+            .is_err()
+    );
     assert_eq!(state(&runtime).state, ControllerState::Failed);
 }
 
@@ -276,13 +275,15 @@ fn closed_loop_moves_temperature_toward_reference_through_arbiter() {
     assert!(*temperature > 45.0);
     assert!((60.0 - temperature).abs() < 40.0);
 
-    assert!(runtime
-        .command(Command::ConfigureParameter {
-            instrument: PLANT,
-            parameter: lab_core::HEATER_POWER,
-            value: Value::Float(0.0),
-        })
-        .is_err());
+    assert!(
+        runtime
+            .command(Command::ConfigureParameter {
+                instrument: PLANT,
+                parameter: lab_core::HEATER_POWER,
+                value: Value::Float(0.0),
+            })
+            .is_err()
+    );
     let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator())).unwrap() else {
         panic!()
     };
@@ -306,11 +307,13 @@ fn unavailable_input_faults_without_reusing_old_good_value() {
             at: Duration::from_secs(1),
         })
         .unwrap();
-    assert!(runtime
-        .command(Command::TickController {
-            controller: CONTROLLER,
-            at: Duration::from_secs(1),
-        })
-        .is_err());
+    assert!(
+        runtime
+            .command(Command::TickController {
+                controller: CONTROLLER,
+                at: Duration::from_secs(1),
+            })
+            .is_err()
+    );
     assert_eq!(state(&runtime).state, ControllerState::Failed);
 }

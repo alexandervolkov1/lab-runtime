@@ -3,6 +3,59 @@
 use crate::Unit;
 use std::time::Duration;
 
+/// Stable Runtime-local identity of a configured Reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReferenceId(u64);
+
+impl ReferenceId {
+    /// Construct an identity. Zero is valid because this is an opaque key, not a sentinel.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return the numeric representation for diagnostics and stable ordering.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Data-only construction contract for one Runtime-owned Reference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReferenceConfig {
+    /// A time-independent finite target.
+    Fixed {
+        /// Stable Reference identity.
+        id: ReferenceId,
+        /// Constant engineering value.
+        value: f64,
+        /// Exact engineering-unit identity.
+        unit: Unit,
+    },
+    /// A target moving linearly in explicit monotonic Runtime time.
+    Ramp {
+        /// Stable Reference identity.
+        id: ReferenceId,
+        /// Value at the creation time.
+        start: f64,
+        /// Finite target at which the ramp clamps.
+        target: f64,
+        /// Positive absolute engineering units per second.
+        rate: f64,
+        /// Exact engineering-unit identity.
+        unit: Unit,
+        /// Initial monotonic Runtime time.
+        at: Duration,
+    },
+}
+
+impl ReferenceConfig {
+    pub(crate) const fn id(self) -> ReferenceId {
+        match self {
+            Self::Fixed { id, .. } | Self::Ramp { id, .. } => id,
+        }
+    }
+}
+
 /// Validation or monotonic-time failure for a Reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceError {
@@ -75,6 +128,91 @@ pub struct RampSnapshot {
 /// Linear monotonic-time Reference supporting upward and downward targets.
 pub struct RampReference {
     state: RampSnapshot,
+}
+
+/// Bounded diagnostic view of a Runtime-owned Reference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReferenceSnapshot {
+    /// Constant reference and its most recent evaluation time.
+    Fixed {
+        /// Stable Reference identity.
+        id: ReferenceId,
+        /// Constant finite engineering value.
+        value: f64,
+        /// Exact engineering-unit identity.
+        unit: Unit,
+        /// Last evaluation time, or None before first use.
+        last_at: Option<Duration>,
+    },
+    /// Ramp state after its most recent evaluation.
+    Ramp {
+        /// Stable Reference identity.
+        id: ReferenceId,
+        /// Bounded ramp state.
+        state: RampSnapshot,
+    },
+}
+
+pub(crate) enum RuntimeReference {
+    Fixed {
+        id: ReferenceId,
+        reference: FixedReference,
+    },
+    Ramp {
+        id: ReferenceId,
+        reference: RampReference,
+    },
+}
+
+impl RuntimeReference {
+    pub(crate) fn new(config: ReferenceConfig) -> Result<Self, ReferenceError> {
+        match config {
+            ReferenceConfig::Fixed { id, value, unit } => Ok(Self::Fixed {
+                id,
+                reference: FixedReference::new(value, unit)?,
+            }),
+            ReferenceConfig::Ramp {
+                id,
+                start,
+                target,
+                rate,
+                unit,
+                at,
+            } => Ok(Self::Ramp {
+                id,
+                reference: RampReference::new(start, target, rate, unit, at)?,
+            }),
+        }
+    }
+
+    pub(crate) const fn unit(&self) -> Unit {
+        match self {
+            Self::Fixed { reference, .. } => reference.unit,
+            Self::Ramp { reference, .. } => reference.state.unit,
+        }
+    }
+
+    pub(crate) fn value_at(&mut self, at: Duration) -> Result<ReferenceValue, ReferenceError> {
+        match self {
+            Self::Fixed { reference, .. } => reference.value_at(at),
+            Self::Ramp { reference, .. } => reference.value_at(at),
+        }
+    }
+
+    pub(crate) const fn snapshot(&self) -> ReferenceSnapshot {
+        match self {
+            Self::Fixed { id, reference } => ReferenceSnapshot::Fixed {
+                id: *id,
+                value: reference.value,
+                unit: reference.unit,
+                last_at: reference.last_at,
+            },
+            Self::Ramp { id, reference } => ReferenceSnapshot::Ramp {
+                id: *id,
+                state: reference.snapshot(),
+            },
+        }
+    }
 }
 
 impl RampReference {

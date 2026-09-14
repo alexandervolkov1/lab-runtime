@@ -11,6 +11,7 @@ pub mod instrument;
 pub mod metakon;
 mod model;
 pub mod output;
+pub mod plant;
 pub mod processing;
 pub mod reference;
 mod runtime;

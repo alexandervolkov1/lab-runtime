@@ -1,6 +1,101 @@
 //! Native controller algorithms. They calculate proposals but have no output access.
 
+use crate::{
+    SignalId,
+    output::{ActuatorId, OutputLease},
+    processing::{Ema, EmaConfig, EmaSnapshot},
+    reference::ReferenceId,
+};
 use std::time::Duration;
+
+/// Stable Runtime-local identity of one native controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ControllerId(u64);
+
+impl ControllerId {
+    /// Construct an opaque identity; zero has no sentinel meaning.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return its numeric representation for diagnostics and owner identity.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Explicit lifecycle of a Runtime-owned native controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerState {
+    /// Registered but not yet checked against Runtime descriptors.
+    Created,
+    /// Descriptor contracts are valid; no output authority is held.
+    Ready,
+    /// Fresh input drives bounded proposals through OutputAuthority.
+    Running,
+    /// Deliberately stopped with output returned to its safe procedure.
+    Paused,
+    /// A timing, input, algorithm or output failure latched safe output.
+    Failed,
+}
+
+/// Data-only construction contract for a native EMA/PID control loop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeControllerConfig {
+    /// Stable controller identity.
+    pub id: ControllerId,
+    /// Measurement stream consumed by the loop.
+    pub input: SignalId,
+    /// Actuator accessed only through central output authority.
+    pub output: ActuatorId,
+    /// Independent time-based target source.
+    pub reference: ReferenceId,
+    /// Native input-filter policy.
+    pub ema: EmaConfig,
+    /// Native controller mathematics and output limits.
+    pub pid: PidConfig,
+    /// Exclusive freshness threshold for the latest measurement attempt.
+    pub max_input_age: Duration,
+    /// Largest accepted interval between successful controller ticks.
+    pub max_tick_gap: Duration,
+    /// Requested bounded automatic-output lease lifetime.
+    pub lease_lifetime: Duration,
+    /// Lifetime of each generated proposal.
+    pub proposal_ttl: Duration,
+}
+
+/// Controller registration, lifecycle or fail-safe reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerError {
+    /// No controller exists for the requested identity.
+    UnknownController,
+    /// Registration would replace an existing controller identity.
+    DuplicateController,
+    /// No Reference exists for the configured identity.
+    UnknownReference,
+    /// Registration would replace an existing Reference identity.
+    DuplicateReference,
+    /// The lifecycle transition is not valid from the current state.
+    InvalidState,
+    /// Durations, descriptors, units or algorithm bounds are inconsistent.
+    InvalidConfiguration,
+    /// The latest attempt is absent, unavailable or not a finite float.
+    InputUnavailable,
+    /// The most recent usable input is too old to authorize output.
+    StaleInput,
+    /// Monotonic controller time did not advance or exceeded its gap bound.
+    InvalidTickTime,
+    /// Native processing or PID mathematics rejected the update.
+    Algorithm,
+    /// Central output authority rejected acquisition, proposal or delivery.
+    Output,
+}
+
+impl From<ControllerError> for crate::Error {
+    fn from(error: ControllerError) -> Self {
+        Self::Controller(error)
+    }
+}
 
 /// PID configuration/update failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +157,76 @@ pub struct PidSnapshot {
 pub struct Pid {
     config: PidConfig,
     state: PidSnapshot,
+}
+
+/// Bounded diagnostic view; it carries no ability to produce output.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControllerSnapshot {
+    /// Stable controller identity.
+    pub id: ControllerId,
+    /// Current explicit lifecycle state.
+    pub state: ControllerState,
+    /// Current central authority token, only while Running.
+    pub lease: Option<OutputLease>,
+    /// Native filter memory retained for diagnosis.
+    pub ema: EmaSnapshot,
+    /// Native PID memory retained for diagnosis.
+    pub pid: PidSnapshot,
+    /// Last successfully initialized or executed controller time.
+    pub last_tick: Option<Duration>,
+    /// Most recent successfully delivered PID proposal.
+    pub latest_output: Option<PidUpdate>,
+}
+
+pub(crate) struct NativeController {
+    pub(crate) config: NativeControllerConfig,
+    pub(crate) state: ControllerState,
+    pub(crate) ema: Ema,
+    pub(crate) pid: Pid,
+    pub(crate) lease: Option<OutputLease>,
+    pub(crate) last_tick: Option<Duration>,
+    pub(crate) latest_output: Option<PidUpdate>,
+}
+
+impl NativeController {
+    pub(crate) fn new(config: NativeControllerConfig) -> Result<Self, ControllerError> {
+        if config.max_input_age.is_zero()
+            || config.max_tick_gap.is_zero()
+            || config.lease_lifetime.is_zero()
+            || config.proposal_ttl.is_zero()
+        {
+            return Err(ControllerError::InvalidConfiguration);
+        }
+        let ema = Ema::new(config.ema).map_err(|_| ControllerError::InvalidConfiguration)?;
+        let pid = Pid::new(config.pid).map_err(|_| ControllerError::InvalidConfiguration)?;
+        Ok(Self {
+            config,
+            state: ControllerState::Created,
+            ema,
+            pid,
+            lease: None,
+            last_tick: None,
+            latest_output: None,
+        })
+    }
+
+    pub(crate) fn reset_algorithms(&mut self) {
+        self.ema.reset();
+        self.pid.reset();
+        self.latest_output = None;
+    }
+
+    pub(crate) fn snapshot(&self) -> ControllerSnapshot {
+        ControllerSnapshot {
+            id: self.config.id,
+            state: self.state,
+            lease: self.lease,
+            ema: self.ema.snapshot(),
+            pid: self.pid.snapshot(),
+            last_tick: self.last_tick,
+            latest_output: self.latest_output,
+        }
+    }
 }
 
 impl Pid {

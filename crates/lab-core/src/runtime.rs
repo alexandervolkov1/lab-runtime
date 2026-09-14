@@ -2,6 +2,10 @@
 //! Commands mutate owned instances; queries clone bounded snapshots. No GUI,
 //! transport, clock polling or external client owns these instruments.
 
+use crate::control::{
+    ControllerError, ControllerId, ControllerSnapshot, ControllerState, NativeController,
+    NativeControllerConfig,
+};
 use crate::instrument::{
     KnownOperation, MetakonBinding, MetakonInstrument, MetakonInstrumentConfig,
 };
@@ -10,16 +14,22 @@ use crate::metakon::{
     encode_read, encode_scaled_i8, encode_write, scale_temperature,
 };
 use crate::output::{
-    ActuatorId, OutputAuthority, OutputCommand, OutputError, OutputResult, OutputSnapshot,
+    ActuatorId, DispatchOutcome, OutputAuthority, OutputCommand, OutputError, OutputOwner,
+    OutputProposal, OutputResult, OutputSnapshot,
+};
+use crate::plant::{ThermalPlantConfig, ThermalPlantInstrument};
+use crate::processing::EmaStatus;
+use crate::reference::{
+    ReferenceConfig, ReferenceError, ReferenceId, ReferenceSnapshot, RuntimeReference,
 };
 use crate::transport::{
     AuthorizationStep, ByteTransport, ExecutorSnapshot, ResourceExecutor, ResourceId,
     TransactionId, TransactionOutcome, TransportError, TransportEvent,
 };
 use crate::{
-    Error, InstrumentDescriptor, InstrumentId, ParameterId, Sample, SignalId, TEMPERATURE, Value,
-    VirtualInstrumentConfig, model::validate_name, signal::SignalBuffer,
-    virtual_instrument::VirtualInstrument,
+    Error, InstrumentDescriptor, InstrumentId, ParameterId, ParameterRole, Sample, SampleQuality,
+    SignalId, TEMPERATURE, Unit, Value, ValueSpec, VirtualInstrumentConfig, model::validate_name,
+    signal::SignalBuffer, virtual_instrument::VirtualInstrument,
 };
 use std::{collections::BTreeMap, time::Duration};
 
@@ -27,6 +37,10 @@ use std::{collections::BTreeMap, time::Duration};
 pub const MAX_INSTRUMENTS: usize = 64;
 /// Maximum independently progressing byte resources owned by one Runtime.
 pub const MAX_TRANSPORT_RESOURCES: usize = 8;
+/// Maximum native References retained by one Runtime.
+pub const MAX_REFERENCES: usize = 64;
+/// Maximum native controllers retained by one Runtime.
+pub const MAX_CONTROLLERS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 /// Local mutation requests serialized by the Runtime owner; no networking or hidden query effects.
@@ -42,6 +56,49 @@ pub enum Command {
     },
     /// Validate and register a native virtual instrument without producing a measurement.
     RegisterVirtual(VirtualInstrumentConfig),
+    /// Register a deterministic first-order virtual thermal plant.
+    RegisterThermalPlant(ThermalPlantConfig),
+    /// Register an independent native target source.
+    RegisterReference(ReferenceConfig),
+    /// Register controller data without acquiring output authority.
+    RegisterController(NativeControllerConfig),
+    /// Check a Created controller against current descriptors and Reference units.
+    PrepareController(ControllerId),
+    /// Initialize algorithms from fresh input and acquire automatic output authority.
+    StartController {
+        /// Controller to start from Ready.
+        controller: ControllerId,
+        /// Explicit monotonic Runtime time.
+        at: Duration,
+    },
+    /// Consume one fresh sample and deliver one bounded native proposal.
+    TickController {
+        /// Running controller to advance.
+        controller: ControllerId,
+        /// Explicit monotonic Runtime time.
+        at: Duration,
+    },
+    /// Revoke automatic authority and complete the configured safe procedure.
+    PauseController {
+        /// Running controller to pause.
+        controller: ControllerId,
+        /// Explicit monotonic Runtime time.
+        at: Duration,
+    },
+    /// Reset algorithm memory, validate fresh input, and acquire a new lease.
+    ResumeController {
+        /// Paused controller to resume.
+        controller: ControllerId,
+        /// Explicit monotonic Runtime time.
+        at: Duration,
+    },
+    /// Append an explicit unavailable attempt to an M4 thermal plant signal.
+    InjectPlantMeasurementFailure {
+        /// Registered thermal plant identity.
+        instrument: InstrumentId,
+        /// Explicit monotonic attempt time.
+        at: Duration,
+    },
     /// Validate and atomically register a known-profile Metakon definition and binding.
     RegisterMetakon(MetakonInstrumentConfig),
     /// Queue one trusted known-profile read; this is a mutation because it schedules I/O.
@@ -116,6 +173,10 @@ pub enum CommandResult {
     Output(OutputResult),
     /// Registration completed without starting acquisition or output authority.
     Registered(InstrumentId),
+    /// A native Reference was registered without evaluating it.
+    ReferenceRegistered(ReferenceId),
+    /// A native controller registration or lifecycle transition completed.
+    ControllerUpdated(ControllerSnapshot),
     /// The display name changed without replacing the instance.
     Renamed(InstrumentId),
     /// One configuration value was committed; no new observation was fabricated.
@@ -131,6 +192,8 @@ pub enum CommandResult {
     TransportsPolled,
     /// An explicit attempt produced this good sample.
     MeasurementRefreshed(Sample),
+    /// An explicit unavailable plant measurement attempt was retained.
+    MeasurementFailed(Sample),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +203,10 @@ pub enum Query {
     Output(ActuatorId),
     /// Copy one byte resource's bounded state without polling it.
     Transport(ResourceId),
+    /// Copy one native controller's bounded lifecycle/algorithm diagnostics.
+    Controller(ControllerId),
+    /// Copy one native Reference's bounded state without advancing it.
+    Reference(ReferenceId),
     /// Return all instrument descriptors in stable ID order.
     Discover,
     /// Return metadata for one existing instrument without accessing hardware.
@@ -159,6 +226,10 @@ pub enum QueryResult {
     Output(OutputSnapshot),
     /// Bounded resource state; no response history or raw adapter handle is exposed.
     Transport(ExecutorSnapshot),
+    /// Bounded native controller diagnostics with no output capability.
+    Controller(ControllerSnapshot),
+    /// Bounded native Reference state with no time advancement.
+    Reference(ReferenceSnapshot),
     /// Catalog descriptors in stable instrument-ID order.
     Instruments(Vec<InstrumentDescriptor>),
     /// Metadata for one instrument; this copy has no authority to mutate Runtime.
@@ -198,6 +269,9 @@ pub struct ParameterObservation {
 pub struct Runtime {
     instruments: BTreeMap<InstrumentId, VirtualInstrument>,
     metakon_instruments: BTreeMap<InstrumentId, MetakonInstrument>,
+    thermal_plants: BTreeMap<InstrumentId, ThermalPlantInstrument>,
+    references: BTreeMap<ReferenceId, RuntimeReference>,
+    controllers: BTreeMap<ControllerId, NativeController>,
     outputs: BTreeMap<ActuatorId, OutputAuthority>,
     resources: BTreeMap<ResourceId, ResourceExecutor>,
     pending_reads: BTreeMap<(ResourceId, TransactionId), PendingRead>,
@@ -266,11 +340,17 @@ impl Runtime {
                 for authority in self.outputs.values_mut() {
                     authority.tick(at)?;
                 }
-                self.outputs
+                let result = self
+                    .outputs
                     .get_mut(&actuator)
                     .ok_or(OutputError::UnknownActuator)?
-                    .command(command, at)
-                    .map(CommandResult::Output)
+                    .command(command, at)?;
+                if let OutputResult::Dispatched(dispatch) = result {
+                    self.apply_virtual_dispatch(actuator, dispatch.value())?;
+                    Ok(CommandResult::Output(OutputResult::Dispatched(dispatch)))
+                } else {
+                    Ok(CommandResult::Output(result))
+                }
             }
             Command::RegisterVirtual(config) => {
                 let id = config.id;
@@ -293,6 +373,70 @@ impl Runtime {
                 self.instruments.insert(id, instrument);
                 self.outputs.insert(actuator, authority);
                 Ok(CommandResult::Registered(id))
+            }
+            Command::RegisterThermalPlant(config) => {
+                let id = config.id;
+                if self.contains_instrument(id) {
+                    return Err(Error::DuplicateInstrument(id));
+                }
+                if self.instrument_count() >= MAX_INSTRUMENTS {
+                    return Err(Error::InvalidConfiguration("instrument limit reached (64)"));
+                }
+                let instrument = ThermalPlantInstrument::new(config)?;
+                let actuator = ActuatorId::new(id, crate::HEATER_POWER);
+                let parameter = instrument
+                    .descriptor
+                    .parameter(crate::HEATER_POWER)
+                    .ok_or(OutputError::UnknownActuator)?;
+                let authority =
+                    OutputAuthority::new(actuator, parameter.value_spec.clone(), parameter.unit)?;
+                self.thermal_plants.insert(id, instrument);
+                self.outputs.insert(actuator, authority);
+                Ok(CommandResult::Registered(id))
+            }
+            Command::RegisterReference(config) => {
+                let id = config.id();
+                if self.references.contains_key(&id) {
+                    return Err(ControllerError::DuplicateReference.into());
+                }
+                if self.references.len() >= MAX_REFERENCES {
+                    return Err(ControllerError::InvalidConfiguration.into());
+                }
+                let reference = RuntimeReference::new(config)
+                    .map_err(|_| ControllerError::InvalidConfiguration)?;
+                self.references.insert(id, reference);
+                Ok(CommandResult::ReferenceRegistered(id))
+            }
+            Command::RegisterController(config) => {
+                let id = config.id;
+                if self.controllers.contains_key(&id) {
+                    return Err(ControllerError::DuplicateController.into());
+                }
+                if self.controllers.len() >= MAX_CONTROLLERS {
+                    return Err(ControllerError::InvalidConfiguration.into());
+                }
+                let controller = NativeController::new(config)?;
+                let snapshot = controller.snapshot();
+                self.controllers.insert(id, controller);
+                Ok(CommandResult::ControllerUpdated(snapshot))
+            }
+            Command::PrepareController(id) => self.prepare_controller(id),
+            Command::StartController { controller, at } => {
+                self.start_or_resume_controller(controller, at, ControllerState::Ready)
+            }
+            Command::TickController { controller, at } => self.tick_controller(controller, at),
+            Command::PauseController { controller, at } => self.pause_controller(controller, at),
+            Command::ResumeController { controller, at } => {
+                self.start_or_resume_controller(controller, at, ControllerState::Paused)
+            }
+            Command::InjectPlantMeasurementFailure { instrument, at } => {
+                let plant = self
+                    .thermal_plants
+                    .get_mut(&instrument)
+                    .ok_or(Error::UnknownInstrument(instrument))?;
+                plant
+                    .inject_failure(at)
+                    .map(CommandResult::MeasurementFailed)
             }
             Command::RegisterMetakon(config) => {
                 let id = config.definition.id;
@@ -501,6 +645,8 @@ impl Runtime {
                     instance.descriptor.name = name;
                 } else if let Some(instance) = self.metakon_instruments.get_mut(&instrument) {
                     instance.descriptor.name = name;
+                } else if let Some(instance) = self.thermal_plants.get_mut(&instrument) {
+                    instance.descriptor.name = name;
                 } else {
                     return Err(Error::UnknownInstrument(instrument));
                 }
@@ -513,7 +659,9 @@ impl Runtime {
             } => {
                 if let Some(instance) = self.instruments.get_mut(&instrument) {
                     instance.configure(parameter, value)?;
-                } else if self.metakon_instruments.contains_key(&instrument) {
+                } else if self.metakon_instruments.contains_key(&instrument)
+                    || self.thermal_plants.contains_key(&instrument)
+                {
                     return Err(Error::OperationNotAllowed(parameter));
                 } else {
                     return Err(Error::UnknownInstrument(instrument));
@@ -531,6 +679,13 @@ impl Runtime {
                 if let Some(instance) = self.instruments.get_mut(&instrument) {
                     instance
                         .refresh(parameter, at)
+                        .map(CommandResult::MeasurementRefreshed)
+                } else if let Some(instance) = self.thermal_plants.get_mut(&instrument) {
+                    if parameter != TEMPERATURE {
+                        return Err(Error::OperationNotAllowed(parameter));
+                    }
+                    instance
+                        .refresh(at)
                         .map(CommandResult::MeasurementRefreshed)
                 } else if self.metakon_instruments.contains_key(&instrument) {
                     Err(Error::OperationNotAllowed(parameter))
@@ -554,6 +709,16 @@ impl Runtime {
                 .get(&id)
                 .map(|executor| QueryResult::Transport(executor.snapshot()))
                 .ok_or(TransportError::UnknownResource.into()),
+            Query::Controller(id) => self
+                .controllers
+                .get(&id)
+                .map(|controller| QueryResult::Controller(controller.snapshot()))
+                .ok_or(ControllerError::UnknownController.into()),
+            Query::Reference(id) => self
+                .references
+                .get(&id)
+                .map(|reference| QueryResult::Reference(reference.snapshot()))
+                .ok_or(ControllerError::UnknownReference.into()),
             Query::Discover => {
                 let mut descriptors: Vec<_> = self
                     .instruments
@@ -561,6 +726,11 @@ impl Runtime {
                     .map(|instrument| instrument.descriptor.clone())
                     .chain(
                         self.metakon_instruments
+                            .values()
+                            .map(|instrument| instrument.descriptor.clone()),
+                    )
+                    .chain(
+                        self.thermal_plants
                             .values()
                             .map(|instrument| instrument.descriptor.clone()),
                     )
@@ -603,6 +773,16 @@ impl Runtime {
                             })
                             .collect(),
                     }))
+                } else if let Some(instrument) = self.thermal_plants.get(&id) {
+                    Ok(QueryResult::State(InstrumentState {
+                        instrument: id,
+                        configured: instrument.configured(),
+                        observations: vec![ParameterObservation {
+                            parameter: TEMPERATURE,
+                            signal: SignalId::new(id, TEMPERATURE),
+                            latest: instrument.signal.latest().cloned(),
+                        }],
+                    }))
                 } else {
                     Err(Error::UnknownInstrument(id))
                 }
@@ -614,12 +794,373 @@ impl Runtime {
         }
     }
 
+    fn prepare_controller(&mut self, id: ControllerId) -> Result<CommandResult, Error> {
+        let config = self
+            .controllers
+            .get(&id)
+            .ok_or(ControllerError::UnknownController)?
+            .config;
+        if self.controllers.get(&id).expect("looked up above").state != ControllerState::Created {
+            return Err(ControllerError::InvalidState.into());
+        }
+
+        let input = self
+            .descriptor(config.input.instrument())?
+            .parameter(config.input.parameter())
+            .filter(|parameter| {
+                parameter.signal == Some(config.input)
+                    && parameter.role == ParameterRole::Measurement
+            })
+            .ok_or(ControllerError::InvalidConfiguration)?;
+        if !matches!(input.value_spec, ValueSpec::Float { .. }) || input.unit != config.ema.unit {
+            return Err(ControllerError::InvalidConfiguration.into());
+        }
+
+        let reference = self
+            .references
+            .get(&config.reference)
+            .ok_or(ControllerError::UnknownReference)?;
+        if reference.unit() != input.unit {
+            return Err(ControllerError::InvalidConfiguration.into());
+        }
+
+        let output = self
+            .descriptor(config.output.instrument())?
+            .parameter(config.output.parameter())
+            .filter(|parameter| parameter.role == ParameterRole::Actuator)
+            .ok_or(ControllerError::InvalidConfiguration)?;
+        let ValueSpec::Float { min, max } = output.value_spec else {
+            return Err(ControllerError::InvalidConfiguration.into());
+        };
+        if config.pid.output_min < min
+            || config.pid.output_max > max
+            || !self.outputs.contains_key(&config.output)
+            || !self
+                .thermal_plants
+                .contains_key(&config.output.instrument())
+        {
+            return Err(ControllerError::InvalidConfiguration.into());
+        }
+
+        let controller = self.controllers.get_mut(&id).expect("validated above");
+        controller.state = ControllerState::Ready;
+        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+    }
+
+    fn start_or_resume_controller(
+        &mut self,
+        id: ControllerId,
+        at: Duration,
+        expected: ControllerState,
+    ) -> Result<CommandResult, Error> {
+        self.check_output_time(at)?;
+        let mut controller = self
+            .controllers
+            .remove(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        let result = (|| {
+            if controller.state != expected {
+                return Err(ControllerError::InvalidState.into());
+            }
+            let (measurement, unit, sample_at) =
+                self.control_input(controller.config.input, at, controller.config.max_input_age)?;
+            let reference = self
+                .references
+                .get_mut(&controller.config.reference)
+                .ok_or(ControllerError::UnknownReference)?
+                .value_at(at)
+                .map_err(map_reference_error)?;
+            if reference.unit != unit {
+                return Err(ControllerError::InvalidConfiguration.into());
+            }
+
+            controller.reset_algorithms();
+            let update = controller
+                .ema
+                .update(Some(measurement), SampleQuality::Good, unit, sample_at)
+                .map_err(|_| ControllerError::Algorithm)?;
+            if update.status != EmaStatus::Ready {
+                return Err(ControllerError::Algorithm.into());
+            }
+            let lease = match self
+                .outputs
+                .get_mut(&controller.config.output)
+                .ok_or(OutputError::UnknownActuator)?
+                .command(
+                    OutputCommand::Acquire {
+                        owner: OutputOwner::Automatic(id.get()),
+                        lifetime: controller.config.lease_lifetime,
+                    },
+                    at,
+                )? {
+                OutputResult::Lease(lease) => lease,
+                _ => unreachable!("Acquire has one successful result kind"),
+            };
+            controller.lease = Some(lease);
+            controller.last_tick = Some(at);
+            controller.state = ControllerState::Running;
+            Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+        })();
+        self.controllers.insert(id, controller);
+        result
+    }
+
+    fn tick_controller(&mut self, id: ControllerId, at: Duration) -> Result<CommandResult, Error> {
+        self.check_output_time(at)?;
+        let mut controller = self
+            .controllers
+            .remove(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        if controller.state != ControllerState::Running {
+            self.controllers.insert(id, controller);
+            return Err(ControllerError::InvalidState.into());
+        }
+
+        let update = self.calculate_controller_update(&mut controller, at);
+        let result = match update {
+            Ok((pid, unit, ttl)) => {
+                let lease = controller.lease.ok_or(ControllerError::InvalidState)?;
+                let output = controller.config.output;
+                let delivery = self.deliver_simulated(
+                    output,
+                    OutputProposal {
+                        lease,
+                        value: Value::Float(pid.output),
+                        unit,
+                        ttl,
+                    },
+                    at,
+                );
+                match delivery {
+                    Ok(()) => {
+                        controller.last_tick = Some(at);
+                        controller.latest_output = Some(pid);
+                        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+                    }
+                    Err(_) => {
+                        self.fail_controller(&mut controller, at)?;
+                        Err(ControllerError::Output.into())
+                    }
+                }
+            }
+            Err(error) => {
+                self.fail_controller(&mut controller, at)?;
+                Err(error.into())
+            }
+        };
+        self.controllers.insert(id, controller);
+        result
+    }
+
+    fn calculate_controller_update(
+        &mut self,
+        controller: &mut NativeController,
+        at: Duration,
+    ) -> Result<(crate::control::PidUpdate, Unit, Duration), ControllerError> {
+        let previous = controller.last_tick.ok_or(ControllerError::InvalidState)?;
+        if at <= previous || at - previous > controller.config.max_tick_gap {
+            return Err(ControllerError::InvalidTickTime);
+        }
+        let (measurement, unit, sample_at) =
+            self.control_input(controller.config.input, at, controller.config.max_input_age)?;
+        let reference = self
+            .references
+            .get_mut(&controller.config.reference)
+            .ok_or(ControllerError::UnknownReference)?
+            .value_at(at)
+            .map_err(map_reference_error)?;
+        if reference.unit != unit {
+            return Err(ControllerError::InvalidConfiguration);
+        }
+        let filtered = controller
+            .ema
+            .update(Some(measurement), SampleQuality::Good, unit, sample_at)
+            .map_err(|_| ControllerError::Algorithm)?;
+        if filtered.status != EmaStatus::Ready {
+            return Err(ControllerError::Algorithm);
+        }
+        let pid = controller
+            .pid
+            .update(
+                filtered.value.ok_or(ControllerError::Algorithm)?,
+                reference.value,
+                at,
+            )
+            .map_err(|_| ControllerError::Algorithm)?;
+        let remaining_freshness = controller.config.max_input_age - (at - sample_at);
+        let ttl = controller.config.proposal_ttl.min(remaining_freshness);
+        if ttl.is_zero() {
+            return Err(ControllerError::StaleInput);
+        }
+        Ok((pid, self.output_unit(controller.config.output)?, ttl))
+    }
+
+    fn pause_controller(&mut self, id: ControllerId, at: Duration) -> Result<CommandResult, Error> {
+        self.check_output_time(at)?;
+        let mut controller = self
+            .controllers
+            .remove(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        let result = (|| {
+            if controller.state != ControllerState::Running {
+                return Err(ControllerError::InvalidState.into());
+            }
+            let lease = controller
+                .lease
+                .take()
+                .ok_or(ControllerError::InvalidState)?;
+            self.outputs
+                .get_mut(&controller.config.output)
+                .ok_or(OutputError::UnknownActuator)?
+                .command(OutputCommand::Release(lease), at)?;
+            self.complete_simulated_safe(controller.config.output, at)?;
+            controller.state = ControllerState::Paused;
+            Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+        })();
+        self.controllers.insert(id, controller);
+        result
+    }
+
+    fn fail_controller(
+        &mut self,
+        controller: &mut NativeController,
+        at: Duration,
+    ) -> Result<(), Error> {
+        controller.state = ControllerState::Failed;
+        controller.lease = None;
+        self.outputs
+            .get_mut(&controller.config.output)
+            .ok_or(OutputError::UnknownActuator)?
+            .command(OutputCommand::Trip, at)?;
+        self.complete_simulated_safe(controller.config.output, at)
+    }
+
+    fn control_input(
+        &self,
+        signal: SignalId,
+        at: Duration,
+        max_age: Duration,
+    ) -> Result<(f64, Unit, Duration), ControllerError> {
+        let sample = self
+            .signal(signal)
+            .ok()
+            .and_then(SignalBuffer::latest)
+            .ok_or(ControllerError::InputUnavailable)?;
+        if sample.quality() != SampleQuality::Good {
+            return Err(ControllerError::InputUnavailable);
+        }
+        if at < sample.at() {
+            return Err(ControllerError::InvalidTickTime);
+        }
+        if at - sample.at() >= max_age {
+            return Err(ControllerError::StaleInput);
+        }
+        let Some(Value::Float(value)) = sample.value() else {
+            return Err(ControllerError::InputUnavailable);
+        };
+        if !value.is_finite() {
+            return Err(ControllerError::InputUnavailable);
+        }
+        Ok((*value, sample.unit(), sample.at()))
+    }
+
+    fn output_unit(&self, actuator: ActuatorId) -> Result<Unit, ControllerError> {
+        self.descriptor(actuator.instrument())
+            .ok()
+            .and_then(|descriptor| descriptor.parameter(actuator.parameter()))
+            .map(|parameter| parameter.unit)
+            .ok_or(ControllerError::InvalidConfiguration)
+    }
+
+    fn deliver_simulated(
+        &mut self,
+        actuator: ActuatorId,
+        proposal: OutputProposal,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.outputs
+            .get_mut(&actuator)
+            .ok_or(OutputError::UnknownActuator)?
+            .command(OutputCommand::Propose(proposal), at)?;
+        let dispatch = match self
+            .outputs
+            .get_mut(&actuator)
+            .expect("authority exists after proposal")
+            .command(OutputCommand::BeginDispatch, at)?
+        {
+            OutputResult::Dispatched(dispatch) => dispatch,
+            _ => unreachable!("BeginDispatch has one successful result kind"),
+        };
+        if let Err(error) = self.apply_virtual_dispatch(actuator, dispatch.value()) {
+            self.outputs
+                .get_mut(&actuator)
+                .expect("authority exists after dispatch")
+                .command(
+                    OutputCommand::Complete {
+                        dispatch_id: dispatch.id(),
+                        outcome: DispatchOutcome::Failed,
+                    },
+                    at,
+                )?;
+            return Err(error);
+        }
+        self.outputs
+            .get_mut(&actuator)
+            .expect("authority exists after dispatch")
+            .command(
+                OutputCommand::Complete {
+                    dispatch_id: dispatch.id(),
+                    outcome: DispatchOutcome::ReadbackVerified,
+                },
+                at,
+            )?;
+        Ok(())
+    }
+
+    fn complete_simulated_safe(&mut self, actuator: ActuatorId, at: Duration) -> Result<(), Error> {
+        let dispatch = match self
+            .outputs
+            .get_mut(&actuator)
+            .ok_or(OutputError::UnknownActuator)?
+            .command(OutputCommand::BeginDispatch, at)?
+        {
+            OutputResult::Dispatched(dispatch) => dispatch,
+            _ => unreachable!("BeginDispatch has one successful result kind"),
+        };
+        self.apply_virtual_dispatch(actuator, dispatch.value())?;
+        self.outputs
+            .get_mut(&actuator)
+            .expect("authority exists after safe dispatch")
+            .command(
+                OutputCommand::Complete {
+                    dispatch_id: dispatch.id(),
+                    outcome: DispatchOutcome::ReadbackVerified,
+                },
+                at,
+            )?;
+        Ok(())
+    }
+
+    fn apply_virtual_dispatch(&mut self, actuator: ActuatorId, value: f64) -> Result<(), Error> {
+        if let Some(plant) = self.thermal_plants.get_mut(&actuator.instrument())
+            && actuator.parameter() == crate::HEATER_POWER
+        {
+            plant.apply_heater(value)?;
+        }
+        Ok(())
+    }
+
     fn descriptor(&self, id: InstrumentId) -> Result<&InstrumentDescriptor, Error> {
         self.instruments
             .get(&id)
             .map(|instrument| &instrument.descriptor)
             .or_else(|| {
                 self.metakon_instruments
+                    .get(&id)
+                    .map(|instrument| &instrument.descriptor)
+            })
+            .or_else(|| {
+                self.thermal_plants
                     .get(&id)
                     .map(|instrument| &instrument.descriptor)
             })
@@ -893,11 +1434,13 @@ impl Runtime {
     }
 
     fn contains_instrument(&self, id: InstrumentId) -> bool {
-        self.instruments.contains_key(&id) || self.metakon_instruments.contains_key(&id)
+        self.instruments.contains_key(&id)
+            || self.metakon_instruments.contains_key(&id)
+            || self.thermal_plants.contains_key(&id)
     }
 
     fn instrument_count(&self) -> usize {
-        self.instruments.len() + self.metakon_instruments.len()
+        self.instruments.len() + self.metakon_instruments.len() + self.thermal_plants.len()
     }
 
     fn signal(&self, id: SignalId) -> Result<&SignalBuffer, Error> {
@@ -910,6 +1453,19 @@ impl Runtime {
                     .get(&id.instrument())
                     .and_then(|instrument| instrument.signals.get(&id))
             })
+            .or_else(|| {
+                self.thermal_plants
+                    .get(&id.instrument())
+                    .filter(|_| id.parameter() == TEMPERATURE)
+                    .map(|instrument| &instrument.signal)
+            })
             .ok_or(Error::UnknownSignal(id))
+    }
+}
+
+fn map_reference_error(error: ReferenceError) -> ControllerError {
+    match error {
+        ReferenceError::InvalidConfiguration => ControllerError::InvalidConfiguration,
+        ReferenceError::InvalidTime => ControllerError::InvalidTickTime,
     }
 }

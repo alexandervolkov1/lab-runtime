@@ -487,6 +487,8 @@ pub enum MeasurementFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Typed domain rejection or observation failure; MeasurementUnavailable alone commits a failed sample.
 pub enum Error {
+    /// Native controller/reference registration or lifecycle was rejected.
+    Controller(crate::control::ControllerError),
     /// A central output-authority operation was rejected.
     Output(crate::output::OutputError),
     /// A bounded byte executor operation was rejected.
@@ -544,6 +546,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Controller(error) => write!(f, "controller: {error:?}"),
             Self::Output(error) => write!(f, "output authority: {error:?}"),
             Self::Transport(error) => write!(f, "transport: {error:?}"),
             Self::Protocol(error) => write!(f, "Metakon protocol: {error:?}"),
