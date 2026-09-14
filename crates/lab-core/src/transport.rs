@@ -8,6 +8,7 @@
 use std::{collections::VecDeque, time::Duration};
 
 use crate::metakon::MAX_FRAME_BYTES;
+use crate::output::{DispatchId, OutputIntent};
 
 /// Maximum ordinary transactions waiting behind one resource owner.
 pub const MAX_QUEUED_TRANSACTIONS: usize = 32;
@@ -31,7 +32,7 @@ impl ResourceId {
 }
 
 /// Local transaction correlation scoped to one executor instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TransactionId(u64);
 
 impl TransactionId {
@@ -84,6 +85,18 @@ pub enum TransportError {
     InvalidTime,
     /// A checked local counter cannot advance without wrapping.
     CounterExhausted,
+    /// A Runtime resource identity is already registered.
+    DuplicateResource,
+    /// No executor owns the requested resource identity.
+    UnknownResource,
+    /// Runtime already owns the maximum eight resources.
+    ResourceLimit,
+}
+
+impl From<TransportError> for crate::Error {
+    fn from(error: TransportError) -> Self {
+        Self::Transport(error)
+    }
 }
 
 /// Terminal result retained in the executor's single latest-result slot.
@@ -153,6 +166,19 @@ struct Transaction {
     retries: u8,
     binding_generation: u64,
     mapping_revision: u64,
+    kind: TransactionKind,
+}
+
+#[derive(Clone)]
+enum TransactionKind {
+    Read,
+    Output(Box<OutputTransaction>),
+}
+
+#[derive(Clone, Copy)]
+struct OutputTransaction {
+    intent: OutputIntent,
+    dispatch: Option<DispatchId>,
 }
 
 struct Active {
@@ -171,6 +197,7 @@ enum OwnedState {
     Idle,
     Active(Active),
     Recovering(Recovery),
+    ProtocolRecovery,
     Offline,
 }
 
@@ -179,12 +206,42 @@ pub struct ResourceExecutor {
     id: ResourceId,
     adapter: Box<dyn ByteTransport>,
     queue: VecDeque<Transaction>,
+    safe_queue: Option<Transaction>,
     state: OwnedState,
     generation: u64,
     next_transaction: u64,
     last_poll: Duration,
     latest: Option<TransactionRecord>,
     latest_response: Option<Vec<u8>>,
+    event: Option<TransportEvent>,
+}
+
+/// Step requested from the trusted Runtime output coordinator.
+pub(crate) enum AuthorizationStep {
+    /// Check all current authority/binding/revision data before a zero-offset attempt.
+    Validate,
+    /// Record that the adapter accepted at least one byte in the same serialized call.
+    Started,
+}
+
+/// One bounded executor event consumed immediately by Runtime.
+pub(crate) enum TransportEvent {
+    ReadTerminal {
+        record: TransactionRecord,
+        response: Option<Vec<u8>>,
+    },
+    OutputUncertain {
+        intent: OutputIntent,
+        dispatch: DispatchId,
+    },
+    OutputTerminal {
+        intent: OutputIntent,
+        dispatch: Option<DispatchId>,
+        record: TransactionRecord,
+        response: Option<Vec<u8>>,
+    },
+    BoundaryRecovered,
+    BoundaryFailed,
 }
 
 impl ResourceExecutor {
@@ -194,12 +251,14 @@ impl ResourceExecutor {
             id,
             adapter,
             queue: VecDeque::new(),
+            safe_queue: None,
             state: OwnedState::Idle,
             generation: 1,
             next_transaction: 1,
             last_poll: Duration::ZERO,
             latest: None,
             latest_response: None,
+            event: None,
         }
     }
 
@@ -256,6 +315,7 @@ impl ResourceExecutor {
             retries: 0,
             binding_generation,
             mapping_revision,
+            kind: TransactionKind::Read,
         });
         Ok(id)
     }
@@ -265,19 +325,83 @@ impl ResourceExecutor {
     /// Equal timestamps are allowed for deterministic orchestration; backwards
     /// timestamps are rejected before adapter state changes.
     pub fn poll(&mut self, at: Duration) -> Result<(), TransportError> {
+        self.poll_authorized(at, &mut |_, _| Err(()))?;
+        Ok(())
+    }
+
+    pub(crate) fn enqueue_output(
+        &mut self,
+        request: &[u8],
+        expected_response: usize,
+        queued_at: Duration,
+        queue_deadline: Duration,
+        timeout: Duration,
+        intent: OutputIntent,
+    ) -> Result<TransactionId, TransportError> {
+        if (!intent.safe && self.queue.len() >= MAX_QUEUED_TRANSACTIONS)
+            || (intent.safe && self.safe_queue.is_some())
+        {
+            return Err(TransportError::QueueFull);
+        }
+        if request.is_empty()
+            || request.len() > MAX_FRAME_BYTES
+            || !(1..=MAX_FRAME_BYTES).contains(&expected_response)
+            || queue_deadline <= queued_at
+            || queue_deadline - queued_at > MAX_TRANSACTION_DURATION
+            || timeout.is_zero()
+            || timeout > MAX_TRANSACTION_DURATION
+        {
+            return Err(TransportError::InvalidTransaction);
+        }
+        let following = self
+            .next_transaction
+            .checked_add(1)
+            .ok_or(TransportError::CounterExhausted)?;
+        let id = TransactionId(self.next_transaction);
+        self.next_transaction = following;
+        let transaction = Transaction {
+            id,
+            request: request.to_vec(),
+            expected_response,
+            queue_deadline,
+            timeout,
+            retryable: false,
+            retries: 0,
+            binding_generation: intent.binding_generation,
+            mapping_revision: intent.mapping_revision,
+            kind: TransactionKind::Output(Box::new(OutputTransaction {
+                intent,
+                dispatch: None,
+            })),
+        };
+        if intent.safe {
+            self.safe_queue = Some(transaction);
+        } else {
+            self.queue.push_back(transaction);
+        }
+        Ok(id)
+    }
+
+    pub(crate) fn poll_authorized(
+        &mut self,
+        at: Duration,
+        authorizer: &mut impl FnMut(OutputIntent, AuthorizationStep) -> Result<Option<DispatchId>, ()>,
+    ) -> Result<Option<TransportEvent>, TransportError> {
         if at < self.last_poll {
             return Err(TransportError::InvalidTime);
         }
         self.last_poll = at;
+        self.event = None;
 
         let state = std::mem::replace(&mut self.state, OwnedState::Idle);
         self.state = match state {
-            OwnedState::Idle => self.start_or_remain_idle(at)?,
-            OwnedState::Active(active) => self.progress_active(active, at),
+            OwnedState::Idle => self.start_or_remain_idle(at, authorizer)?,
+            OwnedState::Active(active) => self.progress_active(active, at, authorizer),
             OwnedState::Recovering(recovery) => self.progress_recovery(recovery, at)?,
+            OwnedState::ProtocolRecovery => self.progress_protocol_recovery()?,
             OwnedState::Offline => OwnedState::Offline,
         };
-        Ok(())
+        Ok(self.event.take())
     }
 
     /// Return a bounded state copy without polling I/O.
@@ -288,11 +412,12 @@ impl ResourceExecutor {
             OwnedState::Recovering(recovery) => {
                 (ExecutorState::Recovering, Some(recovery.transaction.id))
             }
+            OwnedState::ProtocolRecovery => (ExecutorState::Recovering, None),
             OwnedState::Offline => (ExecutorState::Offline, None),
         };
         ExecutorSnapshot {
             state,
-            queue_len: self.queue.len(),
+            queue_len: self.queue.len() + usize::from(self.safe_queue.is_some()),
             active,
             generation: self.generation,
             latest: self.latest,
@@ -304,8 +429,19 @@ impl ResourceExecutor {
         self.latest_response.as_deref()
     }
 
-    fn start_or_remain_idle(&mut self, at: Duration) -> Result<OwnedState, TransportError> {
-        let Some(transaction) = self.queue.pop_front() else {
+    /// Require a clean adapter generation after protocol-level response rejection.
+    pub(crate) fn protocol_failure(&mut self) {
+        if matches!(self.state, OwnedState::Idle) {
+            self.state = OwnedState::ProtocolRecovery;
+        }
+    }
+
+    fn start_or_remain_idle(
+        &mut self,
+        at: Duration,
+        authorizer: &mut impl FnMut(OutputIntent, AuthorizationStep) -> Result<Option<DispatchId>, ()>,
+    ) -> Result<OwnedState, TransportError> {
+        let Some(transaction) = self.safe_queue.take().or_else(|| self.queue.pop_front()) else {
             return Ok(OwnedState::Idle);
         };
         if at >= transaction.queue_deadline {
@@ -324,26 +460,44 @@ impl ResourceExecutor {
                 execution_deadline,
             },
             at,
+            authorizer,
         ))
     }
 
-    fn progress_active(&mut self, mut active: Active, at: Duration) -> OwnedState {
+    fn progress_active(
+        &mut self,
+        mut active: Active,
+        at: Duration,
+        authorizer: &mut impl FnMut(OutputIntent, AuthorizationStep) -> Result<Option<DispatchId>, ()>,
+    ) -> OwnedState {
         if at >= active.execution_deadline {
-            return OwnedState::Recovering(Recovery {
-                started: active.write_offset > 0,
-                transaction: active.transaction,
-            });
+            return self.enter_recovery(active);
         }
 
         if active.write_offset < active.transaction.request.len() {
+            if active.write_offset == 0
+                && let TransactionKind::Output(output) = &active.transaction.kind
+                && authorizer(output.intent, AuthorizationStep::Validate).is_err()
+            {
+                self.finish(&active.transaction, TransactionOutcome::Failed, false, None);
+                return OwnedState::Idle;
+            }
             let remaining = &active.transaction.request[active.write_offset..];
             match self.adapter.try_write(remaining) {
-                Ok(count) if count <= remaining.len() => active.write_offset += count,
+                Ok(count) if count <= remaining.len() => {
+                    if active.write_offset == 0
+                        && count > 0
+                        && let TransactionKind::Output(output) = &mut active.transaction.kind
+                    {
+                        match authorizer(output.intent, AuthorizationStep::Started) {
+                            Ok(Some(id)) => output.dispatch = Some(id),
+                            _ => return self.enter_recovery(active),
+                        }
+                    }
+                    active.write_offset += count;
+                }
                 Ok(_) | Err(_) => {
-                    return OwnedState::Recovering(Recovery {
-                        started: active.write_offset > 0,
-                        transaction: active.transaction,
-                    });
+                    return self.enter_recovery(active);
                 }
             }
         }
@@ -356,10 +510,7 @@ impl ResourceExecutor {
                     active.response.extend_from_slice(&buffer[..count])
                 }
                 Ok(_) | Err(_) => {
-                    return OwnedState::Recovering(Recovery {
-                        started: active.write_offset > 0,
-                        transaction: active.transaction,
-                    });
+                    return self.enter_recovery(active);
                 }
             }
             if active.response.len() == active.transaction.expected_response {
@@ -373,6 +524,22 @@ impl ResourceExecutor {
             }
         }
         OwnedState::Active(active)
+    }
+
+    fn enter_recovery(&mut self, active: Active) -> OwnedState {
+        let started = active.write_offset > 0;
+        if let TransactionKind::Output(output) = &active.transaction.kind
+            && let Some(dispatch) = output.dispatch
+        {
+            self.event = Some(TransportEvent::OutputUncertain {
+                intent: output.intent,
+                dispatch,
+            });
+        }
+        OwnedState::Recovering(Recovery {
+            started,
+            transaction: active.transaction,
+        })
     }
 
     fn progress_recovery(
@@ -415,6 +582,24 @@ impl ResourceExecutor {
         }
     }
 
+    fn progress_protocol_recovery(&mut self) -> Result<OwnedState, TransportError> {
+        match self.adapter.try_recover() {
+            Ok(RecoveryStatus::Pending) => Ok(OwnedState::ProtocolRecovery),
+            Ok(RecoveryStatus::Complete) => {
+                self.generation = self
+                    .generation
+                    .checked_add(1)
+                    .ok_or(TransportError::CounterExhausted)?;
+                self.event = Some(TransportEvent::BoundaryRecovered);
+                Ok(OwnedState::Idle)
+            }
+            Err(_) => {
+                self.event = Some(TransportEvent::BoundaryFailed);
+                Ok(OwnedState::Offline)
+            }
+        }
+    }
+
     fn finish(
         &mut self,
         transaction: &Transaction,
@@ -431,5 +616,18 @@ impl ResourceExecutor {
             mapping_revision: transaction.mapping_revision,
         });
         self.latest_response = response;
+        let record = self.latest.expect("record was assigned above");
+        self.event = Some(match &transaction.kind {
+            TransactionKind::Read => TransportEvent::ReadTerminal {
+                record,
+                response: self.latest_response.clone(),
+            },
+            TransactionKind::Output(output) => TransportEvent::OutputTerminal {
+                intent: output.intent,
+                dispatch: output.dispatch,
+                record,
+                response: self.latest_response.clone(),
+            },
+        });
     }
 }

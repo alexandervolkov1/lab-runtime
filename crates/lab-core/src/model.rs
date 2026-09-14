@@ -478,6 +478,10 @@ pub(crate) fn validate_name(name: &str) -> Result<(), Error> {
 pub enum MeasurementFailure {
     /// Measurement was explicitly disabled in the virtual configuration.
     Disabled,
+    /// The device reported its explicit sensor-fault sentinel.
+    SensorFault,
+    /// Transport or protocol validation did not produce a trustworthy value.
+    Transport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -485,6 +489,10 @@ pub enum MeasurementFailure {
 pub enum Error {
     /// A central output-authority operation was rejected.
     Output(crate::output::OutputError),
+    /// A bounded byte executor operation was rejected.
+    Transport(crate::transport::TransportError),
+    /// Metakon framing or domain representation was invalid.
+    Protocol(crate::metakon::CodecError),
     /// The requested instrument is not registered.
     UnknownInstrument(InstrumentId),
     /// The instrument exists but has no parameter with the requested identity.
@@ -537,6 +545,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Output(error) => write!(f, "output authority: {error:?}"),
+            Self::Transport(error) => write!(f, "transport: {error:?}"),
+            Self::Protocol(error) => write!(f, "Metakon protocol: {error:?}"),
             Self::UnknownInstrument(id) => write!(f, "unknown instrument {}", id.get()),
             Self::UnknownParameter {
                 instrument,

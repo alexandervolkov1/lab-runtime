@@ -28,6 +28,7 @@ pub(crate) struct OutputAuthority {
     profile: Option<SafeProfile>,
     snapshot: OutputSnapshot,
     pending: Option<Pending>,
+    transport_reserved: Option<OutputIntent>,
     safe_needed: bool,
     next_dispatch: u64,
 }
@@ -60,6 +61,7 @@ impl OutputAuthority {
                 outcome: None,
             },
             pending: None,
+            transport_reserved: None,
             safe_needed: false,
             next_dispatch: 1,
         })
@@ -233,7 +235,7 @@ impl OutputAuthority {
     }
 
     fn begin(&mut self, at: Duration) -> Result<OutputResult, Error> {
-        if self.snapshot.in_flight.is_some() {
+        if self.snapshot.in_flight.is_some() || self.transport_reserved.is_some() {
             return Err(OutputError::Busy.into());
         }
 
@@ -349,6 +351,7 @@ impl OutputAuthority {
         self.snapshot.safe_confirmed = false;
         self.snapshot.state = OutputState::SafePending;
         self.safe_needed = true;
+        self.transport_reserved = None;
         // Keep the slot bounded and make revocation immediately visible. The
         // final send check remains mandatory for deadline/owner validation.
         self.clear_pending();
@@ -358,6 +361,157 @@ impl OutputAuthority {
     fn clear_pending(&mut self) {
         self.pending = None;
         self.snapshot.pending = false;
+    }
+
+    /// Reserve the current safe request or normal proposal for a trusted transport queue.
+    pub(crate) fn reserve_transport(
+        &mut self,
+        at: Duration,
+        queue_deadline: Duration,
+        binding_generation: u64,
+        mapping_revision: u64,
+    ) -> Result<OutputIntent, Error> {
+        if self.snapshot.in_flight.is_some() || self.transport_reserved.is_some() {
+            return Err(OutputError::Busy.into());
+        }
+        if at >= queue_deadline || binding_generation == 0 || mapping_revision == 0 {
+            return Err(OutputError::InvalidTime.into());
+        }
+        let intent = if self.safe_needed {
+            OutputIntent {
+                actuator: self.actuator,
+                instance: self.instance,
+                lease: None,
+                epoch: self.snapshot.epoch,
+                value: self.profile()?.safe_value,
+                unit: self.unit,
+                expires: queue_deadline,
+                safe: true,
+                binding_generation,
+                mapping_revision,
+            }
+        } else {
+            let pending = self.pending.ok_or(OutputError::NothingPending)?;
+            self.check_lease(pending.lease, at)?;
+            if at >= pending.expires {
+                self.clear_pending();
+                return Err(OutputError::Expired.into());
+            }
+            OutputIntent {
+                actuator: self.actuator,
+                instance: self.instance,
+                lease: Some(pending.lease),
+                epoch: self.snapshot.epoch,
+                value: pending.value,
+                unit: self.unit,
+                expires: pending.expires.min(queue_deadline),
+                safe: false,
+                binding_generation,
+                mapping_revision,
+            }
+        };
+        self.transport_reserved = Some(intent);
+        Ok(intent)
+    }
+
+    /// Revalidate an intent immediately before a first-byte attempt.
+    pub(crate) fn validate_transport(
+        &self,
+        intent: OutputIntent,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if self.transport_reserved != Some(intent)
+            || intent.actuator != self.actuator
+            || intent.instance != self.instance
+            || intent.epoch != self.snapshot.epoch
+            || intent.unit != self.unit
+            || at >= intent.expires
+            || self.snapshot.in_flight.is_some()
+        {
+            return Err(OutputError::StaleLease.into());
+        }
+        self.limits.validate(&Value::Float(intent.value))?;
+        let profile = self.profile()?;
+        ValueSpec::Float {
+            min: profile.min,
+            max: profile.max,
+        }
+        .validate(&Value::Float(intent.value))?;
+        if intent.safe {
+            if !self.safe_needed || intent.lease.is_some() {
+                return Err(OutputError::StaleLease.into());
+            }
+        } else {
+            self.check_lease(intent.lease.ok_or(OutputError::StaleLease)?, at)?;
+        }
+        Ok(())
+    }
+
+    /// Record the first accepted byte after the final validation performed by the same owner.
+    pub(crate) fn begin_transport(
+        &mut self,
+        intent: OutputIntent,
+        at: Duration,
+    ) -> Result<DispatchId, Error> {
+        self.validate_transport(intent, at)?;
+        let following_id = self
+            .next_dispatch
+            .checked_add(1)
+            .ok_or(OutputError::CounterExhausted)?;
+        let dispatch = Dispatch {
+            id: DispatchId {
+                instance: self.instance,
+                sequence: self.next_dispatch,
+            },
+            value: intent.value,
+            safe: intent.safe,
+            epoch: intent.epoch,
+        };
+        self.next_dispatch = following_id;
+        self.transport_reserved = None;
+        if intent.safe {
+            self.safe_needed = false;
+        } else {
+            self.clear_pending();
+        }
+        self.snapshot.safe_confirmed = false;
+        self.snapshot.in_flight = Some(dispatch);
+        self.snapshot.sent = Some(OutputObservation {
+            value: intent.value,
+            at,
+        });
+        self.snapshot.acknowledged = None;
+        self.snapshot.readback = None;
+        self.snapshot.outcome = None;
+        Ok(dispatch.id)
+    }
+
+    /// Release an unstarted queue reservation without claiming that bytes were sent.
+    pub(crate) fn abort_transport(&mut self, intent: OutputIntent) {
+        if self.transport_reserved == Some(intent) {
+            self.transport_reserved = None;
+            if !intent.safe {
+                self.clear_pending();
+            }
+        }
+    }
+
+    /// Revoke ordinary authority as soon as a started physical write becomes uncertain.
+    pub(crate) fn transport_uncertain(&mut self, id: DispatchId) -> Result<(), Error> {
+        if self.snapshot.in_flight.map(Dispatch::id) != Some(id) {
+            return Err(OutputError::UnknownDispatch.into());
+        }
+        self.request_safe(true)
+    }
+
+    /// Apply a settled transport result through the same M2 evidence state machine.
+    pub(crate) fn complete_transport(
+        &mut self,
+        id: DispatchId,
+        outcome: DispatchOutcome,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.complete(id, outcome, at).map(|_| ())
     }
 
     fn bump_epoch(&mut self) -> Result<(), Error> {

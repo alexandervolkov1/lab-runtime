@@ -65,7 +65,12 @@ fn data_config(id: u64, unit: Unit, expected_unit: Unit) -> MetakonInstrumentCon
     }
 }
 
-fn output(runtime: &mut Runtime, actuator: ActuatorId, command: OutputCommand, ms: u64) -> OutputResult {
+fn output(
+    runtime: &mut Runtime,
+    actuator: ActuatorId,
+    command: OutputCommand,
+    ms: u64,
+) -> OutputResult {
     let CommandResult::Output(result) = runtime
         .command(Command::Output {
             actuator,
@@ -83,7 +88,9 @@ fn output(runtime: &mut Runtime, actuator: ActuatorId, command: OutputCommand, m
 fn custom_unit_is_discovered_and_used_by_the_normal_authority_path() {
     let sccm = Unit::new("sccm", "sccm").unwrap();
     let mut runtime = Runtime::new();
-    runtime.command(Command::RegisterMetakon(data_config(10, sccm, sccm))).unwrap();
+    runtime
+        .command(Command::RegisterMetakon(data_config(10, sccm, sccm)))
+        .unwrap();
     let QueryResult::Descriptor(descriptor) = runtime
         .query(Query::DescribeInstrument(InstrumentId::new(10)))
         .unwrap()
@@ -109,7 +116,11 @@ fn custom_unit_is_discovered_and_used_by_the_normal_authority_path() {
         0,
     );
     output(&mut runtime, actuator, OutputCommand::RequestSafe, 0);
-    let OutputResult::Dispatched(safe) = output(&mut runtime, actuator, OutputCommand::BeginDispatch, 0) else { panic!() };
+    let OutputResult::Dispatched(safe) =
+        output(&mut runtime, actuator, OutputCommand::BeginDispatch, 0)
+    else {
+        panic!()
+    };
     output(
         &mut runtime,
         actuator,
@@ -127,17 +138,23 @@ fn custom_unit_is_discovered_and_used_by_the_normal_authority_path() {
             lifetime: Duration::from_secs(1),
         },
         0,
-    ) else { panic!() };
-    assert!(runtime.command(Command::Output {
-        actuator,
-        command: OutputCommand::Propose(OutputProposal {
-            lease,
-            value: Value::Float(20.0),
-            unit: Unit::CELSIUS,
-            ttl: Duration::from_millis(100),
-        }),
-        at: Duration::ZERO,
-    }).is_err());
+    ) else {
+        panic!()
+    };
+    assert!(
+        runtime
+            .command(Command::Output {
+                actuator,
+                command: OutputCommand::Propose(OutputProposal {
+                    lease,
+                    value: Value::Float(20.0),
+                    unit: Unit::CELSIUS,
+                    ttl: Duration::from_millis(100),
+                }),
+                at: Duration::ZERO,
+            })
+            .is_err()
+    );
     assert_eq!(
         output(
             &mut runtime,
@@ -158,13 +175,21 @@ fn custom_unit_is_discovered_and_used_by_the_normal_authority_path() {
 fn another_runtime_unit_needs_no_new_core_branch() {
     let rpm = Unit::new("rpm", "rpm").unwrap();
     let mut runtime = Runtime::new();
-    runtime.command(Command::RegisterMetakon(data_config(20, rpm, rpm))).unwrap();
+    runtime
+        .command(Command::RegisterMetakon(data_config(20, rpm, rpm)))
+        .unwrap();
     let QueryResult::Instruments(descriptors) = runtime.query(Query::Discover).unwrap() else {
         panic!()
     };
-    assert_eq!(descriptors[0].parameter(ParameterId::new(6)).unwrap().unit, rpm);
     assert_eq!(
-        descriptors[0].parameter(ParameterId::new(1)).unwrap().signal,
+        descriptors[0].parameter(ParameterId::new(6)).unwrap().unit,
+        rpm
+    );
+    assert_eq!(
+        descriptors[0]
+            .parameter(ParameterId::new(1))
+            .unwrap()
+            .signal,
         Some(SignalId::new(InstrumentId::new(20), ParameterId::new(1)))
     );
 }
@@ -174,8 +199,13 @@ fn output_binding_unit_mismatch_is_atomic() {
     let sccm = Unit::new("sccm", "sccm").unwrap();
     let milliamp = Unit::new("mA", "mA").unwrap();
     let mut runtime = Runtime::new();
-    assert!(runtime
-        .command(Command::RegisterMetakon(data_config(30, sccm, milliamp)))
-        .is_err());
-    assert_eq!(runtime.query(Query::Discover), Ok(QueryResult::Instruments(vec![])));
+    assert!(
+        runtime
+            .command(Command::RegisterMetakon(data_config(30, sccm, milliamp)))
+            .is_err()
+    );
+    assert_eq!(
+        runtime.query(Query::Discover),
+        Ok(QueryResult::Instruments(vec![]))
+    );
 }

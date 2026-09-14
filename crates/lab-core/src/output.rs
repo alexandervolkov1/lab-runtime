@@ -11,6 +11,22 @@ use std::time::Duration;
 mod authority;
 pub(crate) use authority::OutputAuthority;
 
+/// Immutable trusted intent held by the transport queue. This is not public
+/// because client code must never obtain or replay output authorization material.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OutputIntent {
+    pub(crate) actuator: ActuatorId,
+    pub(crate) instance: u64,
+    pub(crate) lease: Option<OutputLease>,
+    pub(crate) epoch: u64,
+    pub(crate) value: f64,
+    pub(crate) unit: Unit,
+    pub(crate) expires: Duration,
+    pub(crate) safe: bool,
+    pub(crate) binding_generation: u64,
+    pub(crate) mapping_revision: u64,
+}
+
 /// Canonical actuator binding, independent of its display name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActuatorId {
@@ -73,9 +89,9 @@ pub enum EvidenceLevel {
 /// Explicit simulated safe policy. Zero has no privileged meaning in this type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SafeProfile {
-    /// Inclusive operating lower bound in percent.
+    /// Inclusive operating lower bound in the trusted actuator descriptor's unit.
     pub min: f64,
-    /// Inclusive operating upper bound in percent.
+    /// Inclusive operating upper bound in the trusted actuator descriptor's unit.
     pub max: f64,
     /// Selected safe target inside the operating range.
     pub safe_value: f64,
@@ -159,7 +175,7 @@ impl Dispatch {
     pub fn id(self) -> DispatchId {
         self.id
     }
-    /// Exact authorized percent value sent at this dispatch step.
+    /// Exact authorized scalar value sent at this dispatch step.
     pub fn value(self) -> f64 {
         self.value
     }

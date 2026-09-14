@@ -201,6 +201,12 @@ pub enum CodecError {
     Unrepresentable,
 }
 
+impl From<CodecError> for crate::Error {
+    fn from(error: CodecError) -> Self {
+        Self::Protocol(error)
+    }
+}
+
 /// Calculate the Metakon one-byte CRC.
 ///
 /// Each input byte is consumed least-significant bit first. Feedback is XORed
