@@ -372,3 +372,94 @@ impl OutputAuthority {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn armed() -> (OutputAuthority, OutputLease) {
+        let id = ActuatorId::new(InstrumentId::new(1), crate::HEATER_POWER);
+        let mut authority = OutputAuthority::new(
+            id,
+            ValueSpec::Float {
+                min: 0.0,
+                max: 100.0,
+            },
+        )
+        .unwrap();
+        authority
+            .command(
+                OutputCommand::BindProfile(SafeProfile {
+                    min: 0.0,
+                    max: 100.0,
+                    safe_value: 0.0,
+                    max_lease: Duration::from_secs(1),
+                    max_proposal_ttl: Duration::from_millis(100),
+                    required_evidence: EvidenceLevel::Readback,
+                }),
+                Duration::ZERO,
+            )
+            .unwrap();
+        authority
+            .command(OutputCommand::RequestSafe, Duration::ZERO)
+            .unwrap();
+        let OutputResult::Dispatched(safe) = authority.begin(Duration::ZERO).unwrap() else {
+            panic!()
+        };
+        authority
+            .complete(safe.id(), DispatchOutcome::ReadbackVerified, Duration::ZERO)
+            .unwrap();
+        let OutputResult::Lease(lease) = authority
+            .acquire(
+                OutputOwner::Automatic(1),
+                Duration::from_secs(1),
+                Duration::ZERO,
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        authority
+            .propose(
+                OutputProposal {
+                    lease,
+                    value: Value::Float(90.0),
+                    unit: Unit::Percent,
+                    ttl: Duration::from_millis(100),
+                },
+                Duration::ZERO,
+            )
+            .unwrap();
+        (authority, lease)
+    }
+
+    #[test]
+    fn final_epoch_check_protects_even_if_eager_queue_cleanup_is_missed() {
+        let (mut authority, _) = armed();
+        // Normal revocation eagerly removes this slot. Deliberately retain it
+        // here to prove that final authorization is independent defense, not
+        // merely an assumption that queue cleanup always succeeded.
+        authority.bump_epoch().unwrap();
+        let previous_send = authority.snapshot.sent;
+        assert_eq!(
+            authority.begin(Duration::ZERO),
+            Err(OutputError::StaleLease.into())
+        );
+        assert_eq!(authority.snapshot.sent, previous_send);
+        assert!(!authority.snapshot.pending);
+    }
+
+    #[test]
+    fn epoch_exhaustion_never_wraps_to_an_old_owner() {
+        let (mut authority, _) = armed();
+        authority.snapshot.epoch = u64::MAX;
+        assert_eq!(
+            authority.request_safe(false),
+            Err(OutputError::CounterExhausted.into())
+        );
+        assert_eq!(authority.snapshot.state, OutputState::FaultLatched);
+        assert!(authority.snapshot.lease.is_none());
+        assert!(!authority.snapshot.safe_confirmed);
+        assert!(!authority.snapshot.pending);
+    }
+}
