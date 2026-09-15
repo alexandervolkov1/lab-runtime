@@ -527,3 +527,71 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
     drop(store);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
+    let path = temporary_database();
+    let boot = "98989898989898989898989898989898";
+    let instrument = InstrumentId::new(99);
+    let signal = SignalId::new(instrument, lab_core::TEMPERATURE);
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("large indexed fixture").unwrap();
+    for group in 0..80u64 {
+        let facts = (1..=250u64)
+            .map(|slot| {
+                let second = group * 250 + slot;
+                RecordingFact::Measurement {
+                    sequence: second,
+                    sample: Sample::validated_good(
+                        signal,
+                        Unit::CELSIUS,
+                        Duration::from_secs(second),
+                        Value::Float(20.0 + (second % 100) as f64),
+                    )
+                    .unwrap(),
+                    generation: 1,
+                    revision: 1,
+                }
+            })
+            .collect::<Vec<_>>();
+        store.append_facts(&facts).unwrap();
+    }
+    store.stop_run().unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::from_secs(19_990),
+        to: Duration::from_secs(20_001),
+    };
+    let first = store
+        .read_history_measurements_with_budget(
+            &filter,
+            None,
+            8,
+            HistoryBudget::for_testing(10_000, Duration::from_millis(50)),
+        )
+        .unwrap();
+    assert_eq!(first.rows.len(), 8);
+    assert_eq!(first.rows[0].published_at, Duration::from_secs(19_990));
+    let second = store
+        .read_history_measurements_with_budget(
+            &filter,
+            first.next_cursor.as_ref(),
+            8,
+            HistoryBudget::for_testing(10_000, Duration::from_millis(50)),
+        )
+        .unwrap();
+    assert_eq!(second.rows.len(), 3);
+    assert!(second.next_cursor.is_none());
+    let ids = first
+        .rows
+        .iter()
+        .chain(&second.rows)
+        .map(|row| row.record_sequence)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 11);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
