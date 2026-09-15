@@ -677,11 +677,21 @@ impl RecorderWorker {
         {
             return Err(StorageError("recording group not admissible".into()));
         }
-        let bytes = facts
-            .iter()
-            .try_fold(0usize, |total, fact| total.checked_add(fact_charge(fact)))
-            .ok_or_else(|| StorageError("recording byte credit exhausted".into()))?;
-        if bytes > MAX_GROUP_BYTES
+        // The transferred Vec keeps its allocation until the transaction has
+        // completed. Charge its capacity and worst-case escaped value bytes,
+        // including the worker's bounded encoding scratch, before transfer.
+        let vec_bytes = facts
+            .capacity()
+            .saturating_mul(std::mem::size_of::<RecordingFact>());
+        let (bytes, oversized_record) = facts.iter().fold((vec_bytes, false), |state, fact| {
+            let charge = fact_charge(fact);
+            (
+                state.0.saturating_add(charge),
+                state.1 || charge > 64 * 1024,
+            )
+        });
+        if oversized_record
+            || bytes > MAX_GROUP_BYTES
             || self.charged_groups >= self.limits.groups
             || facts.len() > self.limits.records.saturating_sub(self.charged_records)
             || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
@@ -1011,11 +1021,13 @@ impl RecorderWorker {
 
 fn fact_charge(fact: &RecordingFact) -> usize {
     match fact {
-        RecordingFact::Output { .. } => 128,
-        RecordingFact::Controller { .. } | RecordingFact::Reference { .. } => 256,
+        RecordingFact::Output { .. } => 512,
+        RecordingFact::Controller { .. } | RecordingFact::Reference { .. } => 512,
         RecordingFact::Measurement { sample, .. } => {
-            256 + match sample.value() {
-                Some(Value::Text(value) | Value::Enum(value)) => value.capacity(),
+            512 + match sample.value() {
+                Some(Value::Text(value) | Value::Enum(value)) => value
+                    .capacity()
+                    .saturating_add(value.len().saturating_mul(6)),
                 _ => 0,
             }
         }

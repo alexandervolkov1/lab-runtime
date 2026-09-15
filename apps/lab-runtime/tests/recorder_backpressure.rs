@@ -1,6 +1,9 @@
 //! Recorder owner-to-storage handoff remains finite and nonblocking.
 
-use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_core::{
+    Command, InstrumentId, Runtime, Sample, SignalId, Unit, Value, VirtualInstrumentConfig,
+    recording::RecordingFact,
+};
 use lab_runtime::recorder::{RecorderLimits, RecorderWorker, RecordingState, WriterBarrier};
 use std::{
     path::PathBuf,
@@ -12,6 +15,93 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-worker-{suffix}.sqlite"))
+}
+
+#[test]
+fn escaped_measurement_charges_owned_and_encoded_bytes_before_group_admission() {
+    let path = temporary_database();
+    let mut worker = RecorderWorker::open(
+        &path,
+        RecorderLimits {
+            records: 4,
+            bytes: 2500,
+            groups: 2,
+        },
+    )
+    .unwrap();
+    worker.request_start("encoded charge").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let fact = RecordingFact::Measurement {
+        sequence: 1,
+        sample: Sample::validated_good(
+            SignalId::new(InstrumentId::new(177), lab_core::TEMPERATURE),
+            Unit::CELSIUS,
+            Duration::from_secs(1),
+            Value::Text("\0".repeat(512)),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+    };
+    assert!(worker.try_admit(vec![fact]).is_err());
+    let status = worker.poll();
+    assert_eq!(status.state, RecordingState::Failed);
+    assert_eq!(status.outstanding_records, 0);
+    assert_eq!(status.outstanding_bytes, 0);
+    assert_eq!(status.first_missing_fact, Some(1));
+    worker.request_finish().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !worker.poll().worker_closed && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(worker.poll().worker_closed);
+    drop(worker);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let rows: i64 = archive
+        .query_row("SELECT COUNT(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn overallocated_fact_vector_is_charged_even_when_it_contains_one_small_fact() {
+    let path = temporary_database();
+    let mut worker = RecorderWorker::open(
+        &path,
+        RecorderLimits {
+            records: 4,
+            bytes: 1024,
+            groups: 2,
+        },
+    )
+    .unwrap();
+    worker.request_start("owned Vec charge").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let mut facts = Vec::with_capacity(32);
+    facts.push(RecordingFact::Measurement {
+        sequence: 1,
+        sample: Sample::validated_good(
+            SignalId::new(InstrumentId::new(178), lab_core::TEMPERATURE),
+            Unit::CELSIUS,
+            Duration::from_secs(1),
+            Value::Float(20.0),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+    });
+    assert!(worker.try_admit(facts).is_err());
+    assert_eq!(worker.poll().outstanding_records, 0);
+    worker.request_finish().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !worker.poll().worker_closed && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(worker.poll().worker_closed);
+    drop(worker);
+    std::fs::remove_file(path).unwrap();
 }
 
 fn await_state(worker: &mut RecorderWorker, state: RecordingState) {

@@ -22,7 +22,7 @@ fn accepted_prefix_commits_before_reserved_writable_ingress_gap_seal() {
         &path,
         RecorderLimits {
             records: 2,
-            bytes: 1024,
+            bytes: 4096,
             groups: 1,
         },
         barrier.clone(),
