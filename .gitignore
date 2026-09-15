@@ -1,2 +1,4 @@
 /target/
 /all.txt
+/.clj-kondo/.cache/
+/.lsp/.cache/

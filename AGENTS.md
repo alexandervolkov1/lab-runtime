@@ -25,9 +25,9 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-M6 design and H1–H28 tests-first acceptance complete.
-WAITING_FOR_USER_MODEL_SWITCH: ASTRA_HIGH -> SOL_HIGH.
-Astra must STOP; after explicit user switch, Sol implements M6 only.
+M6 implemented and verified against H1–H28 at 189 workspace tests.
+READY_FOR_EXTERNAL_REVIEW: SOL_HIGH has stopped for reviewer response.
+Do not begin M7 design or implementation before a separate reviewed gate.
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -41,15 +41,17 @@ bounded Lua model/transform support, then verified M5 at 123 tests. The external
 reviewer approved this checkpoint and the user authorized ASTRA_HIGH M6 design.
 The workspace has lab-core, lab-lua and lab-runtime; Warming owns no lease, native
 renewal follows successful trusted delivery, and Lua cannot bypass Rust safety.
-The executable is still finite: there is no autonomous M6 host, Babashka/API,
-Recorder, real COM deployment or hardware acceptance yet.
+The default executable remains finite. Explicit `--serve --profile virtual-demo`
+starts the autonomous M6 host and bounded loopback API. Actual Babashka A/B
+process acceptance passed. Recorder, real COM deployment and hardware acceptance
+remain outside this checkpoint.
 
-Follow `ai/WORK.md` as the authoritative current-phase instruction. M6 architecture
-and tests-first acceptance are fixed in `docs/implementation/MILESTONE_6_DESIGN.md`.
-Do not implement M6 production code under Astra. After the explicit Sol switch,
-implement M6 sequentially, satisfy H1–H28 (including actual bb processes), preserve
-accepted M4/M5 contracts, update the report and stop for external review. Do not
-begin M7 design or implementation or cross the present model gate automatically.
+Follow `ai/WORK.md` as the authoritative current-phase instruction. The fixed M6
+architecture and acceptance are in `docs/implementation/MILESTONE_6_DESIGN.md`;
+implemented H1–H28 evidence is in `docs/implementation/MILESTONE_6_REPORT.md`.
+The user explicitly crossed ASTRA_HIGH -> SOL_HIGH, and SOL_HIGH completed M6.
+The present external-review stop is mandatory. Preserve accepted M1–M5 contracts
+and do not begin M7 design or implementation or cross this review gate automatically.
 
 Read `ai/HANDOFF.md` before each milestone. It is the only dedicated external-review
 handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6

@@ -6,12 +6,15 @@ recent signal state, bounded output authority, strict Metakon framing and a
 single-owner fault-injected byte executor. M4 adds a deterministic thermal plant and
 native EMA/Reference/PID control lifecycle, corrected multi-sample Warming and finite
 native lease renewal. M5 adds bounded Lua model observations and transforms on two
-isolated worker slots. The reviewed checkpoint has **123 workspace tests**.
+isolated worker slots. The reviewed checkpoint had **123 workspace tests**.
 
-The [M6 design and H1–H28 acceptance contract](docs/implementation/MILESTONE_6_DESIGN.md)
-are complete for the autonomous headless host, local API and real Babashka slice.
-Implementation awaits the explicit **ASTRA_HIGH -> SOL_HIGH** user switch.
-Follow [ai/WORK.md](ai/WORK.md) and [ai/HANDOFF.md](ai/HANDOFF.md) for the active gate.
+M6 now implements the autonomous headless virtual host, bounded loopback API,
+semantic event/snapshot recovery and an actual Babashka A/B reconnect slice.
+The [M6 design and H1–H28 contract](docs/implementation/MILESTONE_6_DESIGN.md)
+and [implementation report](docs/implementation/MILESTONE_6_REPORT.md) record
+the 189-test verified workspace and real-process evidence. M6 is
+**READY_FOR_EXTERNAL_REVIEW**; it is not yet externally approved. Follow
+[ai/WORK.md](ai/WORK.md) and [ai/HANDOFF.md](ai/HANDOFF.md) for the review stop.
 
 ## Run and verify
 
@@ -30,11 +33,23 @@ cargo test --workspace
 cargo test --workspace --release
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+bb --config clients/babashka/bb.edn run test-client
+cargo test -p lab-runtime --test babashka_reconnect -- --nocapture
 ```
 
-The executable prints generic introspection and five explicit virtual measurements,
-then exits. A three-sample window demonstrates oldest-first eviction. It is still
-the finite M1 executable; autonomous scheduling and the local API are M6 work.
+The default executable prints generic introspection and five explicit virtual
+measurements, then exits. A three-sample window demonstrates oldest-first
+eviction. The explicit service mode starts the M6 owner on IPv4 loopback and
+prints a bounded readiness line:
+
+```powershell
+cargo run -p lab-runtime -- --serve --profile virtual-demo --port 0
+```
+
+Port 0 selects an ephemeral loopback port. Stop with Ctrl-C or the version-one
+`runtime_shutdown` operation; the Rust owner records safe evidence before the
+network closes. `clients/babashka` contains the bounded client and actual A/B
+process acceptance tasks.
 The finite M5 integration test can be run with
 `cargo test -p lab-runtime --test milestone5_demo`.
 
@@ -67,11 +82,21 @@ The finite M5 integration test can be run with
 - Lua can publish bounded model/filter observations, with fresh VMs, resource budgets,
   independent acceptance deadlines and generation fencing. It has no output authority,
   raw transport or physical-evidence capability. Explicit Rust `ServiceSafety` remains
-  independent of Lua progress and still requires a host caller.
+  independent of Lua progress. The M6 headless host provides that caller on its
+  safety-first monotonic schedule, even when both Lua workers stall.
 
-Babashka/API, Recorder, GUI and real Windows COM deployment are not implemented.
+- The M6 API uses strict version-one UTF-8 NDJSON on loopback with bounded frames,
+  server-issued process scopes, consecutive request IDs and retained terminal
+  outcomes. Queries remain pure. Only native Rust progress renews finite output
+  authority; client disconnect/reconnect never auto-starts or pauses control.
+- Snapshots freeze public facts at one cursor. Subscription replays retained
+  semantic events after that cursor, reports filtered progress and requires
+  explicit resync on gaps, expiry or new process identity.
+
+Recorder, GUI and real Windows COM deployment are not implemented.
 No physical hardware acceptance was performed. M2–M5 are exercised through tests;
-the virtual proof does not establish physical safety or multi-day reliability.
+M6 also has actual Babashka process acceptance. The virtual proof does not
+establish physical safety or multi-day reliability.
 The later release sequence is recorded in [ai/ROADMAP.md](ai/ROADMAP.md).
 
 See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
