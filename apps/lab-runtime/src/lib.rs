@@ -7,6 +7,8 @@ pub mod definition;
 pub mod events;
 /// Explicit monotonic scheduling and trusted virtual host composition.
 pub mod host;
+/// Bounded durable-history storage adapter and host-owned recording ingress.
+pub mod recorder;
 pub mod server;
 /// Startup ownership, loopback binding and process-local boot identity.
 pub mod service;
