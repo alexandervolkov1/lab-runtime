@@ -128,6 +128,27 @@ fn annotation_completion_reports_pending_ingress_before_a_held_sqlite_commit() {
         initial
     );
     barrier.release();
+    let database = service.owner().recording_database_id().unwrap().to_owned();
+    let history = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"history","op":"history_read",
+            "request_id":{"scope":scope,"seq":"2"},
+            "args":{"mode":"runs","database_id":database,"max_records":8,"cursor":null}
+        })),
+    );
+    assert_eq!(history[0]["state"], "accepted");
+    let history_by = Instant::now() + Duration::from_secs(2);
+    let history_result = loop {
+        let result = app.poll_history(&mut service);
+        if !result.is_empty() {
+            break result;
+        }
+        assert!(Instant::now() < history_by);
+        std::thread::yield_now();
+    };
+    assert_eq!(history_result[0].1["state"], "completed");
     service.request_shutdown().unwrap();
     let close_by = Instant::now() + Duration::from_secs(3);
     let terminal = loop {
@@ -154,6 +175,17 @@ fn annotation_completion_reports_pending_ingress_before_a_held_sqlite_commit() {
     assert_eq!(data["actor_scope"], scope);
     assert_eq!(data["name"], "checkpoint");
     assert_eq!(data["data"]["temperature"], 42);
+    let history_audits: i64 = archive
+        .query_row(
+            "SELECT COUNT(*) FROM operation_events WHERE command='history_read'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        history_audits, 0,
+        "historical selection must not audit itself recursively"
+    );
     drop(archive);
     std::fs::remove_file(&path).unwrap();
 }
