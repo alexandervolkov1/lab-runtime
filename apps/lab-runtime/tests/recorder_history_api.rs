@@ -28,6 +28,239 @@ fn temporary_database() -> PathBuf {
 }
 
 #[test]
+fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empty_range() {
+    let path = temporary_database();
+    let archive_boot = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
+    let signal = SignalId::new(InstrumentId::new(211), lab_core::TEMPERATURE);
+    let mut archive = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
+    archive.start_run("before restart").unwrap();
+    let facts = (1..=2u64)
+        .map(|sequence| RecordingFact::Measurement {
+            sequence,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                Duration::from_secs(1),
+                DomainValue::Float(10.0 + sequence as f64),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+        })
+        .collect::<Vec<_>>();
+    archive.append_facts(&facts).unwrap();
+    archive.stop_run().unwrap();
+    archive.finish_boot(Duration::from_secs(2)).unwrap();
+    archive.close().unwrap();
+    let text = path.to_string_lossy();
+    let options = || {
+        ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            text.as_ref(),
+        ])
+        .unwrap()
+    };
+    let mut a = ServiceHost::startup(options()).unwrap();
+    let a_boot = a.boot_id().to_owned();
+    let database = a.owner().recording_database_id().unwrap().to_owned();
+    let mut app_a = Application::new(a.boot_id()).unwrap();
+    let hello_a = app_a.handle(
+        &mut a,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"hello-a","op":"hello","args":{"scope":null}
+        })),
+    );
+    let old_scope = hello_a[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let read_a = app_a.handle(
+        &mut a,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"read-a","op":"history_read",
+            "request_id":{"scope":old_scope,"seq":"1"},
+            "args":{"mode":"measurements","database_id":database,"boot_id":archive_boot,
+                "run_id":{"boot_id":archive_boot,"run_no":"1"},
+                "signal":{"instrument":"211","parameter":"1"},
+                "from_ns":"0","to_ns":"2000000000","max_records":1,"cursor":null}
+        })),
+    );
+    assert_eq!(read_a[0]["state"], "accepted");
+    let by = Instant::now() + Duration::from_secs(2);
+    let result_a = loop {
+        let result = app_a.poll_history(&mut a);
+        if !result.is_empty() {
+            break result;
+        }
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    };
+    assert_eq!(result_a[0].1["state"], "completed");
+    let token = result_a[0].1["result"]["page_token"].clone();
+    let page_a = app_a.handle(
+        &mut a,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"page-a","op":"history_page","args":{"page_token":token}
+        })),
+    );
+    let old_cursor = page_a[0]["result"]["next_cursor"].clone();
+    assert!(old_cursor.is_string());
+    a.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    while a.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    }
+    drop(app_a);
+    drop(a);
+    let mut b = ServiceHost::startup(options()).unwrap();
+    assert_ne!(b.boot_id(), a_boot);
+    assert_eq!(b.owner().recording_database_id(), Some(database.as_str()));
+    let mut app_b = Application::new(b.boot_id()).unwrap();
+    let old_hello = app_b.handle(
+        &mut b,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"old-hello","op":"hello","args":{"scope":old_scope}
+        })),
+    );
+    assert_eq!(old_hello[0]["code"], "instance_changed");
+    let hello_b = app_b.handle(
+        &mut b,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"hello-b","op":"hello","args":{"scope":null}
+        })),
+    );
+    let scope = hello_b[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let stale_event = app_b.handle(
+        &mut b,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"old-event","op":"subscribe",
+            "args":{"after":{"boot_id":a_boot,"seq":"0"},
+                "filter":{"kinds":[],"targets":[]}}
+        })),
+    );
+    assert_eq!(stale_event[0]["code"], "instance_changed");
+    let old_read = app_b.handle(
+        &mut b,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"old-cursor","op":"history_read",
+            "request_id":{"scope":scope,"seq":"1"},
+            "args":{"mode":"measurements","database_id":database,"boot_id":archive_boot,
+                "run_id":{"boot_id":archive_boot,"run_no":"1"},
+                "signal":{"instrument":"211","parameter":"1"},
+                "from_ns":"0","to_ns":"2000000000","max_records":1,"cursor":old_cursor}
+        })),
+    );
+    assert_eq!(old_read[1]["code"], "history_cursor_expired");
+    let mut sequence = 2;
+    for (mode, from, to, expected) in [
+        (
+            "measurements",
+            "2000000000",
+            "3000000000",
+            Vec::<u64>::new(),
+        ),
+        ("measurements", "0", "2000000000", vec![2, 3]),
+    ] {
+        let read = app_b.handle(
+            &mut b,
+            2,
+            frame(json!({
+                "v":1,"msg_id":format!("fresh-{sequence}"),"op":"history_read",
+                "request_id":{"scope":scope,"seq":sequence.to_string()},
+                "args":{"mode":mode,"database_id":database,"boot_id":archive_boot,
+                    "run_id":{"boot_id":archive_boot,"run_no":"1"},
+                    "signal":{"instrument":"211","parameter":"1"},
+                    "from_ns":from,"to_ns":to,"max_records":8,"cursor":null}
+            })),
+        );
+        assert_eq!(read[0]["state"], "accepted");
+        let by = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            let result = app_b.poll_history(&mut b);
+            if !result.is_empty() {
+                break result;
+            }
+            assert!(Instant::now() < by);
+            std::thread::yield_now();
+        };
+        assert_eq!(result[0].1["state"], "completed", "{result:?}");
+        let token = result[0].1["result"]["page_token"].clone();
+        let page = app_b.handle(
+            &mut b,
+            2,
+            frame(json!({
+                "v":1,"msg_id":"fresh-page","op":"history_page","args":{"page_token":token}
+            })),
+        );
+        assert_eq!(page[0]["result"]["coverage"], "complete");
+        assert_eq!(page[0]["result"]["next_cursor"], Value::Null);
+        let ids = page[0]["result"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["record_seq"].as_str().unwrap().parse::<u64>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, expected);
+        let release = app_b.handle(
+            &mut b,
+            2,
+            frame(json!({
+                "v":1,"msg_id":"release","op":"history_release","args":{"page_token":token}
+            })),
+        );
+        assert_eq!(release[0]["type"], "result");
+        sequence += 1;
+    }
+    let runs = app_b.handle(
+        &mut b,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"runs","op":"history_read",
+            "request_id":{"scope":scope,"seq":sequence.to_string()},
+            "args":{"mode":"runs","database_id":database,"max_records":8,"cursor":null}
+        })),
+    );
+    assert_eq!(runs[0]["state"], "accepted");
+    let by = Instant::now() + Duration::from_secs(2);
+    let result = loop {
+        let result = app_b.poll_history(&mut b);
+        if !result.is_empty() {
+            break result;
+        }
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    };
+    let token = result[0].1["result"]["page_token"].clone();
+    let page = app_b.handle(
+        &mut b,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"run-page","op":"history_page","args":{"page_token":token}
+        })),
+    );
+    assert_eq!(page[0]["result"]["runs"][0]["label"], "before restart");
+    b.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    while b.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    }
+    drop(app_b);
+    drop(b);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn public_archived_gap_page_keeps_loss_metadata_within_json_budget() {
     let path = temporary_database();
     let archive_boot = "79797979797979797979797979797979";

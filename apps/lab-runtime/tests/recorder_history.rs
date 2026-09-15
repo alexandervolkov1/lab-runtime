@@ -465,7 +465,21 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
             at: published,
         })
         .unwrap();
-    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    let mut initial = runtime.take_recording_facts();
+    initial.push(RecordingFact::Measurement {
+        sequence: 4,
+        sample: Sample::derived_good(
+            signal,
+            Unit::CELSIUS,
+            published,
+            Duration::from_secs(1),
+            Value::Float(99.0),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 2,
+    });
+    store.append_facts(&initial).unwrap();
     let filter = HistoryFilter {
         boot_id: boot.into(),
         run_no: 1,
@@ -505,30 +519,40 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
             revision: 1,
         }])
         .unwrap();
-    let last = store
+    let third = store
         .read_history_measurements(&filter, second.next_cursor.as_ref(), 1)
+        .unwrap();
+    assert_eq!(third.watermark, frozen);
+    assert_eq!(third.rows.len(), 1);
+    assert!(third.next_cursor.is_some());
+    seen.push(third.rows[0].record_sequence);
+    let last = store
+        .read_history_measurements(&filter, third.next_cursor.as_ref(), 1)
         .unwrap();
     assert_eq!(last.watermark, frozen);
     assert_eq!(last.rows.len(), 1);
+    assert_eq!(last.rows[0].observed_at, Duration::from_secs(1));
+    assert_eq!(last.rows[0].published_at, published);
+    assert_eq!(last.rows[0].value, Some(Value::Float(99.0)));
     assert!(last.next_cursor.is_none());
     seen.push(last.rows[0].record_sequence);
     assert_eq!(
         seen,
-        [2, 3, 4],
-        "the boundary record precedes the three old observations"
+        [2, 3, 4, 5],
+        "the boundary record precedes four frozen observations"
     );
     let fresh = store.read_history_measurements(&filter, None, 8).unwrap();
-    assert_eq!(fresh.rows.len(), 5);
+    assert_eq!(fresh.rows.len(), 6);
     assert_eq!(
         fresh
             .rows
             .iter()
             .map(|row| row.record_sequence)
             .collect::<Vec<_>>(),
-        [2, 3, 4, 5, 6]
+        [2, 3, 4, 5, 6, 7]
     );
     assert_eq!(
-        fresh.rows[..3]
+        fresh.rows[..4]
             .iter()
             .map(|row| row.record_sequence)
             .collect::<Vec<_>>(),
