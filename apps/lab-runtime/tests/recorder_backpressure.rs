@@ -18,6 +18,91 @@ fn temporary_database() -> PathBuf {
 }
 
 #[test]
+fn exhausted_group_and_history_credits_still_deliver_one_reserved_gap_and_terminal_seal() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    worker.request_start("reserved fault seal").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let signal = SignalId::new(InstrumentId::new(185), lab_core::TEMPERATURE);
+    let fact = |sequence: u64| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(
+            signal,
+            Unit::CELSIUS,
+            Duration::from_millis(sequence * 10),
+            Value::Float(sequence as f64),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+    };
+    worker.try_admit(vec![fact(1)]).unwrap();
+    let held_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < held_by);
+        std::thread::yield_now();
+    }
+    for sequence in 2..=4 {
+        worker.try_admit(vec![fact(sequence)]).unwrap();
+    }
+    let mut history_jobs = Vec::new();
+    for _ in 0..8 {
+        history_jobs.push(worker.request_runs(None, 1).unwrap());
+    }
+    assert_eq!(history_jobs.len(), 8);
+    let saturated = worker.poll();
+    assert_eq!(saturated.outstanding_groups, 4);
+    assert_eq!(saturated.outstanding_records, 4);
+    assert!(worker.try_admit(vec![fact(5)]).is_err());
+    let failed = worker.poll();
+    assert_eq!(failed.state, RecordingState::Failed);
+    assert_eq!(failed.first_missing_fact, Some(5));
+    assert_eq!(
+        failed.outstanding_groups, 4,
+        "rejected fifth group must not consume ordinary ingress credit"
+    );
+    worker.request_finish().unwrap();
+    barrier.release();
+    let close_by = Instant::now() + Duration::from_secs(3);
+    while !worker.poll().worker_closed {
+        assert!(Instant::now() < close_by, "{:?}", worker.poll());
+        std::thread::yield_now();
+    }
+    let closed = worker.poll();
+    assert_eq!(
+        closed.state,
+        RecordingState::Failed,
+        "a sticky recording failure remains visible after worker close"
+    );
+    assert!(closed.failure_persisted, "{:?}", closed);
+    assert!(closed.terminal_seal_committed, "{:?}", closed);
+    assert_eq!(closed.outstanding_records, 0);
+    drop(worker);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let fact_count: i64 = archive
+        .query_row("SELECT COUNT(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    let gap_count: i64 = archive
+        .query_row("SELECT COUNT(*) FROM gaps", [], |row| row.get(0))
+        .unwrap();
+    let run: (String, String) = archive
+        .query_row(
+            "SELECT state,coverage FROM runs WHERE label='reserved fault seal'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(fact_count, 4);
+    assert_eq!(gap_count, 1);
+    assert_eq!(run, ("failed".into(), "gap".into()));
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn escaped_measurement_charges_owned_and_encoded_bytes_before_group_admission() {
     let path = temporary_database();
     let mut worker = RecorderWorker::open(
