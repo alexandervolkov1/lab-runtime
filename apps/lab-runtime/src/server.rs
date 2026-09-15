@@ -385,6 +385,38 @@ pub fn run(
         if service.owner_mut().service(&clock).is_err() {
             service.request_fatal_shutdown();
         }
+        for (id, value) in app.poll_recording(&mut service) {
+            let frame = wire::encode_frame(&value)?;
+            if outgoing_tx
+                .try_send(Outgoing::Reply {
+                    connection: id,
+                    frame,
+                    consumed: false,
+                    hello: false,
+                })
+                .is_err()
+            {
+                app.detach(&service, id);
+                queued.remove(&id);
+                closing.insert(id);
+            }
+        }
+        for (id, value) in app.poll_history(&mut service) {
+            let frame = wire::encode_frame(&value)?;
+            if outgoing_tx
+                .try_send(Outgoing::Reply {
+                    connection: id,
+                    frame,
+                    consumed: false,
+                    hello: false,
+                })
+                .is_err()
+            {
+                app.detach(&service, id);
+                queued.remove(&id);
+                closing.insert(id);
+            }
+        }
         for _ in 0..16 {
             match incoming_rx.try_recv() {
                 Ok(Incoming::Request(id, req)) => {

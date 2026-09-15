@@ -5,9 +5,15 @@
 //! receives one actual-time opportunity, never a replay at an old deadline.
 
 use crate::events::{EventError, EventLog};
+use crate::recorder::{
+    BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, ProvenanceEntry,
+    ProvenanceObject, RecorderGap, RecorderWorker, RecordingPolicy, RecordingState,
+    RecordingStatus, RunsCursor, RunsPage, StorageError,
+};
 use lab_core::{
-    Command, CommandResult, Error, InstrumentId, Query, QueryResult, Runtime, Sample,
-    SampleQuality, SignalId, Unit,
+    AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
+    ParameterDescriptor, ParameterRole, Query, QueryResult, Runtime, Sample, SampleQuality,
+    SignalId, Unit, ValueSpec, WriteEffect,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
     managed::{
         ComponentDefinition, ComponentError, ComponentExecutor, ComponentId, ComponentKind,
@@ -18,7 +24,7 @@ use lab_core::{
     },
     plant::ThermalPlantConfig,
     processing::EmaConfig,
-    reference::{ReferenceConfig, ReferenceId},
+    reference::{ReferenceConfig, ReferenceId, ReferenceSnapshot},
     transport::{ByteTransport, ExecutorState, ResourceId, TransactionOutcome},
 };
 use std::{
@@ -39,6 +45,74 @@ const DEPENDENT_REFERENCE: ReferenceId = ReferenceId::new(2);
 pub trait Clock {
     /// Return nondecreasing elapsed monotonic Runtime time.
     fn now(&self) -> Duration;
+}
+
+fn parameter_activation_json(parameter: &ParameterDescriptor) -> serde_json::Value {
+    let value_spec = match &parameter.value_spec {
+        ValueSpec::Float { min, max } => serde_json::json!({"kind":"float","min":min,"max":max}),
+        ValueSpec::Integer { min, max } => {
+            serde_json::json!({"kind":"integer","min":min,"max":max})
+        }
+        ValueSpec::Boolean => serde_json::json!({"kind":"boolean"}),
+        ValueSpec::Text { max_bytes } => serde_json::json!({"kind":"text","max_bytes":max_bytes}),
+        ValueSpec::Enum { choices } => serde_json::json!({"kind":"enum","choices":choices}),
+    };
+    serde_json::json!({"id":parameter.id.get().to_string(),"name":parameter.name,
+        "value_spec":value_spec,"unit":{"id":parameter.unit.id(),
+            "symbol":parameter.unit.symbol()},
+        "access":match parameter.access {AccessMode::ReadOnly=>"read_only",
+            AccessMode::ReadWrite=>"read_write",AccessMode::WriteOnly=>"write_only"},
+        "role":match parameter.role {ParameterRole::Measurement=>"measurement",
+            ParameterRole::Configuration=>"configuration",ParameterRole::Actuator=>"actuator",
+            ParameterRole::Action=>"action",ParameterRole::Diagnostic=>"diagnostic"},
+        "write_effect":match parameter.write_effect {WriteEffect::None=>"none",
+            WriteEffect::ConfigurationOnly=>"configuration_only",
+            WriteEffect::OutputAffecting=>"output_affecting"}})
+}
+
+fn plain_data_activation_json(data: &PlainData) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    for (key, value) in &data.fields {
+        fields.insert(
+            key.clone(),
+            match value {
+                PlainValue::Number(number) => serde_json::json!({"kind":"number","value":number}),
+                PlainValue::Boolean(value) => serde_json::json!({"kind":"boolean","value":value}),
+                PlainValue::Text(value) => serde_json::json!({"kind":"text","value":value}),
+                PlainValue::Numbers(values) => serde_json::json!({"kind":"numbers","value":values}),
+            },
+        );
+    }
+    serde_json::Value::Object(fields)
+}
+
+fn sample_boundary_json(sample: &Sample) -> serde_json::Value {
+    let value = match sample.value() {
+        Some(lab_core::Value::Float(value)) => serde_json::json!({"kind":"float","value":value}),
+        Some(lab_core::Value::Integer(value)) => {
+            serde_json::json!({"kind":"integer","value":value})
+        }
+        Some(lab_core::Value::Boolean(value)) => {
+            serde_json::json!({"kind":"boolean","value":value})
+        }
+        Some(lab_core::Value::Text(value)) => serde_json::json!({"kind":"text","value":value}),
+        Some(lab_core::Value::Enum(value)) => serde_json::json!({"kind":"enum","value":value}),
+        None => serde_json::Value::Null,
+    };
+    let failure = sample.failure().map(|reason| match reason {
+        MeasurementFailure::Disabled => "disabled",
+        MeasurementFailure::SensorFault => "sensor_fault",
+        MeasurementFailure::Transport => "transport",
+        MeasurementFailure::ProcessingWarmup => "processing_warmup",
+        MeasurementFailure::ComponentFailure => "component_failure",
+    });
+    serde_json::json!({"instrument":sample.signal().instrument().get().to_string(),
+        "parameter":sample.signal().parameter().get().to_string(),
+        "unit_id":sample.unit().id(),"published_at_ns":sample.at().as_nanos().to_string(),
+        "observed_at_ns":sample.freshness_at().as_nanos().to_string(),
+        "quality":match sample.quality(){SampleQuality::Good=>"good",
+            SampleQuality::Unavailable=>"unavailable"},
+        "failure":failure,"value":value})
 }
 
 /// Production clock with one Instant origin, never wall time.
@@ -176,6 +250,12 @@ pub struct ShutdownStatus {
     pub unfinished_workers: usize,
     /// A fatal owner/identity fault occurred even if virtual safe evidence remains.
     pub fatal_error: bool,
+    /// Every admitted recording fact and terminal seal was confirmed before close.
+    pub recorder_flushed: bool,
+    /// A Recorder worker remained open at the finite flush deadline.
+    pub recorder_unfinished: bool,
+    /// Sticky Recorder failure prevents claiming durable completion.
+    pub recorder_error: bool,
     /// Safe evidence and worker cleanup both finished.
     pub exit_success: bool,
 }
@@ -189,9 +269,15 @@ pub struct HostCore {
     consumed_managed: BTreeMap<ComponentId, Option<Sample>>,
     components: Vec<(ComponentId, &'static str)>,
     outputs: Vec<ActuatorId>,
+    active_safety_profiles: Vec<(ActuatorId, SafeProfile)>,
     resources: Vec<ResourceId>,
     last_now: Duration,
     stopping: bool,
+    recorder: Option<RecorderWorker>,
+    recording_policy: Option<RecordingPolicy>,
+    recording_status: Option<RecordingStatus>,
+    last_recording_submission: Option<Duration>,
+    recorder_finish_requested: bool,
 }
 impl HostCore {
     /// Construct the bounded trusted native virtual slice in safe Ready state.
@@ -207,17 +293,18 @@ impl HostCore {
             time_constant: Duration::from_secs(8),
         }))?;
         let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+        let safe_profile = SafeProfile {
+            min: 0.0,
+            max: 100.0,
+            safe_value: 0.0,
+            max_lease: Duration::from_secs(2),
+            max_proposal_ttl: Duration::from_millis(200),
+            required_evidence: EvidenceLevel::Readback,
+        };
         runtime.command(Command::Output {
             actuator,
             at: Duration::ZERO,
-            command: OutputCommand::BindProfile(SafeProfile {
-                min: 0.0,
-                max: 100.0,
-                safe_value: 0.0,
-                max_lease: Duration::from_secs(2),
-                max_proposal_ttl: Duration::from_millis(200),
-                required_evidence: EvidenceLevel::Readback,
-            }),
+            command: OutputCommand::BindProfile(safe_profile.clone()),
         })?;
         runtime.command(Command::Output {
             actuator,
@@ -286,10 +373,668 @@ impl HostCore {
             consumed_managed: BTreeMap::new(),
             components: Vec::new(),
             outputs: vec![actuator],
+            active_safety_profiles: vec![(actuator, safe_profile)],
             resources: Vec::new(),
             last_now: Duration::ZERO,
             stopping: false,
+            recorder: None,
+            recording_policy: None,
+            recording_status: None,
+            last_recording_submission: None,
+            recorder_finish_requested: false,
         })
+    }
+
+    /// Attach one already-open worker under trusted host composition.
+    /// Required control starts closed and opens only on a committed start receipt.
+    pub fn attach_recorder(
+        &mut self,
+        mut worker: RecorderWorker,
+        policy: RecordingPolicy,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if self.recorder.is_some() || self.stopping || at < self.last_now {
+            return Err(Error::InvalidConfiguration("recorder attach state"));
+        }
+        let (entries, objects) = self.frozen_activation_entries()?;
+        worker
+            .configure_policy(policy)
+            .map_err(|_| Error::InvalidConfiguration("recorder policy configuration"))?;
+        worker
+            .request_activation(entries, objects)
+            .map_err(|_| Error::InvalidConfiguration("recorder activation admission"))?;
+        if policy == RecordingPolicy::Required {
+            self.runtime.require_recording(at);
+        }
+        self.recording_status = Some(worker.poll());
+        self.recording_policy = Some(policy);
+        self.recorder = Some(worker);
+        Ok(())
+    }
+
+    /// Read the latest owned receipt/status without SQL or hidden worker polling.
+    pub fn recording_status(&self) -> Option<&RecordingStatus> {
+        self.recording_status.as_ref()
+    }
+
+    /// Observe the startup activation receipt without SQL or owner blocking.
+    pub fn recording_activation_committed(&mut self) -> Result<bool, Error> {
+        let Some(worker) = self.recorder.as_mut() else {
+            return Ok(true);
+        };
+        let status = worker.poll();
+        let committed = status.activation_root.is_some();
+        let failed = status.state == RecordingState::Failed;
+        self.recording_status = Some(status);
+        if failed {
+            return Err(Error::InvalidConfiguration("recorder activation failed"));
+        }
+        Ok(committed)
+    }
+
+    // Capture the actual currently committed scalar composition before any
+    // worker hashing. All source bytes come from the fixed loaded component
+    // definitions, never from a pathname reread at recording time.
+    fn frozen_activation_entries(
+        &self,
+    ) -> Result<(Vec<ProvenanceEntry>, Vec<ProvenanceObject>), Error> {
+        let mut entries = Vec::with_capacity(8);
+        let push =
+            |entries: &mut Vec<ProvenanceEntry>, kind: &str, encoding: &str, content: Vec<u8>| {
+                entries.push(ProvenanceEntry {
+                    kind: kind.into(),
+                    encoding: encoding.into(),
+                    content,
+                })
+            };
+        push(
+            &mut entries,
+            "rust_build",
+            "utf8",
+            env!("CARGO_PKG_VERSION").as_bytes().to_vec(),
+        );
+        let mut controllers = Vec::with_capacity(self.plan.controllers.len());
+        for (id, _, _) in &self.plan.controllers {
+            let QueryResult::ControllerConfig(config) =
+                self.runtime.query(Query::ControllerConfig(*id))?
+            else {
+                return Err(Error::InvalidConfiguration("controller config unavailable"));
+            };
+            let QueryResult::Controller(state) = self.runtime.query(Query::Controller(*id))? else {
+                return Err(Error::InvalidConfiguration("controller state unavailable"));
+            };
+            controllers.push(serde_json::json!({
+                "id":config.id.get().to_string(),"revision":state.config_revision.to_string(),
+                "input":{"instrument":config.input.instrument().get().to_string(),
+                    "parameter":config.input.parameter().get().to_string()},
+                "output":{"instrument":config.output.instrument().get().to_string(),
+                    "parameter":config.output.parameter().get().to_string()},
+                "reference":config.reference.get().to_string(),
+                "pid":{"kp":config.pid.kp,"ki":config.pid.ki,"kd":config.pid.kd,
+                    "output_min":config.pid.output_min,"output_max":config.pid.output_max},
+                "ema":{"time_constant_ns":config.ema.time_constant.as_nanos().to_string(),
+                    "warmup_samples":config.ema.warmup_samples,"unit":config.ema.unit.id()},
+                "max_input_age_ns":config.max_input_age.as_nanos().to_string(),
+                "max_tick_gap_ns":config.max_tick_gap.as_nanos().to_string(),
+                "lease_lifetime_ns":config.lease_lifetime.as_nanos().to_string(),
+                "proposal_ttl_ns":config.proposal_ttl.as_nanos().to_string(),
+            }));
+        }
+        let mut references = Vec::with_capacity(self.plan.references.len());
+        for (id, _) in &self.plan.references {
+            let QueryResult::Reference(reference) = self.runtime.query(Query::Reference(*id))?
+            else {
+                return Err(Error::InvalidConfiguration("reference unavailable"));
+            };
+            references.push(match reference {
+                ReferenceSnapshot::Ramp {
+                    id,
+                    state,
+                    revision,
+                } => serde_json::json!({
+                    "kind":"ramp","id":id.get().to_string(),"revision":revision.to_string(),
+                    "current":state.current,"target":state.target,"rate":state.rate,
+                    "unit":state.unit.id(),"progress_at_ns":state.last_at.as_nanos().to_string()}),
+                ReferenceSnapshot::Fixed {
+                    id,
+                    value,
+                    unit,
+                    revision,
+                    ..
+                } => serde_json::json!({
+                    "kind":"fixed","id":id.get().to_string(),"revision":revision.to_string(),
+                    "value":value,"unit":unit.id()}),
+            });
+        }
+        let mut outputs = Vec::with_capacity(self.active_safety_profiles.len());
+        for (actuator, profile) in &self.active_safety_profiles {
+            let unit = match self
+                .runtime
+                .query(Query::DescribeInstrument(actuator.instrument()))?
+            {
+                QueryResult::Descriptor(descriptor) => descriptor
+                    .parameter(actuator.parameter())
+                    .map(|parameter| parameter.unit.id().to_owned())
+                    .ok_or(Error::InvalidConfiguration("safety output unit missing"))?,
+                _ => {
+                    return Err(Error::InvalidConfiguration(
+                        "safety output descriptor missing",
+                    ));
+                }
+            };
+            outputs.push(serde_json::json!({
+                "instrument":actuator.instrument().get().to_string(),
+                "parameter":actuator.parameter().get().to_string(),"unit":unit,
+                "min":profile.min,"max":profile.max,"safe_value":profile.safe_value,
+                "max_lease_ns":profile.max_lease.as_nanos().to_string(),
+                "max_proposal_ttl_ns":profile.max_proposal_ttl.as_nanos().to_string(),
+                "required_evidence":match profile.required_evidence {
+                    EvidenceLevel::Acknowledgement=>"ack",EvidenceLevel::Readback=>"readback"},
+            }));
+        }
+        push(
+            &mut entries,
+            "native_composition",
+            "json_v1",
+            serde_json::json!({"profile":"virtual-demo","controllers":&controllers,
+                "references":&references,"safety_outputs":&outputs})
+            .to_string()
+            .into_bytes(),
+        );
+        let mut managed_source_indices = BTreeMap::new();
+        for (id, _) in &self.components {
+            let source = if *id == LUA_SOURCE {
+                lab_lua::fixtures::VIRTUAL_MODEL_SOURCE
+            } else if *id == LUA_FILTER {
+                lab_lua::fixtures::MOVING_MEAN_SOURCE
+            } else {
+                return Err(Error::InvalidConfiguration("unknown loaded managed source"));
+            };
+            managed_source_indices.insert(*id, entries.len());
+            push(
+                &mut entries,
+                "managed_lua_source",
+                "utf8",
+                source.as_bytes().to_vec(),
+            );
+        }
+        push(
+            &mut entries,
+            "deployment_config",
+            "utf8",
+            b"not_present".to_vec(),
+        );
+        push(
+            &mut entries,
+            "lua_workspace",
+            "utf8",
+            b"not_present".to_vec(),
+        );
+        let mut objects = Vec::new();
+        let QueryResult::Instruments(instruments) = self.runtime.query(Query::Discover)? else {
+            return Err(Error::InvalidConfiguration(
+                "activation discovery unavailable",
+            ));
+        };
+        for instrument in instruments {
+            let component = self
+                .components
+                .iter()
+                .find(|(id, _)| id.get() == instrument.id.get())
+                .map(|(id, _)| *id);
+            let (generation, source_index) = if let Some(id) = component {
+                let QueryResult::Component(snapshot) = self.runtime.query(Query::Component(id))?
+                else {
+                    return Err(Error::InvalidConfiguration(
+                        "component baseline unavailable",
+                    ));
+                };
+                (
+                    snapshot.generation,
+                    *managed_source_indices
+                        .get(&id)
+                        .ok_or(Error::InvalidConfiguration("source baseline missing"))?,
+                )
+            } else {
+                (1, 1)
+            };
+            let parameters: Vec<_> = instrument
+                .parameters
+                .iter()
+                .map(parameter_activation_json)
+                .collect();
+            objects.push(ProvenanceObject {
+                kind: "instrument",
+                id: instrument.id.get().to_be_bytes().to_vec(),
+                logical_key: format!("instrument:{}", instrument.id.get()),
+                label: instrument.name,
+                descriptor: serde_json::json!({"parameters":parameters}).to_string(),
+                unit_key: None,
+                generation: Some(generation),
+                binding: None,
+                source_entry_index: source_index,
+            });
+        }
+        for controller in controllers {
+            let id = controller["id"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .ok_or(Error::InvalidConfiguration("activation controller id"))?;
+            objects.push(ProvenanceObject {
+                kind: "controller",
+                id: id.to_be_bytes().to_vec(),
+                logical_key: format!("controller:{id}"),
+                label: format!("Native PID {id}"),
+                descriptor: controller.to_string(),
+                unit_key: None,
+                generation: Some(1),
+                binding: Some(controller["output"].to_string()),
+                source_entry_index: 1,
+            });
+        }
+        for reference in references {
+            let id = reference["id"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .ok_or(Error::InvalidConfiguration("activation reference id"))?;
+            objects.push(ProvenanceObject {
+                kind: "reference",
+                id: id.to_be_bytes().to_vec(),
+                logical_key: format!("reference:{id}"),
+                label: format!("Reference {id}"),
+                unit_key: reference["unit"].as_str().map(str::to_owned),
+                descriptor: reference.to_string(),
+                generation: Some(1),
+                binding: None,
+                source_entry_index: 1,
+            });
+        }
+        for output in outputs {
+            let instrument = output["instrument"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .ok_or(Error::InvalidConfiguration("activation output instrument"))?;
+            let parameter = output["parameter"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .ok_or(Error::InvalidConfiguration("activation output parameter"))?;
+            let mut id = Vec::with_capacity(16);
+            id.extend_from_slice(&instrument.to_be_bytes());
+            id.extend_from_slice(&parameter.to_be_bytes());
+            objects.push(ProvenanceObject {
+                kind: "actuator",
+                id,
+                logical_key: format!("actuator:{instrument}:{parameter}"),
+                label: format!("Actuator {instrument}:{parameter}"),
+                unit_key: output["unit"].as_str().map(str::to_owned),
+                descriptor: output.to_string(),
+                generation: Some(1),
+                binding: None,
+                source_entry_index: 1,
+            });
+        }
+        for (id, _) in &self.components {
+            let QueryResult::Component(snapshot) = self.runtime.query(Query::Component(*id))?
+            else {
+                return Err(Error::InvalidConfiguration(
+                    "component snapshot unavailable",
+                ));
+            };
+            objects.push(ProvenanceObject {kind:"managed_component",
+                id:id.get().to_be_bytes().to_vec(),logical_key:format!("component:{}",id.get()),
+                label:format!("Managed component {}",id.get()),
+                descriptor:serde_json::json!({"instrument":snapshot.instrument.get().to_string(),
+                    "generation":snapshot.generation.to_string(),"state_revision":snapshot.revision.to_string(),
+                    "committed_state":plain_data_activation_json(&snapshot.committed_state)})
+                    .to_string(),unit_key:None,generation:Some(snapshot.generation),binding:None,
+                source_entry_index:*managed_source_indices.get(id)
+                    .ok_or(Error::InvalidConfiguration("component source index missing"))?});
+        }
+        Ok((entries, objects))
+    }
+
+    /// Stable database identity of this host's durable history, if enabled.
+    pub fn recording_database_id(&self) -> Option<&str> {
+        self.recorder.as_ref().map(RecorderWorker::database_id)
+    }
+
+    /// Boot identity fixed when an already-open worker is attached by trusted
+    /// composition, so its archive keys and public serving boot cannot diverge.
+    pub fn recording_boot_id(&self) -> Option<&str> {
+        self.recorder.as_ref().map(RecorderWorker::boot_id)
+    }
+
+    /// Recording policy fixed by trusted startup composition.
+    pub fn recording_policy(&self) -> Option<RecordingPolicy> {
+        self.recording_policy
+    }
+
+    /// Emit one typed application fact through Recorder credit without changing
+    /// the command's truthful domain result or waiting for SQLite.
+    pub fn record_operation(&mut self, operation: OperationRecord) {
+        let at = operation.at;
+        if let Some(worker) = self.recorder.as_mut()
+            && worker.try_admit_operation(operation).is_err()
+            && self.recording_policy == Some(RecordingPolicy::Required)
+        {
+            self.runtime.recording_failure(at);
+        }
+        self.poll_recorder(at);
+    }
+
+    /// Schedule indexed archive work on the storage worker, never on this owner.
+    pub fn request_history(
+        &mut self,
+        filter: HistoryFilter,
+        cursor: Option<HistoryCursor>,
+        limit: usize,
+    ) -> Result<u64, StorageError> {
+        self.recorder
+            .as_mut()
+            .ok_or_else(StorageError::disabled)?
+            .request_history(filter, cursor, limit)
+    }
+
+    /// Take an already-completed bounded worker page without disk I/O.
+    pub fn try_take_history(&mut self, job: u64) -> Option<Result<HistoryPage, StorageError>> {
+        self.recorder.as_mut()?.try_take_history(job)
+    }
+
+    /// Schedule indexed archive-run discovery off the Runtime owner lane.
+    pub fn request_runs(
+        &mut self,
+        cursor: Option<RunsCursor>,
+        limit: usize,
+    ) -> Result<u64, StorageError> {
+        self.recorder
+            .as_mut()
+            .ok_or_else(StorageError::disabled)?
+            .request_runs(cursor, limit)
+    }
+
+    /// Take an already-completed bounded run listing without SQL.
+    pub fn try_take_runs(&mut self, job: u64) -> Option<Result<RunsPage, StorageError>> {
+        self.recorder.as_mut()?.try_take_runs(job)
+    }
+
+    /// Fence a timed-out or disconnected history job before its late result.
+    pub fn cancel_history(&mut self, job: u64) {
+        if let Some(worker) = self.recorder.as_mut() {
+            worker.cancel_history(job);
+        }
+    }
+
+    /// Submit the start barrier; this does not start a controller or claim durability.
+    pub fn start_recording(&mut self, label: &str, at: Duration) -> Result<(), Error> {
+        if self.stopping || at < self.last_now {
+            return Err(Error::InvalidConfiguration("recording start time/state"));
+        }
+        let boundary = self.frozen_boundary_snapshot(at)?;
+        let worker = self
+            .recorder
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration("recorder disabled"))?;
+        worker
+            .request_start_with_boundary(label, at, boundary)
+            .map_err(|_| Error::InvalidConfiguration("recording start rejected"))?;
+        // The owner boundary is fixed before returning. Facts produced while
+        // SQLite is still committing Start enter FIFO after that barrier, with
+        // no Required control authority until its confirmed receipt.
+        self.runtime.enable_recording_facts();
+        // Inspect the committed successor against the previous owner state.
+        // A fast worker may receipt Start before this method returns; assigning
+        // its new status first would skip the Required gate and fact-capture
+        // transition entirely.
+        self.poll_recorder(at);
+        Ok(())
+    }
+
+    // Copy authoritative committed snapshots while the owner is serialized.
+    // Their original timestamps remain inside the boundary, so the archive
+    // cannot mistake an old attempt for a new post-start measurement.
+    fn frozen_boundary_snapshot(&self, at: Duration) -> Result<BoundarySnapshot, Error> {
+        let QueryResult::Instruments(instruments) = self.runtime.query(Query::Discover)? else {
+            return Err(Error::InvalidConfiguration(
+                "boundary discovery unavailable",
+            ));
+        };
+        let mut latest_samples = Vec::new();
+        for instrument in instruments {
+            for parameter in instrument.parameters {
+                let Some(signal) = parameter.signal else {
+                    continue;
+                };
+                let QueryResult::Latest(latest) =
+                    self.runtime.query(Query::GetLatestSignal(signal))?
+                else {
+                    return Err(Error::InvalidConfiguration("boundary latest unavailable"));
+                };
+                if let Some(sample) = latest {
+                    latest_samples.push(sample_boundary_json(&sample));
+                }
+            }
+        }
+        let mut controller_revisions = Vec::new();
+        for (id, _, _) in &self.plan.controllers {
+            let QueryResult::Controller(snapshot) = self.runtime.query(Query::Controller(*id))?
+            else {
+                return Err(Error::InvalidConfiguration(
+                    "boundary controller unavailable",
+                ));
+            };
+            controller_revisions.push(serde_json::json!({"id":id.get().to_string(),
+                "revision":snapshot.config_revision.to_string()}));
+        }
+        let mut reference_revisions = Vec::new();
+        for (id, _) in &self.plan.references {
+            let QueryResult::Reference(snapshot) = self.runtime.query(Query::Reference(*id))?
+            else {
+                return Err(Error::InvalidConfiguration(
+                    "boundary reference unavailable",
+                ));
+            };
+            let revision = match snapshot {
+                ReferenceSnapshot::Fixed { revision, .. }
+                | ReferenceSnapshot::Ramp { revision, .. } => revision,
+            };
+            reference_revisions.push(serde_json::json!({"id":id.get().to_string(),
+                "revision":revision.to_string()}));
+        }
+        let mut managed_revisions = Vec::new();
+        for (id, _) in &self.components {
+            let QueryResult::Component(snapshot) = self.runtime.query(Query::Component(*id))?
+            else {
+                return Err(Error::InvalidConfiguration(
+                    "boundary component unavailable",
+                ));
+            };
+            managed_revisions.push(serde_json::json!({"id":id.get().to_string(),
+                "generation":snapshot.generation.to_string(),
+                "revision":snapshot.revision.to_string()}));
+        }
+        let data = serde_json::json!({"captured_at_ns":at.as_nanos().to_string(),
+            "latest_samples":latest_samples,"controller_revisions":controller_revisions,
+            "reference_revisions":reference_revisions,"managed_revisions":managed_revisions,
+            "pending_operations":[]})
+        .to_string();
+        if data.len() > 64 * 1024 {
+            return Err(Error::InvalidConfiguration(
+                "boundary snapshot credit exhausted",
+            ));
+        }
+        Ok(BoundarySnapshot { at, data })
+    }
+
+    /// Submit the stop barrier only after the tracked Required controllers pause.
+    pub fn stop_recording(&mut self) -> Result<(), Error> {
+        if self.recording_policy == Some(RecordingPolicy::Required)
+            && (self.controllers_active() || !self.outputs_safe_for_required_stop())
+        {
+            return Err(Error::InvalidConfiguration(
+                "required recording safety unresolved",
+            ));
+        }
+        let worker = self
+            .recorder
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration("recorder disabled"))?;
+        worker
+            .request_stop()
+            .map_err(|_| Error::InvalidConfiguration("recording stop rejected"))?;
+        if self.recording_policy == Some(RecordingPolicy::Required) {
+            self.runtime.close_required_recording();
+        }
+        self.runtime.disable_recording_facts();
+        self.recording_status = Some(worker.poll());
+        Ok(())
+    }
+
+    /// Request a finite worker close after its already-accepted work.
+    pub fn finish_recorder(&mut self) -> Result<(), Error> {
+        let worker = self
+            .recorder
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration("recorder disabled"))?;
+        worker
+            .request_finish()
+            .map_err(|_| Error::InvalidConfiguration("recording finish rejected"))?;
+        self.recorder_finish_requested = true;
+        Ok(())
+    }
+
+    /// Progress shutdown stop/close barriers without a worker join or SQL call.
+    pub fn shutdown_recorder_step(&mut self, now: Duration) {
+        self.poll_recorder(now);
+        let Some(status) = self.recording_status.as_ref() else {
+            return;
+        };
+        match status.state {
+            RecordingState::Recording => {
+                if let Some(worker) = self.recorder.as_mut()
+                    && worker.request_stop().is_ok()
+                {
+                    self.runtime.close_required_recording();
+                    self.runtime.disable_recording_facts();
+                }
+            }
+            RecordingState::Idle if !self.recorder_finish_requested => {
+                if let Some(worker) = self.recorder.as_mut()
+                    && worker.request_finish().is_ok()
+                {
+                    self.recorder_finish_requested = true;
+                }
+            }
+            RecordingState::Idle => {}
+            RecordingState::Failed
+                if status.failure_persisted && !self.recorder_finish_requested =>
+            {
+                if let Some(worker) = self.recorder.as_mut()
+                    && worker.request_finish().is_ok()
+                {
+                    self.recorder_finish_requested = true;
+                }
+            }
+            RecordingState::Starting
+            | RecordingState::Stopping
+            | RecordingState::Failed
+            | RecordingState::Closed => {}
+        }
+        self.poll_recorder(now);
+    }
+
+    fn controllers_active(&self) -> bool {
+        self.plan.controllers.iter().any(|(id, _, _)| {
+            matches!(self.runtime.query(Query::Controller(*id)),
+                Ok(QueryResult::Controller(snapshot)) if matches!(
+                    snapshot.state, ControllerState::Warming | ControllerState::Running))
+        })
+    }
+
+    // Required coverage can end only after every tracked authority has no
+    // lease/pending send and Rust has verified the selected safe evidence.
+    fn outputs_safe_for_required_stop(&self) -> bool {
+        self.outputs.iter().all(|actuator| {
+            matches!(self.runtime.query(Query::Output(*actuator)),
+                Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed
+                    && snapshot.lease.is_none() && !snapshot.pending
+                    && snapshot.in_flight.is_none())
+        }) && self.resources.iter().all(|resource| {
+            matches!(self.runtime.query(Query::Transport(*resource)),
+                Ok(QueryResult::Transport(snapshot)) if snapshot.queue_len == 0
+                    && snapshot.active.is_none())
+        })
+    }
+
+    fn poll_recorder(&mut self, now: Duration) {
+        let Some(worker) = self.recorder.as_mut() else {
+            return;
+        };
+        let prior = self.recording_status.as_ref().map(|s| s.state);
+        let status = worker.poll();
+        if prior != Some(RecordingState::Recording) && status.state == RecordingState::Recording {
+            if self.recording_policy == Some(RecordingPolicy::Required)
+                && let Some(submitted) = status.confirmed_submission
+            {
+                let _ = self.runtime.confirm_recording_start(submitted, now);
+            }
+        } else if status.state == RecordingState::Recording
+            && self.recording_policy == Some(RecordingPolicy::Required)
+            && let Some(submitted) = status.confirmed_submission
+            && self
+                .last_recording_submission
+                .is_some_and(|old| submitted > old)
+        {
+            let _ = self.runtime.confirm_recording_progress(submitted, now);
+        }
+        if let Some(submitted) = status.confirmed_submission {
+            self.last_recording_submission = Some(submitted);
+        }
+        if status.state == RecordingState::Failed
+            && self.recording_policy == Some(RecordingPolicy::Required)
+        {
+            self.runtime.recording_failure(now);
+        }
+        if status.state == RecordingState::Failed {
+            self.runtime.disable_recording_facts();
+        }
+        if status.state == RecordingState::Recording {
+            let _ = worker.request_probe_at(now);
+        }
+        self.recording_status = Some(status);
+    }
+
+    fn admit_recording_facts(&mut self, now: Duration) {
+        if self.recorder.is_none() {
+            return;
+        }
+        let facts = self.runtime.take_recording_facts();
+        let overflow = self.runtime.recording_facts_overflowed();
+        let first_missing = self.runtime.recording_first_lost_fact();
+        let suppressed = self.runtime.recording_suppressed_fact_count();
+        let last_accepted = facts
+            .last()
+            .map(lab_core::recording::RecordingFact::sequence);
+        if let Some(worker) = self.recorder.as_mut() {
+            if !facts.is_empty()
+                && worker.try_admit_at(facts, now).is_err()
+                && self.recording_policy == Some(RecordingPolicy::Required)
+            {
+                self.runtime.recording_failure(now);
+            }
+            if overflow {
+                worker.fail_with_gap(RecorderGap {
+                    reason: "core fact outbox overflow".into(),
+                    at: now,
+                    first_missing_fact: first_missing,
+                    known_missing_count: suppressed,
+                    last_accepted_fact: last_accepted,
+                });
+                self.runtime.disable_recording_facts();
+                if self.recording_policy == Some(RecordingPolicy::Required) {
+                    self.runtime.recording_failure(now);
+                }
+            }
+        }
     }
 
     /// Install one trusted nonblocking component port before managed startup.
@@ -627,11 +1372,29 @@ impl HostCore {
         let safe_confirmed=self.outputs.iter().all(|actuator|matches!(self.runtime.query(Query::Output(*actuator)),
             Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed && snapshot.lease.is_none()));
         let unfinished_workers = self.runtime.unfinished_component_workers();
+        let recorder_state = self.recording_status.as_ref().map(|status| status.state);
+        let recorder_flushed = self.recording_status.as_ref().is_none_or(|status| {
+            status.state == RecordingState::Closed
+                && status.terminal_seal_committed
+                && status.first_error.is_none()
+                && status.outstanding_records == 0
+        });
+        let recorder_error = recorder_state == Some(RecordingState::Failed);
+        let recorder_unfinished = self
+            .recording_status
+            .as_ref()
+            .is_some_and(|status| !status.worker_closed);
         ShutdownStatus {
             safe_confirmed,
             unfinished_workers,
             fatal_error: false,
-            exit_success: safe_confirmed && unfinished_workers == 0,
+            recorder_flushed,
+            recorder_unfinished,
+            recorder_error,
+            exit_success: safe_confirmed
+                && unfinished_workers == 0
+                && recorder_flushed
+                && !recorder_error,
         }
     }
 
@@ -663,14 +1426,39 @@ impl HostCore {
         if self.stopping {
             return Err(Error::InvalidConfiguration("host is stopping"));
         }
+        self.poll_recorder(self.last_now);
         let start = match &command {
             Command::StartController { controller, .. }
             | Command::ResumeController { controller, .. } => Some(*controller),
             _ => None,
         };
+        let profile_binding = match &command {
+            Command::Output {
+                actuator,
+                command: OutputCommand::BindProfile(profile),
+                ..
+            } => Some((*actuator, profile.clone())),
+            _ => None,
+        };
         let outcome = self.runtime.command(command);
+        if outcome.is_ok()
+            && let Some((actuator, profile)) = profile_binding
+        {
+            if let Some((_, active)) = self
+                .active_safety_profiles
+                .iter_mut()
+                .find(|(id, _)| *id == actuator)
+            {
+                *active = profile;
+            } else {
+                self.active_safety_profiles.push((actuator, profile));
+                self.outputs.push(actuator);
+            }
+        }
         let at = self.last_now;
         self.observe(at, cause.as_ref().map(|(s, n)| (s.as_str(), *n)))?;
+        self.admit_recording_facts(at);
+        self.poll_recorder(at);
         let outcome = outcome?;
         if let Some(controller) = start
             && let QueryResult::ControllerConfig(config) =
@@ -711,6 +1499,15 @@ impl HostCore {
 
     /// Drive one bounded turn, checking safety before lower-priority units.
     pub fn service(&mut self, clock: &impl Clock) -> Result<ServiceReport, Error> {
+        let now = clock.now();
+        self.poll_recorder(now);
+        let result = self.service_inner(clock);
+        self.admit_recording_facts(clock.now());
+        self.poll_recorder(clock.now());
+        result
+    }
+
+    fn service_inner(&mut self, clock: &impl Clock) -> Result<ServiceReport, Error> {
         let mut report = ServiceReport::default();
         let now = clock.now();
         if now < self.last_now {

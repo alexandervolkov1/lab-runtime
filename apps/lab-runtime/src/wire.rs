@@ -325,6 +325,24 @@ fn operation_keys(op: &str) -> Option<(bool, &'static [&'static str])> {
         "reference_retune" => (true, &["reference", "expected_revision", "target", "rate"]),
         "controller_configure_pid" => (true, &["controller", "expected_revision", "pid"]),
         "runtime_shutdown" => (true, &[]),
+        "recording_status" => (false, &[]),
+        "recording_start" => (true, &["label"]),
+        "recording_stop" => (true, &["run_id"]),
+        "history_read" => (
+            true,
+            &[
+                "mode",
+                "database_id",
+                "boot_id",
+                "run_id",
+                "signal",
+                "from_ns",
+                "to_ns",
+                "max_records",
+                "cursor",
+            ],
+        ),
+        "history_page" | "history_release" => (false, &["page_token"]),
         _ => return None,
     })
 }
@@ -341,6 +359,31 @@ fn validate_nested_args(op: &str, args: &Map<String, Value>) -> Result<(), WireE
         }
         "controller_configure_pid" => {
             nested.push(("pid", &["kp", "ki", "kd", "output_min", "output_max"]))
+        }
+        "recording_stop" => nested.push(("run_id", &["boot_id", "run_no"])),
+        "history_read" => {
+            if args.get("mode").and_then(Value::as_str) == Some("runs") {
+                allowed_keys(args, &["mode", "database_id", "max_records", "cursor"])
+                    .map_err(|_| WireError::new("invalid_args", "unknown runs field"))?;
+            } else if args.get("mode").and_then(Value::as_str) == Some("measurements") {
+                allowed_keys(
+                    args,
+                    &[
+                        "mode",
+                        "database_id",
+                        "boot_id",
+                        "run_id",
+                        "signal",
+                        "from_ns",
+                        "to_ns",
+                        "max_records",
+                        "cursor",
+                    ],
+                )
+                .map_err(|_| WireError::new("invalid_args", "unknown measurement field"))?;
+                nested.push(("run_id", &["boot_id", "run_no"]));
+                nested.push(("signal", &["instrument", "parameter"]));
+            }
         }
         _ => {}
     }

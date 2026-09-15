@@ -4,39 +4,80 @@
 //! The network reactor is a separate adapter added after this host foundation.
 
 use crate::host::{Clock, HostCore, ShutdownStatus, SystemClock};
+use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy};
 use lab_core::Error as DomainError;
 use lab_core::managed::ComponentError;
 use std::{
     error::Error,
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
+    path::PathBuf,
 };
 
+/// Local SQLite recording configuration selected before Runtime readiness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordingOptions {
+    /// Absolute local database path; UNC/network paths are not accepted in M7.
+    pub path: PathBuf,
+    /// Stable startup policy; clients cannot switch it during a run.
+    pub policy: RecordingPolicy,
+}
+
 /// Strict virtual-only service options; default binary execution remains finite.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceOptions {
     port: u16,
+    recording: Option<RecordingOptions>,
 }
 impl ServiceOptions {
-    /// Accept only the fixed M6 profile and loopback port argument.
+    /// Accept the fixed virtual profile, loopback port, and optional local Recorder.
     pub fn parse(args: &[&str]) -> Result<Self, String> {
-        if args.len() != 5
+        if !matches!(args.len(), 5 | 7 | 9)
             || args[0] != "--serve"
             || args[1] != "--profile"
             || args[2] != "virtual-demo"
             || args[3] != "--port"
         {
-            return Err("expected --serve --profile virtual-demo --port <0..65535>".into());
+            return Err("expected --serve --profile virtual-demo --port <0..65535> [--record-db <absolute-local-path> [--record-policy required|best-effort]]".into());
         }
         let port = args[4]
             .parse::<u16>()
             .map_err(|_| "port must be an integer in 0..65535".to_string())?;
-        Ok(Self { port })
+        let recording = if args.len() > 5 {
+            if args[5] != "--record-db" || args[6].is_empty() {
+                return Err("recording policy requires a database path".into());
+            }
+            let path = PathBuf::from(args[6]);
+            if !path.is_absolute() || args[6].starts_with("\\\\") || args[6].starts_with("//") {
+                return Err("recording database path must be local and absolute".into());
+            }
+            let policy = if args.len() == 9 {
+                if args[7] != "--record-policy" {
+                    return Err("unknown recording option".into());
+                }
+                match args[8] {
+                    "required" => RecordingPolicy::Required,
+                    "best-effort" => RecordingPolicy::BestEffort,
+                    _ => return Err("unknown recording policy".into()),
+                }
+            } else {
+                RecordingPolicy::Required
+            };
+            Some(RecordingOptions { path, policy })
+        } else {
+            None
+        };
+        Ok(Self { port, recording })
     }
 
     /// Requested loopback TCP port; zero delegates selection to the OS.
-    pub const fn port(self) -> u16 {
+    pub const fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Selected Recorder path/policy, if durability is enabled for this host.
+    pub fn recording(&self) -> Option<&RecordingOptions> {
+        self.recording.as_ref()
     }
 }
 
@@ -49,6 +90,7 @@ pub struct ServiceHost {
     boot_id: String,
     stopping_since: Option<std::time::Instant>,
     safe_since: Option<std::time::Instant>,
+    recorder_flush_since: Option<std::time::Instant>,
     terminal: Option<ShutdownStatus>,
     fatal: bool,
 }
@@ -62,7 +104,10 @@ impl ServiceHost {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes)
             .map_err(|e| io::Error::other(format!("OS boot entropy unavailable: {e}")))?;
-        let boot_id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let boot_id = host
+            .recording_boot_id()
+            .map(str::to_owned)
+            .unwrap_or_else(|| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
         host.set_boot_id(&boot_id);
         if !host.shutdown_status().safe_confirmed {
             return Err(io::Error::other("fixture safe evidence unavailable").into());
@@ -70,6 +115,15 @@ impl ServiceHost {
         let clock = SystemClock::new();
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
         listener.set_nonblocking(true)?;
+        if let Some(recording) = options.recording() {
+            let worker = RecorderWorker::open_with_boot(
+                &recording.path,
+                RecorderLimits::default(),
+                &boot_id,
+            )?;
+            host.attach_recorder(worker, recording.policy, clock.now())?;
+        }
+        await_recorder_activation(&mut host)?;
         let bound = listener.local_addr()?;
         Ok(Self {
             host,
@@ -79,6 +133,7 @@ impl ServiceHost {
             boot_id,
             stopping_since: None,
             safe_since: None,
+            recorder_flush_since: None,
             terminal: None,
             fatal: false,
         })
@@ -131,6 +186,15 @@ impl ServiceHost {
         host.activate_standard_lua(clock.now())?;
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
         listener.set_nonblocking(true)?;
+        if let Some(recording) = options.recording() {
+            let worker = RecorderWorker::open_with_boot(
+                &recording.path,
+                RecorderLimits::default(),
+                &boot_id,
+            )?;
+            host.attach_recorder(worker, recording.policy, clock.now())?;
+        }
+        await_recorder_activation(&mut host)?;
         let bound = listener.local_addr()?;
         Ok(Self {
             host,
@@ -140,6 +204,7 @@ impl ServiceHost {
             boot_id,
             stopping_since: None,
             safe_since: None,
+            recorder_flush_since: None,
             terminal: None,
             fatal: false,
         })
@@ -194,17 +259,27 @@ impl ServiceHost {
         status.fatal_error = self.fatal;
         status.exit_success &= !self.fatal;
         let now = std::time::Instant::now();
-        if status.safe_confirmed {
+        let safety_finished = if status.safe_confirmed {
             self.safe_since.get_or_insert(now);
-            if status.unfinished_workers == 0
+            status.unfinished_workers == 0
                 || self.safe_since.is_some_and(|safe_at| {
                     now.duration_since(safe_at) >= std::time::Duration::from_millis(200)
                 })
-            {
+        } else {
+            now.duration_since(started) >= std::time::Duration::from_secs(2)
+        };
+        if safety_finished {
+            self.recorder_flush_since.get_or_insert(now);
+            self.host.shutdown_recorder_step(self.clock.now());
+            status = self.host.shutdown_status();
+            status.fatal_error = self.fatal;
+            status.exit_success &= !self.fatal;
+            let flush_expired = self
+                .recorder_flush_since
+                .is_some_and(|at| now.duration_since(at) >= std::time::Duration::from_secs(2));
+            if status.recorder_flushed || flush_expired {
                 self.terminal = Some(status);
             }
-        } else if now.duration_since(started) >= std::time::Duration::from_secs(2) {
-            self.terminal = Some(status);
         }
         Ok(self.terminal)
     }
@@ -241,5 +316,21 @@ impl ServiceHost {
     /// Borrow the nonblocking listener only for the separate network reactor.
     pub const fn listener(&self) -> &TcpListener {
         &self.listener
+    }
+}
+
+// Listener readiness waits for the active frozen composition to commit. This
+// bounded startup wait happens before the owner serves any client or controller;
+// no steady-state Runtime turn blocks on storage.
+fn await_recorder_activation(host: &mut HostCore) -> Result<(), Box<dyn Error>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if host.recording_activation_committed()? {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::other("recorder activation startup deadline").into());
+        }
+        std::thread::yield_now();
     }
 }

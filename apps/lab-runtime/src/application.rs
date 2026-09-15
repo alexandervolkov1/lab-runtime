@@ -2,6 +2,10 @@
 //! or bounded mutations. Accepted records precede dispatch; terminal records
 //! precede any attempt to send a reply.
 
+use crate::recorder::{
+    HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, RecordingPolicy, RecordingState,
+    RecordingStatus, RunsCursor, RunsPage,
+};
 use crate::{
     host::Clock,
     service::ServiceHost,
@@ -44,6 +48,41 @@ struct PendingShutdown {
     seq: u64,
     msg: String,
 }
+struct PendingRecording {
+    connection: u64,
+    scope: String,
+    seq: u64,
+    msg: String,
+    start: bool,
+    run_no: Option<u64>,
+    interval_no: Option<u64>,
+}
+struct PendingHistory {
+    scope: String,
+    seq: u64,
+    msg: String,
+    job: u64,
+    submitted: Duration,
+    runs: bool,
+}
+struct HistoryCache {
+    token: String,
+    page: Value,
+    expires: Duration,
+}
+struct HistoryContinuation {
+    token: String,
+    cursor: RetainedHistoryCursor,
+    expires: Duration,
+}
+enum RetainedHistoryCursor {
+    Measurements(HistoryCursor),
+    Runs(RunsCursor),
+}
+enum CompletedHistory {
+    Measurements(HistoryPage),
+    Runs(RunsPage),
+}
 
 /// Single-owner fixed API state; a TCP connection carries no domain authority.
 pub struct Application {
@@ -53,6 +92,11 @@ pub struct Application {
     subscriptions: BTreeMap<u64, Subscription>,
     next_token: u64,
     pending_shutdown: Option<PendingShutdown>,
+    pending_recording: Option<PendingRecording>,
+    pending_history: BTreeMap<u64, PendingHistory>,
+    history_pages: BTreeMap<u64, HistoryCache>,
+    history_cursors: BTreeMap<u64, HistoryContinuation>,
+    orphan_history: Vec<u64>,
 }
 impl Application {
     /// Create bounded process-local coordination state for one fresh boot.
@@ -64,6 +108,11 @@ impl Application {
             subscriptions: BTreeMap::new(),
             next_token: 1,
             pending_shutdown: None,
+            pending_recording: None,
+            pending_history: BTreeMap::new(),
+            history_pages: BTreeMap::new(),
+            history_cursors: BTreeMap::new(),
+            orphan_history: Vec::new(),
         })
     }
 
@@ -72,11 +121,19 @@ impl Application {
         self.clients.remove(&connection);
         self.snapshots.remove(&connection);
         self.subscriptions.remove(&connection);
+        self.history_pages.remove(&connection);
+        self.history_cursors.remove(&connection);
+        if let Some(pending) = self.pending_history.remove(&connection) {
+            self.orphan_history.push(pending.job);
+        }
         self.sessions.detach(connection, service.clock().now());
     }
     /// Expire frozen connection snapshots at a trusted monotonic owner instant.
     pub fn expire_snapshots_at(&mut self, now: Duration) {
         self.snapshots.retain(|_, s| now < s.expires);
+        self.history_pages.retain(|_, page| now < page.expires);
+        self.history_cursors
+            .retain(|_, cursor| now < cursor.expires);
     }
     /// Store the safe/cleanup terminal outcome before any network offer.
     pub fn finish_shutdown(
@@ -89,7 +146,11 @@ impl Application {
         };
         let result = json!({"safe_confirmed":status.safe_confirmed,"unfinished_workers":status.unfinished_workers,
             "fatal_error":status.fatal_error,
-            "cleanup_complete":status.unfinished_workers==0,"exit_success":status.exit_success,
+            "cleanup_complete":status.unfinished_workers==0,
+            "recorder_flushed":status.recorder_flushed,
+            "recorder_unfinished":status.recorder_unfinished,
+            "recorder_error":status.recorder_error,
+            "exit_success":status.exit_success,
             "outputs":service.owner().output_safe_records()});
         let state = if status.exit_success {
             OperationState::Completed(result.to_string())
@@ -97,6 +158,10 @@ impl Application {
             OperationState::FailedWithResult {
                 code: if status.fatal_error {
                     "fatal_owner_error"
+                } else if status.recorder_error {
+                    "recording_flush_failed"
+                } else if status.recorder_unfinished {
+                    "recording_flush_timeout"
                 } else if status.safe_confirmed {
                     "cleanup_incomplete"
                 } else {
@@ -150,6 +215,225 @@ impl Application {
         )]
     }
 
+    /// Complete one accepted recording lifecycle operation only after its
+    /// storage barrier has committed or the Recorder has failed.
+    pub fn poll_recording(&mut self, service: &mut ServiceHost) -> Vec<(u64, Value)> {
+        let Some(pending) = self.pending_recording.as_ref() else {
+            return Vec::new();
+        };
+        let Some(status) = service.owner().recording_status() else {
+            return Vec::new();
+        };
+        let done = if pending.start {
+            matches!(
+                status.state,
+                RecordingState::Recording | RecordingState::Failed
+            )
+        } else {
+            matches!(status.state, RecordingState::Idle | RecordingState::Failed)
+        };
+        if !done {
+            return Vec::new();
+        }
+        let pending = self.pending_recording.take().expect("checked above");
+        let run_no = if pending.start {
+            status.run_no
+        } else {
+            pending.run_no
+        };
+        let interval_no = if pending.start {
+            status.interval_no
+        } else {
+            pending.interval_no
+        };
+        let result = if status.state == RecordingState::Failed {
+            OperationState::Failed("recording_failed".into())
+        } else {
+            OperationState::Completed(
+                json!({
+                    "database_id":service.owner().recording_database_id(),
+                    "run_id":{"boot_id":service.boot_id(),
+                        "run_no":run_no.map(|number| number.to_string())},
+                    "interval_id":{"boot_id":service.boot_id(),
+                        "interval_no":interval_no.map(|number| number.to_string())},
+                    "durability":"committed"
+                })
+                .to_string(),
+            )
+        };
+        self.sessions
+            .complete(
+                &pending.scope,
+                pending.seq,
+                result.clone(),
+                service.clock().now(),
+            )
+            .expect("retained recording lifecycle operation");
+        let published = service.clock().now();
+        let _ = service.owner_mut().event_log_mut().operation_terminal(
+            published,
+            &pending.scope,
+            pending.seq,
+            operation_state(result.clone()),
+        );
+        if self.clients.get(&pending.connection) != Some(&pending.scope) {
+            return Vec::new();
+        }
+        let rid = WireRequestId {
+            scope: pending.scope,
+            seq: pending.seq,
+        };
+        vec![(
+            pending.connection,
+            operation_reply(&pending.msg, &rid, result),
+        )]
+    }
+
+    /// Reconcile completed bounded history jobs and retain immutable pages.
+    /// This only takes worker results; SQL ran on the Recorder thread.
+    pub fn poll_history(&mut self, service: &mut ServiceHost) -> Vec<(u64, Value)> {
+        for job in self.orphan_history.drain(..) {
+            service.owner_mut().cancel_history(job);
+        }
+        let now = service.clock().now();
+        self.expire_snapshots_at(now);
+        let ids: Vec<u64> = self.pending_history.keys().copied().collect();
+        let mut replies = Vec::new();
+        for connection in ids {
+            let Some(pending) = self.pending_history.get(&connection) else {
+                continue;
+            };
+            let expired = pending
+                .submitted
+                .checked_add(Duration::from_secs(2))
+                .is_none_or(|deadline| now >= deadline);
+            let outcome = if expired {
+                service.owner_mut().cancel_history(pending.job);
+                Some(Err("history_timeout"))
+            } else if pending.runs {
+                service
+                    .owner_mut()
+                    .try_take_runs(pending.job)
+                    .map(|result| {
+                        result
+                            .map(CompletedHistory::Runs)
+                            .map_err(|_| "history_failed")
+                    })
+            } else {
+                service
+                    .owner_mut()
+                    .try_take_history(pending.job)
+                    .map(|result| {
+                        result
+                            .map(CompletedHistory::Measurements)
+                            .map_err(|_| "history_failed")
+                    })
+            };
+            let Some(outcome) = outcome else { continue };
+            let pending = self
+                .pending_history
+                .remove(&connection)
+                .expect("listed above");
+            let terminal = match outcome {
+                Err(code) => OperationState::Failed(code.into()),
+                Ok(page) => {
+                    let has_cursor = match &page {
+                        CompletedHistory::Measurements(page) => page.next_cursor.is_some(),
+                        CompletedHistory::Runs(page) => page.next_cursor.is_some(),
+                    };
+                    let Some(following) =
+                        self.next_token.checked_add(if has_cursor { 2 } else { 1 })
+                    else {
+                        let failed = OperationState::Failed("history_token_exhausted".into());
+                        self.sessions
+                            .complete(&pending.scope, pending.seq, failed.clone(), now)
+                            .expect("retained history read operation");
+                        let _ = service.owner_mut().event_log_mut().operation_terminal(
+                            now,
+                            &pending.scope,
+                            pending.seq,
+                            operation_state(failed.clone()),
+                        );
+                        if self.clients.get(&connection) == Some(&pending.scope) {
+                            let rid = WireRequestId {
+                                scope: pending.scope,
+                                seq: pending.seq,
+                            };
+                            replies.push((connection, operation_reply(&pending.msg, &rid, failed)));
+                        }
+                        continue;
+                    };
+                    let token = format!("history-page-{}", self.next_token);
+                    let cursor_token =
+                        has_cursor.then(|| format!("history-cursor-{}", self.next_token + 1));
+                    self.next_token = following;
+                    let encoded = match &page {
+                        CompletedHistory::Measurements(page) => {
+                            history_page_json(page, cursor_token.as_deref())
+                        }
+                        CompletedHistory::Runs(page) => {
+                            runs_page_json(page, cursor_token.as_deref())
+                        }
+                    };
+                    if serde_json::to_vec(&encoded).is_ok_and(|bytes| bytes.len() <= 8 * 1024) {
+                        let next_cursor = match page {
+                            CompletedHistory::Measurements(page) => {
+                                page.next_cursor.map(RetainedHistoryCursor::Measurements)
+                            }
+                            CompletedHistory::Runs(page) => {
+                                page.next_cursor.map(RetainedHistoryCursor::Runs)
+                            }
+                        };
+                        if let Some(cursor) = next_cursor {
+                            self.history_cursors.insert(
+                                connection,
+                                HistoryContinuation {
+                                    token: cursor_token.expect("cursor was present"),
+                                    cursor,
+                                    expires: now + Duration::from_secs(30),
+                                },
+                            );
+                        } else {
+                            self.history_cursors.remove(&connection);
+                        }
+                        self.history_pages.insert(
+                            connection,
+                            HistoryCache {
+                                token: token.clone(),
+                                page: encoded,
+                                expires: now + Duration::from_secs(5),
+                            },
+                        );
+                        OperationState::Completed(
+                            json!({"page_token":token,
+                            "durability":"checkpoint_frozen"})
+                            .to_string(),
+                        )
+                    } else {
+                        OperationState::Failed("history_page_oversize".into())
+                    }
+                }
+            };
+            self.sessions
+                .complete(&pending.scope, pending.seq, terminal.clone(), now)
+                .expect("retained history read operation");
+            let _ = service.owner_mut().event_log_mut().operation_terminal(
+                now,
+                &pending.scope,
+                pending.seq,
+                operation_state(terminal.clone()),
+            );
+            if self.clients.get(&connection) == Some(&pending.scope) {
+                let rid = WireRequestId {
+                    scope: pending.scope,
+                    seq: pending.seq,
+                };
+                replies.push((connection, operation_reply(&pending.msg, &rid, terminal)));
+            }
+        }
+        replies
+    }
+
     /// Process one parsed request in owner order. Replies are owned and bounded by
     /// the network encoder; a disconnected client cannot roll back a mutation.
     pub fn handle(
@@ -178,12 +462,23 @@ impl Application {
                         .map_err(session_code)
                         .map(|opened| {
                             self.clients.insert(connection, opened.scope.clone());
+                            let mut capabilities = vec!["virtual","native_controller","ramp_reference",
+                                "lua_source","lua_transform","safe_readback"];
+                            let mut operations = vec!["hello","discover","describe","latest","controller",
+                                "reference","component","output","runtime_snapshot","operation_status",
+                                "snapshot_page","snapshot_release","subscribe","unsubscribe","reference_retune",
+                                "controller_configure_pid","controller_start","controller_pause",
+                                "controller_resume","runtime_shutdown"];
+                            if service.owner().recording_status().is_some() {
+                                capabilities.push("recorder_sqlite_v1");
+                                capabilities.push("history_raw_paged_v1");
+                                operations.extend(["recording_status","recording_start","recording_stop"]);
+                                operations.extend(["history_read","history_page","history_release"]);
+                            }
                             json!({"boot_id":service.boot_id(),"v":1,"scope":opened.scope,
                                 "next_seq":opened.next_seq.to_string(),"state":"ready",
-                                "capabilities":["virtual","native_controller","ramp_reference","lua_source","lua_transform","safe_readback"],
-                                "operations":["hello","discover","describe","latest","controller","reference","component","output","runtime_snapshot",
-                                    "operation_status","snapshot_page","snapshot_release","subscribe","unsubscribe",
-                                    "reference_retune","controller_configure_pid","controller_start","controller_pause","controller_resume","runtime_shutdown"],
+                                "capabilities":capabilities,
+                                "operations":operations,
                                 "limits":{"clients":8,"scopes":16,"frame_bytes":16384},
                                 "event_oldest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()},
                                 "event_latest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()}})
@@ -219,6 +514,45 @@ impl Application {
         let scope = self.clients.get(&connection).ok_or("hello_required")?;
         let owner = service.owner();
         let result = match request.op.as_str() {
+            "history_page" => {
+                let token = args
+                    .get("page_token")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                let page = self
+                    .history_pages
+                    .get(&connection)
+                    .ok_or("history_page_expired")?;
+                if page.token != token || service.clock().now() >= page.expires {
+                    return Err("history_page_expired");
+                }
+                page.page.clone()
+            }
+            "history_release" => {
+                let token = args
+                    .get("page_token")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                if self
+                    .history_pages
+                    .get(&connection)
+                    .is_some_and(|page| page.token == token)
+                {
+                    self.history_pages.remove(&connection);
+                    json!({"released":true})
+                } else {
+                    return Err("history_page_expired");
+                }
+            }
+            "recording_status" => {
+                let status = owner.recording_status().ok_or("recorder_disabled")?;
+                recording_status_json(
+                    status,
+                    owner.recording_database_id(),
+                    owner.recording_policy(),
+                    service.boot_id(),
+                )
+            }
             "runtime_snapshot" => {
                 let cursor = owner.event_log().latest_cursor();
                 let mut records = owner.event_log().snapshot_records();
@@ -632,6 +966,203 @@ impl Application {
             Admission::Accepted => {}
         }
         let accepted = operation_reply(&msg, &rid, OperationState::Accepted);
+        if let Mutation::HistoryReadRuns {
+            database_id,
+            max_records,
+            cursor,
+        } = &payload
+        {
+            let valid_database =
+                service.owner().recording_database_id() == Some(database_id.as_str());
+            let busy = self.pending_history.contains_key(&connection)
+                || self.history_pages.contains_key(&connection)
+                || self.pending_history.len() + self.history_pages.len() >= 8;
+            let retained_cursor = if let Some(token) = cursor {
+                self.history_cursors
+                    .get(&connection)
+                    .filter(|retained| {
+                        retained.token == *token && service.clock().now() < retained.expires
+                    })
+                    .and_then(|retained| match &retained.cursor {
+                        RetainedHistoryCursor::Runs(cursor) => Some(cursor.clone()),
+                        RetainedHistoryCursor::Measurements(_) => None,
+                    })
+            } else {
+                None
+            };
+            let scheduled = if !valid_database {
+                Err("history_database_unknown")
+            } else if busy {
+                Err("history_busy")
+            } else if cursor.is_some() && retained_cursor.is_none() {
+                Err("history_cursor_expired")
+            } else {
+                service
+                    .owner_mut()
+                    .request_runs(retained_cursor, *max_records as usize)
+                    .map_err(|_| "history_busy")
+            };
+            match scheduled {
+                Ok(job) => {
+                    self.pending_history.insert(
+                        connection,
+                        PendingHistory {
+                            scope,
+                            seq: rid.seq,
+                            msg,
+                            job,
+                            submitted: now,
+                            runs: true,
+                        },
+                    );
+                    return vec![accepted];
+                }
+                Err(code) => {
+                    let failed = OperationState::Failed(code.into());
+                    self.sessions
+                        .complete(&scope, rid.seq, failed.clone(), now)
+                        .expect("admitted run discovery operation");
+                    return vec![accepted, operation_reply(&msg, &rid, failed)];
+                }
+            }
+        }
+        if let Mutation::HistoryReadMeasurements {
+            database_id,
+            boot_id,
+            run_no,
+            instrument,
+            parameter,
+            from_ns,
+            to_ns,
+            max_records,
+            cursor,
+        } = &payload
+        {
+            let valid_database =
+                service.owner().recording_database_id() == Some(database_id.as_str());
+            let busy = self.pending_history.contains_key(&connection)
+                || self.history_pages.contains_key(&connection)
+                || self.pending_history.len() + self.history_pages.len() >= 8;
+            let retained_cursor = if let Some(token) = cursor {
+                self.history_cursors
+                    .get(&connection)
+                    .filter(|retained| {
+                        retained.token == *token && service.clock().now() < retained.expires
+                    })
+                    .and_then(|retained| match &retained.cursor {
+                        RetainedHistoryCursor::Measurements(cursor) => Some(cursor.clone()),
+                        RetainedHistoryCursor::Runs(_) => None,
+                    })
+            } else {
+                None
+            };
+            let cursor_valid = cursor.is_none() || retained_cursor.is_some();
+            let scheduled = if !valid_database {
+                Err("history_database_unknown")
+            } else if busy {
+                Err("history_busy")
+            } else if !cursor_valid {
+                Err("history_cursor_expired")
+            } else {
+                let filter = HistoryFilter {
+                    boot_id: boot_id.clone(),
+                    run_no: *run_no,
+                    instrument: InstrumentId::new(*instrument),
+                    parameter: ParameterId::new(*parameter),
+                    from: Duration::from_nanos(*from_ns),
+                    to: Duration::from_nanos(*to_ns),
+                };
+                service
+                    .owner_mut()
+                    .request_history(filter, retained_cursor, *max_records as usize)
+                    .map_err(|_| "history_busy")
+            };
+            match scheduled {
+                Ok(job) => {
+                    self.pending_history.insert(
+                        connection,
+                        PendingHistory {
+                            scope,
+                            seq: rid.seq,
+                            msg,
+                            job,
+                            submitted: now,
+                            runs: false,
+                        },
+                    );
+                    return vec![accepted];
+                }
+                Err(code) => {
+                    let failed = OperationState::Failed(code.into());
+                    self.sessions
+                        .complete(&scope, rid.seq, failed.clone(), now)
+                        .expect("admitted history read operation");
+                    return vec![accepted, operation_reply(&msg, &rid, failed)];
+                }
+            }
+        }
+        if matches!(
+            &payload,
+            Mutation::RecordingStart { .. } | Mutation::RecordingStop { .. }
+        ) {
+            let saved_run = service
+                .owner()
+                .recording_status()
+                .and_then(|status| status.run_no);
+            let saved_interval = service
+                .owner()
+                .recording_status()
+                .and_then(|status| status.interval_no);
+            let action = if self.pending_recording.is_some() {
+                Err(Error::InvalidConfiguration("recording lifecycle busy"))
+            } else {
+                match &payload {
+                    Mutation::RecordingStart { label } => {
+                        service.owner_mut().start_recording(label, now)
+                    }
+                    Mutation::RecordingStop { boot_id, run_no } => {
+                        if boot_id != service.boot_id() || saved_run != Some(*run_no) {
+                            Err(Error::InvalidConfiguration("recording run mismatch"))
+                        } else {
+                            service.owner_mut().stop_recording()
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            };
+            match action {
+                Ok(()) => {
+                    self.pending_recording = Some(PendingRecording {
+                        connection,
+                        scope,
+                        seq: rid.seq,
+                        msg,
+                        start: matches!(payload, Mutation::RecordingStart { .. }),
+                        run_no: saved_run,
+                        interval_no: saved_interval,
+                    });
+                    return vec![accepted];
+                }
+                Err(error) => {
+                    let failed = OperationState::Failed(domain_code(error).into());
+                    self.sessions
+                        .complete(&scope, rid.seq, failed.clone(), service.clock().now())
+                        .expect("admitted recording operation");
+                    return vec![accepted, operation_reply(&msg, &rid, failed)];
+                }
+            }
+        }
+        if let Some((command, data)) = recorded_intent(&payload) {
+            service.owner_mut().record_operation(OperationRecord {
+                scope: scope.clone(),
+                request_seq: rid.seq,
+                command,
+                phase: "accepted",
+                data,
+                outcome_basis: "application_admission",
+                at: now,
+            });
+        }
         if matches!(&payload, Mutation::Shutdown) {
             match service.request_shutdown() {
                 Ok(()) => {
@@ -652,6 +1183,7 @@ impl Application {
                 }
             }
         }
+        let recorded_command = recorded_intent(&payload).map(|(command, _)| command);
         let outcome = dispatch(service, payload, &rid).map_or_else(
             |error| OperationState::Failed(domain_code(error).into()),
             |value| OperationState::Completed(value.to_string()),
@@ -660,6 +1192,19 @@ impl Application {
         self.sessions
             .complete(&scope, rid.seq, outcome.clone(), service.clock().now())
             .expect("bounded typed terminal record for admitted scope");
+        if let Some(command) = recorded_command {
+            let (phase, data) = recorded_terminal(&outcome);
+            let terminal_at = service.clock().now();
+            service.owner_mut().record_operation(OperationRecord {
+                scope: scope.clone(),
+                request_seq: rid.seq,
+                command,
+                phase,
+                data,
+                outcome_basis: "domain_result",
+                at: terminal_at,
+            });
+        }
         let event_state = operation_state(outcome.clone());
         let published_at = service.clock().now();
         if service
@@ -671,6 +1216,74 @@ impl Application {
             let _ = service.request_shutdown();
         }
         vec![accepted, operation_reply(&msg, &rid, outcome)]
+    }
+}
+
+// Stable, language-neutral command fields are selected from the admitted typed
+// mutation. The storage encoding is not the wire request and cannot supply ACK
+// or safe evidence. History selections remain process-local to avoid recursion.
+fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
+    let (command, fields) = match mutation {
+        Mutation::RetuneRamp {
+            reference,
+            expected_revision,
+            target,
+            rate,
+        } => (
+            "reference_retune",
+            json!({"reference":reference.to_string(),
+                "expected_revision":expected_revision.to_string(),"target":target,"rate":rate}),
+        ),
+        Mutation::ConfigurePid {
+            controller,
+            expected_revision,
+            kp,
+            ki,
+            kd,
+            output_min,
+            output_max,
+        } => (
+            "controller_configure",
+            json!({"controller":controller.to_string(),
+                "expected_revision":expected_revision.to_string(),"kp":kp,"ki":ki,"kd":kd,
+                "output_min":output_min,"output_max":output_max}),
+        ),
+        Mutation::Start { controller } => (
+            "controller_start",
+            json!({"controller":controller.to_string()}),
+        ),
+        Mutation::Pause { controller } => (
+            "controller_pause",
+            json!({"controller":controller.to_string()}),
+        ),
+        Mutation::Resume { controller } => (
+            "controller_resume",
+            json!({"controller":controller.to_string()}),
+        ),
+        Mutation::Shutdown => ("shutdown", json!({})),
+        Mutation::RecordingStart { .. }
+        | Mutation::RecordingStop { .. }
+        | Mutation::HistoryReadMeasurements { .. }
+        | Mutation::HistoryReadRuns { .. } => return None,
+    };
+    Some((command, fields.to_string()))
+}
+
+fn recorded_terminal(outcome: &OperationState) -> (&'static str, String) {
+    match outcome {
+        OperationState::Completed(result) => (
+            "completed",
+            json!({"result":serde_json::from_str::<Value>(result).unwrap_or(Value::Null)})
+                .to_string(),
+        ),
+        OperationState::Failed(code) => ("failed", json!({"code":code}).to_string()),
+        OperationState::FailedWithResult { code, detail } => (
+            "failed",
+            json!({"code":code,"detail":serde_json::from_str::<Value>(detail)
+                .unwrap_or(Value::Null)})
+            .to_string(),
+        ),
+        OperationState::Accepted => unreachable!("terminal fact requires domain outcome"),
     }
 }
 
@@ -703,6 +1316,118 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
         "controller_resume" => Mutation::Resume {
             controller: id_field(args, "controller")?,
         },
+        "recording_start" => {
+            let label = args
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            if label.trim().is_empty() || label.len() > 128 {
+                return Err("invalid_args");
+            }
+            Mutation::RecordingStart {
+                label: label.to_owned(),
+            }
+        }
+        "recording_stop" => {
+            let run = args.get("run_id").ok_or("invalid_args")?;
+            let boot_id = run
+                .get("boot_id")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            if boot_id.len() != 32
+                || !boot_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err("invalid_args");
+            }
+            Mutation::RecordingStop {
+                boot_id: boot_id.to_owned(),
+                run_no: id_field(run, "run_no")?,
+            }
+        }
+        "history_read" => {
+            if args.get("mode").and_then(Value::as_str) == Some("runs") {
+                let database_id = args
+                    .get("database_id")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                if !lower_hex_id(database_id) {
+                    return Err("invalid_args");
+                }
+                let max = args
+                    .get("max_records")
+                    .and_then(Value::as_u64)
+                    .ok_or("invalid_args")?;
+                if !(1..=32).contains(&max) {
+                    return Err("invalid_args");
+                }
+                let cursor = match args.get("cursor") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(token)) if !token.is_empty() && token.len() <= 128 => {
+                        Some(token.clone())
+                    }
+                    _ => return Err("invalid_args"),
+                };
+                Mutation::HistoryReadRuns {
+                    database_id: database_id.to_owned(),
+                    max_records: max as u8,
+                    cursor,
+                }
+            } else if args.get("mode").and_then(Value::as_str) == Some("measurements") {
+                let database_id = args
+                    .get("database_id")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                if !lower_hex_id(database_id) {
+                    return Err("invalid_args");
+                }
+                let run = args.get("run_id").ok_or("invalid_args")?;
+                let boot_id = args
+                    .get("boot_id")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                if !lower_hex_id(boot_id) {
+                    return Err("invalid_args");
+                }
+                if run.get("boot_id").and_then(Value::as_str) != Some(boot_id) {
+                    return Err("invalid_args");
+                }
+                let signal = args.get("signal").ok_or("invalid_args")?;
+                let from_ns = id_field(args, "from_ns")?;
+                let to_ns = id_field(args, "to_ns")?;
+                if from_ns >= to_ns {
+                    return Err("invalid_args");
+                }
+                let max = args
+                    .get("max_records")
+                    .and_then(Value::as_u64)
+                    .ok_or("invalid_args")?;
+                if !(1..=128).contains(&max) {
+                    return Err("invalid_args");
+                }
+                let cursor = match args.get("cursor") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(token)) if token.len() <= 128 && !token.is_empty() => {
+                        Some(token.clone())
+                    }
+                    _ => return Err("invalid_args"),
+                };
+                Mutation::HistoryReadMeasurements {
+                    database_id: database_id.to_owned(),
+                    boot_id: boot_id.to_owned(),
+                    run_no: id_field(run, "run_no")?,
+                    instrument: id_field(signal, "instrument")?,
+                    parameter: id_field(signal, "parameter")?,
+                    from_ns,
+                    to_ns,
+                    max_records: max as u16,
+                    cursor,
+                }
+            } else {
+                return Err("unsupported_history_mode");
+            }
+        }
         "runtime_shutdown" => Mutation::Shutdown,
         _ => return Err("unsupported_operation"),
     })
@@ -764,6 +1489,14 @@ fn dispatch(
         Mutation::Shutdown => {
             return Err(Error::InvalidConfiguration(
                 "shutdown dispatch is host-only",
+            ));
+        }
+        Mutation::RecordingStart { .. }
+        | Mutation::RecordingStop { .. }
+        | Mutation::HistoryReadMeasurements { .. }
+        | Mutation::HistoryReadRuns { .. } => {
+            return Err(Error::InvalidConfiguration(
+                "recording dispatch is host-only",
             ));
         }
     };
@@ -963,6 +1696,93 @@ fn domain_code(e: Error) -> &'static str {
         Error::UnknownParameter { .. } => "unknown_parameter",
         Error::UnknownSignal(_) => "unknown_signal",
         Error::InvalidConfiguration(_) => "invalid_configuration",
+        Error::RecordingUnavailable => "recording_unavailable",
         _ => "domain_rejected",
     }
+}
+fn lower_hex_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn recording_status_json(
+    status: &RecordingStatus,
+    database_id: Option<&str>,
+    policy: Option<RecordingPolicy>,
+    boot_id: &str,
+) -> Value {
+    let state = match status.state {
+        RecordingState::Idle => "idle",
+        RecordingState::Starting => "starting",
+        RecordingState::Recording => "recording",
+        RecordingState::Stopping => "stopping",
+        RecordingState::Failed => "failed",
+        RecordingState::Closed => "closed",
+    };
+    let policy = match policy {
+        Some(RecordingPolicy::Required) => "required",
+        Some(RecordingPolicy::BestEffort) => "best-effort",
+        None => "disabled",
+    };
+    json!({"state":state,"policy":policy,"database_id":database_id,
+        "boot_id":boot_id,"run_id":status.run_no.map(|run_no|json!({
+            "boot_id":boot_id,"run_no":run_no.to_string()})),
+        "interval_id":status.interval_no.map(|interval_no|json!({
+            "boot_id":boot_id,"interval_no":interval_no.to_string()})),
+        "persisted_through_seq":status.persisted_through_sequence.to_string(),
+        "outstanding_records":status.outstanding_records,
+        "outstanding_bytes":status.outstanding_bytes,
+        "outstanding_groups":status.outstanding_groups,
+        "coverage":status.coverage,
+        "first_missing_fact_seq":status.first_missing_fact.map(|id|id.to_string()),
+        "failure_persisted":status.failure_persisted,
+        "terminal_seal_committed":status.terminal_seal_committed,
+        "worker_closed":status.worker_closed,
+        "first_error":status.first_error,
+        "confirmed_submission_ns":status.confirmed_submission.map(nanos)})
+}
+
+fn history_page_json(page: &HistoryPage, cursor_token: Option<&str>) -> Value {
+    let rows: Vec<Value> = page
+        .rows
+        .iter()
+        .map(|row| {
+            let value = match &row.value {
+                Some(lab_core::Value::Float(value)) => json!({"kind":"float","value":value}),
+                Some(lab_core::Value::Integer(value)) => {
+                    json!({"kind":"integer","value":value.to_string()})
+                }
+                Some(lab_core::Value::Boolean(value)) => json!({"kind":"boolean","value":value}),
+                Some(lab_core::Value::Text(value)) => json!({"kind":"text","value":value}),
+                Some(lab_core::Value::Enum(value)) => json!({"kind":"enum","value":value}),
+                None => Value::Null,
+            };
+            json!({"record_seq":row.record_sequence.to_string(),
+            "published_at_ns":nanos(row.published_at),
+            "observed_at_ns":nanos(row.observed_at),"unit":row.unit,
+            "quality":row.quality,"failure":row.failure,"value":value,
+            "generation":row.generation.to_string(),"revision":row.revision.to_string()})
+        })
+        .collect();
+    json!({"rows":rows,"watermark":page.watermark.to_string(),
+        "coverage":page.coverage,"next_cursor":cursor_token,
+        "has_more":cursor_token.is_some(),"raw":true})
+}
+
+fn runs_page_json(page: &RunsPage, cursor_token: Option<&str>) -> Value {
+    let runs: Vec<Value> = page
+        .runs
+        .iter()
+        .map(|run| {
+            json!({
+                "run_id":{"boot_id":run.boot_id,"run_no":run.run_no.to_string()},
+                "label":run.label,"policy":run.policy,"state":run.state,
+                "coverage":run.coverage,
+            })
+        })
+        .collect();
+    json!({"runs":runs,"next_cursor":cursor_token,
+        "has_more":cursor_token.is_some(),"mode":"runs"})
 }

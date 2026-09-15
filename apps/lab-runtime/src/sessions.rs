@@ -65,6 +65,48 @@ pub enum Mutation {
         /// Existing native controller identity.
         controller: u64,
     },
+    /// Commit a bounded new durable run before admitting its facts.
+    RecordingStart {
+        /// Human-readable label, never an identity.
+        label: String,
+    },
+    /// Seal exactly the requested active run after Required control has paused.
+    RecordingStop {
+        /// Boot identity of the current recording run.
+        boot_id: String,
+        /// Checked run counter within that boot.
+        run_no: u64,
+    },
+    /// Explicit indexed historical selection, with no Runtime mutation.
+    HistoryReadMeasurements {
+        /// Stable archive database identity.
+        database_id: String,
+        /// Archive boot identity, possibly older than the serving process.
+        boot_id: String,
+        /// Checked run counter within the archived boot.
+        run_no: u64,
+        /// Stable signal instrument ID.
+        instrument: u64,
+        /// Stable signal parameter ID.
+        parameter: u64,
+        /// Inclusive publication time in archive-boot nanoseconds.
+        from_ns: u64,
+        /// Exclusive publication time in archive-boot nanoseconds.
+        to_ns: u64,
+        /// Whole raw rows requested, 1..=128.
+        max_records: u16,
+        /// One connection-retained continuation token, if any.
+        cursor: Option<String>,
+    },
+    /// Explicit bounded archive-run discovery with a frozen upper key.
+    HistoryReadRuns {
+        /// Stable archive database identity.
+        database_id: String,
+        /// Whole run summaries requested, 1..=32.
+        max_records: u8,
+        /// One connection-retained continuation token, if any.
+        cursor: Option<String>,
+    },
     /// Initiate host process shutdown; safe evidence is the later terminal result.
     Shutdown,
 }
