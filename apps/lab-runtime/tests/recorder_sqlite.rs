@@ -1,6 +1,12 @@
 //! Real-file acceptance for the storage adapter, including reopen from WAL.
 
-use lab_core::{Command, InstrumentId, Runtime, Value, VirtualInstrumentConfig};
+use lab_core::{
+    Command, CommandResult, InstrumentId, Runtime, Unit, Value, VirtualInstrumentConfig,
+    output::{
+        ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal,
+        OutputResult, SafeProfile,
+    },
+};
 use lab_runtime::{
     host::{Clock, HostCore},
     recorder::{
@@ -174,6 +180,140 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-{suffix}.sqlite"))
+}
+
+#[test]
+fn one_virtual_attempt_reopens_with_one_boot_scoped_attempt_and_dispatch_correlation() {
+    let path = temporary_database();
+    let instrument = InstrumentId::new(777);
+    let actuator = ActuatorId::new(instrument, lab_core::HEATER_POWER);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "correlated output".into(),
+            history_capacity: 2,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    let output = |runtime: &mut Runtime, at, command| {
+        runtime.command(Command::Output {
+            actuator,
+            at,
+            command,
+        })
+    };
+    output(
+        &mut runtime,
+        Duration::ZERO,
+        OutputCommand::BindProfile(SafeProfile {
+            min: 0.0,
+            max: 100.0,
+            safe_value: 0.0,
+            max_lease: Duration::from_secs(5),
+            max_proposal_ttl: Duration::from_secs(1),
+            required_evidence: EvidenceLevel::Readback,
+        }),
+    )
+    .unwrap();
+    output(&mut runtime, Duration::ZERO, OutputCommand::RequestSafe).unwrap();
+    let CommandResult::Output(OutputResult::Dispatched(safe)) =
+        output(&mut runtime, Duration::ZERO, OutputCommand::BeginDispatch).unwrap()
+    else {
+        panic!("safe dispatch missing")
+    };
+    output(
+        &mut runtime,
+        Duration::ZERO,
+        OutputCommand::Complete {
+            dispatch_id: safe.id(),
+            outcome: DispatchOutcome::ReadbackVerified,
+        },
+    )
+    .unwrap();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("virtual correlation").unwrap();
+    runtime.enable_recording_facts();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = output(
+        &mut runtime,
+        at,
+        OutputCommand::Acquire {
+            owner: OutputOwner::Manual(777),
+            lifetime: Duration::from_secs(1),
+        },
+    )
+    .unwrap() else {
+        panic!("manual lease missing")
+    };
+    output(
+        &mut runtime,
+        at,
+        OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(33.0),
+            unit: Unit::PERCENT,
+            ttl: Duration::from_millis(100),
+        }),
+    )
+    .unwrap();
+    let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
+        output(&mut runtime, at, OutputCommand::BeginDispatch).unwrap()
+    else {
+        panic!("ordinary dispatch missing")
+    };
+    output(
+        &mut runtime,
+        at,
+        OutputCommand::Complete {
+            dispatch_id: dispatch.id(),
+            outcome: DispatchOutcome::ReadbackVerified,
+        },
+    )
+    .unwrap();
+    output(
+        &mut runtime,
+        at,
+        OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(44.0),
+            unit: Unit::CELSIUS,
+            ttl: Duration::from_millis(100),
+        }),
+    )
+    .unwrap_err();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    store.stop_run().unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    type CorrelationRow = (String, Option<Vec<u8>>, Option<Vec<u8>>);
+    let rows: Vec<CorrelationRow> = {
+        let mut statement = db
+            .prepare("SELECT stage,attempt_id,dispatch_id FROM output_events ORDER BY record_seq")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0].0, "requested");
+    assert_eq!(rows[1].0, "authorized");
+    assert_eq!(rows[2].0, "send_started");
+    assert_eq!(rows[3].0, "readback_verified");
+    assert_eq!(rows[4].0, "rejected_before_send");
+    assert!(rows[0].1.is_some(), "proposal identity was omitted");
+    assert!(rows[..4].iter().all(|row| row.1 == rows[0].1));
+    assert_eq!(rows[0].2, None);
+    assert!(rows[1].2.is_some(), "trusted dispatch identity was omitted");
+    assert!(rows[1..4].iter().all(|row| row.2 == rows[1].2));
+    assert!(rows[4].1.is_some());
+    assert_ne!(rows[4].1, rows[0].1);
+    assert_eq!(rows[4].2, None);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

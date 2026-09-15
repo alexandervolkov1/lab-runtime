@@ -382,10 +382,15 @@ pub struct Runtime {
     outputs: BTreeMap<ActuatorId, OutputAuthority>,
     resources: BTreeMap<ResourceId, ResourceExecutor>,
     pending_reads: BTreeMap<(ResourceId, TransactionId), PendingRead>,
-    unsettled_outputs: BTreeMap<ResourceId, (ActuatorId, crate::output::DispatchId)>,
+    unsettled_outputs: BTreeMap<ResourceId, (ActuatorId, crate::output::DispatchId, Option<u64>)>,
     output_time: Duration,
     transport_time: Duration,
     recording_facts: crate::recording::FactOutbox,
+    next_output_attempt: u64,
+    output_attempts: BTreeMap<ActuatorId, u64>,
+    // One current virtual dispatch per binding. M3 intents carry immutable
+    // attempt correlation through their own bounded transport lifecycle.
+    output_dispatch_attempts: BTreeMap<ActuatorId, (crate::output::DispatchId, u64)>,
     required_recording: crate::recording::RequiredGate,
 }
 
@@ -741,23 +746,83 @@ impl Runtime {
                     }
                 }
                 let issued = command.clone();
+                let proposed_attempt = if matches!(
+                    issued,
+                    OutputCommand::Propose(_) | OutputCommand::RequestSafe
+                ) {
+                    Some(self.allocate_output_attempt()?)
+                } else {
+                    None
+                };
                 let was_safe_completion = self
                     .outputs
                     .get(&actuator)
                     .and_then(|authority| authority.snapshot().in_flight)
                     .is_some_and(|dispatch| dispatch.is_safe());
+                let requested_before = self
+                    .outputs
+                    .get(&actuator)
+                    .and_then(|authority| authority.snapshot().requested);
                 let result = self
                     .outputs
                     .get_mut(&actuator)
                     .ok_or(OutputError::UnknownActuator)?
-                    .command(command, at)?;
+                    .command(command, at);
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let (Some(attempt_id), OutputCommand::Propose(proposal)) =
+                            (proposed_attempt, &issued)
+                        {
+                            self.recording_facts.output_correlated(
+                                actuator,
+                                crate::recording::OutputStage::RejectedBeforeSend,
+                                match &proposal.value {
+                                    Value::Float(value) if value.is_finite() => Some(*value),
+                                    _ => None,
+                                },
+                                at,
+                                crate::recording::OutputEvidenceSource::None,
+                                Some(attempt_id),
+                                None,
+                            );
+                        }
+                        if matches!(issued, OutputCommand::BeginDispatch)
+                            && matches!(error, Error::Output(OutputError::Expired))
+                        {
+                            self.recording_facts.output_correlated(
+                                actuator,
+                                crate::recording::OutputStage::ExpiredBeforeSend,
+                                requested_before,
+                                at,
+                                crate::recording::OutputEvidenceSource::None,
+                                self.output_attempts.get(&actuator).copied(),
+                                None,
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
+                if let Some(attempt_id) = proposed_attempt {
+                    self.output_attempts.insert(actuator, attempt_id);
+                }
+                let attempt_id = self.output_attempts.get(&actuator).copied();
+                if let OutputResult::Dispatched(dispatch) = &result
+                    && let Some(attempt_id) = attempt_id
+                {
+                    self.output_dispatch_attempts
+                        .insert(actuator, (dispatch.id(), attempt_id));
+                }
                 match (&issued, &result) {
                     (OutputCommand::RequestSafe, OutputResult::Updated) => {
-                        self.recording_facts.output(
+                        self.recording_facts.output_correlated(
                             actuator,
                             crate::recording::OutputStage::SafeRequested,
                             None,
                             at,
+                            crate::recording::OutputEvidenceSource::None,
+                            attempt_id,
+                            None,
                         );
                     }
                     (OutputCommand::Trip, OutputResult::Updated) => {
@@ -769,37 +834,53 @@ impl Runtime {
                         );
                     }
                     (OutputCommand::Propose(_), OutputResult::Queued) => {
-                        self.recording_facts.output(
+                        self.recording_facts.output_correlated(
                             actuator,
                             crate::recording::OutputStage::Requested,
                             self.outputs
                                 .get(&actuator)
                                 .and_then(|authority| authority.snapshot().requested),
                             at,
+                            crate::recording::OutputEvidenceSource::None,
+                            attempt_id,
+                            None,
                         );
                     }
                     (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch))
                         if !dispatch.is_safe() =>
                     {
-                        self.recording_facts.output(
+                        self.recording_facts.output_correlated(
                             actuator,
                             crate::recording::OutputStage::Authorized,
                             Some(dispatch.value()),
                             at,
+                            crate::recording::OutputEvidenceSource::None,
+                            self.output_dispatch_attempts.get(&actuator).and_then(
+                                |(id, attempt)| (*id == dispatch.id()).then_some(*attempt),
+                            ),
+                            Some(dispatch.id()),
                         );
-                        self.recording_facts.output(
+                        self.recording_facts.output_correlated(
                             actuator,
                             crate::recording::OutputStage::SendStarted,
                             Some(dispatch.value()),
                             at,
+                            crate::recording::OutputEvidenceSource::VirtualSimulation,
+                            self.output_dispatch_attempts.get(&actuator).and_then(
+                                |(id, attempt)| (*id == dispatch.id()).then_some(*attempt),
+                            ),
+                            Some(dispatch.id()),
                         );
                     }
                     (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch)) => {
-                        self.recording_facts.output(
+                        self.recording_facts.output_correlated(
                             actuator,
                             crate::recording::OutputStage::SafeSendStarted,
                             Some(dispatch.value()),
                             at,
+                            crate::recording::OutputEvidenceSource::VirtualSimulation,
+                            attempt_id,
+                            Some(dispatch.id()),
                         );
                     }
                     (OutputCommand::Complete { outcome, .. }, OutputResult::Completed) => {
@@ -821,7 +902,7 @@ impl Runtime {
                                 crate::recording::OutputStage::Ambiguous
                             }
                         };
-                        self.recording_facts.output_with_source(
+                        self.recording_facts.output_correlated(
                             actuator,
                             stage,
                             self.outputs.get(&actuator).and_then(|authority| {
@@ -829,6 +910,18 @@ impl Runtime {
                             }),
                             at,
                             crate::recording::OutputEvidenceSource::VirtualSimulation,
+                            match &issued {
+                                OutputCommand::Complete { dispatch_id, .. } => {
+                                    self.output_dispatch_attempts.get(&actuator).and_then(
+                                        |(id, attempt)| (*id == *dispatch_id).then_some(*attempt),
+                                    )
+                                }
+                                _ => None,
+                            },
+                            match &issued {
+                                OutputCommand::Complete { dispatch_id, .. } => Some(*dispatch_id),
+                                _ => None,
+                            },
                         );
                     }
                     _ => {}
@@ -1142,6 +1235,7 @@ impl Runtime {
                 let intent = authority.reserve_transport(
                     at,
                     deadline,
+                    self.output_attempts.get(&actuator).copied(),
                     binding.binding_generation,
                     binding.mapping_revision,
                 )?;
@@ -2693,17 +2787,21 @@ impl Runtime {
         proposal: OutputProposal,
         at: Duration,
     ) -> Result<(), Error> {
+        let attempt_id = self.allocate_output_attempt()?;
         self.outputs
             .get_mut(&actuator)
             .ok_or(OutputError::UnknownActuator)?
             .command(OutputCommand::Propose(proposal), at)?;
-        self.recording_facts.output(
+        self.recording_facts.output_correlated(
             actuator,
             crate::recording::OutputStage::Requested,
             self.outputs
                 .get(&actuator)
                 .and_then(|output| output.snapshot().requested),
             at,
+            crate::recording::OutputEvidenceSource::None,
+            Some(attempt_id),
+            None,
         );
         // A one-call PID can propose and send in the same owner unit. Recheck
         // capture capacity before that unit reaches its ordinary send boundary.
@@ -2717,17 +2815,23 @@ impl Runtime {
             OutputResult::Dispatched(dispatch) => dispatch,
             _ => unreachable!("BeginDispatch has one successful result kind"),
         };
-        self.recording_facts.output(
+        self.recording_facts.output_correlated(
             actuator,
             crate::recording::OutputStage::Authorized,
             Some(dispatch.value()),
             at,
+            crate::recording::OutputEvidenceSource::None,
+            Some(attempt_id),
+            Some(dispatch.id()),
         );
-        self.recording_facts.output(
+        self.recording_facts.output_correlated(
             actuator,
             crate::recording::OutputStage::SendStarted,
             Some(dispatch.value()),
             at,
+            crate::recording::OutputEvidenceSource::VirtualSimulation,
+            Some(attempt_id),
+            Some(dispatch.id()),
         );
         if let Err(error) = self.apply_virtual_dispatch(actuator, dispatch.value()) {
             self.outputs
@@ -2740,11 +2844,14 @@ impl Runtime {
                     },
                     at,
                 )?;
-            self.recording_facts.output(
+            self.recording_facts.output_correlated(
                 actuator,
                 crate::recording::OutputStage::Failed,
                 Some(dispatch.value()),
                 at,
+                crate::recording::OutputEvidenceSource::VirtualSimulation,
+                Some(attempt_id),
+                Some(dispatch.id()),
             );
             return Err(error);
         }
@@ -2758,14 +2865,24 @@ impl Runtime {
                 },
                 at,
             )?;
-        self.recording_facts.output_with_source(
+        self.recording_facts.output_correlated(
             actuator,
             crate::recording::OutputStage::ReadbackVerified,
             Some(dispatch.value()),
             at,
             crate::recording::OutputEvidenceSource::VirtualSimulation,
+            Some(attempt_id),
+            Some(dispatch.id()),
         );
         Ok(())
+    }
+
+    fn allocate_output_attempt(&mut self) -> Result<u64, Error> {
+        self.next_output_attempt = self
+            .next_output_attempt
+            .checked_add(1)
+            .ok_or(OutputError::CounterExhausted)?;
+        Ok(self.next_output_attempt)
     }
 
     fn complete_simulated_safe(&mut self, actuator: ActuatorId, at: Duration) -> Result<(), Error> {
@@ -2778,11 +2895,15 @@ impl Runtime {
             OutputResult::Dispatched(dispatch) => dispatch,
             _ => unreachable!("BeginDispatch has one successful result kind"),
         };
-        self.recording_facts.output(
+        let attempt_id = self.output_attempts.get(&actuator).copied();
+        self.recording_facts.output_correlated(
             actuator,
             crate::recording::OutputStage::SafeSendStarted,
             Some(dispatch.value()),
             at,
+            crate::recording::OutputEvidenceSource::VirtualSimulation,
+            attempt_id,
+            Some(dispatch.id()),
         );
         self.apply_virtual_dispatch(actuator, dispatch.value())?;
         self.outputs
@@ -2795,12 +2916,14 @@ impl Runtime {
                 },
                 at,
             )?;
-        self.recording_facts.output_with_source(
+        self.recording_facts.output_correlated(
             actuator,
             crate::recording::OutputStage::SafeReadbackVerified,
             Some(dispatch.value()),
             at,
             crate::recording::OutputEvidenceSource::VirtualSimulation,
+            attempt_id,
+            Some(dispatch.id()),
         );
         Ok(())
     }
@@ -2973,25 +3096,35 @@ impl Runtime {
                     }
                     AuthorizationStep::Started => {
                         let dispatch = authority.begin_transport(intent, at).map_err(|_| ())?;
+                        let attempt_id = intent.attempt_id;
                         if intent.safe {
-                            recording_facts.output(
+                            recording_facts.output_correlated(
                                 intent.actuator,
                                 crate::recording::OutputStage::SafeSendStarted,
                                 Some(intent.value),
                                 at,
+                                crate::recording::OutputEvidenceSource::TransportProtocol,
+                                attempt_id,
+                                Some(dispatch),
                             );
                         } else {
-                            recording_facts.output(
+                            recording_facts.output_correlated(
                                 intent.actuator,
                                 crate::recording::OutputStage::Authorized,
                                 Some(intent.value),
                                 at,
+                                crate::recording::OutputEvidenceSource::None,
+                                attempt_id,
+                                Some(dispatch),
                             );
-                            recording_facts.output(
+                            recording_facts.output_correlated(
                                 intent.actuator,
                                 crate::recording::OutputStage::SendStarted,
                                 Some(intent.value),
                                 at,
+                                crate::recording::OutputEvidenceSource::TransportProtocol,
+                                attempt_id,
+                                Some(dispatch),
                             );
                         }
                         Ok(Some(dispatch))
@@ -3064,12 +3197,14 @@ impl Runtime {
             TransportEvent::OutputUncertain { intent, dispatch } => {
                 if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                     authority.transport_uncertain(dispatch)?;
-                    self.recording_facts.output_with_source(
+                    self.recording_facts.output_correlated(
                         intent.actuator,
                         crate::recording::OutputStage::TransportUncertain,
                         Some(intent.value),
                         at,
                         crate::recording::OutputEvidenceSource::TransportProtocol,
+                        intent.attempt_id,
+                        Some(dispatch),
                     );
                 }
             }
@@ -3108,7 +3243,7 @@ impl Runtime {
                                 crate::output::DispatchOutcome::Acknowledged,
                                 at,
                             )?;
-                            self.recording_facts.output_with_source(
+                            self.recording_facts.output_correlated(
                                 intent.actuator,
                                 if intent.safe {
                                     crate::recording::OutputStage::SafeAcknowledged
@@ -3118,19 +3253,23 @@ impl Runtime {
                                 Some(intent.value),
                                 at,
                                 crate::recording::OutputEvidenceSource::TransportProtocol,
+                                intent.attempt_id,
+                                Some(dispatch),
                             );
                         }
                     } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.transport_uncertain(dispatch)?;
-                        self.recording_facts.output_with_source(
+                        self.recording_facts.output_correlated(
                             intent.actuator,
                             crate::recording::OutputStage::TransportUncertain,
                             Some(intent.value),
                             at,
                             crate::recording::OutputEvidenceSource::TransportProtocol,
+                            intent.attempt_id,
+                            Some(dispatch),
                         );
                         self.unsettled_outputs
-                            .insert(resource, (intent.actuator, dispatch));
+                            .insert(resource, (intent.actuator, dispatch, intent.attempt_id));
                         self.resources
                             .get_mut(&resource)
                             .expect("executor reinserted before event handling")
@@ -3142,17 +3281,20 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
-                    self.recording_facts.output_with_source(
+                    self.recording_facts.output_correlated(
                         intent.actuator,
                         crate::recording::OutputStage::Ambiguous,
                         Some(intent.value),
                         at,
                         crate::recording::OutputEvidenceSource::TransportProtocol,
+                        intent.attempt_id,
+                        Some(dispatch),
                     );
                 }
             }
             TransportEvent::BoundaryRecovered => {
-                if let Some((actuator, dispatch)) = self.unsettled_outputs.remove(&resource)
+                if let Some((actuator, dispatch, attempt_id)) =
+                    self.unsettled_outputs.remove(&resource)
                     && let Some(authority) = self.outputs.get_mut(&actuator)
                 {
                     authority.complete_transport(
@@ -3160,12 +3302,14 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
-                    self.recording_facts.output_with_source(
+                    self.recording_facts.output_correlated(
                         actuator,
                         crate::recording::OutputStage::Ambiguous,
                         authority.snapshot().sent.map(|sent| sent.value),
                         at,
                         crate::recording::OutputEvidenceSource::TransportProtocol,
+                        attempt_id,
+                        Some(dispatch),
                     );
                 }
             }

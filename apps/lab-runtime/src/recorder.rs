@@ -1006,12 +1006,16 @@ impl SqliteStore {
                 }
                 RecordingFact::Output {
                     actuator,
+                    attempt_id,
+                    dispatch_id,
                     stage,
                     value,
                     source,
                     ..
                 } => {
                     let stage = match stage {
+                        OutputStage::RejectedBeforeSend => "rejected_before_send",
+                        OutputStage::ExpiredBeforeSend => "expired_before_send",
                         OutputStage::Requested => "requested",
                         OutputStage::Authorized => "authorized",
                         OutputStage::SendStarted => "send_started",
@@ -1035,13 +1039,23 @@ impl SqliteStore {
                             "transport_protocol"
                         }
                     };
+                    let attempt_blob = attempt_id.map(u64_blob);
+                    let dispatch_blob = dispatch_id.map(|id| {
+                        let (instance, sequence) = id.diagnostic_parts();
+                        let mut bytes = [0u8; 16];
+                        bytes[..8].copy_from_slice(&instance.to_be_bytes());
+                        bytes[8..].copy_from_slice(&sequence.to_be_bytes());
+                        bytes
+                    });
                     transaction.execute(
-                        "INSERT INTO output_events(boot_id,record_seq,instrument_id,parameter_id,\
-                         stage,value,evidence_source,evidence_basis) \
-                         VALUES(?1,?2,?3,?4,?5,?6,?7,'runtime')",
+                        "INSERT INTO output_events(boot_id,record_seq,attempt_id,dispatch_id,\
+                         instrument_id,parameter_id,stage,value,evidence_source,evidence_basis) \
+                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'runtime')",
                         params![
                             self.boot_id.as_slice(),
                             record_id.as_slice(),
+                            attempt_blob.as_ref().map(|blob| blob.as_slice()),
+                            dispatch_blob.as_ref().map(|blob| blob.as_slice()),
                             u64_blob(actuator.instrument().get()).as_slice(),
                             u64_blob(actuator.parameter().get()).as_slice(),
                             stage,

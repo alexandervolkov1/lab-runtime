@@ -6,7 +6,7 @@
 use crate::{
     Sample, Unit, Value,
     control::{ControllerId, ControllerState, PidConfig},
-    output::ActuatorId,
+    output::{ActuatorId, DispatchId},
     reference::ReferenceId,
 };
 use std::{collections::VecDeque, time::Duration};
@@ -44,6 +44,10 @@ pub(crate) struct ReferenceDetails {
 /// Distinct stages of an output attempt. A requested value is never delivery evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputStage {
+    /// Admission rejected the candidate before a dispatch identity or send exists.
+    RejectedBeforeSend,
+    /// Accepted proposal reached its exclusive deadline before any send.
+    ExpiredBeforeSend,
     /// A validated candidate was accepted into authority's pending slot.
     Requested,
     /// Authority approved the candidate at the final dispatch check.
@@ -103,6 +107,10 @@ pub enum RecordingFact {
         sequence: u64,
         /// Exact actuator binding.
         actuator: ActuatorId,
+        /// Process-local attempt order; the Recorder scopes it with the boot ID.
+        attempt_id: Option<u64>,
+        /// Trusted dispatch correlation, assigned only after admission.
+        dispatch_id: Option<DispatchId>,
         /// Delivery/evidence stage.
         stage: OutputStage,
         /// Authorized scalar for this attempt when known.
@@ -237,9 +245,30 @@ impl FactOutbox {
         at: Duration,
         source: OutputEvidenceSource,
     ) {
+        self.output_correlated(actuator, stage, value, at, source, None, None);
+    }
+
+    // The explicit source, attempt and dispatch fields prevent a caller from
+    // accidentally treating a requested value as trusted delivery evidence.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit evidence and correlation"
+    )]
+    pub(crate) fn output_correlated(
+        &mut self,
+        actuator: ActuatorId,
+        stage: OutputStage,
+        value: Option<f64>,
+        at: Duration,
+        source: OutputEvidenceSource,
+        attempt_id: Option<u64>,
+        dispatch_id: Option<DispatchId>,
+    ) {
         self.push(128, |sequence| RecordingFact::Output {
             sequence,
             actuator,
+            attempt_id,
+            dispatch_id,
             stage,
             value,
             source,

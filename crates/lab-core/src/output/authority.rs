@@ -432,6 +432,7 @@ impl OutputAuthority {
         &mut self,
         at: Duration,
         queue_deadline: Duration,
+        attempt_id: Option<u64>,
         binding_generation: u64,
         mapping_revision: u64,
     ) -> Result<OutputIntent, Error> {
@@ -444,6 +445,7 @@ impl OutputAuthority {
         let intent = if self.safe_needed {
             OutputIntent {
                 actuator: self.actuator,
+                attempt_id,
                 instance: self.instance,
                 lease: None,
                 epoch: self.snapshot.epoch,
@@ -463,6 +465,7 @@ impl OutputAuthority {
             }
             OutputIntent {
                 actuator: self.actuator,
+                attempt_id,
                 instance: self.instance,
                 lease: Some(pending.lease),
                 epoch: self.snapshot.epoch,
@@ -716,7 +719,7 @@ mod tests {
             )
             .unwrap();
         let intent = authority
-            .reserve_transport(now, now + Duration::from_millis(50), 1, 1)
+            .reserve_transport(now, now + Duration::from_millis(50), None, 1, 1)
             .unwrap();
         assert_eq!(
             authority.renew_native(replacement, lifetime, now),

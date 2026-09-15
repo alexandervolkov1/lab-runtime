@@ -156,6 +156,27 @@ fn one_pid_tick_keeps_requested_sent_and_readback_as_separate_ordered_facts() {
             OutputStage::ReadbackVerified
         ]
     );
+    let output_facts: Vec<_> = facts
+        .iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                attempt_id,
+                dispatch_id,
+                ..
+            } => Some((*attempt_id, *dispatch_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(output_facts.len(), 4);
+    assert!(output_facts[0].0.is_some());
+    assert!(output_facts.iter().all(|fact| fact.0 == output_facts[0].0));
+    assert_eq!(output_facts[0].1, None);
+    assert!(output_facts[1].1.is_some());
+    assert!(
+        output_facts[1..]
+            .iter()
+            .all(|fact| fact.1 == output_facts[1].1)
+    );
     assert!(
         facts
             .windows(2)
@@ -174,6 +195,112 @@ fn recording_fact_outbox_never_accumulates_while_disabled() {
         })
         .unwrap();
     assert!(runtime.take_recording_facts().is_empty());
+}
+
+#[test]
+fn rejected_proposal_has_attempt_identity_without_an_invented_dispatch() {
+    let mut runtime = fixture();
+    let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+    runtime.enable_recording_facts();
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(17),
+                lifetime: Duration::from_secs(1),
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap()
+    else {
+        panic!("fixture did not grant a lease")
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(25.0),
+                unit: Unit::CELSIUS,
+                ttl: Duration::from_millis(100),
+            }),
+            at: Duration::ZERO,
+        })
+        .unwrap_err();
+    let facts = runtime.take_recording_facts();
+    let rejected: Vec<_> = facts
+        .iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage: OutputStage::RejectedBeforeSend,
+                attempt_id,
+                dispatch_id,
+                ..
+            } => Some((*attempt_id, *dispatch_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rejected.len(), 1);
+    assert!(rejected[0].0.is_some());
+    assert_eq!(rejected[0].1, None);
+}
+
+#[test]
+fn proposal_expired_at_exclusive_deadline_has_no_send_or_dispatch_fact() {
+    let mut runtime = fixture();
+    let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+    runtime.enable_recording_facts();
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(18),
+                lifetime: Duration::from_secs(1),
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap()
+    else {
+        panic!("fixture did not grant a lease")
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(30.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(100),
+            }),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::BeginDispatch,
+            at: Duration::from_millis(100),
+        })
+        .unwrap_err();
+    let output: Vec<_> = runtime
+        .take_recording_facts()
+        .into_iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage,
+                attempt_id,
+                dispatch_id,
+                ..
+            } => Some((stage, attempt_id, dispatch_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(output.len(), 2);
+    assert_eq!(output[0].0, OutputStage::Requested);
+    assert_eq!(output[1].0, OutputStage::ExpiredBeforeSend);
+    assert_eq!(output[0].1, output[1].1);
+    assert!(output[0].1.is_some());
+    assert!(output.iter().all(|fact| fact.2.is_none()));
 }
 
 #[test]

@@ -189,4 +189,24 @@ fn actual_metakon_ack_is_trusted_protocol_ack_without_readback_fact() {
         }
     )));
     assert!(!stages.contains(&OutputStage::ReadbackVerified));
+    let correlations: Vec<_> = facts
+        .iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                attempt_id,
+                dispatch_id,
+                ..
+            } => Some((*attempt_id, *dispatch_id)),
+            _ => None,
+        })
+        .collect();
+    assert!(correlations[0].0.is_some());
+    assert!(correlations.iter().all(|pair| pair.0 == correlations[0].0));
+    assert_eq!(correlations[0].1, None);
+    assert!(correlations[1].1.is_some());
+    assert!(
+        correlations[1..]
+            .iter()
+            .all(|pair| pair.1 == correlations[1].1)
+    );
 }

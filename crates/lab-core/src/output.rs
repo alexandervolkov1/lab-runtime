@@ -16,6 +16,7 @@ pub(crate) use authority::OutputAuthority;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct OutputIntent {
     pub(crate) actuator: ActuatorId,
+    pub(crate) attempt_id: Option<u64>,
     pub(crate) instance: u64,
     pub(crate) lease: Option<OutputLease>,
     pub(crate) epoch: u64,
@@ -197,6 +198,13 @@ impl Dispatch {
 pub struct DispatchId {
     instance: u64,
     sequence: u64,
+}
+impl DispatchId {
+    /// Read-only diagnostic correlation; these parts cannot reconstruct a permit.
+    /// Recorder must pair them with its boot ID before persisting a dispatch ID.
+    pub const fn diagnostic_parts(self) -> (u64, u64) {
+        (self.instance, self.sequence)
+    }
 }
 
 /// Terminal simulated outcomes. Ambiguous never means success or absence of effect.
