@@ -1,125 +1,102 @@
 # AI Handoff
 
 This is the single persistent external-review communication file. Read
-`ai/HANDOFF.md`, `ai/ROADMAP.md`, `ai/WORK.md` and `AGENTS.md` before each phase.
-Detailed contracts and implementation evidence belong in normal project docs.
+`ai/HANDOFF.md`, `ai/ROADMAP.md`, `ai/WORK.md`, `AGENTS.md` and `PROJECT_BRIEF.md`
+before each later phase. Detailed acceptance contracts and implementation
+evidence belong in normal project documentation.
 
 ## Current state
 
 ```text
-STATUS: WAITING_FOR_USER_MODEL_SWITCH
-Completed model: ASTRA_HIGH
-Completed work: M6 architecture/design and tests-first acceptance contract
-Requested switch: ASTRA_HIGH -> SOL_HIGH
-Resume after explicit user switch: M6 implementation only
+STATUS: READY_FOR_EXTERNAL_REVIEW
+Completed model: SOL_HIGH
+Completed work: M6 implementation and H1–H28 acceptance verification
+Requested next step: external review of M6 source, tests and report
+Authorized implementation now: none
 Do not begin: M7 Recorder design or implementation
 ```
 
-M6 design is complete in
-[the M6 design and H1–H28 acceptance contract](../docs/implementation/MILESTONE_6_DESIGN.md).
-This is an Astra design checkpoint, not completed M6 implementation or a claim of
-external approval of M6. No M6 production code/dependencies/tests were added.
-There is no unresolved architectural fork; the pending gate is the user model switch.
+The user explicitly crossed ASTRA_HIGH -> SOL_HIGH and authorized M6 only.
+SOL_HIGH completed [the fixed M6 design/H1–H28 contract](../docs/implementation/MILESTONE_6_DESIGN.md)
+and wrote [the M6 implementation report](../docs/implementation/MILESTONE_6_REPORT.md).
+This status requests review; it does **not** claim external approval of M6 or
+authorize another milestone. No unresolved architectural contradiction was found.
 
-## Reviewed implementation checkpoint
+## Previously approved implementation baseline
 
-Corrected M4 and completed M5 are **APPROVED** by the external reviewer.
-The approved implementation checkpoint is `cb98d55`:
+The external reviewer approved corrected M4 and completed M5 at checkpoint
+`cb98d55`. M1 is the domain foundation and finite virtual executable; M2 central
+OutputAuthority and arbitration; M3 bounded transport, narrow Metakon and
+data-driven definitions; M4 thermal plant/native EMA/Fixed/Ramp/PID with corrected
+Warming and finite private native renewal; M5 bounded Lua model observations and
+moving-mean Transform. The M4 corrections passed 92 tests before Lua
+dependencies, and the reviewed M5 baseline passed 123 workspace tests.
 
-- M1: domain foundation and finite virtual executable.
-- M2: central OutputAuthority and arbitration.
-- M3: bounded transport executor, narrow Metakon and data-driven definitions.
-- M4: thermal plant, native EMA/Fixed/Ramp/PID; corrected Warming and finite native
-  renewal, verified at 92 workspace tests before adding Lua dependencies.
-- M5: bounded Lua model observations and moving-mean transform, verified at 123 tests.
+Accepted contracts and evidence remain in the
+[M4 lifecycle review](../docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md),
+[M4 report](../docs/implementation/MILESTONE_4_REPORT.md),
+[M5 design](../docs/implementation/MILESTONE_5_DESIGN.md) and
+[M5 report](../docs/implementation/MILESTONE_5_REPORT.md). The reviewer assessed
+supplied source/snapshot and recorded verification; it did not independently run
+Cargo on this workstation. The incoming reviewer comments and full Astra mandate
+are preserved in commit `a8c68ff`.
 
-Accepted implementation contracts/evidence:
+## M6 implementation checkpoint for review
 
-- [M4 lifecycle review](../docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md).
-- [M4 report](../docs/implementation/MILESTONE_4_REPORT.md).
-- [M5 design](../docs/implementation/MILESTONE_5_DESIGN.md).
-- [M5 report](../docs/implementation/MILESTONE_5_REPORT.md).
+M6 has one mutable Runtime owner and explicit 10-ms safety, 100-ms
+plant/Reference/native-controller, and 200-ms Lua Source opportunities. Lower
+priority work is bounded and cannot hold the owner behind Lua or network I/O.
+Two fixed real Lua workers remain isolated. The explicit service profile starts
+safe Ready on IPv4 loopback, publishes a bounded port-0 readiness line, and
+accepts strict version-one UTF-8 NDJSON. It excludes remote direct output,
+manual producer, client-supplied clock and client-supplied physical evidence.
 
-The reviewer approved supplied source/snapshot and recorded verification evidence;
-the reviewer did not independently run Cargo on this machine. Astra independently
-reran `cargo test --workspace` (123 passing) and
-`cargo clippy --workspace --all-targets -- -D warnings` (passing) before M6 design.
-Incoming reviewer comments and the full Astra mandate are preserved in `a8c68ff`.
+Core gained continuous Ramp retune and safe Ready/Paused PID configuration with
+atomic revisions and pure snapshots. Server-issued process scopes/consecutive
+request numbers retain accepted/terminal outcomes and expose explicit unknown
+after eviction/restart. Semantic events, frozen snapshot pages, subscription
+replay/filter progress, gap and resync preserve the owner publication order.
+Peer queues, frames, sessions, histories, worker slots and shutdown grace are
+bounded. Ctrl-C only sets an atomic stop flag for the Rust owner; the stop
+barrier quiesces work, records safe/cleanup evidence before network closure,
+and reports unconfirmed output or unfinished workers as failure.
 
-## Accepted invariants carried into M6
+The final workspace lists **189 named Rust tests**. Debug and release
+`cargo test --workspace`, `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, finite
+`cargo run -p lab-runtime`, `bb --config clients/babashka/bb.edn run test-client`,
+standalone actual-process `babashka_reconnect` and `git diff --check` passed.
+The actual built Rust host launched real Babashka A/B: A configured/started and
+reached Running, Rust killed A without Pause, and the host ran 6,138 ms with no
+ordinary client (>3 complete 2-s leases). B resumed the same boot/scope,
+reconciled outcome/replay, observed plant temperature 20.0749 -> 30.6670 °C and
+a 6,305-ms finite lease-expiry advance with unchanged authority
+instance/owner/epoch, then paused with Rust-confirmed virtual safe readback and
+completed clean shutdown. `rustc`/`cargo` are 1.95.0; `bb` is 1.13.220.
 
-Warming owns no lease, integrates no PID and emits no ordinary proposal. Only
-distinct fresh Good observations advance warm-up; activation acquires authority
-when preparation finishes. Start/Resume reset and warm; independent Reference
-progress follows monotonic Runtime time, including controller pause.
+The report maps every H1–H28 requirement to named passing tests, records
+tests-first red/fix evidence, hard limits, shutdown/reconnect observations and
+remaining scope. The M6 proof remains virtual/software. ACK is not readback;
+no physical output acceptance, real COM adapter, Recorder/SQLite, GUI, long soak
+or full product parity was added. Lua acceptance deadlines fence late results
+but do not physically kill a stalled foreign instruction. The separate v1 donor
+remains read-only and is not a workspace dependency.
 
-Native renewal remains crate-private and follows successful trusted Running
-delivery. It retains authority instance, owner and epoch, with a new finite expiry;
-the old token becomes stale. Expiry/revoke/pause/trip, bad input, failed algorithm,
-failed delivery or lost ownership stop renewal. Numeric Automatic/controller IDs
-never grant clients that privilege. A client starting a native controller does
-not own its lifetime.
+## Review request and gate
 
-Lua remains read-only model/transform work with `mlua 0.11.6`, Lua 5.4 vendored,
-default features disabled. Core is std-only. Two fixed workers, disposable VMs,
-capability allowlist, memory/instruction/data/diagnostic/host-call bounds and
-100-ms acceptance/dependency deadlines remain in force. Stalled slots quarantine;
-no unlimited replacement or owner wait. Correlation/generation/revision/deadline
-fences reject obsolete results. Replacement validates before atomic commit and
-re-warms. No Lua raw transport, output authority, OS access or physical evidence.
-ACK is not readback. Runtime service must progress independently of workers.
+Please review [the M6 report](../docs/implementation/MILESTONE_6_REPORT.md),
+[fixed design](../docs/implementation/MILESTONE_6_DESIGN.md), implementation
+source and named acceptance tests against H1–H28 and the previously accepted
+M1–M5 contracts. Record the response in this file. If a genuine architectural
+contradiction remains, state the precise fork and set `WAITING_FOR_REVIEW`;
+SOL_HIGH has stopped. A later user-authorized model/phase instruction is required
+before any M7 design or implementation.
 
-The implementation remains a virtual/software proof: the executable is finite;
-there is no M6 autonomous scheduler/API/Babashka client, Recorder/SQLite, GUI,
-real COM adapter or hardware acceptance. A Lua deadline fences acceptance, not
-physical thread execution. No hard real-time or physical safety certification.
+## Workspace preservation and later release work
 
-## Completed Astra work
-
-1. Synchronized stale README/AGENTS with reviewed M5 before material M6 design:
-   `aaca40f` (separate documentation commit).
-2. Preserved the incoming review/phase mandate: `a8c68ff`.
-3. Fixed M6 architecture and tests-first acceptance: `1d18317`.
-4. Updated README/AGENTS and all three ai coordination files for this model gate.
-
-M6 contract decisions:
-
-- One Runtime owner, explicit monotonic periods, safety-first bounded scheduling;
-  std nonblocking network reactor and fixed Lua workers have no shared Runtime lock.
-- Loopback-only bounded version-1 NDJSON; separate host DTOs, pure queries and
-  serialized domain commands, explicit accepted/completed/failed/unknown outcomes.
-- Safe Ready/Paused PID configuration with shared Core validation/revisions;
-  continuous live Ramp retune; no remote direct output or evidence capability.
-- Server-issued scopes and monotonic request numbers, bounded retained outcomes,
-  same-ID conflicts, explicit unknown after eviction/restart and no blind replay.
-- Bounded semantic events, frozen snapshot/cursor/pages, ordered replay/filter
-  progress, explicit gap/resync and disconnect policy for slow clients.
-- Producer stop barrier, nonblocking worker quiesce, safe/recovery grace before
-  transport teardown; missing evidence and unfinished workers reported honestly.
-- Mandatory real Rust host + actual bb A/B process acceptance, client death,
-  autonomous operation beyond three finite leases, reconnect and safe pause.
-
-## Sol resumption and external-review gate
-
-After the user explicitly switches to SOL_HIGH, follow `ai/WORK.md` and M6 design
-section 12 sequentially. Write failing behavior tests before each production
-slice, satisfy all H1–H28 and preserve M4 W1–W9/R1–R10 plus M5 L1–L22.
-Missing actual bb execution leaves M6 incomplete; a Rust fake client or skipped
-test cannot satisfy it. The design workstation has `babashka v1.13.220`; that is
-availability evidence only.
-
-Record implementation/test/process evidence in `MILESTONE_6_REPORT.md`. After M6,
-update this file to `READY_FOR_EXTERNAL_REVIEW` and STOP. If a genuine architecture
-contradiction remains unresolved, use `WAITING_FOR_REVIEW`, describe the exact
-fork and stop. Do not cross either gate automatically or begin M7.
-
-## Later release work and workspace preservation
-
-After reviewed M6, the release sequence still requires M7 Recorder/SQLite,
-runtime/release hardening, real Windows COM, safe read-only Metakon smoke,
-Markdown consolidation, final documentation/tutorial and release packaging.
-These are future phases, not permission to design or implement them now.
-The v1 donor remains read-only and never a workspace dependency.
-
-`ai/project_snapshot.txt` was already an untracked user file at this phase's
-start. It was not edited or staged; preserve it.
+The user-staged `ai/project_snapshot.txt` pre-existed this phase and remains
+untouched. Every M6 commit used scoped paths and excluded that file. After a
+reviewed M6 gate, later release work may include M7 durable Recorder/SQLite,
+runtime/release hardening, real Windows serial/COM, safe read-only Metakon smoke,
+Markdown consolidation, final tutorial and packaging. Listing that sequence is
+not permission to begin it now.

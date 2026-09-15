@@ -13,18 +13,19 @@ review checkpoint and `WORK.md` for the current model's authorized work.
 - M5: bounded Lua model observations and moving-mean transform — implemented,
   verified at 123 workspace tests; external review approved.
 - M6: autonomous headless host, monotonic scheduler, bounded local API/events,
-  reconnect and actual Babashka slice — Astra design/H1–H28 acceptance complete;
-  waiting for explicit ASTRA_HIGH -> SOL_HIGH user switch. No M6 production yet.
+  reconnect and actual Babashka slice — implemented and verified at 189 Rust
+  workspace tests plus real bb A/B process acceptance; external review pending.
 
-Current implementation authority after the model switch is
-[the M6 design](../docs/implementation/MILESTONE_6_DESIGN.md), with
-[ai/WORK.md](WORK.md) as the phase instruction. Existing M4/M5 contracts and reports
-remain the accepted baseline. `NEXT_IMPLEMENTATION_PLAN.md` and
+The fixed M6 contract is [the M6 design](../docs/implementation/MILESTONE_6_DESIGN.md);
+[the M6 report](../docs/implementation/MILESTONE_6_REPORT.md) is the reviewable
+implementation evidence, with [ai/WORK.md](WORK.md) as the current review-stop
+instruction. Existing M4/M5 contracts and reports remain the accepted baseline.
+`NEXT_IMPLEMENTATION_PLAN.md` and
 `IMPLEMENTATION_ROADMAP_M2_M6.md` retain historical context; they do not bypass
 current model/review gates or authorize future milestones.
 
-After Sol verifies M6, mark `READY_FOR_EXTERNAL_REVIEW` in HANDOFF and stop.
-No M7 design or implementation is authorized at this model handoff.
+`READY_FOR_EXTERNAL_REVIEW` is the current HANDOFF state. SOL_HIGH has stopped;
+no M7 design or implementation is authorized at this review gate.
 
 ## First stable release after M6
 
