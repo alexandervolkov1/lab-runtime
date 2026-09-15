@@ -145,6 +145,41 @@ fn ring_overrun_rejects_old_cursor_with_gap_and_filtered_scan_reports_progress()
 }
 
 #[test]
+fn eviction_during_an_installed_replay_reports_gap_and_abandons_that_subscription() {
+    let (mut service, mut app, scope) = setup();
+    let boot = service.boot_id().to_string();
+    let sub = ask(
+        &mut service,
+        &mut app,
+        1,
+        json!({
+            "v":1,"msg_id":"sub","op":"subscribe",
+            "args":{"after":{"boot_id":boot,"seq":"0"},"filter":{"kinds":[],"targets":[]}}
+        }),
+    );
+    assert_eq!(sub[0]["type"], "result");
+    for seq in 1..=520u64 {
+        let retune = ask(
+            &mut service,
+            &mut app,
+            1,
+            json!({
+                "v":1,"msg_id":"many","op":"reference_retune",
+                "request_id":{"scope":scope,"seq":seq.to_string()},
+                "args":{"reference":"1","expected_revision":seq.to_string(),
+                "target":30.0+(seq%2) as f64,"rate":3.0}
+            }),
+        );
+        assert_eq!(retune[1]["state"], "completed");
+    }
+    let gap = app.pump_events(&service, 1);
+    assert_eq!(gap.len(), 1);
+    assert_eq!(gap[0]["code"], "event_gap");
+    assert_eq!(gap[0]["resync_required"], true);
+    assert!(app.pump_events(&service, 1).is_empty());
+}
+
+#[test]
 fn expired_snapshot_and_previous_boot_cursor_or_scope_require_explicit_resync() {
     let (mut first, mut app, scope) = setup();
     let snap = ask(

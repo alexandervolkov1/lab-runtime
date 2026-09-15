@@ -9,13 +9,17 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
+
+// One process-wide fixed Lua supervisor is intentionally shared by this test
+// binary; each real-host case owns it through its network shutdown.
+static TEST_SERVICE_GATE: Mutex<()> = Mutex::new(());
 
 fn start() -> (
     std::net::SocketAddr,
@@ -66,6 +70,7 @@ fn hello(reader: &mut BufReader<TcpStream>) -> String {
 
 #[test]
 fn fragmented_and_coalesced_frames_preserve_connection_order_and_hello_gate() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
     let (addr, stop, join) = start();
     let mut a = connect(addr);
     let gate = send(
@@ -97,6 +102,7 @@ fn fragmented_and_coalesced_frames_preserve_connection_order_and_hello_gate() {
 
 #[test]
 fn client_disconnect_does_not_stop_native_owner_or_other_client_queries() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
     let (addr, stop, join) = start();
     let mut a = connect(addr);
     hello(&mut a);
@@ -122,6 +128,60 @@ fn client_disconnect_does_not_stop_native_owner_or_other_client_queries() {
     assert_ne!(
         before["result"]["observed_at"],
         later["result"]["observed_at"]
+    );
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
+
+#[test]
+fn partial_frame_trickler_closes_at_absolute_first_byte_deadline_while_healthy_peer_progresses() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
+    let (addr, stop, join) = start();
+    let mut trickler = connect(addr);
+    trickler.get_mut().write_all(b"{\"v\":1").unwrap();
+    let mut healthy = connect(addr);
+    hello(&mut healthy);
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_millis(2100) {
+        let progress = send(
+            &mut healthy,
+            json!({"v":1,"msg_id":"q","op":"reference","args":{"reference":"1"}}),
+        );
+        assert_eq!(progress["type"], "result");
+        thread::sleep(Duration::from_millis(40));
+    }
+    let mut line = String::new();
+    assert_eq!(
+        trickler.read_line(&mut line).unwrap(),
+        0,
+        "trickled incomplete frame stayed attached"
+    );
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
+
+#[test]
+fn incompatible_version_receives_bounded_error_then_only_that_socket_closes() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
+    let (addr, stop, join) = start();
+    let mut incompatible = connect(addr);
+    incompatible
+        .get_mut()
+        .write_all(b"{\"v\":2,\"msg_id\":\"bad\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n")
+        .unwrap();
+    let error = read(&mut incompatible);
+    assert_eq!(error["code"], "version_mismatch");
+    assert_eq!(error["accepted"], false);
+    let mut eof = String::new();
+    assert_eq!(incompatible.read_line(&mut eof).unwrap(), 0);
+    let mut healthy = connect(addr);
+    hello(&mut healthy);
+    assert_eq!(
+        send(
+            &mut healthy,
+            json!({"v":1,"msg_id":"q","op":"discover","args":{}})
+        )["type"],
+        "result"
     );
     stop.store(true, Ordering::SeqCst);
     join.join().unwrap();

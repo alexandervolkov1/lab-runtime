@@ -33,6 +33,9 @@ enum Incoming {
     Detach(u64),
 }
 enum Outgoing {
+    Close {
+        connection: u64,
+    },
     Reply {
         connection: u64,
         frame: Vec<u8>,
@@ -57,6 +60,7 @@ struct Peer {
     last_reply: bool,
     last_write: Instant,
     pending: usize,
+    closing: bool,
 }
 impl Peer {
     fn new(stream: TcpStream) -> Self {
@@ -73,6 +77,7 @@ impl Peer {
             last_reply: false,
             last_write: now,
             pending: 0,
+            closing: false,
         }
     }
     fn queued(&self) -> usize {
@@ -128,7 +133,27 @@ impl Peer {
             let frame = self.input[..=end].to_vec();
             let request = match wire::decode_frame(&frame) {
                 Ok(r) => r,
-                Err(_) => return false,
+                Err(error) => {
+                    // A complete malformed exchange can receive one bounded
+                    // best-effort rejection. It never reaches the Runtime owner.
+                    let correlation = serde_json::from_slice::<serde_json::Value>(&frame)
+                        .ok()
+                        .and_then(|value| {
+                            value["msg_id"]
+                                .as_str()
+                                .filter(|id| !id.is_empty() && id.len() <= 64)
+                                .map(str::to_owned)
+                        });
+                    let rejection = serde_json::json!({"v":1,"type":"error","code":error.code,
+                        "message":error.message,"accepted":false,"msg_id":correlation});
+                    if self.reply_queued() < CLIENT_OUT
+                        && let Ok(encoded) = wire::encode_frame(&rejection)
+                    {
+                        self.replies.push_back(encoded);
+                    }
+                    self.closing = true;
+                    return true;
+                }
             };
             match to_owner.try_send(Incoming::Request(id, request)) {
                 Ok(()) => {
@@ -259,6 +284,11 @@ fn reactor(
                         }
                     }
                 }
+                Ok(Outgoing::Close { connection: id }) => {
+                    if let Some(peer) = peers.get_mut(&id) {
+                        peer.closing = true;
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Ok(()),
             }
@@ -267,8 +297,9 @@ fn reactor(
         for id in ids {
             let alive = if let Some(peer) = peers.get_mut(&id) {
                 !peer.timed_out()
-                    && peer.read(id, &to_owner).unwrap_or(false)
+                    && (peer.closing || peer.read(id, &to_owner).unwrap_or(false))
                     && peer.write().unwrap_or(false)
+                    && !(peer.closing && peer.queued() == 0)
             } else {
                 false
             };
@@ -302,6 +333,8 @@ pub fn run(
     let mut app =
         Application::new(service.boot_id()).map_err(|_| io::Error::other("invalid boot"))?;
     let mut queued = BTreeMap::<u64, VecDeque<WireRequest>>::new();
+    let mut closing = std::collections::BTreeSet::<u64>::new();
+    let mut close_sent = std::collections::BTreeSet::<u64>::new();
     let mut rotation = 0usize;
     let mut terminal_since: Option<Instant> = None;
     loop {
@@ -313,6 +346,9 @@ pub fn run(
         for _ in 0..16 {
             match incoming_rx.try_recv() {
                 Ok(Incoming::Request(id, req)) => {
+                    if closing.contains(&id) {
+                        continue;
+                    }
                     let q = queued.entry(id).or_default();
                     if q.len() < CLIENT_IN {
                         q.push_back(req);
@@ -320,6 +356,8 @@ pub fn run(
                 }
                 Ok(Incoming::Detach(id)) => {
                     queued.remove(&id);
+                    closing.remove(&id);
+                    close_sent.remove(&id);
                     app.detach(&service, id);
                 }
                 Err(TryRecvError::Empty) => break,
@@ -351,6 +389,7 @@ pub fn run(
                     {
                         app.detach(&service, id);
                         queued.remove(&id);
+                        closing.insert(id);
                         break;
                     }
                 }
@@ -359,6 +398,11 @@ pub fn run(
         }
         for id in queued.keys().copied() {
             for event in app.pump_events(&service, id) {
+                let gap = event["code"] == "event_gap";
+                if gap {
+                    app.detach(&service, id);
+                    closing.insert(id);
+                }
                 let frame = wire::encode_frame(&event)?;
                 if outgoing_tx
                     .try_send(Outgoing::Event {
@@ -368,8 +412,22 @@ pub fn run(
                     .is_err()
                 {
                     app.detach(&service, id);
+                    closing.insert(id);
                     break;
                 }
+                if gap {
+                    break;
+                }
+            }
+        }
+        for id in closing.iter().copied().collect::<Vec<_>>() {
+            if !close_sent.contains(&id)
+                && outgoing_tx
+                    .try_send(Outgoing::Close { connection: id })
+                    .is_ok()
+            {
+                queued.remove(&id);
+                close_sent.insert(id);
             }
         }
         if let Some(status) = service.shutdown_step()? {
@@ -406,6 +464,7 @@ pub fn run(
 #[cfg(test)]
 mod bounded_peer_tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
 
     fn peer() -> (Peer, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -444,5 +503,100 @@ mod bounded_peer_tests {
         peer.replies.push_back(vec![b'X'; wire::FRAME_LIMIT]);
         peer.last_write = past;
         assert!(peer.timed_out());
+    }
+
+    #[test]
+    fn replay_gap_is_offered_then_affected_socket_detaches_without_affecting_owner() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(4);
+        let (to_net, from_owner) = mpsc::sync_channel(4);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let gap = wire::encode_frame(&serde_json::json!({"v":1,"type":"error","code":"event_gap"}))
+            .unwrap();
+        to_net
+            .send(Outgoing::Event {
+                connection: 1,
+                frame: gap,
+            })
+            .unwrap();
+        to_net.send(Outgoing::Close { connection: 1 }).unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("event_gap"));
+        line.clear();
+        assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Detach(1)
+        ));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn nonreading_event_flood_detaches_and_stale_slot_frames_cannot_reach_reused_capacity() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(4);
+        let (to_net, from_owner) = mpsc::sync_channel(64);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let nonreader = TcpStream::connect(addr).unwrap();
+        for _ in 0..=CLIENT_EVENTS {
+            to_net
+                .send(Outgoing::Event {
+                    connection: 1,
+                    frame: vec![b'x'; 1024],
+                })
+                .unwrap();
+        }
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Detach(1)
+        ));
+        drop(nonreader);
+        let second = TcpStream::connect(addr).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(second);
+        let stale =
+            wire::encode_frame(&serde_json::json!({"v":1,"type":"result","msg_id":"stale"}))
+                .unwrap();
+        let live = wire::encode_frame(&serde_json::json!({"v":1,"type":"result","msg_id":"live"}))
+            .unwrap();
+        to_net
+            .send(Outgoing::Reply {
+                connection: 1,
+                frame: stale,
+                consumed: false,
+                hello: false,
+            })
+            .unwrap();
+        to_net
+            .send(Outgoing::Reply {
+                connection: 2,
+                frame: live,
+                consumed: false,
+                hello: false,
+            })
+            .unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("live"));
+        assert!(!line.contains("stale"));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
     }
 }
