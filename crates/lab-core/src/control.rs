@@ -91,6 +91,10 @@ pub enum ControllerError {
     Algorithm,
     /// Central output authority rejected acquisition, proposal or delivery.
     Output,
+    /// The expected configuration revision differs from the committed revision.
+    RevisionConflict,
+    /// A configuration revision cannot advance without reusing an old value.
+    RevisionExhausted,
 }
 
 impl From<ControllerError> for crate::Error {
@@ -178,6 +182,8 @@ pub struct ControllerSnapshot {
     pub last_tick: Option<Duration>,
     /// Most recent successfully delivered PID proposal.
     pub latest_output: Option<PidUpdate>,
+    /// Revision of immutable controller configuration, not a tick or lease counter.
+    pub config_revision: u64,
 }
 
 pub(crate) struct NativeController {
@@ -188,6 +194,7 @@ pub(crate) struct NativeController {
     pub(crate) lease: Option<OutputLease>,
     pub(crate) last_tick: Option<Duration>,
     pub(crate) latest_output: Option<PidUpdate>,
+    pub(crate) config_revision: u64,
 }
 
 impl NativeController {
@@ -209,6 +216,7 @@ impl NativeController {
             lease: None,
             last_tick: None,
             latest_output: None,
+            config_revision: 1,
         })
     }
 
@@ -227,6 +235,7 @@ impl NativeController {
             pid: self.pid.snapshot(),
             last_tick: self.last_tick,
             latest_output: self.latest_output,
+            config_revision: self.config_revision,
         }
     }
 }

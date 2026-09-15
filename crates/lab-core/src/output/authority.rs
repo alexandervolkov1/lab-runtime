@@ -92,6 +92,16 @@ impl OutputAuthority {
                 .is_some_and(|profile| lifetime <= profile.max_lease)
     }
 
+    /// New native PID limits must fit both actuator descriptor and bound safe profile.
+    pub(crate) fn accepts_pid_limits(&self, min: f64, max: f64) -> bool {
+        self.can_prepare()
+            && matches!(self.limits, ValueSpec::Float { min: low, max: high } if min >= low && max <= high)
+            && self
+                .profile
+                .as_ref()
+                .is_some_and(|profile| min >= profile.min && max <= profile.max)
+    }
+
     /// Replace only the exact current native token after trusted successful delivery.
     /// An ordinary client has no command exposing this operation.
     pub(crate) fn renew_native(

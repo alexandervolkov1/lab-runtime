@@ -4,7 +4,7 @@
 
 use crate::control::{
     ControllerError, ControllerId, ControllerSnapshot, ControllerState, NativeController,
-    NativeControllerConfig,
+    NativeControllerConfig, Pid, PidConfig,
 };
 use crate::instrument::{
     KnownOperation, MetakonBinding, MetakonInstrument, MetakonInstrumentConfig,
@@ -26,7 +26,8 @@ use crate::output::{
 use crate::plant::{ThermalPlantConfig, ThermalPlantInstrument};
 use crate::processing::EmaStatus;
 use crate::reference::{
-    ReferenceConfig, ReferenceError, ReferenceId, ReferenceSnapshot, RuntimeReference,
+    ReferenceConfig, ReferenceError, ReferenceId, ReferenceSnapshot, ReferenceValue, RetunedRamp,
+    RuntimeReference,
 };
 use crate::transport::{
     AuthorizationStep, ByteTransport, ExecutorSnapshot, ResourceExecutor, ResourceId,
@@ -93,8 +94,37 @@ pub enum Command {
     RegisterThermalPlant(ThermalPlantConfig),
     /// Register an independent native target source.
     RegisterReference(ReferenceConfig),
+    /// Advance one independent Reference at trusted monotonic Runtime time.
+    EvaluateReference {
+        /// Existing native Reference identity.
+        reference: ReferenceId,
+        /// Nondecreasing trusted evaluation time.
+        at: Duration,
+    },
+    /// Retune an existing Ramp continuously with an optimistic configuration revision.
+    RetuneRampReference {
+        /// Existing Ramp identity.
+        reference: ReferenceId,
+        /// New finite target in the existing unit.
+        target: f64,
+        /// Positive finite engineering units per second.
+        rate: f64,
+        /// Revision read from a pure Reference snapshot.
+        expected_revision: u64,
+        /// Trusted nondecreasing Runtime mutation time.
+        at: Duration,
+    },
     /// Register controller data without acquiring output authority.
     RegisterController(NativeControllerConfig),
+    /// Atomically configure gains/limits in Ready or safely Paused without output.
+    ConfigureControllerPid {
+        /// Existing controller whose bindings/timing stay unchanged.
+        controller: ControllerId,
+        /// Full finite five-field replacement value.
+        pid: PidConfig,
+        /// Revision read from a pure controller snapshot.
+        expected_revision: u64,
+    },
     /// Check a Created controller against current descriptors and Reference units.
     PrepareController(ControllerId),
     /// Begin distinct-sample warm-up; acquire only when the configured count is reached.
@@ -226,6 +256,10 @@ pub enum CommandResult {
     Registered(InstrumentId),
     /// A native Reference was registered without evaluating it.
     ReferenceRegistered(ReferenceId),
+    /// One independent Reference evaluation, not a query or a controller tick.
+    ReferenceEvaluated(ReferenceValue),
+    /// Full committed continuous Ramp state and advanced configuration revision.
+    ReferenceRetuned(RetunedRamp),
     /// A native controller registration or lifecycle transition completed.
     ControllerUpdated(ControllerSnapshot),
     /// The display name changed without replacing the instance.
@@ -260,6 +294,8 @@ pub enum Query {
     Transport(ResourceId),
     /// Copy one native controller's bounded lifecycle/algorithm diagnostics.
     Controller(ControllerId),
+    /// Copy native controller construction/config values without progressing it.
+    ControllerConfig(ControllerId),
     /// Copy one native Reference's bounded state without advancing it.
     Reference(ReferenceId),
     /// Return all instrument descriptors in stable ID order.
@@ -285,6 +321,8 @@ pub enum QueryResult {
     Transport(ExecutorSnapshot),
     /// Bounded native controller diagnostics with no output capability.
     Controller(ControllerSnapshot),
+    /// Full immutable controller configuration; no output capability is conveyed.
+    ControllerConfig(NativeControllerConfig),
     /// Bounded native Reference state with no time advancement.
     Reference(ReferenceSnapshot),
     /// Catalog descriptors in stable instrument-ID order.
@@ -552,6 +590,32 @@ impl Runtime {
                 self.references.insert(id, reference);
                 Ok(CommandResult::ReferenceRegistered(id))
             }
+            Command::EvaluateReference { reference, at } => self
+                .references
+                .get_mut(&reference)
+                .ok_or(ControllerError::UnknownReference.into())
+                .and_then(|item| {
+                    item.value_at(at)
+                        .map(CommandResult::ReferenceEvaluated)
+                        .map_err(map_reference_error)
+                        .map_err(Into::into)
+                }),
+            Command::RetuneRampReference {
+                reference,
+                target,
+                rate,
+                expected_revision,
+                at,
+            } => self
+                .references
+                .get_mut(&reference)
+                .ok_or(ControllerError::UnknownReference.into())
+                .and_then(|item| {
+                    item.retune(target, rate, expected_revision, at)
+                        .map(CommandResult::ReferenceRetuned)
+                        .map_err(map_reference_error)
+                        .map_err(Into::into)
+                }),
             Command::RegisterController(config) => {
                 let id = config.id;
                 if self.controllers.contains_key(&id) {
@@ -565,6 +629,11 @@ impl Runtime {
                 self.controllers.insert(id, controller);
                 Ok(CommandResult::ControllerUpdated(snapshot))
             }
+            Command::ConfigureControllerPid {
+                controller,
+                pid,
+                expected_revision,
+            } => self.configure_controller_pid(controller, pid, expected_revision),
             Command::PrepareController(id) => self.prepare_controller(id),
             Command::StartController { controller, at } => {
                 self.start_or_resume_controller(controller, at, ControllerState::Ready)
@@ -877,6 +946,11 @@ impl Runtime {
                 .get(&id)
                 .map(|controller| QueryResult::Controller(controller.snapshot()))
                 .ok_or(ControllerError::UnknownController.into()),
+            Query::ControllerConfig(id) => self
+                .controllers
+                .get(&id)
+                .map(|controller| QueryResult::ControllerConfig(controller.config))
+                .ok_or(ControllerError::UnknownController.into()),
             Query::Reference(id) => self
                 .references
                 .get(&id)
@@ -974,6 +1048,49 @@ impl Runtime {
             }
             Query::GetSignalWindow(id) => Ok(QueryResult::Window(self.signal(id)?.window())),
         }
+    }
+
+    /// Validate all authority/descriptor constraints before touching controller memory.
+    fn configure_controller_pid(
+        &mut self,
+        id: ControllerId,
+        pid: PidConfig,
+        expected_revision: u64,
+    ) -> Result<CommandResult, Error> {
+        let controller = self
+            .controllers
+            .get(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        if controller.config_revision != expected_revision {
+            return Err(ControllerError::RevisionConflict.into());
+        }
+        if !matches!(
+            controller.state,
+            ControllerState::Ready | ControllerState::Paused
+        ) || controller.lease.is_some()
+            || self.warming_on(controller.config.output)
+        {
+            return Err(ControllerError::InvalidState.into());
+        }
+        let next = controller
+            .config_revision
+            .checked_add(1)
+            .ok_or(ControllerError::RevisionExhausted)?;
+        let new_pid = Pid::new(pid).map_err(|_| ControllerError::InvalidConfiguration)?;
+        let authority = self
+            .outputs
+            .get(&controller.config.output)
+            .ok_or(OutputError::UnknownActuator)?;
+        if !authority.accepts_pid_limits(pid.output_min, pid.output_max) {
+            return Err(ControllerError::Output.into());
+        }
+        let controller = self.controllers.get_mut(&id).expect("checked above");
+        controller.pid = new_pid;
+        controller.config.pid = pid;
+        controller.reset_algorithms();
+        controller.last_tick = None;
+        controller.config_revision = next;
+        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
     }
 
     fn prepare_controller(&mut self, id: ControllerId) -> Result<CommandResult, Error> {
@@ -2603,6 +2720,9 @@ fn map_reference_error(error: ReferenceError) -> ControllerError {
     match error {
         ReferenceError::InvalidConfiguration => ControllerError::InvalidConfiguration,
         ReferenceError::InvalidTime => ControllerError::InvalidTickTime,
+        ReferenceError::RevisionConflict => ControllerError::RevisionConflict,
+        ReferenceError::NotRamp => ControllerError::InvalidConfiguration,
+        ReferenceError::RevisionExhausted => ControllerError::RevisionExhausted,
     }
 }
 

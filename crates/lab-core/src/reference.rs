@@ -63,6 +63,21 @@ pub enum ReferenceError {
     InvalidConfiguration,
     /// Requested Runtime time moved backwards.
     InvalidTime,
+    /// The expected configuration revision is not the committed revision.
+    RevisionConflict,
+    /// A Fixed Reference has no Ramp target or slope to retune.
+    NotRamp,
+    /// Configuration revision cannot advance without reusing an old value.
+    RevisionExhausted,
+}
+
+/// One atomically committed Ramp configuration after a continuous retune.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RetunedRamp {
+    /// Value and target at the trusted command time.
+    pub state: RampSnapshot,
+    /// New configuration revision; ordinary evaluations do not increment it.
+    pub revision: u64,
 }
 
 /// One finite desired value at explicit monotonic Runtime time.
@@ -143,6 +158,8 @@ pub enum ReferenceSnapshot {
         unit: Unit,
         /// Last evaluation time, or None before first use.
         last_at: Option<Duration>,
+        /// Revision of the immutable Fixed configuration.
+        revision: u64,
     },
     /// Ramp state after its most recent evaluation.
     Ramp {
@@ -150,6 +167,8 @@ pub enum ReferenceSnapshot {
         id: ReferenceId,
         /// Bounded ramp state.
         state: RampSnapshot,
+        /// Revision of target/rate configuration, independent of progress.
+        revision: u64,
     },
 }
 
@@ -157,10 +176,12 @@ pub(crate) enum RuntimeReference {
     Fixed {
         id: ReferenceId,
         reference: FixedReference,
+        revision: u64,
     },
     Ramp {
         id: ReferenceId,
         reference: RampReference,
+        revision: u64,
     },
 }
 
@@ -170,6 +191,7 @@ impl RuntimeReference {
             ReferenceConfig::Fixed { id, value, unit } => Ok(Self::Fixed {
                 id,
                 reference: FixedReference::new(value, unit)?,
+                revision: 1,
             }),
             ReferenceConfig::Ramp {
                 id,
@@ -181,6 +203,7 @@ impl RuntimeReference {
             } => Ok(Self::Ramp {
                 id,
                 reference: RampReference::new(start, target, rate, unit, at)?,
+                revision: 1,
             }),
         }
     }
@@ -199,17 +222,57 @@ impl RuntimeReference {
         }
     }
 
+    /// Validate revision and the complete new trajectory before committing either.
+    pub(crate) fn retune(
+        &mut self,
+        target: f64,
+        rate: f64,
+        expected_revision: u64,
+        at: Duration,
+    ) -> Result<RetunedRamp, ReferenceError> {
+        let Self::Ramp {
+            reference,
+            revision,
+            ..
+        } = self
+        else {
+            return Err(ReferenceError::NotRamp);
+        };
+        if *revision != expected_revision {
+            return Err(ReferenceError::RevisionConflict);
+        }
+        let next = revision
+            .checked_add(1)
+            .ok_or(ReferenceError::RevisionExhausted)?;
+        reference.retune(target, rate, at)?;
+        *revision = next;
+        Ok(RetunedRamp {
+            state: reference.snapshot(),
+            revision: next,
+        })
+    }
+
     pub(crate) const fn snapshot(&self) -> ReferenceSnapshot {
         match self {
-            Self::Fixed { id, reference } => ReferenceSnapshot::Fixed {
+            Self::Fixed {
+                id,
+                reference,
+                revision,
+            } => ReferenceSnapshot::Fixed {
                 id: *id,
                 value: reference.value,
                 unit: reference.unit,
                 last_at: reference.last_at,
+                revision: *revision,
             },
-            Self::Ramp { id, reference } => ReferenceSnapshot::Ramp {
+            Self::Ramp {
+                id,
+                reference,
+                revision,
+            } => ReferenceSnapshot::Ramp {
                 id: *id,
                 state: reference.snapshot(),
+                revision: *revision,
             },
         }
     }
