@@ -411,6 +411,48 @@ fn unknown_nonempty_database_is_rejected_without_converting_it_to_wal() {
 }
 
 #[test]
+fn future_corrupt_and_foreign_sqlite_files_are_rejected_without_byte_rewrite() {
+    let future = temporary_database();
+    drop(SqliteStore::open(&future).unwrap());
+    let external = rusqlite::Connection::open(&future).unwrap();
+    external.pragma_update(None, "user_version", 2i64).unwrap();
+    drop(external);
+    let future_bytes = std::fs::read(&future).unwrap();
+    assert!(SqliteStore::open(&future).is_err());
+    assert_eq!(std::fs::read(&future).unwrap(), future_bytes);
+    let db = rusqlite::Connection::open(&future).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    drop(db);
+    std::fs::remove_file(future).unwrap();
+
+    let corrupt = temporary_database();
+    let original = b"SQLite format 3\0corrupt and incomplete".to_vec();
+    std::fs::write(&corrupt, &original).unwrap();
+    assert!(SqliteStore::open(&corrupt).is_err());
+    assert_eq!(std::fs::read(&corrupt).unwrap(), original);
+    std::fs::remove_file(corrupt).unwrap();
+
+    let donor = temporary_database();
+    let foreign = rusqlite::Connection::open(&donor).unwrap();
+    foreign
+        .pragma_update(None, "application_id", 0x4350_5231i64)
+        .unwrap();
+    foreign
+        .execute_batch(
+            "CREATE TABLE donor_note(value TEXT); INSERT INTO donor_note VALUES('keep');",
+        )
+        .unwrap();
+    drop(foreign);
+    let donor_bytes = std::fs::read(&donor).unwrap();
+    assert!(SqliteStore::open(&donor).is_err());
+    assert_eq!(std::fs::read(&donor).unwrap(), donor_bytes);
+    std::fs::remove_file(donor).unwrap();
+}
+
+#[test]
 fn incompatible_single_hash_provenance_key_is_rejected_without_rewriting_existing_bytes() {
     let path = temporary_database();
     drop(SqliteStore::open(&path).unwrap());
