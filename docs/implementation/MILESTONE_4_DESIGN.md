@@ -1,6 +1,9 @@
 # M4 — deterministic native control pipeline design
 
-Status: implementation contract for the current SOL_HIGH phase. M3 is complete.
+Status: original M4 implementation contract; the reviewed Warming, native lease
+renewal and independent safety-service corrections are specified in
+[M4 lifecycle review](MILESTONE_4_LIFECYCLE_REVIEW.md) and reported in
+[M4 implementation report](MILESTONE_4_REPORT.md). M3 is complete.
 Scope ends after native plant/EMA/Reference/PID/lifecycle verification. No M5 code.
 
 ## Components and ownership
