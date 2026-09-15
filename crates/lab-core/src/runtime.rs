@@ -492,14 +492,16 @@ impl Runtime {
     /// Open Required control after the start barrier actually committed.
     /// The deadline derives from the original submission time, never receipt arrival.
     pub fn confirm_recording_start(
-        &mut self, submitted_at: Duration, now: Duration,
+        &mut self,
+        submitted_at: Duration,
+        now: Duration,
     ) -> Result<(), Error> {
-        if !self.required_recording.enabled || self.required_recording.failed
-            || submitted_at > now
+        if !self.required_recording.enabled || self.required_recording.failed || submitted_at > now
         {
             return Err(Error::RecordingUnavailable);
         }
-        let deadline = submitted_at.checked_add(crate::recording::REQUIRED_PROGRESS_AGE)
+        let deadline = submitted_at
+            .checked_add(crate::recording::REQUIRED_PROGRESS_AGE)
             .ok_or(Error::RecordingUnavailable)?;
         if now >= deadline {
             self.recording_failure(now);
@@ -513,15 +515,22 @@ impl Runtime {
 
     /// Advance the gate only for confirmed, strictly newer worker submissions.
     pub fn confirm_recording_progress(
-        &mut self, submitted_at: Duration, now: Duration,
+        &mut self,
+        submitted_at: Duration,
+        now: Duration,
     ) -> Result<(), Error> {
         self.service_required_recording_deadline(now);
-        if !self.required_recording.open || submitted_at > now
-            || self.required_recording.confirmed_submission.is_some_and(|old| submitted_at <= old)
+        if !self.required_recording.open
+            || submitted_at > now
+            || self
+                .required_recording
+                .confirmed_submission
+                .is_some_and(|old| submitted_at <= old)
         {
             return Err(Error::RecordingUnavailable);
         }
-        let deadline = submitted_at.checked_add(crate::recording::REQUIRED_PROGRESS_AGE)
+        let deadline = submitted_at
+            .checked_add(crate::recording::REQUIRED_PROGRESS_AGE)
             .ok_or(Error::RecordingUnavailable)?;
         if now >= deadline {
             self.recording_failure(now);
@@ -543,11 +552,19 @@ impl Runtime {
         self.required_recording.valid_until = None;
         // Remove Warming as well as Running eligibility before any output trip.
         for (id, controller) in &mut self.controllers {
-            if matches!(controller.state, ControllerState::Warming | ControllerState::Running) {
+            if matches!(
+                controller.state,
+                ControllerState::Warming | ControllerState::Running
+            ) {
                 controller.state = ControllerState::Failed;
                 controller.lease = None;
-                self.recording_facts.controller(*id, ControllerState::Failed,
-                    controller.config_revision, None, at);
+                self.recording_facts.controller(
+                    *id,
+                    ControllerState::Failed,
+                    controller.config_revision,
+                    None,
+                    at,
+                );
             }
         }
         // Trip every tracked output even if one authority rejects its transition.
@@ -555,7 +572,10 @@ impl Runtime {
         for (actuator, authority) in &mut self.outputs {
             if authority.command(OutputCommand::Trip, at).is_ok() {
                 self.recording_facts.output(
-                    *actuator, crate::recording::OutputStage::Revoked, None, at,
+                    *actuator,
+                    crate::recording::OutputStage::Revoked,
+                    None,
+                    at,
                 );
             }
         }
@@ -574,8 +594,12 @@ impl Runtime {
         if self.required_recording.enabled && self.recording_facts.overflowed() {
             self.recording_failure(at);
         }
-        if self.required_recording.enabled && self.required_recording.open
-            && self.required_recording.valid_until.is_some_and(|deadline| at >= deadline)
+        if self.required_recording.enabled
+            && self.required_recording.open
+            && self
+                .required_recording
+                .valid_until
+                .is_some_and(|deadline| at >= deadline)
         {
             self.recording_failure(at);
         }
@@ -677,7 +701,8 @@ impl Runtime {
                 self.service_required_recording_deadline(at);
                 let ordinary = matches!(
                     command,
-                    OutputCommand::Acquire { .. } | OutputCommand::Propose(_)
+                    OutputCommand::Acquire { .. }
+                        | OutputCommand::Propose(_)
                         | OutputCommand::AcknowledgeFault
                 ) || matches!(command, OutputCommand::BeginDispatch)
                     && self.outputs.get(&actuator).is_some_and(|authority| {
@@ -716,7 +741,9 @@ impl Runtime {
                     }
                 }
                 let issued = command.clone();
-                let was_safe_completion = self.outputs.get(&actuator)
+                let was_safe_completion = self
+                    .outputs
+                    .get(&actuator)
                     .and_then(|authority| authority.snapshot().in_flight)
                     .is_some_and(|dispatch| dispatch.is_safe());
                 let result = self
@@ -726,47 +753,83 @@ impl Runtime {
                     .command(command, at)?;
                 match (&issued, &result) {
                     (OutputCommand::RequestSafe, OutputResult::Updated) => {
-                        self.recording_facts.output(actuator,
-                            crate::recording::OutputStage::SafeRequested, None, at);
+                        self.recording_facts.output(
+                            actuator,
+                            crate::recording::OutputStage::SafeRequested,
+                            None,
+                            at,
+                        );
                     }
                     (OutputCommand::Trip, OutputResult::Updated) => {
-                        self.recording_facts.output(actuator,
-                            crate::recording::OutputStage::Revoked, None, at);
+                        self.recording_facts.output(
+                            actuator,
+                            crate::recording::OutputStage::Revoked,
+                            None,
+                            at,
+                        );
                     }
                     (OutputCommand::Propose(_), OutputResult::Queued) => {
                         self.recording_facts.output(
-                            actuator, crate::recording::OutputStage::Requested,
-                            self.outputs.get(&actuator).and_then(|authority| authority.snapshot().requested), at,
+                            actuator,
+                            crate::recording::OutputStage::Requested,
+                            self.outputs
+                                .get(&actuator)
+                                .and_then(|authority| authority.snapshot().requested),
+                            at,
                         );
                     }
                     (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch))
-                        if !dispatch.is_safe() => {
-                            self.recording_facts.output(
-                                actuator, crate::recording::OutputStage::Authorized,
-                                Some(dispatch.value()), at,
-                            );
-                            self.recording_facts.output(
-                                actuator, crate::recording::OutputStage::SendStarted,
-                                Some(dispatch.value()), at,
-                            );
+                        if !dispatch.is_safe() =>
+                    {
+                        self.recording_facts.output(
+                            actuator,
+                            crate::recording::OutputStage::Authorized,
+                            Some(dispatch.value()),
+                            at,
+                        );
+                        self.recording_facts.output(
+                            actuator,
+                            crate::recording::OutputStage::SendStarted,
+                            Some(dispatch.value()),
+                            at,
+                        );
                     }
                     (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch)) => {
-                        self.recording_facts.output(actuator,
+                        self.recording_facts.output(
+                            actuator,
                             crate::recording::OutputStage::SafeSendStarted,
-                            Some(dispatch.value()), at);
+                            Some(dispatch.value()),
+                            at,
+                        );
                     }
                     (OutputCommand::Complete { outcome, .. }, OutputResult::Completed) => {
                         let stage = match (was_safe_completion, outcome) {
-                            (true, DispatchOutcome::Acknowledged) => crate::recording::OutputStage::SafeAcknowledged,
-                            (true, DispatchOutcome::ReadbackVerified) => crate::recording::OutputStage::SafeReadbackVerified,
-                            (false, DispatchOutcome::Acknowledged) => crate::recording::OutputStage::Acknowledged,
-                            (false, DispatchOutcome::ReadbackVerified) => crate::recording::OutputStage::ReadbackVerified,
+                            (true, DispatchOutcome::Acknowledged) => {
+                                crate::recording::OutputStage::SafeAcknowledged
+                            }
+                            (true, DispatchOutcome::ReadbackVerified) => {
+                                crate::recording::OutputStage::SafeReadbackVerified
+                            }
+                            (false, DispatchOutcome::Acknowledged) => {
+                                crate::recording::OutputStage::Acknowledged
+                            }
+                            (false, DispatchOutcome::ReadbackVerified) => {
+                                crate::recording::OutputStage::ReadbackVerified
+                            }
                             (_, DispatchOutcome::Failed) => crate::recording::OutputStage::Failed,
-                            (_, DispatchOutcome::Ambiguous) => crate::recording::OutputStage::Ambiguous,
+                            (_, DispatchOutcome::Ambiguous) => {
+                                crate::recording::OutputStage::Ambiguous
+                            }
                         };
-                        self.recording_facts.output_with_source(actuator, stage,
-                            self.outputs.get(&actuator).and_then(|authority| authority.snapshot().sent.map(|sent| sent.value)), at,
-                            crate::recording::OutputEvidenceSource::VirtualSimulation);
+                        self.recording_facts.output_with_source(
+                            actuator,
+                            stage,
+                            self.outputs.get(&actuator).and_then(|authority| {
+                                authority.snapshot().sent.map(|sent| sent.value)
+                            }),
+                            at,
+                            crate::recording::OutputEvidenceSource::VirtualSimulation,
+                        );
                     }
                     _ => {}
                 }
@@ -830,21 +893,29 @@ impl Runtime {
                 let reference = RuntimeReference::new(config)
                     .map_err(|_| ControllerError::InvalidConfiguration)?;
                 self.references.insert(id, reference);
-                self.capture_reference_fact(id, match config {
-                    ReferenceConfig::Fixed { .. } => Duration::ZERO,
-                    ReferenceConfig::Ramp { at, .. } => at,
-                });
+                self.capture_reference_fact(
+                    id,
+                    match config {
+                        ReferenceConfig::Fixed { .. } => Duration::ZERO,
+                        ReferenceConfig::Ramp { at, .. } => at,
+                    },
+                );
                 Ok(CommandResult::ReferenceRegistered(id))
             }
             Command::EvaluateReference { reference, at } => {
-                let result = self.references.get_mut(&reference)
-                    .ok_or(ControllerError::UnknownReference.into()).and_then(|item| {
-                    item.value_at(at)
-                        .map(CommandResult::ReferenceEvaluated)
-                        .map_err(map_reference_error)
-                        .map_err(Into::into)
-                });
-                if result.is_ok() { self.capture_reference_fact(reference, at); }
+                let result = self
+                    .references
+                    .get_mut(&reference)
+                    .ok_or(ControllerError::UnknownReference.into())
+                    .and_then(|item| {
+                        item.value_at(at)
+                            .map(CommandResult::ReferenceEvaluated)
+                            .map_err(map_reference_error)
+                            .map_err(Into::into)
+                    });
+                if result.is_ok() {
+                    self.capture_reference_fact(reference, at);
+                }
                 result
             }
             Command::RetuneRampReference {
@@ -854,14 +925,19 @@ impl Runtime {
                 expected_revision,
                 at,
             } => {
-                let result = self.references.get_mut(&reference)
-                    .ok_or(ControllerError::UnknownReference.into()).and_then(|item| {
-                    item.retune(target, rate, expected_revision, at)
-                        .map(CommandResult::ReferenceRetuned)
-                        .map_err(map_reference_error)
-                        .map_err(Into::into)
-                });
-                if result.is_ok() { self.capture_reference_fact(reference, at); }
+                let result = self
+                    .references
+                    .get_mut(&reference)
+                    .ok_or(ControllerError::UnknownReference.into())
+                    .and_then(|item| {
+                        item.retune(target, rate, expected_revision, at)
+                            .map(CommandResult::ReferenceRetuned)
+                            .map_err(map_reference_error)
+                            .map_err(Into::into)
+                    });
+                if result.is_ok() {
+                    self.capture_reference_fact(reference, at);
+                }
                 result
             }
             Command::RegisterController(config) => {
@@ -875,8 +951,13 @@ impl Runtime {
                 let controller = NativeController::new(config)?;
                 let snapshot = controller.snapshot();
                 self.controllers.insert(id, controller);
-                self.recording_facts.controller(id, snapshot.state,
-                    snapshot.config_revision, Some(config.pid), self.output_time);
+                self.recording_facts.controller(
+                    id,
+                    snapshot.state,
+                    snapshot.config_revision,
+                    Some(config.pid),
+                    self.output_time,
+                );
                 Ok(CommandResult::ControllerUpdated(snapshot))
             }
             Command::ConfigureControllerPid {
@@ -886,13 +967,18 @@ impl Runtime {
             } => self.configure_controller_pid(controller, pid, expected_revision),
             Command::PrepareController(id) => {
                 let result = self.prepare_controller(id);
-                if result.is_ok() { self.capture_controller_fact(id, self.output_time); }
+                if result.is_ok() {
+                    self.capture_controller_fact(id, self.output_time);
+                }
                 result
             }
             Command::StartController { controller, at } => {
                 self.require_recording_open(at)?;
-                let result = self.start_or_resume_controller(controller, at, ControllerState::Ready);
-                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                let result =
+                    self.start_or_resume_controller(controller, at, ControllerState::Ready);
+                if result.is_ok() {
+                    self.capture_controller_fact(controller, at);
+                }
                 result
             }
             Command::TickController { controller, at } => {
@@ -903,18 +989,25 @@ impl Runtime {
             }
             Command::PauseController { controller, at } => {
                 let result = self.pause_controller(controller, at);
-                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                if result.is_ok() {
+                    self.capture_controller_fact(controller, at);
+                }
                 result
             }
             Command::ResumeController { controller, at } => {
                 self.require_recording_open(at)?;
-                let result = self.start_or_resume_controller(controller, at, ControllerState::Paused);
-                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                let result =
+                    self.start_or_resume_controller(controller, at, ControllerState::Paused);
+                if result.is_ok() {
+                    self.capture_controller_fact(controller, at);
+                }
                 result
             }
             Command::ResetFailedController { controller, at } => {
                 let result = self.reset_failed_controller(controller, at);
-                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                if result.is_ok() {
+                    self.capture_controller_fact(controller, at);
+                }
                 result
             }
             Command::InjectPlantMeasurementFailure { instrument, at } => {
@@ -1374,8 +1467,13 @@ impl Runtime {
         controller.reset_algorithms();
         controller.last_tick = None;
         controller.config_revision = next;
-        self.recording_facts.controller(id, controller.state,
-            controller.config_revision, Some(pid), self.output_time);
+        self.recording_facts.controller(
+            id,
+            controller.state,
+            controller.config_revision,
+            Some(pid),
+            self.output_time,
+        );
         Ok(CommandResult::ControllerUpdated(controller.snapshot()))
     }
 
@@ -1880,7 +1978,8 @@ impl Runtime {
         if let Some(sample) = component.signal.latest().cloned()
             && sample.at() == at
         {
-            self.recording_facts.measurement(sample, component.generation, component.revision);
+            self.recording_facts
+                .measurement(sample, component.generation, component.revision);
         }
         let dependents: Vec<_> = self
             .managed
@@ -1922,7 +2021,8 @@ impl Runtime {
                 if let Some(sample) = other.signal.latest().cloned()
                     && sample.at() == at
                 {
-                    self.recording_facts.measurement(sample, other.generation, other.revision);
+                    self.recording_facts
+                        .measurement(sample, other.generation, other.revision);
                 }
             }
         }
@@ -2054,7 +2154,8 @@ impl Runtime {
         component.diagnostics = result.diagnostics;
         component.last_service = Some(at);
         component.last_observation = Some(source_at);
-        self.recording_facts.measurement(sample, component.generation, component.revision);
+        self.recording_facts
+            .measurement(sample, component.generation, component.revision);
     }
 
     fn poll_components(&mut self, at: Duration) -> Result<(), Error> {
@@ -2542,22 +2643,47 @@ impl Runtime {
             return;
         };
         match snapshot {
-            crate::reference::ReferenceSnapshot::Fixed { value, unit, revision, .. } =>
-                self.recording_facts.reference(crate::recording::ReferenceDetails {
-                    reference:id,revision,value,target:None,rate:None,unit,at,
+            crate::reference::ReferenceSnapshot::Fixed {
+                value,
+                unit,
+                revision,
+                ..
+            } => self
+                .recording_facts
+                .reference(crate::recording::ReferenceDetails {
+                    reference: id,
+                    revision,
+                    value,
+                    target: None,
+                    rate: None,
+                    unit,
+                    at,
                 }),
-            crate::reference::ReferenceSnapshot::Ramp { state, revision, .. } =>
-                self.recording_facts.reference(crate::recording::ReferenceDetails {
-                    reference:id,revision,value:state.current,
-                    target:Some(state.target),rate:Some(state.rate),unit:state.unit,at,
+            crate::reference::ReferenceSnapshot::Ramp {
+                state, revision, ..
+            } => self
+                .recording_facts
+                .reference(crate::recording::ReferenceDetails {
+                    reference: id,
+                    revision,
+                    value: state.current,
+                    target: Some(state.target),
+                    rate: Some(state.rate),
+                    unit: state.unit,
+                    at,
                 }),
         }
     }
 
     fn capture_controller_fact(&mut self, id: ControllerId, at: Duration) {
         if let Some(controller) = self.controllers.get(&id) {
-            self.recording_facts.controller(id, controller.state,
-                controller.config_revision, None, at);
+            self.recording_facts.controller(
+                id,
+                controller.state,
+                controller.config_revision,
+                None,
+                at,
+            );
         }
     }
 
@@ -2574,7 +2700,9 @@ impl Runtime {
         self.recording_facts.output(
             actuator,
             crate::recording::OutputStage::Requested,
-            self.outputs.get(&actuator).and_then(|output| output.snapshot().requested),
+            self.outputs
+                .get(&actuator)
+                .and_then(|output| output.snapshot().requested),
             at,
         );
         // A one-call PID can propose and send in the same owner unit. Recheck
@@ -2650,8 +2778,12 @@ impl Runtime {
             OutputResult::Dispatched(dispatch) => dispatch,
             _ => unreachable!("BeginDispatch has one successful result kind"),
         };
-        self.recording_facts.output(actuator,
-            crate::recording::OutputStage::SafeSendStarted, Some(dispatch.value()), at);
+        self.recording_facts.output(
+            actuator,
+            crate::recording::OutputStage::SafeSendStarted,
+            Some(dispatch.value()),
+            at,
+        );
         self.apply_virtual_dispatch(actuator, dispatch.value())?;
         self.outputs
             .get_mut(&actuator)
@@ -2663,9 +2795,13 @@ impl Runtime {
                 },
                 at,
             )?;
-        self.recording_facts.output_with_source(actuator,
-            crate::recording::OutputStage::SafeReadbackVerified, Some(dispatch.value()), at,
-            crate::recording::OutputEvidenceSource::VirtualSimulation);
+        self.recording_facts.output_with_source(
+            actuator,
+            crate::recording::OutputStage::SafeReadbackVerified,
+            Some(dispatch.value()),
+            at,
+            crate::recording::OutputEvidenceSource::VirtualSimulation,
+        );
         Ok(())
     }
 
@@ -2747,8 +2883,13 @@ impl Runtime {
                 }
             }
             if controller.state != before_state {
-                self.recording_facts.controller(id, controller.state,
-                    controller.config_revision, None, at);
+                self.recording_facts.controller(
+                    id,
+                    controller.state,
+                    controller.config_revision,
+                    None,
+                    at,
+                );
             }
             self.controllers.insert(id, controller);
         }
@@ -2833,16 +2974,25 @@ impl Runtime {
                     AuthorizationStep::Started => {
                         let dispatch = authority.begin_transport(intent, at).map_err(|_| ())?;
                         if intent.safe {
-                            recording_facts.output(intent.actuator,
+                            recording_facts.output(
+                                intent.actuator,
                                 crate::recording::OutputStage::SafeSendStarted,
-                                Some(intent.value), at);
+                                Some(intent.value),
+                                at,
+                            );
                         } else {
-                            recording_facts.output(intent.actuator,
+                            recording_facts.output(
+                                intent.actuator,
                                 crate::recording::OutputStage::Authorized,
-                                Some(intent.value), at);
-                            recording_facts.output(intent.actuator,
+                                Some(intent.value),
+                                at,
+                            );
+                            recording_facts.output(
+                                intent.actuator,
                                 crate::recording::OutputStage::SendStarted,
-                                Some(intent.value), at);
+                                Some(intent.value),
+                                at,
+                            );
                         }
                         Ok(Some(dispatch))
                     }
@@ -2897,11 +3047,16 @@ impl Runtime {
                 if let Some(instrument) = self.metakon_instruments.get(&pending.instrument)
                     && let Some(descriptor) = instrument.descriptor.parameter(pending.parameter)
                     && let Some(signal) = descriptor.signal
-                    && let Some(sample) = instrument.signals.get(&signal).and_then(|buffer| buffer.latest()).cloned()
+                    && let Some(sample) = instrument
+                        .signals
+                        .get(&signal)
+                        .and_then(|buffer| buffer.latest())
+                        .cloned()
                     && sample.at() == at
                 {
                     self.recording_facts.measurement(
-                        sample, instrument.binding.binding_generation,
+                        sample,
+                        instrument.binding.binding_generation,
                         instrument.binding.mapping_revision,
                     );
                 }
@@ -2909,10 +3064,13 @@ impl Runtime {
             TransportEvent::OutputUncertain { intent, dispatch } => {
                 if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                     authority.transport_uncertain(dispatch)?;
-                    self.recording_facts.output_with_source(intent.actuator,
+                    self.recording_facts.output_with_source(
+                        intent.actuator,
                         crate::recording::OutputStage::TransportUncertain,
-                        Some(intent.value), at,
-                        crate::recording::OutputEvidenceSource::TransportProtocol);
+                        Some(intent.value),
+                        at,
+                        crate::recording::OutputEvidenceSource::TransportProtocol,
+                    );
                 }
             }
             TransportEvent::OutputTerminal {
@@ -2950,20 +3108,27 @@ impl Runtime {
                                 crate::output::DispatchOutcome::Acknowledged,
                                 at,
                             )?;
-                            self.recording_facts.output_with_source(intent.actuator,
+                            self.recording_facts.output_with_source(
+                                intent.actuator,
                                 if intent.safe {
                                     crate::recording::OutputStage::SafeAcknowledged
                                 } else {
                                     crate::recording::OutputStage::Acknowledged
-                                }, Some(intent.value), at,
-                                crate::recording::OutputEvidenceSource::TransportProtocol);
+                                },
+                                Some(intent.value),
+                                at,
+                                crate::recording::OutputEvidenceSource::TransportProtocol,
+                            );
                         }
                     } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.transport_uncertain(dispatch)?;
-                        self.recording_facts.output_with_source(intent.actuator,
+                        self.recording_facts.output_with_source(
+                            intent.actuator,
                             crate::recording::OutputStage::TransportUncertain,
-                            Some(intent.value), at,
-                            crate::recording::OutputEvidenceSource::TransportProtocol);
+                            Some(intent.value),
+                            at,
+                            crate::recording::OutputEvidenceSource::TransportProtocol,
+                        );
                         self.unsettled_outputs
                             .insert(resource, (intent.actuator, dispatch));
                         self.resources
@@ -2977,10 +3142,13 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
-                    self.recording_facts.output_with_source(intent.actuator,
+                    self.recording_facts.output_with_source(
+                        intent.actuator,
                         crate::recording::OutputStage::Ambiguous,
-                        Some(intent.value), at,
-                        crate::recording::OutputEvidenceSource::TransportProtocol);
+                        Some(intent.value),
+                        at,
+                        crate::recording::OutputEvidenceSource::TransportProtocol,
+                    );
                 }
             }
             TransportEvent::BoundaryRecovered => {
@@ -2992,10 +3160,13 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
-                    self.recording_facts.output_with_source(actuator,
+                    self.recording_facts.output_with_source(
+                        actuator,
                         crate::recording::OutputStage::Ambiguous,
-                        authority.snapshot().sent.map(|sent| sent.value), at,
-                        crate::recording::OutputEvidenceSource::TransportProtocol);
+                        authority.snapshot().sent.map(|sent| sent.value),
+                        at,
+                        crate::recording::OutputEvidenceSource::TransportProtocol,
+                    );
                 }
             }
             TransportEvent::BoundaryFailed => {}

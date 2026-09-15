@@ -3,9 +3,12 @@
 //! The Core owner emits facts only when recording is enabled. This bounded outbox
 //! is a short handoff to the host; it is not durable history or a client event ring.
 
-use crate::{Sample, Unit, Value,
+use crate::{
+    Sample, Unit, Value,
     control::{ControllerId, ControllerState, PidConfig},
-    output::ActuatorId, reference::ReferenceId};
+    output::ActuatorId,
+    reference::ReferenceId,
+};
 use std::{collections::VecDeque, time::Duration};
 
 /// Maximum facts awaiting host admission after one or more owner units.
@@ -149,8 +152,10 @@ impl RecordingFact {
     /// Return the order assigned at the authoritative transition.
     pub const fn sequence(&self) -> u64 {
         match self {
-            Self::Measurement { sequence, .. } | Self::Output { sequence, .. }
-            | Self::Controller { sequence, .. } | Self::Reference { sequence, .. } => *sequence,
+            Self::Measurement { sequence, .. }
+            | Self::Output { sequence, .. }
+            | Self::Controller { sequence, .. }
+            | Self::Reference { sequence, .. } => *sequence,
         }
     }
 }
@@ -201,10 +206,11 @@ impl FactOutbox {
     }
 
     pub(crate) fn measurement(&mut self, sample: Sample, generation: u64, revision: u64) {
-        let bytes = 256 + match sample.value() {
-            Some(Value::Text(value) | Value::Enum(value)) => value.capacity(),
-            _ => 0,
-        };
+        let bytes = 256
+            + match sample.value() {
+                Some(Value::Text(value) | Value::Enum(value)) => value.capacity(),
+                _ => 0,
+            };
         self.push(bytes, |sequence| RecordingFact::Measurement {
             sequence,
             sample,
@@ -224,8 +230,12 @@ impl FactOutbox {
     }
 
     pub(crate) fn output_with_source(
-        &mut self, actuator: ActuatorId, stage: OutputStage,
-        value: Option<f64>, at: Duration, source: OutputEvidenceSource,
+        &mut self,
+        actuator: ActuatorId,
+        stage: OutputStage,
+        value: Option<f64>,
+        at: Duration,
+        source: OutputEvidenceSource,
     ) {
         self.push(128, |sequence| RecordingFact::Output {
             sequence,
@@ -238,18 +248,42 @@ impl FactOutbox {
     }
 
     pub(crate) fn controller(
-        &mut self, controller: ControllerId, state: ControllerState,
-        config_revision: u64, pid: Option<PidConfig>, at: Duration,
+        &mut self,
+        controller: ControllerId,
+        state: ControllerState,
+        config_revision: u64,
+        pid: Option<PidConfig>,
+        at: Duration,
     ) {
         self.push(256, |sequence| RecordingFact::Controller {
-            sequence, controller, state, config_revision, pid, at,
+            sequence,
+            controller,
+            state,
+            config_revision,
+            pid,
+            at,
         });
     }
 
     pub(crate) fn reference(&mut self, details: ReferenceDetails) {
-        let ReferenceDetails {reference,revision,value,target,rate,unit,at}=details;
+        let ReferenceDetails {
+            reference,
+            revision,
+            value,
+            target,
+            rate,
+            unit,
+            at,
+        } = details;
         self.push(256, |sequence| RecordingFact::Reference {
-            sequence, reference, revision, value, target, rate, unit, at,
+            sequence,
+            reference,
+            revision,
+            value,
+            target,
+            rate,
+            unit,
+            at,
         });
     }
 
