@@ -1,3 +1,21 @@
+# Permanent coordination files
+
+The permanent coordination files are:
+
+ai/HANDOFF.md
+ai/ROADMAP.md
+ai/WORK.md
+
+Read all three before each new phase.
+
+ai/HANDOFF.md is the only file used for external reviewer communication.
+ai/WORK.md contains the current model instruction and is replaced at model handoff.
+ai/ROADMAP.md contains the persistent product roadmap.
+
+Legacy root-level model instruction/handoff files are temporary compatibility
+material and will be removed during the mandatory pre-release Markdown cleanup.
+
+
 # Agent Instructions
 
 This repository is an architecture-first greenfield project.
@@ -7,7 +25,8 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-handoff: M4 correction and M5 designs fixed; waiting for ASTRA_HIGH -> SOL_HIGH
+SOL_HIGH: implement M4 lifecycle corrections, verify M1–M4, then implement M5;
+stop for external review before M6
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -18,22 +37,21 @@ implement M3 before the user switches models. This direct user instruction overr
 IMPLEMENTATION_ROADMAP_M2_M6.md section 16's prohibition on M3 design. Later model
 handoffs also require an explicit stop; authorization through M6 never bypasses them.
 
-The user crossed the M4 gate. ASTRA_M5_DESIGN_INSTRUCTIONS.md is authoritative for
-this phase. Consume the external reviewer response in AI_HANDOFF.md, design the two
-M4 lifecycle corrections, then the M5 Lua boundary and Sol acceptance contract.
-Do not implement M4 corrections, add Lua dependencies, implement M5, or design M6
-during this Astra phase. Finish the design, update AI_HANDOFF.md, request
-ASTRA_HIGH -> SOL_HIGH and STOP. Sol must fix/verify M4 before implementing M5.
+The user crossed the M4 gate and switched ASTRA_HIGH -> SOL_HIGH. The accepted
+Astra design and reviewer response are recorded in `ai/HANDOFF.md` and the two
+milestone contracts. Fix and verify M4 before implementing M5.
 
 The Astra design is complete. Next Sol implementation is governed by
 docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md, then
 docs/implementation/MILESTONE_5_DESIGN.md. Its W1–W9/R1–R10 prerequisites precede
 Lua dependencies; M5 must satisfy L1–L22. The current 72-test baseline still has
 the reviewed M4 lifecycle defects; a design document is not an implementation fix.
-After M5, update AI_HANDOFF.md and stop for external review. Do not begin M6 design
+After M5, update `ai/HANDOFF.md` and stop for external review. Do not begin M6 design
 or implementation or cross the present model gate automatically.
 
-Read AI_HANDOFF.md before each milestone. It is the only dedicated external-review handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6 mark READY_FOR_EXTERNAL_REVIEW and stop.
+Read `ai/HANDOFF.md` before each milestone. It is the only dedicated external-review
+handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6
+mark READY_FOR_EXTERNAL_REVIEW and stop.
 
 Do not implement M7 recorder, GUI, physical production deployment, long soak or full product parity. No dangerous physical actuator tests; donor remains read-only.
 
