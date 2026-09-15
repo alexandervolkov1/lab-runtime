@@ -1,0 +1,5 @@
+{:paths ["src"]
+ :tasks {accept-a {:requires ([lab.acceptance :as acceptance])
+                   :task (apply acceptance/-main "a" *command-line-args*)}
+         accept-b {:requires ([lab.acceptance :as acceptance])
+                   :task (apply acceptance/-main "b" *command-line-args*)}}}
