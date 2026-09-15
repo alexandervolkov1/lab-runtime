@@ -25,18 +25,16 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-ASTRA_HIGH — M6 design only: corrected M4 and bounded M5 passed external review;
-synchronize checkpoint docs, design M6 and its tests-first acceptance, then
-request ASTRA_HIGH -> SOL_HIGH and STOP before production implementation
+M6 design and H1–H28 tests-first acceptance complete.
+WAITING_FOR_USER_MODEL_SWITCH: ASTRA_HIGH -> SOL_HIGH.
+Astra must STOP; after explicit user switch, Sol implements M6 only.
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
 
-Mandatory user model gate: after M2 completion and the M3 design/acceptance contract,
-update AI_HANDOFF.md, explicitly request Astra High -> Sol High, and STOP. Do not
-implement M3 before the user switches models. This direct user instruction overrides
-IMPLEMENTATION_ROADMAP_M2_M6.md section 16's prohibition on M3 design. Later model
-handoffs also require an explicit stop; authorization through M6 never bypasses them.
+Earlier milestone gates were crossed explicitly. Current model/review gates are
+recorded in `ai/HANDOFF.md` and `ai/WORK.md`; legacy root instructions are historical
+compatibility material. Authorization through M6 never bypasses a required stop.
 
 M1–M5 are implemented. SOL_HIGH corrected and verified M4 at 92 tests before adding
 bounded Lua model/transform support, then verified M5 at 123 tests. The external
@@ -46,10 +44,12 @@ renewal follows successful trusted delivery, and Lua cannot bypass Rust safety.
 The executable is still finite: there is no autonomous M6 host, Babashka/API,
 Recorder, real COM deployment or hardware acceptance yet.
 
-Follow `ai/WORK.md` for the current design-only scope. Fix the M6 host, scheduling,
-local API, reconnect and actual Babashka acceptance contracts in documentation.
-Do not implement M6 production code under Astra or begin M7. Later model handoffs
-require an explicit user switch; authorization never bypasses the stop.
+Follow `ai/WORK.md` as the authoritative current-phase instruction. M6 architecture
+and tests-first acceptance are fixed in `docs/implementation/MILESTONE_6_DESIGN.md`.
+Do not implement M6 production code under Astra. After the explicit Sol switch,
+implement M6 sequentially, satisfy H1–H28 (including actual bb processes), preserve
+accepted M4/M5 contracts, update the report and stop for external review. Do not
+begin M7 design or implementation or cross the present model gate automatically.
 
 Read `ai/HANDOFF.md` before each milestone. It is the only dedicated external-review
 handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6

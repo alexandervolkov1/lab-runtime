@@ -8,23 +8,28 @@ review checkpoint and `WORK.md` for the current model's authorized work.
 - M1: domain foundation — completed.
 - M2: central output authority and arbitration — completed.
 - M3: bounded transport, narrow Metakon and data-driven instruments — completed.
-- M4: thermal plant, EMA, Reference and native PID — original 72-test checkpoint
-  corrected and verified at the 92-test W1–W9/R1–R10 gate before Lua dependencies.
-- M5: bounded embedded Lua virtual measurement and moving-mean transform —
-  implemented and verified at 123 workspace tests. Waiting for external review.
-- M6: later milestone; no design or implementation during the present review gate.
+- M4: thermal plant, EMA, Reference and native PID — corrected and verified at the
+  92-test W1–W9/R1–R10 gate before Lua dependencies; external review approved.
+- M5: bounded Lua model observations and moving-mean transform — implemented,
+  verified at 123 workspace tests; external review approved.
+- M6: autonomous headless host, monotonic scheduler, bounded local API/events,
+  reconnect and actual Babashka slice — Astra design/H1–H28 acceptance complete;
+  waiting for explicit ASTRA_HIGH -> SOL_HIGH user switch. No M6 production yet.
 
-The reviewed implementation contracts are
-`docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md` and
-`docs/implementation/MILESTONE_5_DESIGN.md`; implementation results are in the
-corresponding M4/M5 reports. `NEXT_IMPLEMENTATION_PLAN.md` and
-`IMPLEMENTATION_ROADMAP_M2_M6.md` retain the earlier sequence and architecture
-context; the current `ai/WORK.md` forbids proceeding while review is pending.
+Current implementation authority after the model switch is
+[the M6 design](../docs/implementation/MILESTONE_6_DESIGN.md), with
+[ai/WORK.md](WORK.md) as the phase instruction. Existing M4/M5 contracts and reports
+remain the accepted baseline. `NEXT_IMPLEMENTATION_PLAN.md` and
+`IMPLEMENTATION_ROADMAP_M2_M6.md` retain historical context; they do not bypass
+current model/review gates or authorize future milestones.
+
+After Sol verifies M6, mark `READY_FOR_EXTERNAL_REVIEW` in HANDOFF and stop.
+No M7 design or implementation is authorized at this model handoff.
 
 ## First stable release after M6
 
-The first release also requires M7 durable Recorder and SQLite, runtime/release
+The first release still requires M7 durable Recorder and SQLite, runtime/release
 hardening, a real Windows serial/COM adapter, a safe read-only physical Metakon
 smoke path, repository Markdown consolidation, final documentation, an end-to-end
-tutorial and release packaging. These are later phases and are not authorized by
-the current M5 implementation instruction. The separate v1 donor stays read-only.
+tutorial and release packaging. These are later phases. The separate v1 donor
+stays read-only and never becomes a workspace dependency.

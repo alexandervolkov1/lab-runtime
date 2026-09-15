@@ -8,9 +8,10 @@ native EMA/Reference/PID control lifecycle, corrected multi-sample Warming and f
 native lease renewal. M5 adds bounded Lua model observations and transforms on two
 isolated worker slots. The reviewed checkpoint has **123 workspace tests**.
 
-The current phase is **ASTRA_HIGH — M6 design only**, covering an autonomous
-headless host, local API and real Babashka slice. Follow [ai/WORK.md](ai/WORK.md)
-and [ai/HANDOFF.md](ai/HANDOFF.md) for the active phase and model gate.
+The [M6 design and H1–H28 acceptance contract](docs/implementation/MILESTONE_6_DESIGN.md)
+are complete for the autonomous headless host, local API and real Babashka slice.
+Implementation awaits the explicit **ASTRA_HIGH -> SOL_HIGH** user switch.
+Follow [ai/WORK.md](ai/WORK.md) and [ai/HANDOFF.md](ai/HANDOFF.md) for the active gate.
 
 ## Run and verify
 
