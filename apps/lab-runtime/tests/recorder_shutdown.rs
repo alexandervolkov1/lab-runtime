@@ -125,6 +125,134 @@ fn shutdown_seals_active_interval_and_closes_worker_before_reporting_flush_succe
 }
 
 #[test]
+fn two_host_runs_and_active_shutdown_reopen_with_distinct_fifo_seals() {
+    let path = temporary_database();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let boot = service.boot_id().to_owned();
+    for label in ["first host run", "second host run"] {
+        let start_at = service.clock().now();
+        service
+            .owner_mut()
+            .start_recording(label, start_at)
+            .unwrap();
+        let by = Instant::now() + Duration::from_secs(2);
+        while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+            assert!(Instant::now() < by);
+            let clock = service.clock_copy();
+            service.owner_mut().service(&clock).unwrap();
+            std::thread::yield_now();
+        }
+        if label == "first host run" {
+            let stop_at = service.clock().now();
+            service.owner_mut().stop_recording_at(stop_at).unwrap();
+            while service.owner().recording_status().unwrap().state != RecordingState::Idle {
+                assert!(Instant::now() < by);
+                let clock = service.clock_copy();
+                service.owner_mut().service(&clock).unwrap();
+                std::thread::yield_now();
+            }
+        }
+    }
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.recorder_flushed, "{terminal:?}");
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let runs = db
+        .prepare("SELECT run_no,label,state,coverage FROM runs ORDER BY run_no")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(runs.len(), 2);
+    for (index, (id, label, state, coverage)) in runs.iter().enumerate() {
+        assert_eq!(
+            u64::from_be_bytes(id.clone().try_into().unwrap()),
+            index as u64 + 1
+        );
+        assert_eq!(
+            label,
+            if index == 0 {
+                "first host run"
+            } else {
+                "second host run"
+            }
+        );
+        assert_eq!(state, "sealed");
+        assert_eq!(coverage, "complete");
+    }
+    let boundaries = db
+        .prepare(
+            "SELECT record_seq FROM records WHERE kind='boundary_snapshot' ORDER BY record_seq",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let seals = db
+        .prepare("SELECT record_seq FROM records WHERE kind='interval_seal' ORDER BY record_seq")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let final_record: Vec<u8> = db
+        .query_row(
+            "SELECT record_seq FROM records WHERE kind='shutdown'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!((boundaries.len(), seals.len()), (2, 2));
+    assert!(
+        boundaries[0] < seals[0]
+            && seals[0] < boundaries[1]
+            && boundaries[1] < seals[1]
+            && seals[1] < final_record
+    );
+    let checkpoint: Vec<u8> = db
+        .query_row(
+            "SELECT persisted_through_seq FROM durable_checkpoints",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(checkpoint, final_record);
+    drop(db);
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_ne!(reopened.boot_id(), boot);
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn blocked_writer_expires_finite_flush_without_falsifying_safe_output_evidence() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();
