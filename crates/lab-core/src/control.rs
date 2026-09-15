@@ -31,6 +31,8 @@ pub enum ControllerState {
     Created,
     /// Descriptor contracts are valid; no output authority is held.
     Ready,
+    /// Explicit startup is collecting distinct Good observations without output authority.
+    Warming,
     /// Fresh input drives bounded proposals through OutputAuthority.
     Running,
     /// Deliberately stopped with output returned to its safe procedure.
@@ -56,7 +58,7 @@ pub struct NativeControllerConfig {
     pub pid: PidConfig,
     /// Exclusive freshness threshold for the latest measurement attempt.
     pub max_input_age: Duration,
-    /// Largest accepted interval between successful controller ticks.
+    /// Largest accepted interval between controller service times.
     pub max_tick_gap: Duration,
     /// Requested bounded automatic-output lease lifetime.
     pub lease_lifetime: Duration,
@@ -172,7 +174,7 @@ pub struct ControllerSnapshot {
     pub ema: EmaSnapshot,
     /// Native PID memory retained for diagnosis.
     pub pid: PidSnapshot,
-    /// Last successfully initialized or executed controller time.
+    /// Last successful startup or controller service time; not proof of PID delivery.
     pub last_tick: Option<Duration>,
     /// Most recent successfully delivered PID proposal.
     pub latest_output: Option<PidUpdate>,

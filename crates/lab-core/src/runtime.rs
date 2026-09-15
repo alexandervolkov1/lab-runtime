@@ -64,28 +64,28 @@ pub enum Command {
     RegisterController(NativeControllerConfig),
     /// Check a Created controller against current descriptors and Reference units.
     PrepareController(ControllerId),
-    /// Initialize algorithms from fresh input and acquire automatic output authority.
+    /// Begin distinct-sample warm-up; acquire only when the configured count is reached.
     StartController {
         /// Controller to start from Ready.
         controller: ControllerId,
         /// Explicit monotonic Runtime time.
         at: Duration,
     },
-    /// Consume one fresh sample and deliver one bounded native proposal.
+    /// Advance warm-up or consume one distinct sample for native output progress.
     TickController {
         /// Running controller to advance.
         controller: ControllerId,
         /// Explicit monotonic Runtime time.
         at: Duration,
     },
-    /// Revoke automatic authority and complete the configured safe procedure.
+    /// Cancel warm-up or revoke automatic authority and complete safe output.
     PauseController {
         /// Running controller to pause.
         controller: ControllerId,
         /// Explicit monotonic Runtime time.
         at: Duration,
     },
-    /// Reset algorithm memory, validate fresh input, and acquire a new lease.
+    /// Reset algorithm memory and repeat the same warm-up policy as Start.
     ResumeController {
         /// Paused controller to resume.
         controller: ControllerId,
@@ -128,6 +128,11 @@ pub enum Command {
     /// Advance every resource by one bounded write/read/recovery attempt.
     PollTransports {
         /// Nondecreasing monotonic Runtime time.
+        at: Duration,
+    },
+    /// Advance watchdog, native dependency checks and safe/transport work independently of producers.
+    ServiceSafety {
+        /// Nondecreasing trusted monotonic Runtime time.
         at: Duration,
     },
     /// Replace physical binding/mapping generations and invalidate all old authority.
@@ -190,6 +195,8 @@ pub enum CommandResult {
     TransportQueued(TransactionId),
     /// Every registered resource received one bounded progress opportunity.
     TransportsPolled,
+    /// Bounded safety/watchdog work was serviced without running a producer callback.
+    SafetyServiced,
     /// An explicit attempt produced this good sample.
     MeasurementRefreshed(Sample),
     /// An explicit unavailable plant measurement attempt was retained.
@@ -339,6 +346,21 @@ impl Runtime {
                 self.output_time = at;
                 for authority in self.outputs.values_mut() {
                     authority.tick(at)?;
+                }
+                if self.warming_on(actuator) {
+                    match command {
+                        OutputCommand::RequestSafe => {
+                            self.cancel_warming(actuator, ControllerState::Paused);
+                        }
+                        OutputCommand::Trip => {
+                            self.cancel_warming(actuator, ControllerState::Failed);
+                        }
+                        OutputCommand::Acquire { .. } => return Err(OutputError::Busy.into()),
+                        OutputCommand::BindProfile(_) => {
+                            return Err(OutputError::InvalidState.into());
+                        }
+                        _ => {}
+                    }
                 }
                 let result = self
                     .outputs
@@ -589,11 +611,21 @@ impl Runtime {
                 self.poll_transports(at)?;
                 Ok(CommandResult::TransportsPolled)
             }
+            Command::ServiceSafety { at } => {
+                self.service_safety(at)?;
+                Ok(CommandResult::SafetyServiced)
+            }
             Command::RebindMetakon {
                 instrument,
                 binding,
                 at,
             } => {
+                if self.controllers.values().any(|controller| {
+                    controller.state == ControllerState::Warming
+                        && controller.config.output.instrument() == instrument
+                }) {
+                    return Err(OutputError::Busy.into());
+                }
                 self.check_output_time(at)?;
                 let instance = self
                     .metakon_instruments
@@ -841,6 +873,14 @@ impl Runtime {
         {
             return Err(ControllerError::InvalidConfiguration.into());
         }
+        if !self
+            .outputs
+            .get(&config.output)
+            .expect("output checked above")
+            .valid_native_duration(config.max_tick_gap, config.lease_lifetime)
+        {
+            return Err(ControllerError::InvalidConfiguration.into());
+        }
 
         let controller = self.controllers.get_mut(&id).expect("validated above");
         controller.state = ControllerState::Ready;
@@ -862,8 +902,33 @@ impl Runtime {
             if controller.state != expected {
                 return Err(ControllerError::InvalidState.into());
             }
+            if self.warming_on(controller.config.output) {
+                return Err(OutputError::Busy.into());
+            }
+            if !self
+                .outputs
+                .get(&controller.config.output)
+                .ok_or(OutputError::UnknownActuator)?
+                .can_prepare()
+            {
+                return Err(ControllerError::Output.into());
+            }
+            if !self
+                .outputs
+                .get(&controller.config.output)
+                .expect("checked above")
+                .valid_native_duration(
+                    controller.config.max_tick_gap,
+                    controller.config.lease_lifetime,
+                )
+            {
+                return Err(ControllerError::InvalidConfiguration.into());
+            }
             let (measurement, unit, sample_at) =
                 self.control_input(controller.config.input, at, controller.config.max_input_age)?;
+            if unit != controller.config.ema.unit {
+                return Err(ControllerError::InvalidConfiguration.into());
+            }
             let reference = self
                 .references
                 .get_mut(&controller.config.reference)
@@ -879,26 +944,11 @@ impl Runtime {
                 .ema
                 .update(Some(measurement), SampleQuality::Good, unit, sample_at)
                 .map_err(|_| ControllerError::Algorithm)?;
-            if update.status != EmaStatus::Ready {
-                return Err(ControllerError::Algorithm.into());
-            }
-            let lease = match self
-                .outputs
-                .get_mut(&controller.config.output)
-                .ok_or(OutputError::UnknownActuator)?
-                .command(
-                    OutputCommand::Acquire {
-                        owner: OutputOwner::Automatic(id.get()),
-                        lifetime: controller.config.lease_lifetime,
-                    },
-                    at,
-                )? {
-                OutputResult::Lease(lease) => lease,
-                _ => unreachable!("Acquire has one successful result kind"),
-            };
-            controller.lease = Some(lease);
             controller.last_tick = Some(at);
-            controller.state = ControllerState::Running;
+            controller.state = ControllerState::Warming;
+            if update.status == EmaStatus::Ready {
+                self.activate_controller(&mut controller, at)?;
+            }
             Ok(CommandResult::ControllerUpdated(controller.snapshot()))
         })();
         self.controllers.insert(id, controller);
@@ -911,15 +961,29 @@ impl Runtime {
             .controllers
             .remove(&id)
             .ok_or(ControllerError::UnknownController)?;
-        if controller.state != ControllerState::Running {
+        if !matches!(
+            controller.state,
+            ControllerState::Running | ControllerState::Warming
+        ) {
             self.controllers.insert(id, controller);
             return Err(ControllerError::InvalidState.into());
+        }
+        if controller.last_tick.is_some_and(|previous| at <= previous) {
+            self.controllers.insert(id, controller);
+            return Err(ControllerError::InvalidTickTime.into());
+        }
+        if controller.state == ControllerState::Warming {
+            let result = self.advance_warming(&mut controller, at);
+            self.controllers.insert(id, controller);
+            return result;
         }
 
         let update = self.calculate_controller_update(&mut controller, at);
         let result = match update {
             Ok((pid, unit, ttl)) => {
-                let lease = controller.lease.ok_or(ControllerError::InvalidState)?;
+                let lease = controller
+                    .lease
+                    .expect("Running controller owns its last token");
                 let output = controller.config.output;
                 let delivery = self.deliver_simulated(
                     output,
@@ -933,23 +997,127 @@ impl Runtime {
                 );
                 match delivery {
                     Ok(()) => {
-                        controller.last_tick = Some(at);
-                        controller.latest_output = Some(pid);
-                        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+                        let renewal = self
+                            .outputs
+                            .get_mut(&output)
+                            .ok_or(Error::from(OutputError::UnknownActuator))
+                            .and_then(|authority| {
+                                authority.renew_native(lease, controller.config.lease_lifetime, at)
+                            });
+                        if let Ok(replacement) = renewal {
+                            controller.lease = Some(replacement);
+                            controller.last_tick = Some(at);
+                            controller.latest_output = Some(pid);
+                            Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+                        } else {
+                            let _ = self.fail_controller(&mut controller, at);
+                            Err(ControllerError::Output.into())
+                        }
                     }
                     Err(_) => {
-                        self.fail_controller(&mut controller, at)?;
+                        let _ = self.fail_controller(&mut controller, at);
                         Err(ControllerError::Output.into())
                     }
                 }
             }
             Err(error) => {
-                self.fail_controller(&mut controller, at)?;
+                let _ = self.fail_controller(&mut controller, at);
                 Err(error.into())
             }
         };
         self.controllers.insert(id, controller);
         result
+    }
+
+    /// Serially acquire the actuator only after all warm-up observations are committed.
+    fn activate_controller(
+        &mut self,
+        controller: &mut NativeController,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let authority = self
+            .outputs
+            .get_mut(&controller.config.output)
+            .ok_or(OutputError::UnknownActuator)?;
+        if !authority.can_prepare() {
+            controller.state = ControllerState::Failed;
+            return Err(ControllerError::Output.into());
+        }
+        let acquisition = authority.command(
+            OutputCommand::Acquire {
+                owner: OutputOwner::Automatic(controller.config.id.get()),
+                lifetime: controller.config.lease_lifetime,
+            },
+            at,
+        );
+        match acquisition {
+            Ok(OutputResult::Lease(lease)) => {
+                controller.lease = Some(lease);
+                controller.state = ControllerState::Running;
+                Ok(())
+            }
+            Ok(_) => unreachable!("Acquire has one successful result kind"),
+            Err(error) => {
+                controller.state = ControllerState::Failed;
+                Err(error)
+            }
+        }
+    }
+
+    /// A Warming service may observe the same Good attempt once without recounting it.
+    fn advance_warming(
+        &mut self,
+        controller: &mut NativeController,
+        at: Duration,
+    ) -> Result<CommandResult, Error> {
+        let attempt = (|| {
+            let previous = controller.last_tick.ok_or(ControllerError::InvalidState)?;
+            if at - previous > controller.config.max_tick_gap {
+                return Err(ControllerError::InvalidTickTime);
+            }
+            let (value, unit, sample_at) =
+                self.control_input(controller.config.input, at, controller.config.max_input_age)?;
+            if unit != controller.config.ema.unit {
+                return Err(ControllerError::InvalidConfiguration);
+            }
+            let reference = self
+                .references
+                .get_mut(&controller.config.reference)
+                .ok_or(ControllerError::UnknownReference)?
+                .value_at(at)
+                .map_err(map_reference_error)?;
+            if reference.unit != unit {
+                return Err(ControllerError::InvalidConfiguration);
+            }
+            if controller
+                .ema
+                .snapshot()
+                .last_at
+                .is_some_and(|last| sample_at <= last)
+            {
+                controller.last_tick = Some(at);
+                return Ok(());
+            }
+            let updated = controller
+                .ema
+                .update(Some(value), SampleQuality::Good, unit, sample_at)
+                .map_err(|_| ControllerError::Algorithm)?;
+            controller.last_tick = Some(at);
+            if updated.status == EmaStatus::Ready {
+                self.activate_controller(controller, at)
+                    .map_err(|_| ControllerError::Output)?;
+            }
+            Ok(())
+        })();
+        match attempt {
+            Ok(()) => Ok(CommandResult::ControllerUpdated(controller.snapshot())),
+            Err(error) => {
+                // Preparation never owned the actuator, so its algorithm fault needs no Trip.
+                controller.state = ControllerState::Failed;
+                controller.lease = None;
+                Err(error.into())
+            }
+        }
     }
 
     fn calculate_controller_update(
@@ -958,8 +1126,20 @@ impl Runtime {
         at: Duration,
     ) -> Result<(crate::control::PidUpdate, Unit, Duration), ControllerError> {
         let previous = controller.last_tick.ok_or(ControllerError::InvalidState)?;
-        if at <= previous || at - previous > controller.config.max_tick_gap {
+        if at - previous > controller.config.max_tick_gap {
             return Err(ControllerError::InvalidTickTime);
+        }
+        let lease = controller.lease.ok_or(ControllerError::Output)?;
+        if at >= lease.expires()
+            || self
+                .outputs
+                .get(&controller.config.output)
+                .ok_or(ControllerError::Output)?
+                .snapshot()
+                .lease
+                != Some(lease)
+        {
+            return Err(ControllerError::Output);
         }
         let (measurement, unit, sample_at) =
             self.control_input(controller.config.input, at, controller.config.max_input_age)?;
@@ -988,7 +1168,11 @@ impl Runtime {
             )
             .map_err(|_| ControllerError::Algorithm)?;
         let remaining_freshness = controller.config.max_input_age - (at - sample_at);
-        let ttl = controller.config.proposal_ttl.min(remaining_freshness);
+        let ttl = controller
+            .config
+            .proposal_ttl
+            .min(remaining_freshness)
+            .min(lease.expires() - at);
         if ttl.is_zero() {
             return Err(ControllerError::StaleInput);
         }
@@ -1002,6 +1186,10 @@ impl Runtime {
             .remove(&id)
             .ok_or(ControllerError::UnknownController)?;
         let result = (|| {
+            if controller.state == ControllerState::Warming {
+                controller.state = ControllerState::Paused;
+                return Ok(CommandResult::ControllerUpdated(controller.snapshot()));
+            }
             if controller.state != ControllerState::Running {
                 return Err(ControllerError::InvalidState.into());
             }
@@ -1013,16 +1201,21 @@ impl Runtime {
                 .outputs
                 .get_mut(&controller.config.output)
                 .ok_or(OutputError::UnknownActuator)?;
+            controller.state = ControllerState::Paused;
             if authority.snapshot().lease == Some(lease) {
                 authority.command(OutputCommand::Release(lease), at)?;
-            } else {
+            } else if authority.snapshot().lease.is_none()
+                && authority.snapshot().state == crate::output::OutputState::SafePending
+            {
                 // The Runtime watchdog may already have revoked an expired lease.
                 // Pausing must still settle the reserved safe action and must not
                 // leave the controller claiming authority it no longer owns.
                 authority.command(OutputCommand::RequestSafe, at)?;
+            } else {
+                // A previously revoked controller cannot mutate a subsequent owner.
+                return Ok(CommandResult::ControllerUpdated(controller.snapshot()));
             }
             self.complete_simulated_safe(controller.config.output, at)?;
-            controller.state = ControllerState::Paused;
             Ok(CommandResult::ControllerUpdated(controller.snapshot()))
         })();
         self.controllers.insert(id, controller);
@@ -1035,11 +1228,21 @@ impl Runtime {
         at: Duration,
     ) -> Result<(), Error> {
         controller.state = ControllerState::Failed;
-        controller.lease = None;
-        self.outputs
+        let lease = controller.lease.take();
+        let authority = self
+            .outputs
             .get_mut(&controller.config.output)
-            .ok_or(OutputError::UnknownActuator)?
-            .command(OutputCommand::Trip, at)?;
+            .ok_or(OutputError::UnknownActuator)?;
+        if authority.snapshot().lease == lease && lease.is_some() {
+            authority.command(OutputCommand::Trip, at)?;
+        } else if authority.snapshot().lease.is_none()
+            && authority.snapshot().state == crate::output::OutputState::SafePending
+        {
+            // A failed loop latches its own fault even if watchdog already requested safe.
+            authority.command(OutputCommand::Trip, at)?;
+        } else {
+            return Ok(());
+        }
         self.complete_simulated_safe(controller.config.output, at)
     }
 
@@ -1060,7 +1263,7 @@ impl Runtime {
         if at < sample.at() {
             return Err(ControllerError::InvalidTickTime);
         }
-        if at - sample.at() > max_age {
+        if at - sample.at() >= max_age {
             return Err(ControllerError::StaleInput);
         }
         let Some(Value::Float(value)) = sample.value() else {
@@ -1184,6 +1387,75 @@ impl Runtime {
             authority.tick(at)?;
         }
         Ok(())
+    }
+
+    /// This explicit service needs host scheduling; a finite lease alone cannot send safe bytes.
+    /// It does not run EMA/PID or renew a native owner and never waits on a script VM.
+    fn service_safety(&mut self, at: Duration) -> Result<(), Error> {
+        self.check_output_time(at)?;
+        let identities: Vec<_> = self.controllers.keys().copied().collect();
+        for id in identities {
+            let mut controller = self.controllers.remove(&id).expect("listed above");
+            let live = matches!(
+                controller.state,
+                ControllerState::Warming | ControllerState::Running
+            );
+            if live {
+                let timed_out = controller
+                    .last_tick
+                    .is_some_and(|last| at > last && at - last > controller.config.max_tick_gap);
+                let input_failed = self
+                    .control_input(controller.config.input, at, controller.config.max_input_age)
+                    .is_err();
+                let ownership_lost = controller.state == ControllerState::Running
+                    && controller.lease.is_some_and(|lease| {
+                        self.outputs
+                            .get(&controller.config.output)
+                            .is_none_or(|authority| authority.snapshot().lease != Some(lease))
+                    });
+                if timed_out || input_failed || ownership_lost {
+                    if controller.state == ControllerState::Warming {
+                        controller.state = ControllerState::Failed;
+                    } else {
+                        let _ = self.fail_controller(&mut controller, at);
+                    }
+                }
+            }
+            self.controllers.insert(id, controller);
+        }
+        // Only the known Rust virtual plant may report simulated readback here.
+        // A physical Metakon safe request still needs its trusted transport/evidence path.
+        let virtual_safe: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|(actuator, authority)| {
+                self.thermal_plants.contains_key(&actuator.instrument())
+                    && authority.snapshot().state == crate::output::OutputState::SafePending
+                    && authority.snapshot().in_flight.is_none()
+            })
+            .map(|(actuator, _)| *actuator)
+            .collect();
+        for actuator in virtual_safe {
+            let _ = self.complete_simulated_safe(actuator, at);
+        }
+        // Every M3 resource gets one bounded recovery/dispatch opportunity.
+        self.poll_transports(at)
+    }
+
+    /// Warming is a bounded preparation guard, not an output owner or lease.
+    fn warming_on(&self, actuator: ActuatorId) -> bool {
+        self.controllers.values().any(|controller| {
+            controller.state == ControllerState::Warming && controller.config.output == actuator
+        })
+    }
+
+    fn cancel_warming(&mut self, actuator: ActuatorId, state: ControllerState) {
+        for controller in self.controllers.values_mut() {
+            if controller.state == ControllerState::Warming && controller.config.output == actuator
+            {
+                controller.state = state;
+            }
+        }
     }
 
     fn check_transport_time(&mut self, at: Duration) -> Result<(), Error> {

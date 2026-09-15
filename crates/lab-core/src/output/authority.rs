@@ -71,6 +71,60 @@ impl OutputAuthority {
         self.snapshot.clone()
     }
 
+    /// Admission for a controller preparing input without acquiring an output lease.
+    pub(crate) fn can_prepare(&self) -> bool {
+        self.snapshot.state == OutputState::Disarmed
+            && self.snapshot.safe_confirmed
+            && self.snapshot.lease.is_none()
+            && self.pending.is_none()
+            && self.transport_reserved.is_none()
+            && self.snapshot.in_flight.is_none()
+            && !self.safe_needed
+    }
+
+    /// Require a finite controller cadence strictly shorter than its configured lease.
+    pub(crate) fn valid_native_duration(&self, gap: Duration, lifetime: Duration) -> bool {
+        !gap.is_zero()
+            && gap < lifetime
+            && self
+                .profile
+                .as_ref()
+                .is_some_and(|profile| lifetime <= profile.max_lease)
+    }
+
+    /// Replace only the exact current native token after trusted successful delivery.
+    /// An ordinary client has no command exposing this operation.
+    pub(crate) fn renew_native(
+        &mut self,
+        lease: OutputLease,
+        lifetime: Duration,
+        at: Duration,
+    ) -> Result<OutputLease, Error> {
+        self.check_lease(lease, at)?;
+        if self.snapshot.state != OutputState::ArmedAuto
+            || self.snapshot.fault_latched
+            || self.safe_needed
+        {
+            return Err(OutputError::InvalidState.into());
+        }
+        if self.pending.is_some()
+            || self.transport_reserved.is_some()
+            || self.snapshot.in_flight.is_some()
+        {
+            return Err(OutputError::Busy.into());
+        }
+        if lifetime.is_zero() || lifetime > self.profile()?.max_lease {
+            return Err(OutputError::InvalidProfile.into());
+        }
+        let expires = at.checked_add(lifetime).ok_or(OutputError::InvalidTime)?;
+        if expires <= lease.expires {
+            return Err(OutputError::InvalidTime.into());
+        }
+        let replacement = OutputLease { expires, ..lease };
+        self.snapshot.lease = Some(replacement);
+        Ok(replacement)
+    }
+
     /// The enclosing owner drives this watchdog even when a producer sends nothing.
     pub(crate) fn tick(&mut self, at: Duration) -> Result<(), Error> {
         if let Some(lease) = self.snapshot.lease
@@ -618,5 +672,103 @@ mod tests {
         assert!(authority.snapshot.lease.is_none());
         assert!(!authority.snapshot.safe_confirmed);
         assert!(!authority.snapshot.pending);
+    }
+
+    #[test]
+    fn native_replacement_requires_empty_authority_work_and_exact_current_token() {
+        let (mut authority, initial) = armed();
+        let now = Duration::from_millis(100);
+        let lifetime = Duration::from_secs(1);
+        assert_eq!(
+            authority.renew_native(initial, lifetime, now),
+            Err(OutputError::Busy.into())
+        );
+        assert_eq!(authority.snapshot.lease, Some(initial));
+        authority.clear_pending();
+        let replacement = authority.renew_native(initial, lifetime, now).unwrap();
+        assert_eq!(replacement.epoch(), initial.epoch());
+        assert_eq!(replacement.owner(), initial.owner());
+        assert_eq!(replacement.expires(), now + lifetime);
+        assert_eq!(
+            authority.renew_native(initial, lifetime, now),
+            Err(OutputError::StaleLease.into())
+        );
+
+        authority
+            .propose(
+                OutputProposal {
+                    lease: replacement,
+                    value: Value::Float(5.0),
+                    unit: Unit::PERCENT,
+                    ttl: Duration::from_millis(50),
+                },
+                now,
+            )
+            .unwrap();
+        let intent = authority
+            .reserve_transport(now, now + Duration::from_millis(50), 1, 1)
+            .unwrap();
+        assert_eq!(
+            authority.renew_native(replacement, lifetime, now),
+            Err(OutputError::Busy.into())
+        );
+        authority.abort_transport(intent);
+        authority
+            .propose(
+                OutputProposal {
+                    lease: replacement,
+                    value: Value::Float(5.0),
+                    unit: Unit::PERCENT,
+                    ttl: Duration::from_millis(50),
+                },
+                now,
+            )
+            .unwrap();
+        let OutputResult::Dispatched(dispatch) = authority.begin(now).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            authority.renew_native(replacement, lifetime, now),
+            Err(OutputError::Busy.into())
+        );
+        authority
+            .complete(dispatch.id(), DispatchOutcome::ReadbackVerified, now)
+            .unwrap();
+        assert_eq!(
+            authority.renew_native(replacement, Duration::ZERO, now),
+            Err(OutputError::InvalidProfile.into())
+        );
+        assert_eq!(
+            authority.renew_native(replacement, lifetime + Duration::from_nanos(1), now),
+            Err(OutputError::InvalidProfile.into())
+        );
+        assert_eq!(
+            authority.renew_native(replacement, lifetime, replacement.expires()),
+            Err(OutputError::Expired.into())
+        );
+        assert_eq!(authority.snapshot.lease, Some(replacement));
+    }
+
+    #[test]
+    fn native_duration_admission_and_revoke_never_resurrect_old_authority() {
+        let (mut authority, initial) = armed();
+        authority.clear_pending();
+        assert!(
+            authority.valid_native_duration(Duration::from_millis(100), Duration::from_secs(1))
+        );
+        assert!(!authority.valid_native_duration(Duration::from_secs(1), Duration::from_secs(1)));
+        assert!(!authority.valid_native_duration(Duration::ZERO, Duration::from_secs(1)));
+        assert!(
+            !authority.valid_native_duration(Duration::from_millis(100), Duration::from_secs(2))
+        );
+        authority
+            .command(OutputCommand::Trip, Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            authority.renew_native(initial, Duration::from_secs(1), Duration::ZERO),
+            Err(OutputError::StaleLease.into())
+        );
+        assert!(authority.snapshot.lease.is_none());
+        assert_eq!(authority.snapshot.state, OutputState::SafePending);
     }
 }
