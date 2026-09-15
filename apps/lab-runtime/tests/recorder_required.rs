@@ -1,15 +1,15 @@
 //! Required recording is a Runtime-owned prerequisite, not a client lifetime.
 
 use lab_core::{
-    Command, CommandResult, Error, InstrumentId, VirtualInstrumentConfig,
+    Command, CommandResult, Error, InstrumentId, Query, QueryResult, VirtualInstrumentConfig,
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputOwner, OutputResult,
-        SafeProfile,
+        OutputState, SafeProfile,
     },
 };
 use lab_runtime::{
     host::{Clock, HostCore},
-    recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState},
+    recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, WriterBarrier},
 };
 use std::{
     path::PathBuf,
@@ -255,6 +255,65 @@ fn required_host_refuses_control_until_start_commits_then_records_autonomous_uni
         host.recording_status().unwrap().state,
         RecordingState::Closed
     );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn required_worker_panic_faults_native_control_without_waiting_for_sql() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::panic_before_fact_sql();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
+        .unwrap();
+    host.service(&FakeClock(Duration::ZERO)).unwrap();
+    host.start_recording("Required panic", Duration::ZERO)
+        .unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while host.recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        host.service(&FakeClock(Duration::ZERO)).unwrap();
+        std::thread::yield_now();
+    }
+    host.command(Command::StartController {
+        controller: host.controller_id(),
+        at: Duration::ZERO,
+    })
+    .unwrap();
+    while !barrier.reached() {
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    }
+    while host.recording_status().unwrap().state != RecordingState::Failed {
+        assert!(Instant::now() < by);
+        host.service(&FakeClock(Duration::from_millis(10))).unwrap();
+        std::thread::yield_now();
+    }
+    let QueryResult::Controller(controller) =
+        host.query(Query::Controller(host.controller_id())).unwrap()
+    else {
+        panic!("native controller query unavailable")
+    };
+    assert_eq!(controller.state, lab_core::control::ControllerState::Failed);
+    let QueryResult::Output(output) = host
+        .query(Query::Output(ActuatorId::new(
+            host.plant_id(),
+            lab_core::HEATER_POWER,
+        )))
+        .unwrap()
+    else {
+        panic!("output query unavailable")
+    };
+    assert!(output.fault_latched);
+    assert!(output.lease.is_none());
+    assert!(matches!(
+        output.state,
+        OutputState::SafePending | OutputState::FaultLatched
+    ));
+    assert_eq!(host.recording_status().unwrap().coverage, "unknown_tail");
+    drop(host);
     std::fs::remove_file(path).unwrap();
 }
 
