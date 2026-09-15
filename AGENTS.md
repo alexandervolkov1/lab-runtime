@@ -9,7 +9,7 @@ ai/WORK.md
 Read all three before each new phase.
 
 ai/HANDOFF.md is the only file used for external reviewer communication.
-ai/WORK.md contains the current model instruction and is replaced at model handoff.
+ai/WORK.md contains the current phase instruction and is replaced at a phase handoff.
 ai/ROADMAP.md contains the persistent product roadmap.
 
 Legacy root-level model instruction/handoff files are temporary compatibility
@@ -25,8 +25,8 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-SOL_HIGH: implement M4 lifecycle corrections, verify M1–M4, then implement M5;
-stop for external review before M6
+WAITING_FOR_EXTERNAL_REVIEW: corrected M4 and bounded M5 are complete;
+stop before any M6 design or implementation
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -39,15 +39,10 @@ handoffs also require an explicit stop; authorization through M6 never bypasses 
 
 The user crossed the M4 gate and switched ASTRA_HIGH -> SOL_HIGH. The accepted
 Astra design and reviewer response are recorded in `ai/HANDOFF.md` and the two
-milestone contracts. Fix and verify M4 before implementing M5.
-
-The Astra design is complete. Next Sol implementation is governed by
-docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md, then
-docs/implementation/MILESTONE_5_DESIGN.md. Its W1–W9/R1–R10 prerequisites precede
-Lua dependencies; M5 must satisfy L1–L22. The current 72-test baseline still has
-the reviewed M4 lifecycle defects; a design document is not an implementation fix.
-After M5, update `ai/HANDOFF.md` and stop for external review. Do not begin M6 design
-or implementation or cross the present model gate automatically.
+milestone contracts. SOL_HIGH corrected and verified M4 at 92 tests before adding
+Lua, then implemented and verified bounded M5 at 123 tests. The current instruction
+is the external-review stop in `ai/WORK.md`; do not begin M6 design or
+implementation or cross this review/model gate automatically.
 
 Read `ai/HANDOFF.md` before each milestone. It is the only dedicated external-review
 handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6
