@@ -14,9 +14,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !args.is_empty() {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let options = ServiceOptions::parse(&refs)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let callback_flag = stop.clone();
+        // The OS callback only publishes intent; the Runtime owner performs
+        // every safe shutdown step and retains evidence before closing peers.
+        ctrlc::set_handler(move || {
+            callback_flag.store(true, std::sync::atomic::Ordering::Release)
+        })?;
         let host = ServiceHost::startup(options)?;
         println!("{}", host.ready_line());
-        server::run(host, Arc::new(AtomicBool::new(false)))?;
+        server::run(host, stop)?;
         return Ok(());
     }
     finite_demo()
