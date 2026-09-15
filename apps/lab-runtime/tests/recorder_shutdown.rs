@@ -1,5 +1,6 @@
 //! Safe shutdown and durable flush have separate, honest terminal evidence.
 
+use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
 use lab_runtime::{
     host::{Clock, HostCore},
     recorder::{
@@ -191,4 +192,86 @@ fn blocked_writer_expires_finite_flush_without_falsifying_safe_output_evidence()
         std::thread::yield_now();
     }
     assert!(!path.exists());
+}
+
+#[test]
+fn stop_and_finish_drain_all_four_accepted_groups_with_full_normal_credit() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    worker.request_start("full credit shutdown").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while worker.poll().state != RecordingState::Recording && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().state, RecordingState::Recording);
+    let instrument = InstrumentId::new(811);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "full credit source".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    for n in 1..=4u64 {
+        let at = Duration::from_millis(n);
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument,
+                parameter: lab_core::TEMPERATURE,
+                at,
+            })
+            .unwrap();
+        worker
+            .try_admit_at(runtime.take_recording_facts(), at)
+            .unwrap();
+        if n == 1 {
+            while !barrier.reached() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                barrier.reached(),
+                "first actual SQLite batch never reached barrier"
+            );
+        }
+    }
+    assert_eq!(worker.poll().outstanding_groups, 4);
+    worker.request_stop().unwrap();
+    assert_eq!(worker.poll().state, RecordingState::Stopping);
+    barrier.release();
+    while worker.poll().state != RecordingState::Idle && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().state, RecordingState::Idle);
+    assert_eq!(worker.poll().outstanding_groups, 0);
+    worker.request_finish().unwrap();
+    while worker.poll().state != RecordingState::Closed && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().state, RecordingState::Closed);
+    drop(worker);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    let sealed: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_boots WHERE state='sealed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 4,
+        "every accepted group belongs to the terminal prefix"
+    );
+    assert_eq!(sealed, 1);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
