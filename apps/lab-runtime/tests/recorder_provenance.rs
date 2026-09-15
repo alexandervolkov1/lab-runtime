@@ -18,10 +18,13 @@ use lab_runtime::{
 };
 
 #[test]
-fn start_boundary_freezes_full_pid_and_reference_config_after_pre_recording_retunes() {
+fn recording_boundary_and_ordered_revisions_reconstruct_current_config() {
     let path = temporary_database();
     let worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
     let mut host = HostCore::virtual_demo().unwrap();
+    let host_reference = host.reference_id();
+    let host_controller = host.controller_id();
+    let host_plant = host.plant_id();
     host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
         .unwrap();
     host.command(Command::RetuneRampReference {
@@ -59,6 +62,66 @@ fn start_boundary_freezes_full_pid_and_reference_config_after_pre_recording_retu
         service.owner_mut().service(&clock).unwrap();
         std::thread::yield_now();
     }
+    let retune_at = service.clock().now();
+    service
+        .owner_mut()
+        .command(Command::RetuneRampReference {
+            reference: host_reference,
+            target: 62.0,
+            rate: 2.25,
+            expected_revision: 2,
+            at: retune_at,
+        })
+        .unwrap();
+    service
+        .owner_mut()
+        .command(Command::ConfigureControllerPid {
+            controller: host_controller,
+            pid: lab_core::control::PidConfig {
+                kp: 3.25,
+                ki: 0.4,
+                kd: 0.05,
+                output_min: 7.0,
+                output_max: 75.0,
+            },
+            expected_revision: 2,
+        })
+        .unwrap();
+    assert!(
+        service
+            .owner_mut()
+            .command(Command::ConfigureControllerPid {
+                controller: host_controller,
+                pid: lab_core::control::PidConfig {
+                    kp: 99.0,
+                    ki: 0.4,
+                    kd: 0.05,
+                    output_min: 80.0,
+                    output_max: 5.0,
+                },
+                expected_revision: 3,
+            })
+            .is_err()
+    );
+    let failure_at = service.clock().now();
+    service
+        .owner_mut()
+        .command(Command::InjectPlantMeasurementFailure {
+            instrument: host_plant,
+            at: failure_at,
+        })
+        .unwrap();
+    let drained_by = Instant::now() + Duration::from_secs(2);
+    while service
+        .owner()
+        .recording_status()
+        .is_some_and(|status| status.outstanding_groups > 1)
+    {
+        assert!(Instant::now() < drained_by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
     service.request_shutdown().unwrap();
     let close_by = Instant::now() + Duration::from_secs(4);
     let terminal = loop {
@@ -68,7 +131,11 @@ fn start_boundary_freezes_full_pid_and_reference_config_after_pre_recording_retu
         assert!(Instant::now() < close_by);
         std::thread::yield_now();
     };
-    assert!(terminal.recorder_flushed);
+    assert!(
+        terminal.recorder_flushed,
+        "{terminal:?} {:?}",
+        service.owner().recording_status()
+    );
     drop(service);
     let db = rusqlite::Connection::open(&path).unwrap();
     let payload: Vec<u8> = db
@@ -88,6 +155,46 @@ fn start_boundary_freezes_full_pid_and_reference_config_after_pre_recording_retu
     assert_eq!(boundary["reference_configurations"][0]["revision"], "2");
     assert_eq!(boundary["reference_configurations"][0]["target"], 57.0);
     assert_eq!(boundary["reference_configurations"][0]["rate"], 1.5);
+    let reference_revision: (f64, f64, f64) = db
+        .query_row(
+            "SELECT value,target,rate FROM reference_events WHERE revision=x'0000000000000003'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(reference_revision.1, 62.0);
+    assert_eq!(reference_revision.2, 2.25);
+    assert!(reference_revision.0.is_finite());
+    let controller_revision: (String, String) = db
+        .query_row(
+            "SELECT event_kind,diagnostics FROM controller_events WHERE config_revision=x'0000000000000003'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(controller_revision.0, "configuration");
+    let pid: serde_json::Value = serde_json::from_str(&controller_revision.1).unwrap();
+    assert_eq!(pid["kp"], 3.25);
+    assert_eq!(pid["output_min"], 7.0);
+    let rejected: i64 = db
+        .query_row(
+            "SELECT count(*) FROM controller_events WHERE config_revision=x'0000000000000004' OR diagnostics LIKE '%99.0%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rejected, 0, "rejected PID candidate cannot become active");
+    let after_revision: i64 = db
+        .query_row(
+            "SELECT count(*) FROM measurements m JOIN records r ON r.boot_id=m.boot_id AND r.record_seq=m.record_seq WHERE m.quality='unavailable' AND r.record_seq>(SELECT record_seq FROM controller_events WHERE config_revision=x'0000000000000003') AND r.record_seq>(SELECT record_seq FROM reference_events WHERE revision=x'0000000000000003')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        after_revision >= 1,
+        "committed revisions must precede dependent measurement"
+    );
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
