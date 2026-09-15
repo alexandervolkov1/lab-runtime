@@ -9,7 +9,10 @@ use lab_core::{
     Command, CommandResult, Error, InstrumentId, Query, QueryResult, Runtime, Sample,
     SampleQuality, SignalId, Unit,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
-    managed::ComponentExecutor,
+    managed::{
+        ComponentDefinition, ComponentError, ComponentExecutor, ComponentId, ComponentKind,
+        ComponentManifest, ComponentState, PlainData, PlainValue,
+    },
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputResult, SafeProfile,
     },
@@ -25,6 +28,8 @@ use std::{
 const PLANT: InstrumentId = InstrumentId::new(1);
 const REFERENCE: ReferenceId = ReferenceId::new(1);
 const CONTROLLER: ControllerId = ControllerId::new(1);
+const LUA_SOURCE: ComponentId = ComponentId::new(201);
+const LUA_FILTER: ComponentId = ComponentId::new(202);
 
 /// Trusted elapsed-time source; production and deterministic tests share the interface.
 pub trait Clock {
@@ -105,6 +110,8 @@ pub struct SchedulePlan {
     plants: Vec<(InstrumentId, Periodic)>,
     references: Vec<(ReferenceId, Periodic)>,
     controllers: Vec<(ControllerId, SignalId, Periodic)>,
+    sources: Vec<(ComponentId, Periodic)>,
+    transforms: Vec<(ComponentId, SignalId)>,
 }
 impl SchedulePlan {
     fn virtual_demo() -> Self {
@@ -117,6 +124,8 @@ impl SchedulePlan {
                 SignalId::new(PLANT, lab_core::TEMPERATURE),
                 Periodic::new(Duration::from_millis(100)),
             )],
+            sources: Vec::new(),
+            transforms: Vec::new(),
         }
     }
 
@@ -133,6 +142,8 @@ impl SchedulePlan {
             plants: Vec::new(),
             references: vec![(reference, Periodic::new(Duration::from_millis(100)))],
             controllers: vec![(controller, input, Periodic::new(Duration::from_millis(100)))],
+            sources: Vec::new(),
+            transforms: Vec::new(),
         }
     }
 }
@@ -169,6 +180,8 @@ pub struct HostCore {
     events: EventLog,
     plan: SchedulePlan,
     consumed: BTreeMap<ControllerId, Option<Sample>>,
+    consumed_managed: BTreeMap<ComponentId, Option<Sample>>,
+    components: Vec<(ComponentId, &'static str)>,
     last_now: Duration,
     stopping: bool,
 }
@@ -262,6 +275,8 @@ impl HostCore {
             events,
             plan: SchedulePlan::virtual_demo(),
             consumed: BTreeMap::new(),
+            consumed_managed: BTreeMap::new(),
+            components: Vec::new(),
             last_now: Duration::ZERO,
             stopping: false,
         })
@@ -276,6 +291,111 @@ impl HostCore {
             return Err(Error::InvalidConfiguration("host is stopping"));
         }
         self.runtime.install_component_executor(executor)
+    }
+
+    /// Stage only the fixed trusted Lua Source; Core permits one staged init at a time.
+    pub fn stage_standard_lua(&mut self, at: Duration) -> Result<(), Error> {
+        if !self.components.is_empty() {
+            return Err(Error::InvalidConfiguration("Lua profile already staged"));
+        }
+        let mut config = PlainData::default();
+        config
+            .fields
+            .insert("baseline".into(), PlainValue::Number(20.0));
+        config.fields.insert("rate".into(), PlainValue::Number(1.0));
+        let manifest =
+            |id: ComponentId, kind: ComponentKind, warmup_samples: usize| ComponentManifest {
+                schema_version: 1,
+                id,
+                instrument: InstrumentId::new(id.get()),
+                name: format!("Lua observation {}", id.get()),
+                parameter: lab_core::TEMPERATURE,
+                kind,
+                unit: Unit::CELSIUS,
+                min: -100.0,
+                max: 500.0,
+                warmup_samples,
+                max_input_age: Duration::from_secs(2),
+                history_capacity: 32,
+            };
+        self.runtime.command(Command::StageComponent {
+            definition: ComponentDefinition {
+                manifest: manifest(LUA_SOURCE, ComponentKind::Source, 1),
+                source: lab_lua::fixtures::VIRTUAL_MODEL_SOURCE.into(),
+                config,
+            },
+            replaces: None,
+            at,
+        })?;
+        self.events.track_component(LUA_SOURCE);
+        self.components.push((LUA_SOURCE, "source"));
+        Ok(())
+    }
+
+    /// Stage the fixed one-input Transform only after Source init has committed.
+    pub fn stage_standard_filter(&mut self, at: Duration) -> Result<(), Error> {
+        if !self.source_lua_initialized() {
+            return Err(Error::InvalidConfiguration("Lua Source init incomplete"));
+        }
+        let manifest = ComponentManifest {
+            schema_version: 1,
+            id: LUA_FILTER,
+            instrument: InstrumentId::new(LUA_FILTER.get()),
+            name: "Lua moving mean".into(),
+            parameter: lab_core::TEMPERATURE,
+            kind: ComponentKind::Transform {
+                input: SignalId::new(InstrumentId::new(LUA_SOURCE.get()), lab_core::TEMPERATURE),
+            },
+            unit: Unit::CELSIUS,
+            min: -100.0,
+            max: 500.0,
+            warmup_samples: 3,
+            max_input_age: Duration::from_secs(2),
+            history_capacity: 32,
+        };
+        self.runtime.command(Command::StageComponent {
+            definition: ComponentDefinition {
+                manifest,
+                source: lab_lua::fixtures::MOVING_MEAN_SOURCE.into(),
+                config: PlainData::default(),
+            },
+            replaces: None,
+            at,
+        })?;
+        self.events.track_component(LUA_FILTER);
+        self.components.push((LUA_FILTER, "transform"));
+        Ok(())
+    }
+    /// The first real init result committed without any pending callback.
+    pub fn source_lua_initialized(&self) -> bool {
+        matches!(self.runtime.query(Query::Component(LUA_SOURCE)),Ok(QueryResult::Component(s))
+            if matches!(s.state,ComponentState::Warming|ComponentState::Ready) && s.pending.is_none())
+    }
+
+    /// True only after both real init callbacks have committed and no job waits.
+    pub fn standard_lua_initialized(&self) -> bool {
+        [LUA_SOURCE,LUA_FILTER].iter().all(|id|matches!(self.runtime.query(Query::Component(*id)),
+            Ok(QueryResult::Component(snapshot)) if matches!(snapshot.state,ComponentState::Warming|ComponentState::Ready) && snapshot.pending.is_none()))
+    }
+
+    /// Start trusted managed cadence after bounded startup init completes.
+    pub fn activate_standard_lua(&mut self, at: Duration) -> Result<(), Error> {
+        if !self.standard_lua_initialized() {
+            return Err(Error::InvalidConfiguration("managed init incomplete"));
+        }
+        let mut source = Periodic::new(Duration::from_millis(200));
+        source.next_due = at;
+        self.plan.sources.push((LUA_SOURCE, source));
+        self.plan.transforms.push((
+            LUA_FILTER,
+            SignalId::new(InstrumentId::new(LUA_SOURCE.get()), lab_core::TEMPERATURE),
+        ));
+        Ok(())
+    }
+
+    /// Fixed trusted component identities/kinds for discovery and typed status.
+    pub fn component_catalog(&self) -> &[(ComponentId, &'static str)] {
+        &self.components
     }
 
     /// Fence producers before Rust begins a new required safe procedure.
@@ -337,7 +457,11 @@ impl HostCore {
     /// Replace a schedule only through a trusted local composition decision.
     /// Network requests cannot access this seam or choose controller cadence.
     pub fn replace_plan(&mut self, plan: SchedulePlan) -> Result<(), Error> {
-        if plan.plants.len() > 8 || plan.references.len() > 8 || plan.controllers.len() > 8 {
+        if plan.plants.len() > 8
+            || plan.references.len() > 8
+            || plan.controllers.len() > 8
+            || plan.sources.len() + plan.transforms.len() > 8
+        {
             return Err(Error::InvalidConfiguration("M6 host schedule limit"));
         }
         self.plan = plan;
@@ -506,6 +630,70 @@ impl HostCore {
                     report.controller_ticks += 1;
                 }
             }
+        }
+        for (source, slot) in &mut self.plan.sources {
+            let now = clock.now();
+            if self.plan.safety.due(now) {
+                return Ok(report);
+            }
+            if let Some(skipped) = slot.take(now)? {
+                report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
+                let status = self.runtime.query(Query::Component(*source));
+                if !matches!(status,Ok(QueryResult::Component(s)) if s.state!=ComponentState::Failed && s.pending.is_none())
+                {
+                    continue;
+                }
+                let outcome = self.runtime.command(Command::InvokeComponent {
+                    component: *source,
+                    at: clock.now(),
+                });
+                self.events
+                    .observe(&self.runtime, clock.now(), None)
+                    .map_err(event_domain_error)?;
+                if let Err(error) = outcome
+                    && !matches!(
+                        error,
+                        Error::Component(ComponentError::Busy | ComponentError::InputUnavailable)
+                    )
+                {
+                    return Err(error);
+                }
+            }
+        }
+        for (transform, input) in &self.plan.transforms {
+            let now = clock.now();
+            if self.plan.safety.due(now) {
+                return Ok(report);
+            }
+            let status = self.runtime.query(Query::Component(*transform));
+            if !matches!(status,Ok(QueryResult::Component(s)) if s.state!=ComponentState::Failed && s.pending.is_none())
+            {
+                continue;
+            }
+            let latest = match self.runtime.query(Query::GetLatestSignal(*input))? {
+                QueryResult::Latest(s) => s,
+                _ => unreachable!(),
+            };
+            if latest.is_none() || latest == self.consumed_managed.get(transform).cloned().flatten()
+            {
+                continue;
+            }
+            let outcome = self.runtime.command(Command::InvokeComponent {
+                component: *transform,
+                at: clock.now(),
+            });
+            self.events
+                .observe(&self.runtime, clock.now(), None)
+                .map_err(event_domain_error)?;
+            if let Err(error) = outcome
+                && !matches!(
+                    error,
+                    Error::Component(ComponentError::Busy | ComponentError::InputUnavailable)
+                )
+            {
+                return Err(error);
+            }
+            self.consumed_managed.insert(*transform, latest);
         }
         Ok(report)
     }

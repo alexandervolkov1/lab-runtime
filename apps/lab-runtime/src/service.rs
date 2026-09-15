@@ -3,8 +3,9 @@
 //! Entropy failure, malformed CLI or failed safe profile prevents readiness.
 //! The network reactor is a separate adapter added after this host foundation.
 
-use crate::host::{HostCore, ShutdownStatus, SystemClock};
+use crate::host::{Clock, HostCore, ShutdownStatus, SystemClock};
 use lab_core::Error as DomainError;
+use lab_core::managed::ComponentError;
 use std::{
     error::Error,
     io,
@@ -51,6 +52,35 @@ pub struct ServiceHost {
     terminal: Option<ShutdownStatus>,
 }
 impl ServiceHost {
+    /// Bind a trusted already-safe host fixture on loopback, without changing its
+    /// Core composition. This is local test/deployment wiring, never a wire op.
+    pub fn startup_from_trusted_host(
+        options: ServiceOptions,
+        mut host: HostCore,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes)
+            .map_err(|e| io::Error::other(format!("OS boot entropy unavailable: {e}")))?;
+        let boot_id = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        host.set_boot_id(&boot_id);
+        if !host.shutdown_status().safe_confirmed {
+            return Err(io::Error::other("fixture safe evidence unavailable").into());
+        }
+        let clock = SystemClock::new();
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
+        listener.set_nonblocking(true)?;
+        let bound = listener.local_addr()?;
+        Ok(Self {
+            host,
+            clock,
+            listener,
+            bound,
+            boot_id,
+            stopping_since: None,
+            safe_since: None,
+            terminal: None,
+        })
+    }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
     pub fn startup(options: ServiceOptions) -> Result<Self, Box<dyn Error>> {
         let mut bytes = [0u8; 16];
@@ -61,17 +91,48 @@ impl ServiceHost {
             use std::fmt::Write;
             write!(&mut boot_id, "{byte:02x}")?;
         }
+        let clock = SystemClock::new();
         let mut host = HostCore::virtual_demo()?;
         host.set_boot_id(&boot_id);
         if !host.shutdown_status().safe_confirmed {
             return Err(io::Error::other("startup safe evidence unavailable").into());
         }
+        let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let supervisor = loop {
+            match lab_lua::LuaSupervisor::new() {
+                Ok(supervisor) => break supervisor,
+                Err(ComponentError::Busy) if std::time::Instant::now() < init_deadline => {
+                    std::thread::yield_now()
+                }
+                Err(error) => return Err(DomainError::from(error).into()),
+            }
+        };
+        host.install_component_executor(Box::new(supervisor))?;
+        host.stage_standard_lua(clock.now())?;
+        while !host.source_lua_initialized() {
+            if std::time::Instant::now() >= init_deadline {
+                let _ = host.begin_shutdown(&clock);
+                return Err(io::Error::other("managed Source init deadline").into());
+            }
+            host.service(&clock)?;
+            std::thread::yield_now();
+        }
+        host.stage_standard_filter(clock.now())?;
+        while !host.standard_lua_initialized() {
+            if std::time::Instant::now() >= init_deadline {
+                let _ = host.begin_shutdown(&clock);
+                return Err(io::Error::other("managed startup init deadline").into());
+            }
+            host.service(&clock)?;
+            std::thread::yield_now();
+        }
+        host.activate_standard_lua(clock.now())?;
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
         listener.set_nonblocking(true)?;
         let bound = listener.local_addr()?;
         Ok(Self {
             host,
-            clock: SystemClock::new(),
+            clock,
             listener,
             bound,
             boot_id,

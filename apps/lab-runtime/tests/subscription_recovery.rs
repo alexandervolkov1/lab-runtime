@@ -162,11 +162,14 @@ fn expired_snapshot_and_previous_boot_cursor_or_scope_require_explicit_resync() 
         json!({"v":1,"msg_id":"page","op":"snapshot_page","args":{"snapshot":token,"index":"0"}}),
     );
     assert_eq!(page[0]["code"], "snapshot_expired");
+    let old_boot = first.boot_id().to_string();
+    drop(app);
+    drop(first);
     let mut second = ServiceHost::startup(
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
     )
     .unwrap();
-    assert_ne!(first.boot_id(), second.boot_id());
+    assert_ne!(old_boot, second.boot_id());
     let mut fresh = Application::new(second.boot_id()).unwrap();
     let old_scope = ask(
         &mut second,
@@ -186,7 +189,7 @@ fn expired_snapshot_and_previous_boot_cursor_or_scope_require_explicit_resync() 
         &mut fresh,
         2,
         json!({"v":1,"msg_id":"oldcur","op":"subscribe",
-        "args":{"after":{"boot_id":first.boot_id(),"seq":"0"},"filter":{"kinds":[],"targets":[]}}}),
+        "args":{"after":{"boot_id":old_boot,"seq":"0"},"filter":{"kinds":[],"targets":[]}}}),
     );
     assert_eq!(old_cursor[0]["code"], "instance_changed");
 }

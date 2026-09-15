@@ -8,6 +8,7 @@ use crate::application::{
     controller_json, nanos, output_json, quality_name, reference_json, sample_value,
 };
 use lab_core::control::ControllerId;
+use lab_core::managed::{ComponentId, ComponentState};
 use lab_core::output::ActuatorId;
 use lab_core::reference::ReferenceId;
 use lab_core::{ParameterRole, Query, QueryResult, Runtime, SignalId};
@@ -41,6 +42,7 @@ enum Target {
     Controller(ControllerId),
     Reference(ReferenceId),
     Output(ActuatorId),
+    Component(ComponentId),
 }
 impl Target {
     fn key(&self) -> String {
@@ -49,6 +51,7 @@ impl Target {
             Self::Controller(id) => format!("controller:{}", id.get()),
             Self::Reference(id) => format!("reference:{}", id.get()),
             Self::Output(a) => format!("output:{}:{}", a.instrument().get(), a.parameter().get()),
+            Self::Component(id) => format!("component:{}", id.get()),
         }
     }
     fn kind(&self) -> &'static str {
@@ -57,6 +60,7 @@ impl Target {
             Self::Controller(_) => "controller",
             Self::Reference(_) => "reference",
             Self::Output(_) => "output",
+            Self::Component(_) => "component",
         }
     }
     fn id(&self) -> Value {
@@ -69,6 +73,7 @@ impl Target {
             Self::Output(a) => {
                 json!({"instrument":a.instrument().get().to_string(),"parameter":a.parameter().get().to_string()})
             }
+            Self::Component(id) => json!({"id":id.get().to_string()}),
         }
     }
     fn query(&self, runtime: &Runtime) -> Option<Value> {
@@ -92,6 +97,15 @@ impl Target {
             },
             Self::Output(id) => match runtime.query(Query::Output(*id)).ok()? {
                 QueryResult::Output(s) => Some(output_json(s)),
+                _ => None,
+            },
+            Self::Component(id) => match runtime.query(Query::Component(*id)).ok()? {
+                QueryResult::Component(s) => Some(
+                    json!({"component":id.get().to_string(),"instrument":s.instrument.get().to_string(),
+                    "generation":s.generation.to_string(),"revision":s.revision.to_string(),
+                    "state":match s.state{ComponentState::Warming=>"warming",ComponentState::Ready=>"ready",ComponentState::Failed=>"failed"},
+                    "good_steps":s.good_steps,"pending":s.pending.is_some(),"diagnostics":s.diagnostics}),
+                ),
                 _ => None,
             },
         }
@@ -149,6 +163,35 @@ impl EventLog {
         self.sequence = 0;
         self.ring.clear();
     }
+    /// Track a trusted staged component before asynchronous init can commit.
+    pub fn track_component(&mut self, id: ComponentId) {
+        if self
+            .targets
+            .iter()
+            .any(|t| matches!(t,Target::Component(existing) if *existing==id))
+        {
+            return;
+        }
+        self.targets.push(Target::Component(id));
+        self.targets.sort_by_key(Target::key);
+    }
+    fn track_new_signals(&mut self, runtime: &Runtime) {
+        if let Ok(QueryResult::Instruments(instruments)) = runtime.query(Query::Discover) {
+            for instrument in instruments {
+                for p in instrument.parameters {
+                    if let Some(signal) = p.signal
+                        && !self
+                            .targets
+                            .iter()
+                            .any(|t| matches!(t,Target::Signal(existing) if *existing==signal))
+                    {
+                        self.targets.push(Target::Signal(signal));
+                    }
+                }
+            }
+        }
+        self.targets.sort_by_key(Target::key);
+    }
     /// Freshest committed publication sequence, zero before the first event.
     pub const fn latest_cursor(&self) -> u64 {
         self.sequence
@@ -184,6 +227,7 @@ impl EventLog {
         at: Duration,
         cause: Option<(&str, u64)>,
     ) -> Result<(), EventError> {
+        self.track_new_signals(runtime);
         let targets = self.targets.clone();
         for target in targets {
             let Some(data) = target.query(runtime) else {

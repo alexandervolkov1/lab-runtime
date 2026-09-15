@@ -140,15 +140,15 @@ fn unfinished_workers_are_reported_without_delaying_rust_safe_work() {
 
 #[test]
 fn service_shutdown_grace_stays_nonblocking_and_reports_stalled_cleanup() {
-    let mut service = ServiceHost::startup(
+    let mut host = HostCore::virtual_demo().unwrap();
+    let begun = Arc::new(AtomicBool::new(false));
+    host.install_component_executor(Box::new(TwoStalledWorkers(begun.clone())))
+        .unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
+        host,
     )
     .unwrap();
-    let begun = Arc::new(AtomicBool::new(false));
-    service
-        .owner_mut()
-        .install_component_executor(Box::new(TwoStalledWorkers(begun.clone())))
-        .unwrap();
     service.request_shutdown().unwrap();
     assert!(begun.load(Ordering::Acquire));
     let one_step_at = std::time::Instant::now();

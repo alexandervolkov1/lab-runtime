@@ -71,13 +71,11 @@ fn startup_binds_ephemeral_loopback_only_after_safe_ready_profile_and_has_new_bo
     assert_eq!(ready["boot_id"], service.boot_id());
     assert_eq!(ready["port"], service.bound_address().port());
     assert_eq!(ready["state"], "ready");
+    let prior_boot = service.boot_id().to_string();
+    drop(service);
     let next = ServiceHost::startup(
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
     )
     .unwrap();
-    assert_ne!(
-        next.boot_id(),
-        service.boot_id(),
-        "restart identity must change"
-    );
+    assert_ne!(next.boot_id(), prior_boot, "restart identity must change");
 }

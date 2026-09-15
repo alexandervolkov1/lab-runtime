@@ -11,6 +11,7 @@ use crate::{
 use lab_core::control::{
     ControllerError, ControllerId, ControllerSnapshot, ControllerState, PidConfig,
 };
+use lab_core::managed::{ComponentId, ComponentState};
 use lab_core::output::{ActuatorId, DispatchOutcome, OutputOwner, OutputSnapshot, OutputState};
 use lab_core::reference::{ReferenceId, ReferenceSnapshot};
 use lab_core::{
@@ -98,7 +99,10 @@ impl Application {
                             self.clients.insert(connection, opened.scope.clone());
                             json!({"boot_id":service.boot_id(),"v":1,"scope":opened.scope,
                                 "next_seq":opened.next_seq.to_string(),"state":"ready",
-                                "capabilities":["virtual","native_controller","ramp_reference"],
+                                "capabilities":["virtual","native_controller","ramp_reference","lua_source","lua_transform","safe_readback"],
+                                "operations":["hello","discover","describe","latest","controller","reference","component","output","runtime_snapshot",
+                                    "operation_status","snapshot_page","snapshot_release","subscribe","unsubscribe",
+                                    "reference_retune","controller_configure_pid","controller_start","controller_pause","controller_resume","runtime_shutdown"],
                                 "limits":{"clients":8,"scopes":16,"frame_bytes":16384},
                                 "event_oldest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()},
                                 "event_latest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()}})
@@ -285,6 +289,25 @@ impl Application {
                     _ => return Err("internal_error"),
                 }
             }
+            "component" => {
+                let id = id_field(args, "component")?;
+                let QueryResult::Component(snapshot) = owner
+                    .query(Query::Component(ComponentId::new(id)))
+                    .map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                let kind = owner
+                    .component_catalog()
+                    .iter()
+                    .find(|(candidate, _)| candidate.get() == id)
+                    .map(|(_, kind)| *kind)
+                    .ok_or("unknown_component")?;
+                json!({"component":id.to_string(),"instrument":snapshot.instrument.get().to_string(),"kind":kind,
+                    "generation":snapshot.generation.to_string(),"revision":snapshot.revision.to_string(),
+                    "state":match snapshot.state{ComponentState::Warming=>"warming",ComponentState::Ready=>"ready",ComponentState::Failed=>"failed"},
+                    "good_steps":snapshot.good_steps,"pending":snapshot.pending.is_some(),"diagnostics":snapshot.diagnostics})
+            }
             "controller" => {
                 let id = id_field(args, "controller")?;
                 let QueryResult::Controller(snap) = owner
@@ -373,8 +396,13 @@ impl Application {
                     .iter()
                     .map(|d| json!({"id":d.id.get().to_string(),"name":d.name}))
                     .collect();
+                let components: Vec<_> = owner
+                    .component_catalog()
+                    .iter()
+                    .map(|(id, kind)| json!({"id":id.get().to_string(),"kind":kind}))
+                    .collect();
                 json!({"instruments":list,"controllers":[{"id":"1","kind":"native_pid"}],
-                    "references":[{"id":"1","kind":"ramp"}],"components":[],
+                    "references":[{"id":"1","kind":"ramp"}],"components":components,
                     "outputs":[{"instrument":"1","parameter":lab_core::HEATER_POWER.get().to_string()}]})
             }
             _ => return Err("unsupported_operation"),
