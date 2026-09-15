@@ -79,3 +79,22 @@ fn startup_binds_ephemeral_loopback_only_after_safe_ready_profile_and_has_new_bo
     .unwrap();
     assert_ne!(next.boot_id(), prior_boot, "restart identity must change");
 }
+
+#[test]
+fn occupied_loopback_bind_unwinds_real_lua_startup_without_publishing_readiness() {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    let text = port.to_string();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", &text]).unwrap();
+    assert!(ServiceHost::startup(options).is_err());
+    drop(occupied);
+    let retry =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", &text]).unwrap();
+    let service = ServiceHost::startup(retry).unwrap();
+    assert_eq!(service.bound_address().port(), port);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&service.ready_line()).unwrap()["state"],
+        "ready"
+    );
+}

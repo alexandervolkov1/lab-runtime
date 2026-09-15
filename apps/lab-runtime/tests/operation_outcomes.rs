@@ -107,6 +107,42 @@ fn invalid_domain_config_fails_after_acceptance_and_its_revision_does_not_change
 }
 
 #[test]
+fn two_live_scopes_racing_on_one_revision_have_exactly_one_committed_retune() {
+    let (mut service, mut app) = startup();
+    let a = hello(&mut service, &mut app, 1);
+    let b = hello(&mut service, &mut app, 2);
+    let first = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"a","op":"reference_retune","request_id":{"scope":a,"seq":"1"},
+            "args":{"reference":"1","expected_revision":"1","target":61.0,"rate":3.0}
+        })),
+    );
+    let second = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"b","op":"reference_retune","request_id":{"scope":b,"seq":"1"},
+            "args":{"reference":"1","expected_revision":"1","target":62.0,"rate":3.0}
+        })),
+    );
+    assert_eq!(first[0]["state"], "accepted");
+    assert_eq!(first[1]["state"], "completed");
+    assert_eq!(second[0]["state"], "accepted");
+    assert_eq!(second[1]["state"], "failed");
+    let current = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"q","op":"reference","args":{"reference":"1"}
+        })),
+    );
+    assert_eq!(current[0]["result"]["revision"], "2");
+    assert_eq!(current[0]["result"]["target"], 61.0);
+}
+
+#[test]
 fn a_pure_query_does_not_refresh_or_advance_reference_without_the_scheduler() {
     let (mut service, mut app) = startup();
     hello(&mut service, &mut app, 1);
