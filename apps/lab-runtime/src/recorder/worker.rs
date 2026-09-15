@@ -285,6 +285,7 @@ pub struct RecorderWorker {
     source: MonotonicSource,
     last_periodic: Duration,
     periodic_pending: Option<u64>,
+    last_owner_submission: Option<Duration>,
     last_accepted_fact: Option<u64>,
     gap_scheduled: bool,
     finish_requested: bool,
@@ -458,6 +459,7 @@ impl RecorderWorker {
             source,
             last_periodic,
             periodic_pending: None,
+            last_owner_submission: None,
             last_accepted_fact: None,
             gap_scheduled: false,
             finish_requested: false,
@@ -682,6 +684,7 @@ impl RecorderWorker {
             *assigned.start(),
         ))?;
         self.reserved_through = *assigned.end();
+        self.last_owner_submission = Some(submitted_at);
         self.last_probe_requested = Some(submitted_at);
         Ok(())
     }
@@ -753,6 +756,10 @@ impl RecorderWorker {
         match self.sender.try_send(message) {
             Ok(()) => {
                 self.reserved_through = *assigned.end();
+                self.last_owner_submission = Some(
+                    self.last_owner_submission
+                        .map_or(submitted_at, |latest| latest.max(submitted_at)),
+                );
                 self.charged_records += record_count;
                 self.charged_bytes += bytes;
                 self.charged_groups += 1;
@@ -817,6 +824,10 @@ impl RecorderWorker {
         {
             Ok(()) => {
                 self.reserved_through = *assigned.end();
+                self.last_owner_submission = Some(
+                    self.last_owner_submission
+                        .map_or(at, |latest| latest.max(at)),
+                );
                 self.charged_records += 1;
                 self.charged_bytes += bytes;
                 self.charged_groups += 1;
@@ -871,6 +882,10 @@ impl RecorderWorker {
         {
             Ok(()) => {
                 self.reserved_through = assigned;
+                self.last_owner_submission = Some(
+                    self.last_owner_submission
+                        .map_or(at, |latest| latest.max(at)),
+                );
                 self.charged_records += 1;
                 self.charged_bytes += bytes;
                 self.charged_groups += 1;
@@ -934,6 +949,10 @@ impl RecorderWorker {
             return Ok(());
         }
         self.send_control(Message::Probe(submitted_at))?;
+        self.last_owner_submission = Some(
+            self.last_owner_submission
+                .map_or(submitted_at, |latest| latest.max(submitted_at)),
+        );
         self.last_probe_requested = Some(submitted_at);
         self.probe_pending = true;
         Ok(())
@@ -1019,6 +1038,25 @@ impl RecorderWorker {
     }
 
     fn apply_receipt(&mut self, receipt: Receipt) {
+        if receipt.persisted < self.cached.persisted_through_sequence {
+            // A stale clone cannot lower a watermark or undo a later receipt.
+            return;
+        }
+        if receipt.persisted > self.reserved_through {
+            self.fail("future storage record receipt");
+            return;
+        }
+        if receipt.confirmed_submission.is_some_and(|confirmed| {
+            self.last_owner_submission
+                .is_none_or(|latest| confirmed > latest)
+        }) {
+            self.fail("future storage submission receipt");
+            return;
+        }
+        if receipt.confirmed_submission < self.cached.confirmed_submission {
+            // A stale heartbeat clone cannot move the Required progress clock back.
+            return;
+        }
         if receipt.released_records < self.seen_released_records
             || receipt.released_bytes < self.seen_released_bytes
             || receipt.released_groups < self.seen_released_groups
@@ -1600,6 +1638,120 @@ mod cancellation_tests {
         assert!(worker.try_take_runs(live).is_none());
         drop(worker);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod receipt_fence_tests {
+    use super::*;
+
+    fn temporary_database() -> std::path::PathBuf {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let name: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        std::env::temp_dir().join(format!("lab-m7-receipt-{name}.sqlite"))
+    }
+
+    fn remove_after_drop(path: &Path) {
+        let by = Instant::now() + Duration::from_secs(2);
+        while std::fs::remove_file(path).is_err() && Instant::now() < by {
+            thread::yield_now();
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn future_persisted_identity_cannot_confirm_an_owner_unreserved_record() {
+        let path = temporary_database();
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        assert_eq!(worker.reserved_through, 0);
+        worker.apply_receipt(Receipt {
+            persisted: 1,
+            ..Receipt::default()
+        });
+        assert_eq!(worker.cached.state, RecordingState::Failed);
+        assert_eq!(worker.cached.persisted_through_sequence, 0);
+        assert!(
+            worker
+                .cached
+                .first_error
+                .as_deref()
+                .unwrap()
+                .contains("future")
+        );
+        drop(worker);
+        remove_after_drop(&path);
+    }
+
+    #[test]
+    fn a_receipt_cannot_confirm_monotonic_time_never_submitted_by_owner() {
+        let path = temporary_database();
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        worker
+            .request_start_at("receipt time", Duration::ZERO)
+            .unwrap();
+        let by = Instant::now() + Duration::from_secs(2);
+        while worker.poll().state != RecordingState::Recording {
+            assert!(Instant::now() < by);
+            thread::yield_now();
+        }
+        let committed = worker.cached.persisted_through_sequence;
+        worker.apply_receipt(Receipt {
+            state: RecordingState::Recording,
+            persisted: committed,
+            confirmed_submission: Some(Duration::from_secs(1)),
+            run_no: Some(1),
+            interval_no: Some(1),
+            ..Receipt::default()
+        });
+        assert_eq!(worker.cached.state, RecordingState::Failed);
+        assert_eq!(worker.cached.persisted_through_sequence, committed);
+        assert!(
+            worker
+                .cached
+                .first_error
+                .as_deref()
+                .unwrap()
+                .contains("future")
+        );
+        drop(worker);
+        remove_after_drop(&path);
+    }
+
+    #[test]
+    fn stale_probe_clone_cannot_roll_back_confirmed_required_progress() {
+        let path = temporary_database();
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        worker
+            .request_start_at("stale probe", Duration::ZERO)
+            .unwrap();
+        let by = Instant::now() + Duration::from_secs(2);
+        while worker.poll().state != RecordingState::Recording {
+            assert!(Instant::now() < by);
+            thread::yield_now();
+        }
+        let start_id = worker.poll().persisted_through_sequence;
+        worker.request_probe_at(Duration::from_secs(1)).unwrap();
+        while worker.poll().confirmed_submission != Some(Duration::from_secs(1)) {
+            assert!(Instant::now() < by);
+            thread::yield_now();
+        }
+        worker.apply_receipt(Receipt {
+            state: RecordingState::Recording,
+            persisted: start_id,
+            confirmed_submission: Some(Duration::ZERO),
+            run_no: Some(1),
+            interval_no: Some(1),
+            ..Receipt::default()
+        });
+        assert_eq!(worker.cached.state, RecordingState::Recording);
+        assert_eq!(
+            worker.cached.confirmed_submission,
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(worker.cached.persisted_through_sequence, start_id);
+        drop(worker);
+        remove_after_drop(&path);
     }
 }
 
