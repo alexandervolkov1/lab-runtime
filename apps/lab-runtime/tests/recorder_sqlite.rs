@@ -1,22 +1,300 @@
 //! Real-file acceptance for the storage adapter, including reopen from WAL.
 
 use lab_core::{
-    Command, CommandResult, InstrumentId, Runtime, Unit, Value, VirtualInstrumentConfig,
+    Command, CommandResult, InstrumentId, Query, QueryResult, Runtime, Unit, Value,
+    VirtualInstrumentConfig,
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal,
         OutputResult, SafeProfile,
     },
 };
 use lab_runtime::{
+    application::Application,
     host::{Clock, HostCore},
     recorder::{
         RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, SqliteStore, WriterBarrier,
     },
+    service::{ServiceHost, ServiceOptions},
+    wire::{WireRequest, decode_frame, encode_frame},
 };
+use serde_json::{Value as JsonValue, json};
 use std::{
+    collections::BTreeSet,
     path::PathBuf,
     time::{Duration, Instant},
 };
+
+fn frame(value: JsonValue) -> WireRequest {
+    decode_frame(&encode_frame(&value).unwrap()).unwrap()
+}
+
+#[test]
+fn native_and_managed_batches_reopen_through_public_indexed_history_with_exact_sql_ids() {
+    let path = temporary_database();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let old_boot = service.boot_id().to_owned();
+    let now = service.clock().now();
+    service
+        .owner_mut()
+        .start_recording("native plus managed", now)
+        .unwrap();
+    let ready_by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < ready_by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let started = Instant::now();
+    let work_by = started + Duration::from_secs(3);
+    let mut native_times = BTreeSet::new();
+    let mut managed_times = BTreeSet::new();
+    let mut confirmed = BTreeSet::new();
+    while Instant::now() < work_by {
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        for (instrument, times) in [
+            (InstrumentId::new(1), &mut native_times),
+            (InstrumentId::new(201), &mut managed_times),
+        ] {
+            if let QueryResult::Latest(Some(sample)) = service
+                .owner()
+                .query(Query::GetLatestSignal(lab_core::SignalId::new(
+                    instrument,
+                    lab_core::TEMPERATURE,
+                )))
+                .unwrap()
+            {
+                times.insert(sample.at());
+            }
+        }
+        confirmed.insert(
+            service
+                .owner()
+                .recording_status()
+                .unwrap()
+                .persisted_through_sequence,
+        );
+        if started.elapsed() >= Duration::from_millis(600)
+            && native_times.len() >= 3
+            && managed_times.len() >= 2
+            && confirmed.len() >= 3
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(native_times.len() >= 3, "native refresh did not advance");
+    assert!(
+        managed_times.len() >= 2,
+        "real managed Source did not publish twice"
+    );
+    assert!(
+        confirmed.len() >= 3,
+        "facts did not confirm across several SQL batches"
+    );
+    let stop_at = service.clock().now();
+    service.owner_mut().stop_recording_at(stop_at).unwrap();
+    let stop_by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Idle {
+        assert!(Instant::now() < stop_by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.recorder_flushed);
+    drop(service);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let old_boot_bytes: Vec<u8> = (0..32)
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&old_boot[index..index + 2], 16).unwrap())
+        .collect();
+    let expected = |instrument: u64| {
+        archive
+            .prepare(
+                "SELECT record_seq,quality,float_value FROM measurements
+             WHERE boot_id=?1 AND run_no=?2 AND instrument_id=?3 AND parameter_id=?4
+             AND published_at>=?5 AND published_at<?6 ORDER BY published_at,record_seq",
+            )
+            .unwrap()
+            .query_map(
+                rusqlite::params![
+                    old_boot_bytes,
+                    1u64.to_be_bytes().to_vec(),
+                    instrument.to_be_bytes().to_vec(),
+                    1u64.to_be_bytes().to_vec(),
+                    0u64.to_be_bytes().to_vec(),
+                    10_000_000_000u64.to_be_bytes().to_vec(),
+                ],
+                |row| {
+                    let id: Vec<u8> = row.get(0)?;
+                    Ok((
+                        u64::from_be_bytes(id.try_into().unwrap()),
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect::<Vec<_>>()
+    };
+    let native = expected(1);
+    let managed = expected(201);
+    assert!(native.len() >= 3);
+    assert!(managed.len() >= 2);
+    assert!(
+        native
+            .iter()
+            .filter(|(_, quality, value)| quality == "good" && value.is_some())
+            .count()
+            >= 3
+    );
+    assert!(
+        managed
+            .iter()
+            .filter(|(_, quality, value)| quality == "good" && value.is_some())
+            .count()
+            >= 2,
+        "two real managed source values must reach the archive"
+    );
+    let (checkpoint, maximum): (Vec<u8>, Vec<u8>) = archive
+        .query_row(
+            "SELECT d.persisted_through_seq,(SELECT MAX(record_seq) FROM records r
+         WHERE r.boot_id=d.boot_id) FROM durable_checkpoints d WHERE d.boot_id=?1",
+            [old_boot_bytes.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        checkpoint, maximum,
+        "reopened checkpoint must cover exact committed prefix"
+    );
+    let seals: i64 = archive
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE boot_id=?1 AND kind='interval_seal'",
+            [old_boot_bytes],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seals, 1);
+    drop(archive);
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut reopened = ServiceHost::startup(options).unwrap();
+    assert_ne!(reopened.boot_id(), old_boot);
+    let database = reopened.owner().recording_database_id().unwrap().to_owned();
+    let mut app = Application::new(reopened.boot_id()).unwrap();
+    let hello = app.handle(
+        &mut reopened,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"h","op":"hello","args":{"scope":null}
+        })),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let mut sequence = 1;
+    for (instrument, known) in [(1, &native), (201, &managed)] {
+        let mut cursor = JsonValue::Null;
+        let mut received = Vec::new();
+        loop {
+            let read = app.handle(
+                &mut reopened,
+                1,
+                frame(json!({
+                    "v":1,"msg_id":format!("read-{sequence}"),"op":"history_read",
+                    "request_id":{"scope":scope,"seq":sequence.to_string()},
+                    "args":{"mode":"measurements","database_id":database,"boot_id":old_boot,
+                        "run_id":{"boot_id":old_boot,"run_no":"1"},
+                        "signal":{"instrument":instrument.to_string(),"parameter":"1"},
+                        "from_ns":"0","to_ns":"10000000000","max_records":8,"cursor":cursor}
+                })),
+            );
+            assert_eq!(read[0]["state"], "accepted", "{read:?}");
+            let result_by = Instant::now() + Duration::from_secs(2);
+            let result = loop {
+                let result = app.poll_history(&mut reopened);
+                if !result.is_empty() {
+                    break result;
+                }
+                assert!(Instant::now() < result_by);
+                std::thread::yield_now();
+            };
+            assert_eq!(result[0].1["state"], "completed", "{result:?}");
+            let token = result[0].1["result"]["page_token"].clone();
+            let page = app.handle(
+                &mut reopened,
+                1,
+                frame(json!({
+                    "v":1,"msg_id":"page","op":"history_page","args":{"page_token":token}
+                })),
+            );
+            assert_eq!(page[0]["type"], "result", "{page:?}");
+            for row in page[0]["result"]["rows"].as_array().unwrap() {
+                received.push((
+                    row["record_seq"].as_str().unwrap().parse::<u64>().unwrap(),
+                    row["quality"].as_str().unwrap().to_owned(),
+                    row["value"]["value"].as_f64(),
+                ));
+            }
+            cursor = page[0]["result"]["next_cursor"].clone();
+            let released = app.handle(
+                &mut reopened,
+                1,
+                frame(json!({
+                    "v":1,"msg_id":"release","op":"history_release",
+                    "args":{"page_token":token}
+                })),
+            );
+            assert_eq!(released[0]["type"], "result");
+            sequence += 1;
+            if cursor.is_null() {
+                break;
+            }
+        }
+        assert_eq!(
+            &received, known,
+            "public history changed exact committed IDs/values"
+        );
+    }
+    reopened.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    while reopened.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    }
+    drop(app);
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
 
 #[derive(Clone, Copy)]
 struct FakeClock(Duration);
