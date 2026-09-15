@@ -8,6 +8,7 @@
 
 pub mod control;
 pub mod instrument;
+pub mod managed;
 pub mod metakon;
 mod model;
 pub mod output;

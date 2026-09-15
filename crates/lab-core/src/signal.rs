@@ -32,6 +32,8 @@ pub struct Sample {
     unit: Unit,
     /// Elapsed monotonic runtime time of this explicit measurement attempt.
     at: Duration,
+    /// Original observation/model time; processing delay never renews freshness.
+    freshness_at: Duration,
     reading: Reading,
 }
 
@@ -41,6 +43,7 @@ impl Sample {
             signal,
             unit,
             at,
+            freshness_at: at,
             reading: Reading::Good(value),
         }
     }
@@ -54,8 +57,35 @@ impl Sample {
             signal,
             unit,
             at,
+            freshness_at: at,
             reading: Reading::Unavailable(reason),
         }
+    }
+    /// Construct a Rust-validated derived reading with the captured input lineage.
+    pub(crate) fn derived_good(
+        signal: SignalId,
+        unit: Unit,
+        at: Duration,
+        freshness_at: Duration,
+        value: Value,
+    ) -> Result<Self, Error> {
+        if freshness_at > at {
+            return Err(Error::InvalidConfiguration(
+                "derived freshness is after publication",
+            ));
+        }
+        if let Value::Float(number) = &value
+            && !number.is_finite()
+        {
+            return Err(Error::NonFinite);
+        }
+        Ok(Self {
+            signal,
+            unit,
+            at,
+            freshness_at,
+            reading: Reading::Good(value),
+        })
     }
     /// Return the immutable stream identity captured with this observation.
     pub fn signal(&self) -> SignalId {
@@ -68,6 +98,10 @@ impl Sample {
     /// Return the monotonic time of this attempt; a failed attempt also has its own timestamp.
     pub fn at(&self) -> Duration {
         self.at
+    }
+    /// Source/model observation time used for control freshness and filter sample intervals.
+    pub fn freshness_at(&self) -> Duration {
+        self.freshness_at
     }
     /// Report whether a value exists; Good alone does not establish freshness for control.
     pub fn quality(&self) -> SampleQuality {
@@ -143,6 +177,35 @@ impl SignalBuffer {
         }
         self.samples.push_back(sample);
         Ok(())
+    }
+    /// A trusted failure may replace a same-time Good tail with Unavailable only.
+    /// Normal Good publication and M1 Refresh still require strictly increasing time.
+    pub(crate) fn invalidate(
+        &mut self,
+        at: Duration,
+        reason: MeasurementFailure,
+    ) -> Result<(), Error> {
+        if self.latest().is_some_and(|last| at < last.at()) {
+            return Err(Error::NonMonotonicTime {
+                signal: self.id,
+                previous: self.latest().expect("checked above").at(),
+                requested: at,
+            });
+        }
+        let unit = self
+            .latest()
+            .map(Sample::unit)
+            .ok_or(Error::InvalidConfiguration(
+                "cannot invalidate a signal without an installed unit",
+            ))?;
+        let failure = Sample::unavailable(self.id, unit, at, reason);
+        if self.latest().is_some_and(|last| last.at() == at) {
+            self.samples.pop_back();
+            self.samples.push_back(failure);
+            Ok(())
+        } else {
+            self.push(failure)
+        }
     }
 }
 

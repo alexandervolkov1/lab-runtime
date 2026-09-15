@@ -482,11 +482,17 @@ pub enum MeasurementFailure {
     SensorFault,
     /// Transport or protocol validation did not produce a trustworthy value.
     Transport,
+    /// A managed processing component is collecting distinct warm-up observations.
+    ProcessingWarmup,
+    /// A managed component failed, timed out or returned invalid data.
+    ComponentFailure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Typed domain rejection or observation failure; MeasurementUnavailable alone commits a failed sample.
 pub enum Error {
+    /// A bounded managed observation component was rejected.
+    Component(crate::managed::ComponentError),
     /// Native controller/reference registration or lifecycle was rejected.
     Controller(crate::control::ControllerError),
     /// A central output-authority operation was rejected.
@@ -546,6 +552,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Component(error) => write!(f, "component: {error:?}"),
             Self::Controller(error) => write!(f, "controller: {error:?}"),
             Self::Output(error) => write!(f, "output authority: {error:?}"),
             Self::Transport(error) => write!(f, "transport: {error:?}"),

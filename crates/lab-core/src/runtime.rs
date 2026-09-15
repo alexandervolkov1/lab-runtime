@@ -9,6 +9,12 @@ use crate::control::{
 use crate::instrument::{
     KnownOperation, MetakonBinding, MetakonInstrument, MetakonInstrumentConfig,
 };
+use crate::managed::{
+    CapturedInput, ComponentCompletion, ComponentDefinition, ComponentError, ComponentExecutor,
+    ComponentId, ComponentKind, ComponentManifest, ComponentSnapshot, ComponentState,
+    ComponentStatus, Correlation, Invocation, InvocationPhase, MAX_COMPONENTS, MAX_SOURCE_BYTES,
+    PlainData,
+};
 use crate::metakon::{
     Address, ExpectedRead, MetakonType, MetakonValue, TemperatureReading, decode_ack, decode_read,
     encode_read, encode_scaled_i8, encode_write, scale_temperature,
@@ -31,7 +37,13 @@ use crate::{
     SignalId, TEMPERATURE, Unit, Value, ValueSpec, VirtualInstrumentConfig, model::validate_name,
     signal::SignalBuffer, virtual_instrument::VirtualInstrument,
 };
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
+
+static NEXT_COMPONENT_RUNTIME: AtomicU64 = AtomicU64::new(1);
 
 /// Maximum retained instruments per Runtime, bounding registry and observation ownership.
 pub const MAX_INSTRUMENTS: usize = 64;
@@ -45,6 +57,27 @@ pub const MAX_CONTROLLERS: usize = 64;
 #[derive(Clone, Debug, PartialEq)]
 /// Local mutation requests serialized by the Runtime owner; no networking or hidden query effects.
 pub enum Command {
+    /// Stage one bounded managed source/transform; init runs on a nonblocking worker.
+    StageComponent {
+        /// Immutable shape/source/config supplied by trusted local deployment.
+        definition: ComponentDefinition,
+        /// Existing committed component for a staged same-shape replacement, if any.
+        replaces: Option<ComponentId>,
+        /// Trusted Runtime monotonic admission time.
+        at: Duration,
+    },
+    /// Submit at most one managed Step, returning Busy if pending/worker occupied.
+    InvokeComponent {
+        /// Committed component to process.
+        component: ComponentId,
+        /// Trusted scheduled observation/model time.
+        at: Duration,
+    },
+    /// Service safety/deadline and poll at most two bounded component completions.
+    PollComponents {
+        /// Trusted nondecreasing Runtime service/publication time.
+        at: Duration,
+    },
     /// Mutate output authority or step the trusted deterministic simulated executor.
     Output {
         /// Canonical actuator binding, validated against its explicit descriptor.
@@ -174,6 +207,12 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq)]
 /// Completed local command outcomes, not a claim of physical hardware or durable storage success.
 pub enum CommandResult {
+    /// Candidate admitted for worker init, not yet installed as an instrument.
+    ComponentStaged(ComponentId),
+    /// Managed step admitted, not a Good sample or completed callback.
+    ComponentInvoked(Correlation),
+    /// Bounded completion/safety service was polled, possibly with no result.
+    ComponentsPolled,
     /// Authority outcome; queue acceptance is not delivery or safe-state confirmation.
     Output(OutputResult),
     /// Registration completed without starting acquisition or output authority.
@@ -206,6 +245,8 @@ pub enum CommandResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Pure snapshot requests. Reading a query neither refreshes measurements nor advances time.
 pub enum Query {
+    /// Copy a committed component snapshot without evaluating its script.
+    Component(ComponentId),
     /// Copy current output authority/evidence without executing watchdog work.
     Output(ActuatorId),
     /// Copy one byte resource's bounded state without polling it.
@@ -229,6 +270,8 @@ pub enum Query {
 #[derive(Clone, Debug, PartialEq)]
 /// Owned query responses; callers may retain or edit their copies without affecting Runtime.
 pub enum QueryResult {
+    /// Committed bounded component state without its worker VM.
+    Component(ComponentSnapshot),
     /// Bounded output snapshot, distinct from measurement/configuration state.
     Output(OutputSnapshot),
     /// Bounded resource state; no response history or raw adapter handle is exposed.
@@ -274,6 +317,10 @@ pub struct ParameterObservation {
 /// Single synchronous state owner. No I/O, interior mutability or background work.
 #[derive(Default)]
 pub struct Runtime {
+    managed: BTreeMap<ComponentId, ManagedInstance>,
+    staged: Option<StagedComponent>,
+    executor: Option<Box<dyn ComponentExecutor>>,
+    component_runtime: u64,
     instruments: BTreeMap<InstrumentId, VirtualInstrument>,
     metakon_instruments: BTreeMap<InstrumentId, MetakonInstrument>,
     thermal_plants: BTreeMap<InstrumentId, ThermalPlantInstrument>,
@@ -297,10 +344,69 @@ struct PendingRead {
     mapping_revision: u64,
 }
 
+struct ManagedInstance {
+    definition: ComponentDefinition,
+    descriptor: InstrumentDescriptor,
+    signal: SignalBuffer,
+    generation: u64,
+    revision: u64,
+    attempt: u64,
+    state: ComponentState,
+    committed: PlainData,
+    good_steps: usize,
+    last_service: Option<Duration>,
+    last_observation: Option<Duration>,
+    pending: Option<Correlation>,
+    pending_input: Option<CapturedInput>,
+    pending_at: Option<Duration>,
+    diagnostics: Vec<String>,
+}
+
+struct StagedComponent {
+    definition: ComponentDefinition,
+    replaces: Option<ComponentId>,
+    correlation: Correlation,
+}
+
+impl ManagedInstance {
+    fn snapshot(&self) -> ComponentSnapshot {
+        ComponentSnapshot {
+            id: self.definition.manifest.id,
+            instrument: self.definition.manifest.instrument,
+            generation: self.generation,
+            revision: self.revision,
+            state: self.state,
+            good_steps: self.good_steps,
+            committed_state: self.committed.clone(),
+            pending: self.pending,
+            diagnostics: self.diagnostics.clone(),
+        }
+    }
+}
+
 impl Runtime {
     /// Create an empty owner with no registered instruments, measurements or active work.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install exactly one trusted nonblocking executor port before staging work.
+    /// Its implementation must never share a Runtime/authority lock with a worker.
+    pub fn install_component_executor(
+        &mut self,
+        executor: Box<dyn ComponentExecutor>,
+    ) -> Result<(), Error> {
+        if self.executor.is_some() || self.staged.is_some() || !self.managed.is_empty() {
+            return Err(ComponentError::Busy.into());
+        }
+        let identity = NEXT_COMPONENT_RUNTIME
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| ComponentError::IdentityExhausted)?;
+        self.component_runtime = identity;
+        self.executor = Some(executor);
+        Ok(())
     }
 
     /// Install one bounded byte adapter under exclusive Runtime ownership.
@@ -328,6 +434,16 @@ impl Runtime {
     /// be revoked even when the requested producer action is then rejected.
     pub fn command(&mut self, command: Command) -> Result<CommandResult, Error> {
         match command {
+            Command::StageComponent {
+                definition,
+                replaces,
+                at,
+            } => self.stage_component(definition, replaces, at),
+            Command::InvokeComponent { component, at } => self.invoke_component(component, at),
+            Command::PollComponents { at } => {
+                self.poll_components(at)?;
+                Ok(CommandResult::ComponentsPolled)
+            }
             Command::Output {
                 actuator,
                 command,
@@ -731,6 +847,11 @@ impl Runtime {
     /// Reads owned snapshots only. Never refreshes, reads a clock or advances simulation.
     pub fn query(&self, query: Query) -> Result<QueryResult, Error> {
         match query {
+            Query::Component(id) => self
+                .managed
+                .get(&id)
+                .map(|component| QueryResult::Component(component.snapshot()))
+                .ok_or(ComponentError::Unknown.into()),
             Query::Output(id) => self
                 .outputs
                 .get(&id)
@@ -765,6 +886,11 @@ impl Runtime {
                         self.thermal_plants
                             .values()
                             .map(|instrument| instrument.descriptor.clone()),
+                    )
+                    .chain(
+                        self.managed
+                            .values()
+                            .map(|component| component.descriptor.clone()),
                     )
                     .collect();
                 descriptors.sort_by_key(|descriptor| descriptor.id);
@@ -813,6 +939,20 @@ impl Runtime {
                             parameter: TEMPERATURE,
                             signal: SignalId::new(id, TEMPERATURE),
                             latest: instrument.signal.latest().cloned(),
+                        }],
+                    }))
+                } else if let Some(component) = self
+                    .managed
+                    .values()
+                    .find(|item| item.definition.manifest.instrument == id)
+                {
+                    Ok(QueryResult::State(InstrumentState {
+                        instrument: id,
+                        configured: vec![],
+                        observations: vec![ParameterObservation {
+                            parameter: component.definition.manifest.parameter,
+                            signal: SignalId::new(id, component.definition.manifest.parameter),
+                            latest: component.signal.latest().cloned(),
                         }],
                     }))
                 } else {
@@ -885,6 +1025,656 @@ impl Runtime {
         let controller = self.controllers.get_mut(&id).expect("validated above");
         controller.state = ControllerState::Ready;
         Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+    }
+
+    /// Validate the manifest and topology before sending disposable init work to a worker.
+    fn validate_component_definition(
+        &self,
+        definition: &ComponentDefinition,
+        replaces: Option<ComponentId>,
+    ) -> Result<(), Error> {
+        let manifest = &definition.manifest;
+        validate_name(&manifest.name)?;
+        definition.config.validate()?;
+        if manifest.schema_version != 1
+            || definition.source.is_empty()
+            || definition.source.len() > MAX_SOURCE_BYTES
+            || !manifest.min.is_finite()
+            || !manifest.max.is_finite()
+            || manifest.min >= manifest.max
+            || !(1..=64).contains(&manifest.warmup_samples)
+            || manifest.max_input_age.is_zero()
+        {
+            return Err(ComponentError::InvalidConfiguration.into());
+        }
+        SignalBuffer::new(
+            SignalId::new(manifest.instrument, manifest.parameter),
+            manifest.history_capacity,
+        )?;
+        match replaces {
+            None => {
+                if self.managed.contains_key(&manifest.id)
+                    || self.contains_instrument(manifest.instrument)
+                    || self.managed.len() >= MAX_COMPONENTS
+                    || self.instrument_count() >= MAX_INSTRUMENTS
+                {
+                    return Err(ComponentError::InvalidConfiguration.into());
+                }
+            }
+            Some(id) => {
+                let old = self.managed.get(&id).ok_or(ComponentError::Unknown)?;
+                let previous = &old.definition.manifest;
+                if id != manifest.id
+                    || previous.instrument != manifest.instrument
+                    || previous.parameter != manifest.parameter
+                    || previous.kind != manifest.kind
+                    || previous.unit != manifest.unit
+                    || previous.min != manifest.min
+                    || previous.max != manifest.max
+                    || previous.name != manifest.name
+                    || previous.warmup_samples != manifest.warmup_samples
+                    || previous.max_input_age != manifest.max_input_age
+                    || previous.history_capacity != manifest.history_capacity
+                {
+                    return Err(ComponentError::InvalidConfiguration.into());
+                }
+                old.generation
+                    .checked_add(1)
+                    .ok_or(ComponentError::IdentityExhausted)?;
+            }
+        }
+        if let ComponentKind::Transform { input } = manifest.kind {
+            if input.instrument() == manifest.instrument {
+                return Err(ComponentError::InvalidConfiguration.into());
+            }
+            if self.managed.values().any(|item| {
+                item.definition.manifest.instrument == input.instrument()
+                    && matches!(
+                        item.definition.manifest.kind,
+                        ComponentKind::Transform { .. }
+                    )
+            }) {
+                return Err(ComponentError::InvalidConfiguration.into());
+            }
+            let parameter = self
+                .descriptor(input.instrument())?
+                .parameter(input.parameter())
+                .ok_or(ComponentError::InvalidConfiguration)?;
+            if parameter.signal != Some(input)
+                || parameter.role != ParameterRole::Measurement
+                || !matches!(parameter.value_spec, ValueSpec::Float { .. })
+                || parameter.unit != manifest.unit
+            {
+                return Err(ComponentError::InvalidConfiguration.into());
+            }
+        }
+        Ok(())
+    }
+
+    fn stage_component(
+        &mut self,
+        definition: ComponentDefinition,
+        replaces: Option<ComponentId>,
+        at: Duration,
+    ) -> Result<CommandResult, Error> {
+        if self.staged.is_some() {
+            return Err(ComponentError::Busy.into());
+        }
+        self.validate_component_definition(&definition, replaces)?;
+        self.check_output_time(at)?;
+        let generation = replaces.map_or(Ok(1), |id| {
+            self.managed
+                .get(&id)
+                .expect("validated above")
+                .generation
+                .checked_add(1)
+                .ok_or(ComponentError::IdentityExhausted)
+        })?;
+        let revision = replaces.map_or(0, |id| {
+            self.managed.get(&id).expect("validated above").revision
+        });
+        let correlation = Correlation {
+            runtime: self.component_runtime,
+            component: definition.manifest.id,
+            generation,
+            attempt: 0,
+            revision,
+        };
+        let job = Invocation {
+            correlation,
+            phase: InvocationPhase::Init,
+            definition: definition.clone(),
+            state: PlainData::default(),
+            at,
+            dt: Duration::ZERO,
+            input: None,
+        };
+        self.executor
+            .as_mut()
+            .ok_or(ComponentError::Executor)?
+            .try_submit(job)?;
+        let id = definition.manifest.id;
+        self.staged = Some(StagedComponent {
+            definition,
+            replaces,
+            correlation,
+        });
+        Ok(CommandResult::ComponentStaged(id))
+    }
+
+    fn managed_descriptor(manifest: &ComponentManifest) -> Result<InstrumentDescriptor, Error> {
+        let signal = SignalId::new(manifest.instrument, manifest.parameter);
+        let parameter = crate::ParameterDescriptor {
+            id: manifest.parameter,
+            name: "value".into(),
+            value_spec: ValueSpec::Float {
+                min: manifest.min,
+                max: manifest.max,
+            },
+            unit: manifest.unit,
+            access: crate::AccessMode::ReadOnly,
+            role: ParameterRole::Measurement,
+            write_effect: crate::WriteEffect::None,
+            signal: Some(signal),
+        };
+        parameter.validate_definition()?;
+        Ok(InstrumentDescriptor {
+            id: manifest.instrument,
+            name: manifest.name.clone(),
+            parameters: vec![parameter],
+        })
+    }
+
+    fn validate_managed_result(
+        result: &crate::managed::ComponentResult,
+        manifest: &ComponentManifest,
+        phase: InvocationPhase,
+    ) -> Result<(), ComponentError> {
+        if result.unit != manifest.unit
+            || result.state.validate().is_err()
+            || result.diagnostics.len() > 4
+            || result.diagnostics.iter().any(|line| line.len() > 256)
+            || result.diagnostics.iter().map(String::len).sum::<usize>() > 1024
+        {
+            return Err(ComponentError::InvalidResult);
+        }
+        match (phase, result.status, result.value) {
+            (InvocationPhase::Init, ComponentStatus::Init, None) => Ok(()),
+            (InvocationPhase::Step, ComponentStatus::Warming, None)
+            | (InvocationPhase::Step, ComponentStatus::Unavailable, None) => Ok(()),
+            (InvocationPhase::Step, ComponentStatus::Ready, Some(value))
+                if value.is_finite() && (manifest.min..=manifest.max).contains(&value) =>
+            {
+                Ok(())
+            }
+            _ => Err(ComponentError::InvalidResult),
+        }
+    }
+
+    /// Init is validated before quiescing dependents or replacing the committed definition.
+    fn commit_staged(
+        &mut self,
+        staged: StagedComponent,
+        result: crate::managed::ComponentResult,
+        at: Duration,
+    ) -> Result<(), Error> {
+        Self::validate_managed_result(&result, &staged.definition.manifest, InvocationPhase::Init)?;
+        if let Some(id) = staged.replaces {
+            let old = self.managed.get(&id).ok_or(ComponentError::Unknown)?;
+            let pending_to_cancel = old.pending;
+            if old.generation.checked_add(1) != Some(staged.correlation.generation)
+                || old.revision != staged.correlation.revision
+                || old.signal.latest().is_some_and(|last| last.at() > at)
+            {
+                return Err(ComponentError::InvalidResult.into());
+            }
+            let signal = SignalId::new(
+                old.definition.manifest.instrument,
+                old.definition.manifest.parameter,
+            );
+            let dependent_ids: Vec<_> = self
+                .managed
+                .iter()
+                .filter(|(other, component)| {
+                    **other != id
+                        && component.definition.manifest.kind
+                            == ComponentKind::Transform { input: signal }
+                })
+                .map(|(other, _)| *other)
+                .collect();
+            let mut affected_signals = vec![signal];
+            for dependent in &dependent_ids {
+                if let Some(component) = self.managed.get(dependent) {
+                    if component.signal.latest().is_some_and(|last| last.at() > at) {
+                        return Err(ComponentError::InvalidResult.into());
+                    }
+                    affected_signals.push(SignalId::new(
+                        component.definition.manifest.instrument,
+                        component.definition.manifest.parameter,
+                    ));
+                }
+            }
+            let affected: Vec<_> = self
+                .controllers
+                .iter()
+                .filter(|(_, controller)| {
+                    affected_signals.contains(&controller.config.input)
+                        && matches!(
+                            controller.state,
+                            ControllerState::Running | ControllerState::Warming
+                        )
+                })
+                .map(|(controller, _)| *controller)
+                .collect();
+            for controller in affected {
+                self.pause_controller(controller, at)?;
+            }
+            if let Some(correlation) = pending_to_cancel
+                && let Some(executor) = self.executor.as_mut()
+            {
+                executor.try_cancel(correlation);
+            }
+            for dependent in dependent_ids {
+                if let Some(other) = self.managed.get_mut(&dependent) {
+                    if let Some(correlation) = other.pending
+                        && let Some(executor) = self.executor.as_mut()
+                    {
+                        executor.try_cancel(correlation);
+                    }
+                    other.pending = None;
+                    other.pending_input = None;
+                    other.pending_at = None;
+                    other.state = ComponentState::Failed;
+                    if other.signal.latest().is_some() {
+                        other
+                            .signal
+                            .invalidate(at, crate::MeasurementFailure::ComponentFailure)?;
+                    }
+                }
+            }
+        }
+        let manifest = &staged.definition.manifest;
+        let descriptor = Self::managed_descriptor(manifest)?;
+        let signal_id = SignalId::new(manifest.instrument, manifest.parameter);
+        let signal = if let Some(old) = staged.replaces {
+            let mut retained = self
+                .managed
+                .remove(&old)
+                .ok_or(ComponentError::Unknown)?
+                .signal;
+            if retained.latest().is_some() {
+                retained.invalidate(at, crate::MeasurementFailure::ComponentFailure)?;
+            }
+            retained
+        } else {
+            SignalBuffer::new(signal_id, manifest.history_capacity)?
+        };
+        self.managed.insert(
+            manifest.id,
+            ManagedInstance {
+                definition: staged.definition,
+                descriptor,
+                signal,
+                generation: staged.correlation.generation,
+                revision: 0,
+                attempt: 0,
+                state: ComponentState::Warming,
+                committed: result.state,
+                good_steps: 0,
+                last_service: None,
+                last_observation: None,
+                pending: None,
+                pending_input: None,
+                pending_at: None,
+                diagnostics: result.diagnostics,
+            },
+        );
+        Ok(())
+    }
+
+    /// Validate a fresh typed input before any executor work is admitted.
+    fn capture_component_input(
+        &self,
+        manifest: &ComponentManifest,
+        at: Duration,
+    ) -> Result<Option<CapturedInput>, ComponentError> {
+        let ComponentKind::Transform { input } = manifest.kind else {
+            return Ok(None);
+        };
+        let sample = self
+            .signal(input)
+            .ok()
+            .and_then(SignalBuffer::latest)
+            .ok_or(ComponentError::InputUnavailable)?;
+        if sample.quality() != SampleQuality::Good
+            || sample.unit() != manifest.unit
+            || at < sample.freshness_at()
+            || at - sample.freshness_at() >= manifest.max_input_age
+        {
+            return Err(ComponentError::InputUnavailable);
+        }
+        let Some(Value::Float(value)) = sample.value() else {
+            return Err(ComponentError::InputUnavailable);
+        };
+        if !value.is_finite() {
+            return Err(ComponentError::InputUnavailable);
+        }
+        Ok(Some(CapturedInput {
+            signal: input,
+            value: *value,
+            unit: sample.unit(),
+            at: sample.at(),
+            freshness_at: sample.freshness_at(),
+        }))
+    }
+
+    fn invoke_component(&mut self, id: ComponentId, at: Duration) -> Result<CommandResult, Error> {
+        self.check_output_time(at)?;
+        let component = self.managed.get(&id).ok_or(ComponentError::Unknown)?;
+        if component.state == ComponentState::Failed {
+            return Err(ComponentError::InvalidResult.into());
+        }
+        if component.pending.is_some() {
+            return Err(ComponentError::Busy.into());
+        }
+        let captured = self.capture_component_input(&component.definition.manifest, at);
+        let input = match captured {
+            Ok(input) => input,
+            Err(error) => {
+                self.fail_component(id, at);
+                return Err(error.into());
+            }
+        };
+        let observation = input.map_or(at, |reading| reading.freshness_at);
+        if component
+            .last_observation
+            .is_some_and(|last| observation <= last)
+            || component.last_service.is_some_and(|last| at <= last)
+        {
+            return Err(ComponentError::InputUnavailable.into());
+        }
+        let dt = component
+            .last_observation
+            .map_or(Duration::ZERO, |last| observation - last);
+        let attempt = component
+            .attempt
+            .checked_add(1)
+            .ok_or(ComponentError::IdentityExhausted)?;
+        let correlation = Correlation {
+            runtime: self.component_runtime,
+            component: id,
+            generation: component.generation,
+            attempt,
+            revision: component.revision,
+        };
+        let job = Invocation {
+            correlation,
+            phase: InvocationPhase::Step,
+            definition: component.definition.clone(),
+            state: component.committed.clone(),
+            at,
+            dt,
+            input,
+        };
+        self.executor
+            .as_mut()
+            .ok_or(ComponentError::Executor)?
+            .try_submit(job)?;
+        let component = self.managed.get_mut(&id).expect("checked above");
+        component.attempt = attempt;
+        component.pending = Some(correlation);
+        component.pending_input = input;
+        component.pending_at = Some(at);
+        Ok(CommandResult::ComponentInvoked(correlation))
+    }
+
+    /// Invalidate a failed branch and its fixed M5 dependents before further producer work.
+    fn fail_component(&mut self, id: ComponentId, at: Duration) {
+        let Some(component) = self.managed.get_mut(&id) else {
+            return;
+        };
+        if let Some(pending) = component.pending
+            && let Some(executor) = self.executor.as_mut()
+        {
+            executor.try_cancel(pending);
+        }
+        let signal = SignalId::new(
+            component.definition.manifest.instrument,
+            component.definition.manifest.parameter,
+        );
+        component.state = ComponentState::Failed;
+        component.pending = None;
+        component.pending_input = None;
+        component.pending_at = None;
+        if component.signal.latest().is_some() {
+            let _ = component
+                .signal
+                .invalidate(at, crate::MeasurementFailure::ComponentFailure);
+        } else {
+            let _ = component.signal.push(Sample::unavailable(
+                signal,
+                component.definition.manifest.unit,
+                at,
+                crate::MeasurementFailure::ComponentFailure,
+            ));
+        }
+        let dependents: Vec<_> = self
+            .managed
+            .iter()
+            .filter(|(other, instance)| {
+                **other != id
+                    && instance.definition.manifest.kind
+                        == ComponentKind::Transform { input: signal }
+            })
+            .map(|(other, _)| *other)
+            .collect();
+        for dependent in &dependents {
+            if let Some(other) = self.managed.get_mut(dependent) {
+                other.state = ComponentState::Failed;
+                other.pending = None;
+                other.pending_input = None;
+                other.pending_at = None;
+                let downstream = SignalId::new(
+                    other.definition.manifest.instrument,
+                    other.definition.manifest.parameter,
+                );
+                if other.signal.latest().is_some() {
+                    let _ = other
+                        .signal
+                        .invalidate(at, crate::MeasurementFailure::ComponentFailure);
+                } else {
+                    let _ = other.signal.push(Sample::unavailable(
+                        downstream,
+                        other.definition.manifest.unit,
+                        at,
+                        crate::MeasurementFailure::ComponentFailure,
+                    ));
+                }
+            }
+        }
+        let affected_signals: Vec<_> = std::iter::once(signal)
+            .chain(dependents.iter().filter_map(|dependent| {
+                self.managed.get(dependent).map(|instance| {
+                    SignalId::new(
+                        instance.definition.manifest.instrument,
+                        instance.definition.manifest.parameter,
+                    )
+                })
+            }))
+            .collect();
+        let affected: Vec<_> = self
+            .controllers
+            .iter()
+            .filter(|(_, native)| {
+                affected_signals.contains(&native.config.input)
+                    && matches!(
+                        native.state,
+                        ControllerState::Running | ControllerState::Warming
+                    )
+            })
+            .map(|(native, _)| *native)
+            .collect();
+        for native in affected {
+            let mut controller = self.controllers.remove(&native).expect("listed above");
+            if controller.state == ControllerState::Warming {
+                controller.state = ControllerState::Failed;
+            } else {
+                let _ = self.fail_controller(&mut controller, at);
+            }
+            self.controllers.insert(native, controller);
+        }
+    }
+
+    fn commit_step(&mut self, completion: ComponentCompletion, at: Duration) {
+        let id = completion.correlation.component;
+        let Some(component) = self.managed.get(&id) else {
+            return;
+        };
+        if component.pending != Some(completion.correlation)
+            || component.generation != completion.correlation.generation
+            || component.revision != completion.correlation.revision
+            || completion.correlation.runtime != self.component_runtime
+            || component.state == ComponentState::Failed
+        {
+            return;
+        }
+        let captured = component.pending_input;
+        let scheduled = component.pending_at;
+        let manifest = component.definition.manifest.clone();
+        if !completion.timely
+            || at < scheduled.unwrap_or(Duration::ZERO)
+            || captured.is_some_and(|input| {
+                at < input.freshness_at
+                    || at - input.freshness_at >= manifest.max_input_age
+                    || self
+                        .signal(input.signal)
+                        .ok()
+                        .and_then(SignalBuffer::latest)
+                        .is_none_or(|latest| {
+                            latest.quality() != SampleQuality::Good
+                                || latest.freshness_at() < input.freshness_at
+                        })
+            })
+        {
+            self.fail_component(id, at);
+            return;
+        }
+        let Ok(result) = completion.outcome else {
+            self.fail_component(id, at);
+            return;
+        };
+        if Self::validate_managed_result(&result, &manifest, InvocationPhase::Step).is_err() {
+            self.fail_component(id, at);
+            return;
+        }
+        let component = self.managed.get_mut(&id).expect("checked above");
+        let count = component
+            .good_steps
+            .saturating_add(1)
+            .min(manifest.warmup_samples);
+        if result.status == ComponentStatus::Unavailable
+            || (result.status == ComponentStatus::Ready && count < manifest.warmup_samples)
+            || (component.state == ComponentState::Ready && result.status != ComponentStatus::Ready)
+        {
+            self.fail_component(id, at);
+            return;
+        }
+        let signal = SignalId::new(manifest.instrument, manifest.parameter);
+        let source_at = captured.map_or(
+            scheduled.expect("pending job has scheduled time"),
+            |input| input.freshness_at,
+        );
+        let published = if let Some(value) = result.value {
+            Sample::derived_good(signal, manifest.unit, at, source_at, Value::Float(value))
+        } else {
+            Ok(Sample::unavailable(
+                signal,
+                manifest.unit,
+                at,
+                crate::MeasurementFailure::ProcessingWarmup,
+            ))
+        };
+        let Ok(sample) = published else {
+            self.fail_component(id, at);
+            return;
+        };
+        if component.signal.push(sample).is_err() {
+            self.fail_component(id, at);
+            return;
+        }
+        component.committed = result.state;
+        component.revision = match component.revision.checked_add(1) {
+            Some(next) => next,
+            None => {
+                self.fail_component(id, at);
+                return;
+            }
+        };
+        component.good_steps = count;
+        component.state = if result.status == ComponentStatus::Ready {
+            ComponentState::Ready
+        } else {
+            ComponentState::Warming
+        };
+        component.pending = None;
+        component.pending_input = None;
+        component.pending_at = None;
+        component.diagnostics = result.diagnostics;
+        component.last_service = Some(at);
+        component.last_observation = Some(source_at);
+    }
+
+    fn poll_components(&mut self, at: Duration) -> Result<(), Error> {
+        self.service_safety(at)?;
+        if let Some(staged) = &self.staged
+            && self
+                .executor
+                .as_mut()
+                .is_some_and(|port| port.try_expire(staged.correlation))
+        {
+            let staged = self.staged.take().expect("checked above");
+            self.executor
+                .as_mut()
+                .expect("checked above")
+                .try_cancel(staged.correlation);
+        }
+        let expired: Vec<_> = self
+            .managed
+            .iter()
+            .filter_map(|(id, instance)| {
+                instance
+                    .pending
+                    .filter(|correlation| {
+                        self.executor
+                            .as_mut()
+                            .is_some_and(|port| port.try_expire(*correlation))
+                    })
+                    .map(|_| *id)
+            })
+            .collect();
+        for id in expired {
+            self.fail_component(id, at);
+        }
+        for _ in 0..2 {
+            let Some(completion) = self.executor.as_mut().and_then(|port| port.try_poll()) else {
+                break;
+            };
+            if self
+                .staged
+                .as_ref()
+                .is_some_and(|candidate| candidate.correlation == completion.correlation)
+            {
+                let staged = self.staged.take().expect("checked above");
+                if completion.timely
+                    && let Ok(result) = completion.outcome
+                {
+                    let _ = self.commit_staged(staged, result, at);
+                }
+            } else {
+                self.commit_step(completion, at);
+            }
+        }
+        Ok(())
     }
 
     fn start_or_resume_controller(
@@ -1260,10 +2050,10 @@ impl Runtime {
         if sample.quality() != SampleQuality::Good {
             return Err(ControllerError::InputUnavailable);
         }
-        if at < sample.at() {
+        if at < sample.freshness_at() {
             return Err(ControllerError::InvalidTickTime);
         }
-        if at - sample.at() >= max_age {
+        if at - sample.freshness_at() >= max_age {
             return Err(ControllerError::StaleInput);
         }
         let Some(Value::Float(value)) = sample.value() else {
@@ -1272,7 +2062,7 @@ impl Runtime {
         if !value.is_finite() {
             return Err(ControllerError::InputUnavailable);
         }
-        Ok((*value, sample.unit(), sample.at()))
+        Ok((*value, sample.unit(), sample.freshness_at()))
     }
 
     fn output_unit(&self, actuator: ActuatorId) -> Result<Unit, ControllerError> {
@@ -1374,6 +2164,12 @@ impl Runtime {
                 self.thermal_plants
                     .get(&id)
                     .map(|instrument| &instrument.descriptor)
+            })
+            .or_else(|| {
+                self.managed
+                    .values()
+                    .find(|item| item.definition.manifest.instrument == id)
+                    .map(|item| &item.descriptor)
             })
             .ok_or(Error::UnknownInstrument(id))
     }
@@ -1717,10 +2513,17 @@ impl Runtime {
         self.instruments.contains_key(&id)
             || self.metakon_instruments.contains_key(&id)
             || self.thermal_plants.contains_key(&id)
+            || self
+                .managed
+                .values()
+                .any(|item| item.definition.manifest.instrument == id)
     }
 
     fn instrument_count(&self) -> usize {
-        self.instruments.len() + self.metakon_instruments.len() + self.thermal_plants.len()
+        self.instruments.len()
+            + self.metakon_instruments.len()
+            + self.thermal_plants.len()
+            + self.managed.len()
     }
 
     fn signal(&self, id: SignalId) -> Result<&SignalBuffer, Error> {
@@ -1738,6 +2541,15 @@ impl Runtime {
                     .get(&id.instrument())
                     .filter(|_| id.parameter() == TEMPERATURE)
                     .map(|instrument| &instrument.signal)
+            })
+            .or_else(|| {
+                self.managed
+                    .values()
+                    .find(|item| {
+                        item.definition.manifest.instrument == id.instrument()
+                            && item.definition.manifest.parameter == id.parameter()
+                    })
+                    .map(|item| &item.signal)
             })
             .ok_or(Error::UnknownSignal(id))
     }
