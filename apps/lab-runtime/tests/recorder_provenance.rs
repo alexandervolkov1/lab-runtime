@@ -9,10 +9,88 @@ use lab_core::{
     recording::RecordingFact,
 };
 use lab_runtime::{
-    host::Clock,
-    recorder::{ProvenanceEntry, RecordingState, SqliteStore},
+    host::{Clock, HostCore},
+    recorder::{
+        ProvenanceEntry, RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState,
+        SqliteStore,
+    },
     service::{ServiceHost, ServiceOptions},
 };
+
+#[test]
+fn start_boundary_freezes_full_pid_and_reference_config_after_pre_recording_retunes() {
+    let path = temporary_database();
+    let worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    host.command(Command::RetuneRampReference {
+        reference: host.reference_id(),
+        target: 57.0,
+        rate: 1.5,
+        expected_revision: 1,
+        at: Duration::ZERO,
+    })
+    .unwrap();
+    host.command(Command::ConfigureControllerPid {
+        controller: host.controller_id(),
+        pid: lab_core::control::PidConfig {
+            kp: 4.5,
+            ki: 0.6,
+            kd: 0.1,
+            output_min: 5.0,
+            output_max: 80.0,
+        },
+        expected_revision: 1,
+    })
+    .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let now = service.clock().now();
+    service
+        .owner_mut()
+        .start_recording("current at start", now)
+        .unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.recorder_flushed);
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let payload: Vec<u8> = db
+        .query_row(
+            "SELECT payload FROM records WHERE kind='boundary_snapshot'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let boundary: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(boundary["controller_configurations"][0]["revision"], "2");
+    assert_eq!(boundary["controller_configurations"][0]["pid"]["kp"], 4.5);
+    assert_eq!(
+        boundary["controller_configurations"][0]["pid"]["output_min"],
+        5.0
+    );
+    assert_eq!(boundary["reference_configurations"][0]["revision"], "2");
+    assert_eq!(boundary["reference_configurations"][0]["target"], 57.0);
+    assert_eq!(boundary["reference_configurations"][0]["rate"], 1.5);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,

@@ -901,6 +901,7 @@ impl HostCore {
             }
         }
         let mut controller_revisions = Vec::new();
+        let mut controller_configurations = Vec::new();
         for (id, _, _) in &self.plan.controllers {
             let QueryResult::Controller(snapshot) = self.runtime.query(Query::Controller(*id))?
             else {
@@ -910,8 +911,33 @@ impl HostCore {
             };
             controller_revisions.push(serde_json::json!({"id":id.get().to_string(),
                 "revision":snapshot.config_revision.to_string()}));
+            let QueryResult::ControllerConfig(config) =
+                self.runtime.query(Query::ControllerConfig(*id))?
+            else {
+                return Err(Error::InvalidConfiguration(
+                    "boundary controller config unavailable",
+                ));
+            };
+            controller_configurations.push(serde_json::json!({
+                "id":id.get().to_string(),"revision":snapshot.config_revision.to_string(),
+                "input":{"instrument":config.input.instrument().get().to_string(),
+                    "parameter":config.input.parameter().get().to_string()},
+                "output":{"instrument":config.output.instrument().get().to_string(),
+                    "parameter":config.output.parameter().get().to_string()},
+                "reference":config.reference.get().to_string(),
+                "pid":{"kp":config.pid.kp,"ki":config.pid.ki,"kd":config.pid.kd,
+                    "output_min":config.pid.output_min,"output_max":config.pid.output_max},
+                "ema":{"time_constant_ns":config.ema.time_constant.as_nanos().to_string(),
+                    "warmup_samples":config.ema.warmup_samples,
+                    "unit":config.ema.unit.id()},
+                "max_input_age_ns":config.max_input_age.as_nanos().to_string(),
+                "max_tick_gap_ns":config.max_tick_gap.as_nanos().to_string(),
+                "lease_lifetime_ns":config.lease_lifetime.as_nanos().to_string(),
+                "proposal_ttl_ns":config.proposal_ttl.as_nanos().to_string(),
+            }));
         }
         let mut reference_revisions = Vec::new();
+        let mut reference_configurations = Vec::new();
         for (id, _) in &self.plan.references {
             let QueryResult::Reference(snapshot) = self.runtime.query(Query::Reference(*id))?
             else {
@@ -925,6 +951,22 @@ impl HostCore {
             };
             reference_revisions.push(serde_json::json!({"id":id.get().to_string(),
                 "revision":revision.to_string()}));
+            reference_configurations.push(match snapshot {
+                ReferenceSnapshot::Fixed {
+                    value,
+                    unit,
+                    last_at,
+                    ..
+                } => serde_json::json!({
+                    "kind":"fixed","id":id.get().to_string(),
+                    "revision":revision.to_string(),"value":value,"unit":unit.id(),
+                    "last_at_ns":last_at.map(|at|at.as_nanos().to_string())}),
+                ReferenceSnapshot::Ramp { state, .. } => serde_json::json!({
+                    "kind":"ramp","id":id.get().to_string(),
+                    "revision":revision.to_string(),"current":state.current,
+                    "target":state.target,"rate":state.rate,"unit":state.unit.id(),
+                    "progress_at_ns":state.last_at.as_nanos().to_string()}),
+            });
         }
         let mut managed_revisions = Vec::new();
         for (id, _) in &self.components {
@@ -940,7 +982,10 @@ impl HostCore {
         }
         let data = serde_json::json!({"captured_at_ns":at.as_nanos().to_string(),
             "latest_samples":latest_samples,"controller_revisions":controller_revisions,
-            "reference_revisions":reference_revisions,"managed_revisions":managed_revisions,
+            "controller_configurations":controller_configurations,
+            "reference_revisions":reference_revisions,
+            "reference_configurations":reference_configurations,
+            "managed_revisions":managed_revisions,
             "pending_operations":self.pending_operations.iter().map(|((scope,seq),pending)|
                 serde_json::json!({"scope":scope,"request_seq":seq.to_string(),
                     "command":pending.command,"accepted_at_ns":pending.accepted_at.as_nanos().to_string(),
