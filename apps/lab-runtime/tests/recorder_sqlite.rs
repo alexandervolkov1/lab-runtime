@@ -29,6 +29,131 @@ fn frame(value: JsonValue) -> WireRequest {
 }
 
 #[test]
+fn explicit_stop_waits_for_held_pending_fact_and_reopens_its_wal_prefix_and_seal() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let old_boot = worker.boot_id().to_owned();
+    worker.request_start("held pending before Stop").unwrap();
+    let start_by = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Recording {
+        assert!(Instant::now() < start_by);
+        std::thread::yield_now();
+    }
+    let start_watermark = worker.poll().persisted_through_sequence;
+    let instrument = InstrumentId::new(777);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "held Stop source".into(),
+            history_capacity: 1,
+            base_temperature: 31.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let facts = runtime.take_recording_facts();
+    assert_eq!(facts.len(), 1);
+    let assigned = worker.try_admit_at(facts, Duration::from_secs(1)).unwrap();
+    let fact_id = *assigned.start();
+    worker
+        .request_stop_with_summary(
+            json!({"pending_operations":[]}),
+            Duration::from_secs(1) + Duration::from_millis(1),
+        )
+        .unwrap();
+    let held_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < held_by);
+        std::thread::yield_now();
+    }
+    let pending = worker.poll();
+    assert_eq!(pending.state, RecordingState::Stopping);
+    assert_eq!(pending.outstanding_records, 1);
+    assert_eq!(pending.persisted_through_sequence, start_watermark);
+    barrier.release();
+    let stop_by = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Idle {
+        assert!(Instant::now() < stop_by);
+        std::thread::yield_now();
+    }
+    let sealed = worker.poll();
+    assert!(sealed.persisted_through_sequence > fact_id);
+    let mut wal_name = path.as_os_str().to_os_string();
+    wal_name.push("-wal");
+    let wal = PathBuf::from(wal_name);
+    assert!(
+        std::fs::metadata(&wal).unwrap().len() > 0,
+        "a real WAL file must contain committed work before close"
+    );
+    worker.request_finish().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Closed {
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    }
+    drop(worker);
+    let new_boot = "fefefefefefefefefefefefefefefefe";
+    let reopened = SqliteStore::open_with_boot(&path, new_boot).unwrap();
+    let old_page = reopened
+        .read_history_measurements(
+            &lab_runtime::recorder::HistoryFilter {
+                boot_id: old_boot.clone(),
+                run_no: 1,
+                instrument,
+                parameter: lab_core::TEMPERATURE,
+                from: Duration::ZERO,
+                to: Duration::from_secs(2),
+            },
+            None,
+            8,
+        )
+        .unwrap();
+    assert_eq!(old_page.coverage, "complete");
+    assert_eq!(old_page.rows.len(), 1);
+    assert_eq!(old_page.rows[0].record_sequence, fact_id);
+    assert_eq!(old_page.rows[0].value, Some(Value::Float(32.0)));
+    reopened.close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let old_boot_bytes: Vec<u8> = (0..32)
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&old_boot[at..at + 2], 16).unwrap())
+        .collect();
+    let (checkpoint, last): (Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT d.persisted_through_seq,(SELECT MAX(record_seq) FROM records r
+         WHERE r.boot_id=d.boot_id) FROM durable_checkpoints d WHERE d.boot_id=?1",
+            [old_boot_bytes.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(checkpoint, last);
+    let fact_and_seal: Vec<String> = db
+        .prepare(
+            "SELECT kind FROM records WHERE boot_id=?1 AND kind IN ('measurement','interval_seal')
+         ORDER BY record_seq",
+        )
+        .unwrap()
+        .query_map([old_boot_bytes], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(fact_and_seal, ["measurement", "interval_seal"]);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn native_and_managed_batches_reopen_through_public_indexed_history_with_exact_sql_ids() {
     let path = temporary_database();
     let text = path.to_string_lossy();
