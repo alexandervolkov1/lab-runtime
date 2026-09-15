@@ -8,6 +8,7 @@ use lab_core::{
     Command, CommandResult, Error, InstrumentId, Query, QueryResult, Runtime, Sample,
     SampleQuality, SignalId, Unit,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
+    managed::ComponentExecutor,
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputResult, SafeProfile,
     },
@@ -149,12 +150,24 @@ pub struct ServiceReport {
     pub skipped_deadlines: u64,
 }
 
+/// Honest in-process shutdown evidence; unfinished workers prevent a clean exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShutdownStatus {
+    /// Every configured output has no lease and obtained its required safe evidence.
+    pub safe_confirmed: bool,
+    /// Fixed executor slots still executing; Rust safe work never waits for them.
+    pub unfinished_workers: usize,
+    /// Safe evidence and worker cleanup both finished.
+    pub exit_success: bool,
+}
+
 /// Sole mutable Core owner plus one explicit schedule; callers serialize commands.
 pub struct HostCore {
     runtime: Runtime,
     plan: SchedulePlan,
     consumed: BTreeMap<ControllerId, Option<Sample>>,
     last_now: Duration,
+    stopping: bool,
 }
 impl HostCore {
     /// Construct the bounded trusted native virtual slice in safe Ready state.
@@ -240,7 +253,70 @@ impl HostCore {
             plan: SchedulePlan::virtual_demo(),
             consumed: BTreeMap::new(),
             last_now: Duration::ZERO,
+            stopping: false,
         })
+    }
+
+    /// Install one trusted nonblocking component port before managed startup.
+    pub fn install_component_executor(
+        &mut self,
+        executor: Box<dyn ComponentExecutor>,
+    ) -> Result<(), Error> {
+        if self.stopping {
+            return Err(Error::InvalidConfiguration("host is stopping"));
+        }
+        self.runtime.install_component_executor(executor)
+    }
+
+    /// Fence producers before Rust begins a new required safe procedure.
+    pub fn begin_shutdown(&mut self, clock: &impl Clock) -> Result<(), Error> {
+        if self.stopping {
+            return Ok(());
+        }
+        self.stopping = true;
+        self.runtime
+            .command(Command::QuiesceManaged { at: clock.now() })?;
+        let identities: Vec<_> = self.plan.controllers.iter().map(|(id, _, _)| *id).collect();
+        for id in identities {
+            let QueryResult::Controller(snapshot) = self.runtime.query(Query::Controller(id))?
+            else {
+                unreachable!()
+            };
+            if matches!(
+                snapshot.state,
+                ControllerState::Warming | ControllerState::Running
+            ) {
+                self.runtime.command(Command::PauseController {
+                    controller: id,
+                    at: clock.now(),
+                })?;
+            }
+        }
+        let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+        self.runtime.command(Command::Output {
+            actuator,
+            command: OutputCommand::RequestSafe,
+            at: clock.now(),
+        })?;
+        self.plan.safety.next_due = clock.now();
+        Ok(())
+    }
+
+    /// Copy output evidence and worker cleanup status without progressing either.
+    pub fn shutdown_status(&self) -> ShutdownStatus {
+        let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+        let safe_confirmed = match self.runtime.query(Query::Output(actuator)) {
+            Ok(QueryResult::Output(snapshot)) => {
+                snapshot.safe_confirmed && snapshot.lease.is_none()
+            }
+            _ => false,
+        };
+        let unfinished_workers = self.runtime.unfinished_component_workers();
+        ShutdownStatus {
+            safe_confirmed,
+            unfinished_workers,
+            exit_success: safe_confirmed && unfinished_workers == 0,
+        }
     }
 
     /// Replace a schedule only through a trusted local composition decision.
@@ -255,6 +331,9 @@ impl HostCore {
 
     /// Serialize a local domain Command on this owner; snapshots are separate.
     pub fn command(&mut self, command: Command) -> Result<CommandResult, Error> {
+        if self.stopping {
+            return Err(Error::InvalidConfiguration("host is stopping"));
+        }
         let start = match &command {
             Command::StartController { controller, .. }
             | Command::ResumeController { controller, .. } => Some(*controller),
@@ -291,10 +370,16 @@ impl HostCore {
         }
         self.last_now = now;
         if let Some(skipped) = self.plan.safety.take(now)? {
-            self.runtime
-                .command(Command::PollComponents { at: clock.now() })?;
+            self.runtime.command(if self.stopping {
+                Command::ServiceSafety { at: clock.now() }
+            } else {
+                Command::PollComponents { at: clock.now() }
+            })?;
             report.safety += 1;
             report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
+        }
+        if self.stopping {
+            return Ok(report);
         }
         for (plant, slot) in &mut self.plan.plants {
             let now = clock.now();
