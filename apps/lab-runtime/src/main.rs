@@ -1,8 +1,28 @@
-//! Finite virtual-only demonstration, not a service or hardware runtime.
+//! Finite M1 demonstration by default; explicit serve mode runs the M6 host.
 use lab_core::{Command, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig};
-use std::time::Duration;
+use lab_runtime::{
+    server,
+    service::{ServiceHost, ServiceOptions},
+};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let options = ServiceOptions::parse(&refs)?;
+        let host = ServiceHost::startup(options)?;
+        println!("{}", host.ready_line());
+        server::run(host, Arc::new(AtomicBool::new(false)))?;
+        return Ok(());
+    }
+    finite_demo()
+}
+
+fn finite_demo() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = Runtime::new();
     runtime.command(Command::RegisterVirtual(VirtualInstrumentConfig {
         id: InstrumentId::new(1),
