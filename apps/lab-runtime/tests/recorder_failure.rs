@@ -230,3 +230,88 @@ fn worker_panic_before_fact_sql_is_visible_without_a_fabricated_receipt() {
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn sqlite_fact_insert_error_preserves_start_receipt_and_unknown_tail() {
+    let path = temporary_database();
+    drop(SqliteStore::open(&path).unwrap());
+    let external = rusqlite::Connection::open(&path).unwrap();
+    external
+        .execute_batch(
+            "CREATE TRIGGER fail_worker_measurement BEFORE INSERT ON measurements
+             BEGIN SELECT RAISE(ABORT,'injected worker insert failure'); END;",
+        )
+        .unwrap();
+    drop(external);
+    let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+    worker.request_start("failing insert").unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    }
+    let start_watermark = worker.poll().persisted_through_sequence;
+    let instrument = InstrumentId::new(974);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "disk error fixture".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    worker
+        .try_admit_at(runtime.take_recording_facts(), Duration::from_secs(1))
+        .unwrap();
+    let failed = loop {
+        let status = worker.poll();
+        if status.worker_closed {
+            break status;
+        }
+        assert!(
+            Instant::now() < by,
+            "SQL error must close writer: {status:?}"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(failed.state, RecordingState::Failed);
+    assert_eq!(failed.coverage, "unknown_tail");
+    assert_eq!(failed.persisted_through_sequence, start_watermark);
+    assert!(
+        failed
+            .first_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("injected worker insert failure")
+    );
+    assert!(!failed.failure_persisted);
+    drop(worker);
+    let reopened = SqliteStore::open(&path).unwrap();
+    drop(reopened);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (state, coverage): (String, String) = db
+        .query_row(
+            "SELECT state,coverage FROM runs WHERE label='failing insert'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "interrupted");
+    assert_eq!(coverage, "unknown_tail");
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
