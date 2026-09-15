@@ -1,10 +1,10 @@
 //! Real SQLite constraint failure must roll back a whole mixed transaction.
 
 use lab_core::{
-    Command, InstrumentId, Runtime, Unit, VirtualInstrumentConfig, recording::RecordingFact,
-    reference::ReferenceId,
+    Command, InstrumentId, Runtime, Sample, SignalId, Unit, Value, VirtualInstrumentConfig,
+    recording::RecordingFact, reference::ReferenceId,
 };
-use lab_runtime::recorder::SqliteStore;
+use lab_runtime::recorder::{HistoryFilter, SqliteStore};
 use std::{path::PathBuf, time::Duration};
 
 fn temporary_database() -> PathBuf {
@@ -12,6 +12,63 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-transaction-{suffix}.sqlite"))
+}
+
+#[test]
+fn duplicate_source_fact_identity_with_changed_value_rolls_back_its_whole_batch() {
+    let path = temporary_database();
+    let boot = "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc";
+    let instrument = InstrumentId::new(812);
+    let signal = SignalId::new(instrument, lab_core::TEMPERATURE);
+    let fact = |sequence, second, value| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(
+            signal,
+            Unit::CELSIUS,
+            Duration::from_secs(second),
+            Value::Float(value),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+    };
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("source identity").unwrap();
+    store.append_facts(&[fact(7, 1, 23.5)]).unwrap();
+    let prefix = store.current_record_sequence();
+    assert!(
+        store
+            .append_facts(&[fact(8, 2, 24.0), fact(7, 3, 99.0)])
+            .is_err()
+    );
+    assert_eq!(store.current_record_sequence(), prefix);
+    let current = store
+        .read_measurements(instrument, lab_core::TEMPERATURE, 8)
+        .unwrap();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].value, Some(Value::Float(23.5)));
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_secs(4)).unwrap();
+    store.close().unwrap();
+    let reopened = SqliteStore::open_with_boot(&path, "bdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbd").unwrap();
+    let archive = reopened
+        .read_history_measurements(
+            &HistoryFilter {
+                boot_id: boot.into(),
+                run_no: 1,
+                instrument,
+                parameter: lab_core::TEMPERATURE,
+                from: Duration::ZERO,
+                to: Duration::from_secs(4),
+            },
+            None,
+            8,
+        )
+        .unwrap();
+    assert_eq!(archive.rows.len(), 1);
+    assert_eq!(archive.rows[0].value, Some(Value::Float(23.5)));
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

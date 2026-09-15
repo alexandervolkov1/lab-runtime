@@ -465,11 +465,12 @@ impl SqliteStore {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
                  ('runtime_boots_unfinished','runs_unfinished','intervals_unfinished',
                   'intervals_by_run',
-                  'measurements_history','measurements_all_history','operation_identity')",
+                  'measurements_history','measurements_all_history','operation_identity',
+                  'records_source_fact')",
                 [],
                 |row| row.get(0),
             )?;
-            if indexes != 7 {
+            if indexes != 8 {
                 return Err(StorageError(
                     "version-one required indexes are incomplete".into(),
                 ));
@@ -2719,13 +2720,16 @@ fn create_schema(connection: &mut Connection) -> Result<(), StorageError> {
              FOREIGN KEY(boot_id,activation_no) REFERENCES configurations(boot_id,activation_no));
          CREATE TABLE records(boot_id BLOB NOT NULL, record_seq BLOB NOT NULL CHECK(length(record_seq)=8),
              run_no BLOB, interval_no BLOB, kind TEXT NOT NULL,
-             version INTEGER NOT NULL CHECK(version=1), fact_seq BLOB,
+             version INTEGER NOT NULL CHECK(version=1), fact_seq BLOB
+             CHECK(fact_seq IS NULL OR length(fact_seq)=8),
              published_at BLOB, observed_at BLOB, captured_at BLOB, wall_estimate_us INTEGER,
              wall_basis TEXT,
              origin TEXT, target TEXT, cause TEXT, payload BLOB,
              PRIMARY KEY(boot_id,record_seq),
              FOREIGN KEY(boot_id,run_no) REFERENCES runs(boot_id,run_no),
              FOREIGN KEY(boot_id,interval_no) REFERENCES recording_intervals(boot_id,interval_no));
+         CREATE UNIQUE INDEX records_source_fact ON records(boot_id,fact_seq)
+             WHERE fact_seq IS NOT NULL;
          CREATE TABLE measurements(boot_id BLOB NOT NULL, record_seq BLOB NOT NULL,
              run_no BLOB NOT NULL, instrument_id BLOB NOT NULL, parameter_id BLOB NOT NULL,
              generation BLOB NOT NULL, revision BLOB NOT NULL, observed_at BLOB NOT NULL,
