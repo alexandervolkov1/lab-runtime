@@ -28,6 +28,116 @@ fn temporary_database() -> PathBuf {
 }
 
 #[test]
+fn history_read_rejects_untrusted_fields_and_invalid_ranges_before_worker_admission() {
+    let path = temporary_database();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"hello-invalid","op":"hello","args":{"scope":null}})),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let database = service.owner().recording_database_id().unwrap().to_owned();
+    let boot = service.boot_id().to_owned();
+    let base = json!({"mode":"measurements","database_id":database,"boot_id":boot,
+        "run_id":{"boot_id":boot,"run_no":"1"},
+        "signal":{"instrument":"1","parameter":"1"},
+        "from_ns":"0","to_ns":"1000000000","max_records":8,"cursor":null});
+    for field in ["sql", "path", "downsampling", "history_envelope"] {
+        let mut args = base.clone();
+        args[field] = json!("untrusted");
+        let raw = encode_frame(&json!({"v":1,"msg_id":format!("wire-{field}"),
+            "op":"history_read","request_id":{"scope":scope,"seq":"1"},
+            "args":args}))
+        .unwrap();
+        assert!(
+            decode_frame(&raw).is_err(),
+            "{field} must fail at the wire boundary"
+        );
+    }
+    for nested in ["run_id", "signal"] {
+        let mut args = base.clone();
+        args[nested]["sql"] = json!("untrusted");
+        let raw = encode_frame(&json!({"v":1,"msg_id":format!("nested-{nested}"),
+            "op":"history_read","request_id":{"scope":scope,"seq":"1"},
+            "args":args}))
+        .unwrap();
+        assert!(
+            decode_frame(&raw).is_err(),
+            "{nested} must reject unknown nested fields"
+        );
+    }
+    let mut unterminated = encode_frame(&json!({"v":1,"msg_id":"unterminated",
+        "op":"history_read","request_id":{"scope":scope,"seq":"1"},
+        "args":base.clone()}))
+    .unwrap();
+    unterminated.pop();
+    assert!(decode_frame(&unterminated).is_err());
+    assert!(decode_frame(&vec![b'x'; 16_385]).is_err());
+    let mut cases = Vec::new();
+    for (name, field, value) in [
+        ("zero-limit", "max_records", json!(0)),
+        ("large-limit", "max_records", json!(129)),
+        ("equal-range", "to_ns", json!("0")),
+        ("reverse-range", "from_ns", json!("2000000000")),
+        ("bad-time", "from_ns", json!("01")),
+        ("overflow-time", "to_ns", json!("18446744073709551616")),
+        ("long-cursor", "cursor", json!("c".repeat(129))),
+        ("unsupported-mode", "mode", json!("envelope")),
+    ] {
+        let mut args = base.clone();
+        args[field] = value;
+        cases.push((name, args));
+    }
+    let mut wrong_boot = base.clone();
+    wrong_boot["run_id"]["boot_id"] = json!("ffffffffffffffffffffffffffffffff");
+    cases.push(("mismatched-run", wrong_boot));
+    let mut wrong_signal = base.clone();
+    wrong_signal["signal"]["instrument"] = json!("-1");
+    cases.push(("bad-signal", wrong_signal));
+    for (seq, (name, args)) in cases.into_iter().enumerate() {
+        let response = app.handle(
+            &mut service,
+            1,
+            frame(json!({"v":1,"msg_id":format!("invalid-{name}"),
+                "op":"history_read","request_id":{"scope":scope,"seq":(seq+1).to_string()},
+                "args":args})),
+        );
+        assert_eq!(response.len(), 1, "{name}: {response:?}");
+        assert_eq!(response[0]["type"], "error", "{name}: {response:?}");
+    }
+    assert_eq!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .outstanding_groups,
+        0
+    );
+    service.request_shutdown().unwrap();
+    let by = Instant::now() + Duration::from_secs(4);
+    while service.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    }
+    drop(app);
+    drop(service);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empty_range() {
     let path = temporary_database();
     let archive_boot = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
