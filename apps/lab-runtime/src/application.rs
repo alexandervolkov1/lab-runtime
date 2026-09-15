@@ -1813,6 +1813,13 @@ fn history_page_json(page: &HistoryPage, cursor_token: Option<&str>) -> Value {
         .collect();
     json!({"rows":rows,"watermark":page.watermark.to_string(),
         "coverage":page.coverage,"next_cursor":cursor_token,
+        "loss":page.loss.as_ref().map(|loss| json!({
+            "reason":loss.reason,
+            "first_missing_fact_seq":loss.first_missing_fact.map(|id|id.to_string()),
+            "known_missing_count":loss.known_missing_count.map(|id|id.to_string()),
+            "last_accepted_fact_seq":loss.last_accepted_fact.map(|id|id.to_string()),
+            "cutoff_monotonic_ns":nanos(loss.cutoff),
+            "last_confirmed_record_seq":loss.last_confirmed_record.to_string()})),
         "has_more":cursor_token.is_some(),"raw":true})
 }
 

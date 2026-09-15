@@ -276,6 +276,25 @@ pub struct HistoryPage {
     pub next_cursor: Option<HistoryCursor>,
     /// `complete`, `gap`, or `unknown_tail` interval/run coverage.
     pub coverage: String,
+    /// Known loss boundary, if this run committed a failure seal.
+    pub loss: Option<HistoryLoss>,
+}
+
+/// Bounded, committed gap metadata; absent fields mean genuinely unknown loss.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryLoss {
+    /// Stable bounded reason captured at the first coverage failure.
+    pub reason: String,
+    /// First missing source-fact identity if transfer rejection was observed.
+    pub first_missing_fact: Option<u64>,
+    /// Known number of missing source facts, or None for an unknown tail.
+    pub known_missing_count: Option<u64>,
+    /// Last source fact accepted before this failure, if known.
+    pub last_accepted_fact: Option<u64>,
+    /// Trusted monotonic failure cutoff in the archived boot.
+    pub cutoff: Duration,
+    /// Last record confirmed committed before the gap seal.
+    pub last_confirmed_record: u64,
 }
 
 /// One archived run discoverable after a fresh process boot.
@@ -482,6 +501,20 @@ impl SqliteStore {
                 ));
             }
             validate_unfinished_entries(&connection)?;
+            // The original version-one files may predate the indexed history
+            // loss projection. Adding this read-only lookup index preserves all
+            // stored facts and avoids a scan through earlier intervals.
+            connection.execute_batch(
+                "CREATE INDEX IF NOT EXISTS intervals_by_run
+                 ON recording_intervals(boot_id,run_no)",
+            )?;
+            let loss_index: Vec<String> = connection
+                .prepare("PRAGMA index_info('intervals_by_run')")?
+                .query_map([], |row| row.get::<_, String>(2))?
+                .collect::<Result<_, _>>()?;
+            if loss_index != ["boot_id", "run_no"] {
+                return Err(StorageError("incompatible interval history index".into()));
+            }
         }
         let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
         let page_count: i64 =
@@ -2143,6 +2176,28 @@ impl SqliteStore {
             )
             .optional()?
             .ok_or_else(|| StorageError("unknown archived run".into()))?;
+        let loss = if coverage == "gap" {
+            let mut statement = self.connection.prepare(
+                "SELECT loss_summary FROM recording_intervals INDEXED BY intervals_by_run
+                 WHERE boot_id=?1 AND run_no=?2 LIMIT 2",
+            )?;
+            let summaries = statement
+                .query_map(params![archive_boot.as_slice(), run_no.as_slice()], |row| {
+                    row.get::<_, Option<String>>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            if summaries.len() != 1 {
+                return Err(StorageError("ambiguous archived gap interval".into()));
+            }
+            Some(parse_history_loss(summaries[0].as_deref().ok_or_else(
+                || StorageError("archived gap has no loss summary".into()),
+            )?)?)
+        } else {
+            None
+        };
+        let loss_charge = loss.as_ref().map_or(0, |loss| {
+            256usize.saturating_add(loss.reason.len().saturating_mul(6))
+        });
         let current_watermark = self.connection.query_row(
             "SELECT persisted_through_seq FROM durable_checkpoints WHERE boot_id=?1",
             params![archive_boot.as_slice()],
@@ -2188,6 +2243,7 @@ impl SqliteStore {
                 watermark,
                 next_cursor: None,
                 coverage,
+                loss,
             });
         };
         let frozen = u64_blob(watermark);
@@ -2238,7 +2294,9 @@ impl SqliteStore {
                     Some(Value::Text(text) | Value::Enum(text)) => escaped(text),
                     _ => 0,
                 });
-            if rows.len() == limit || page_bytes.saturating_add(bytes) > 8 * 1024 - 512 {
+            if rows.len() == limit
+                || page_bytes.saturating_add(bytes).saturating_add(loss_charge) > 8 * 1024 - 512
+            {
                 if rows.is_empty() {
                     return Err(StorageError("whole history row exceeds page budget".into()));
                 }
@@ -2268,6 +2326,7 @@ impl SqliteStore {
             watermark,
             next_cursor,
             coverage,
+            loss,
         })
     }
 
@@ -2488,6 +2547,50 @@ fn decode_measurement_row(row: &rusqlite::Row<'_>) -> Result<MeasurementRow, rus
     })
 }
 
+fn parse_history_loss(summary: &str) -> Result<HistoryLoss, StorageError> {
+    // A 512-byte reason may require six JSON bytes per source byte.
+    if summary.len() > 4096 {
+        return Err(StorageError("archived loss summary exceeds bound".into()));
+    }
+    let document: serde_json::Value = serde_json::from_str(summary)
+        .map_err(|_| StorageError("malformed archived loss summary".into()))?;
+    let text = |key: &str| -> Result<&str, StorageError> {
+        document
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| StorageError(format!("archived loss field {key} is invalid")))
+    };
+    let optional_id = |key: &str| -> Result<Option<u64>, StorageError> {
+        match document.get(key) {
+            Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(value)) => value
+                .parse()
+                .map(Some)
+                .map_err(|_| StorageError(format!("archived loss field {key} is invalid"))),
+            _ => Err(StorageError(format!(
+                "archived loss field {key} is invalid"
+            ))),
+        }
+    };
+    let reason = text("reason")?;
+    if reason.is_empty() || reason.len() > 512 {
+        return Err(StorageError("archived loss reason is invalid".into()));
+    }
+    let required_id = |key: &str| -> Result<u64, StorageError> {
+        text(key)?
+            .parse()
+            .map_err(|_| StorageError(format!("archived loss field {key} is invalid")))
+    };
+    Ok(HistoryLoss {
+        reason: reason.to_owned(),
+        first_missing_fact: optional_id("first_missing_fact")?,
+        known_missing_count: optional_id("known_missing_count")?,
+        last_accepted_fact: optional_id("last_accepted_fact")?,
+        cutoff: Duration::from_nanos(required_id("cutoff_monotonic_ns")?),
+        last_confirmed_record: required_id("last_confirmed_record_seq")?,
+    })
+}
+
 // An invalid archive must be rejected before WAL conversion or new-boot
 // recovery. Indexed LIMIT 2 proves the at-most-one invariant without scanning
 // the history of all earlier sealed runs.
@@ -2600,6 +2703,7 @@ fn create_schema(connection: &mut Connection) -> Result<(), StorageError> {
              PRIMARY KEY(boot_id,interval_no),
              FOREIGN KEY(boot_id,run_no) REFERENCES runs(boot_id,run_no));
          CREATE INDEX intervals_unfinished ON recording_intervals(state,boot_id,run_no);
+         CREATE INDEX intervals_by_run ON recording_intervals(boot_id,run_no);
          CREATE TABLE configurations(boot_id BLOB NOT NULL, activation_no BLOB NOT NULL,
              manifest_root_hash BLOB, manifest_content_hash BLOB, encoding TEXT,
              committed_at BLOB, object_revisions TEXT,

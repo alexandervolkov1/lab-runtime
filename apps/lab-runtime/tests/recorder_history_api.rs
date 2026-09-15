@@ -7,6 +7,7 @@ use lab_core::{
 use lab_runtime::{
     application::Application,
     host::Clock,
+    recorder::{RecorderGap, SqliteStore},
     service::{ServiceHost, ServiceOptions},
     wire::{WireRequest, decode_frame, encode_frame},
 };
@@ -24,6 +25,105 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|b| format!("{b:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-history-api-{suffix}.sqlite"))
+}
+
+#[test]
+fn public_archived_gap_page_keeps_loss_metadata_within_json_budget() {
+    let path = temporary_database();
+    let archive_boot = "79797979797979797979797979797979";
+    let reason = "\0".repeat(512);
+    let mut archive = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
+    archive.start_run("archive gap").unwrap();
+    archive
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 6,
+            sample: Sample::validated_good(
+                SignalId::new(InstrumentId::new(1), lab_core::TEMPERATURE),
+                Unit::CELSIUS,
+                Duration::from_secs(1),
+                DomainValue::Float(23.5),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+        }])
+        .unwrap();
+    archive
+        .fail_run(&RecorderGap {
+            reason: reason.clone(),
+            at: Duration::from_secs(2),
+            first_missing_fact: Some(7),
+            known_missing_count: Some(2),
+            last_accepted_fact: Some(6),
+        })
+        .unwrap();
+    drop(archive);
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"hello","op":"hello","args":{"scope":null}})),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap();
+    let status = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"status","op":"recording_status","args":{}})),
+    );
+    let database = status[0]["result"]["database_id"].clone();
+    let read = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"read","op":"history_read",
+            "request_id":{"scope":scope,"seq":"1"},
+            "args":{"mode":"measurements","database_id":database,
+                "boot_id":archive_boot,
+                "run_id":{"boot_id":archive_boot,"run_no":"1"},
+                "signal":{"instrument":"1","parameter":"1"},
+                "from_ns":"0","to_ns":"3000000000",
+                "max_records":8,"cursor":null}})),
+    );
+    assert_eq!(read[0]["state"], "accepted");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut terminal = Vec::new();
+    while terminal.is_empty() && Instant::now() < deadline {
+        terminal = app.poll_history(&mut service);
+        std::thread::yield_now();
+    }
+    assert_eq!(terminal[0].1["state"], "completed", "{terminal:?}");
+    let token = terminal[0].1["result"]["page_token"].clone();
+    let page = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"page","op":"history_page",
+            "args":{"page_token":token}})),
+    );
+    assert_eq!(page[0]["result"]["coverage"], "gap");
+    assert_eq!(page[0]["result"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(page[0]["result"]["loss"]["reason"], reason);
+    assert_eq!(page[0]["result"]["loss"]["first_missing_fact_seq"], "7");
+    assert_eq!(page[0]["result"]["loss"]["known_missing_count"], "2");
+    assert!(serde_json::to_vec(&page[0]["result"]).unwrap().len() <= 8 * 1024);
+    assert!(encode_frame(&page[0]).unwrap().len() <= 16_384);
+    drop(app);
+    drop(service);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
 }
 
 #[test]
