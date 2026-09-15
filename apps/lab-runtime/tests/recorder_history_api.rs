@@ -122,7 +122,9 @@ fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
         "args":{"mode":"measurements","database_id":database_id,
             "boot_id":run_id["boot_id"],"run_id":run_id,
             "signal":{"instrument":"1","parameter":"1"},
-            "from_ns":"0","to_ns":"10000000000","max_records":8,"cursor":null}})),
+            "from_ns":at.as_nanos().to_string(),
+            "to_ns":(at+Duration::from_millis(1)).as_nanos().to_string(),
+            "max_records":8,"cursor":null}})),
     );
     assert_eq!(read.len(), 1);
     assert_eq!(read[0]["state"], "accepted");

@@ -204,7 +204,7 @@ impl Default for Receipt {
 enum Message {
     Activation(Vec<ProvenanceEntry>, Vec<ProvenanceObject>),
     Start(String, RecordingPolicy, Duration, BoundarySnapshot),
-    Facts(Vec<RecordingFact>, usize, Duration),
+    Facts(Vec<RecordingFact>, usize, Duration, Instant),
     Operation(OperationRecord, usize),
     GapSeal(RecorderGap),
     Probe(Duration),
@@ -651,7 +651,7 @@ impl RecorderWorker {
         }
         let record_count = facts.len();
         let last_fact = facts.last().map(RecordingFact::sequence);
-        let message = Message::Facts(facts, bytes, submitted_at);
+        let message = Message::Facts(facts, bytes, submitted_at, Instant::now());
         match self.sender.try_send(message) {
             Ok(()) => {
                 self.charged_records += record_count;
@@ -661,8 +661,8 @@ impl RecorderWorker {
                 Ok(())
             }
             Err(
-                TrySendError::Full(Message::Facts(facts, _, _))
-                | TrySendError::Disconnected(Message::Facts(facts, _, _)),
+                TrySendError::Full(Message::Facts(facts, _, _, _))
+                | TrySendError::Disconnected(Message::Facts(facts, _, _, _)),
             ) => {
                 self.fail_with_gap(RecorderGap {
                     reason: "recorder ingress unavailable".into(),
@@ -930,26 +930,39 @@ fn worker_loop(
     source: MonotonicSource,
 ) -> bool {
     let mut last_periodic = store.boot_anchor.after();
+    let mut deferred: Option<Message> = None;
     loop {
-        if source.now().saturating_sub(last_periodic) >= Duration::from_secs(1) {
-            let result = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
-                .and_then(|anchor| store.append_clock_anchor("periodic", &anchor));
-            if let Err(error) = result {
-                let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                status.state = RecordingState::Failed;
-                status
-                    .first_error
-                    .get_or_insert_with(|| error.to_string().chars().take(512).collect());
-                return false;
+        let message = if let Some(message) = deferred.take() {
+            message
+        } else {
+            // Admit older queued domain work before taking a new actual UTC
+            // sample, so a periodic clock fact never overtakes a held group.
+            match receiver.try_recv() {
+                Ok(message) => message,
+                Err(mpsc::TryRecvError::Disconnected) => return false,
+                Err(mpsc::TryRecvError::Empty) => {
+                    if source.now().saturating_sub(last_periodic) >= Duration::from_secs(1) {
+                        let result = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                            .and_then(|anchor| store.append_clock_anchor("periodic", &anchor));
+                        if let Err(error) = result {
+                            let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                            status.state = RecordingState::Failed;
+                            status.first_error.get_or_insert_with(|| {
+                                error.to_string().chars().take(512).collect()
+                            });
+                            return false;
+                        }
+                        last_periodic = source.now();
+                        receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
+                            store.current_record_sequence();
+                    }
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(message) => message,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                    }
+                }
             }
-            last_periodic = source.now();
-            receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
-                store.current_record_sequence();
-        }
-        let message = match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(message) => message,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return false,
         };
         let message = match message {
             Message::History {
@@ -1016,16 +1029,57 @@ fn worker_loop(
                         status.interval_no = store.current_interval_no();
                     })
             }
-            Message::Facts(facts, bytes, submitted_at) => store
-                .append_facts_with_capture(&facts, submitted_at)
-                .map(|sequence| {
+            Message::Facts(facts, bytes, submitted_at, queued_at) => {
+                let mut batch = vec![(facts, bytes, submitted_at)];
+                let mut records = batch[0].0.len();
+                let mut accounted_bytes = bytes;
+                let deadline = queued_at + Duration::from_millis(100);
+                while batch.len() < MAX_GROUPS && records < 256 && accounted_bytes < MAX_GROUP_BYTES
+                {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    match receiver.recv_timeout(remaining) {
+                        Ok(Message::Facts(next_facts, next_bytes, next_at, next_queued)) => {
+                            if next_facts.len() > 256 - records
+                                || next_bytes > MAX_GROUP_BYTES - accounted_bytes
+                            {
+                                deferred = Some(Message::Facts(
+                                    next_facts,
+                                    next_bytes,
+                                    next_at,
+                                    next_queued,
+                                ));
+                                break;
+                            }
+                            records += next_facts.len();
+                            accounted_bytes += next_bytes;
+                            batch.push((next_facts, next_bytes, next_at));
+                        }
+                        Ok(other) => {
+                            deferred = Some(other);
+                            break;
+                        }
+                        Err(
+                            mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected,
+                        ) => break,
+                    }
+                }
+                let views: Vec<(&[RecordingFact], Duration)> = batch
+                    .iter()
+                    .map(|(facts, _, at)| (facts.as_slice(), *at))
+                    .collect();
+                let last_submission = batch.last().expect("nonempty batch").2;
+                store.append_fact_groups(&views).map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
-                    status.confirmed_submission = Some(submitted_at);
-                    status.released_records += facts.len();
-                    status.released_bytes += bytes;
-                    status.released_groups += 1;
-                }),
+                    status.confirmed_submission = Some(last_submission);
+                    status.released_records += records;
+                    status.released_bytes += accounted_bytes;
+                    status.released_groups += batch.len();
+                })
+            }
             Message::Operation(operation, bytes) => {
                 store.append_operation(&operation).map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());

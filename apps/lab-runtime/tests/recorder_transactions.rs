@@ -1,6 +1,9 @@
 //! Real SQLite constraint failure must roll back a whole mixed transaction.
 
-use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_core::{
+    Command, InstrumentId, Runtime, Unit, VirtualInstrumentConfig, recording::RecordingFact,
+    reference::ReferenceId,
+};
 use lab_runtime::recorder::SqliteStore;
 use std::{path::PathBuf, time::Duration};
 
@@ -88,6 +91,69 @@ fn real_insert_error_rolls_back_all_new_rows_and_checkpoint_without_erasing_pref
     assert!(checkpoints.contains(&1u64.to_be_bytes().to_vec()));
     assert!(checkpoints.contains(&2u64.to_be_bytes().to_vec()));
     drop(connection);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn nonfinite_second_group_rejects_one_batch_without_committing_its_valid_prefix() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("nonfinite batch").unwrap();
+    let boundary = store.current_record_sequence();
+    let instrument = InstrumentId::new(881);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "valid first group".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let first = runtime.take_recording_facts();
+    let invalid = RecordingFact::Reference {
+        sequence: first[0].sequence() + 1,
+        reference: ReferenceId::new(882),
+        revision: 1,
+        value: f64::NAN,
+        target: None,
+        rate: None,
+        unit: Unit::CELSIUS,
+        at: Duration::from_secs(2),
+    };
+    assert!(
+        store
+            .append_fact_groups(&[
+                (&first, Duration::from_secs(1)),
+                (&[invalid], Duration::from_secs(2)),
+            ])
+            .is_err()
+    );
+    assert_eq!(store.current_record_sequence(), boundary);
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    let checkpoint: Vec<u8> = db
+        .query_row(
+            "SELECT persisted_through_seq FROM durable_checkpoints",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(checkpoint, boundary.to_be_bytes());
+    drop(db);
     std::fs::remove_file(path).unwrap();
 }
 

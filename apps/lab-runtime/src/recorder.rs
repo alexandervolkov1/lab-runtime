@@ -1130,8 +1130,27 @@ impl SqliteStore {
         facts: &[RecordingFact],
         captured_at: Duration,
     ) -> Result<u64, StorageError> {
-        if facts.len() > 256 || self.run_no.is_none() {
-            return Err(StorageError("invalid or oversized recording group".into()));
+        self.append_fact_groups(&[(facts, captured_at)])
+    }
+
+    /// Commit several causal owner groups without splitting any group. The
+    /// worker retains their original capture times and one bounded batch.
+    pub fn append_fact_groups(
+        &mut self,
+        groups: &[(&[RecordingFact], Duration)],
+    ) -> Result<u64, StorageError> {
+        let count = groups
+            .iter()
+            .try_fold(0usize, |total, (facts, _)| total.checked_add(facts.len()))
+            .ok_or_else(|| StorageError("batch count arithmetic exhausted".into()))?;
+        if groups.is_empty()
+            || groups.len() > 4
+            || count == 0
+            || count > 256
+            || groups.iter().any(|(facts, _)| facts.is_empty())
+            || self.run_no.is_none()
+        {
+            return Err(StorageError("invalid or oversized recording batch".into()));
         }
         let mut next_sequence = self.next_record_sequence;
         let next_commit = self
@@ -1139,80 +1158,82 @@ impl SqliteStore {
             .checked_add(1)
             .ok_or_else(|| StorageError("commit identity exhausted".into()))?;
         let transaction = self.connection.transaction()?;
-        for fact in facts {
-            next_sequence = next_sequence
-                .checked_add(1)
-                .ok_or_else(|| StorageError("record identity exhausted".into()))?;
-            let record_id = u64_blob(next_sequence);
-            let fact_id = u64_blob(fact.sequence());
-            let run_no = u64_blob(self.run_no.expect("run checked above"));
-            let interval_no = u64_blob(self.interval_no.expect("run checked above"));
-            let (kind, time) = match fact {
-                RecordingFact::Measurement { sample, .. } => ("measurement", sample.at()),
-                RecordingFact::Output { at, .. } => ("output", *at),
-                RecordingFact::Controller { at, .. } => ("controller", *at),
-                RecordingFact::Reference { at, .. } => ("reference", *at),
-            };
-            let at = duration_blob(time)?;
-            let observed = match fact {
-                RecordingFact::Measurement { sample, .. } => sample.freshness_at(),
-                _ => time,
-            };
-            let observed = duration_blob(observed)?;
-            let captured = duration_blob(captured_at)?;
-            let wall_estimate = self.boot_anchor.estimate_us(time)?;
-            transaction.execute(
-                "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,\
+        for &(facts, captured_at) in groups {
+            for fact in facts {
+                validate_storage_fact(fact)?;
+                next_sequence = next_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("record identity exhausted".into()))?;
+                let record_id = u64_blob(next_sequence);
+                let fact_id = u64_blob(fact.sequence());
+                let run_no = u64_blob(self.run_no.expect("run checked above"));
+                let interval_no = u64_blob(self.interval_no.expect("run checked above"));
+                let (kind, time) = match fact {
+                    RecordingFact::Measurement { sample, .. } => ("measurement", sample.at()),
+                    RecordingFact::Output { at, .. } => ("output", *at),
+                    RecordingFact::Controller { at, .. } => ("controller", *at),
+                    RecordingFact::Reference { at, .. } => ("reference", *at),
+                };
+                let at = duration_blob(time)?;
+                let observed = match fact {
+                    RecordingFact::Measurement { sample, .. } => sample.freshness_at(),
+                    _ => time,
+                };
+                let observed = duration_blob(observed)?;
+                let captured = duration_blob(captured_at)?;
+                let wall_estimate = self.boot_anchor.estimate_us(time)?;
+                transaction.execute(
+                    "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,\
                  fact_seq,published_at,observed_at,captured_at,wall_estimate_us,wall_basis)
                  VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,?9,?10,'boot_anchor')",
-                params![
-                    self.boot_id.as_slice(),
-                    record_id.as_slice(),
-                    run_no.as_slice(),
-                    interval_no.as_slice(),
-                    kind,
-                    fact_id.as_slice(),
-                    at.as_slice(),
-                    observed.as_slice(),
-                    captured.as_slice(),
-                    wall_estimate
-                ],
-            )?;
-            match fact {
-                RecordingFact::Measurement {
-                    sample,
-                    generation,
-                    revision,
-                    ..
-                } => {
-                    let (value_kind, float_value, integer_value, bool_value, text_value) =
-                        match sample.value() {
-                            Some(Value::Float(value)) if value.is_finite() => {
-                                ("float", Some(*value), None, None, None)
-                            }
-                            Some(Value::Integer(value)) => {
-                                ("integer", None, Some(*value), None, None)
-                            }
-                            Some(Value::Boolean(value)) => {
-                                ("boolean", None, None, Some(i64::from(*value)), None)
-                            }
-                            Some(Value::Text(value)) => {
-                                ("text", None, None, None, Some(value.as_str()))
-                            }
-                            Some(Value::Enum(value)) => {
-                                ("enum", None, None, None, Some(value.as_str()))
-                            }
-                            Some(Value::Float(_)) => {
-                                return Err(StorageError("nonfinite measurement".into()));
-                            }
-                            None => ("none", None, None, None, None),
+                    params![
+                        self.boot_id.as_slice(),
+                        record_id.as_slice(),
+                        run_no.as_slice(),
+                        interval_no.as_slice(),
+                        kind,
+                        fact_id.as_slice(),
+                        at.as_slice(),
+                        observed.as_slice(),
+                        captured.as_slice(),
+                        wall_estimate
+                    ],
+                )?;
+                match fact {
+                    RecordingFact::Measurement {
+                        sample,
+                        generation,
+                        revision,
+                        ..
+                    } => {
+                        let (value_kind, float_value, integer_value, bool_value, text_value) =
+                            match sample.value() {
+                                Some(Value::Float(value)) if value.is_finite() => {
+                                    ("float", Some(*value), None, None, None)
+                                }
+                                Some(Value::Integer(value)) => {
+                                    ("integer", None, Some(*value), None, None)
+                                }
+                                Some(Value::Boolean(value)) => {
+                                    ("boolean", None, None, Some(i64::from(*value)), None)
+                                }
+                                Some(Value::Text(value)) => {
+                                    ("text", None, None, None, Some(value.as_str()))
+                                }
+                                Some(Value::Enum(value)) => {
+                                    ("enum", None, None, None, Some(value.as_str()))
+                                }
+                                Some(Value::Float(_)) => {
+                                    return Err(StorageError("nonfinite measurement".into()));
+                                }
+                                None => ("none", None, None, None, None),
+                            };
+                        let quality = match sample.quality() {
+                            SampleQuality::Good => "good",
+                            SampleQuality::Unavailable => "unavailable",
                         };
-                    let quality = match sample.quality() {
-                        SampleQuality::Good => "good",
-                        SampleQuality::Unavailable => "unavailable",
-                    };
-                    let failure = sample.failure().map(|reason| format!("{reason:?}"));
-                    transaction.execute(
+                        let failure = sample.failure().map(|reason| format!("{reason:?}"));
+                        transaction.execute(
                         "INSERT INTO measurements(boot_id,record_seq,run_no,instrument_id,\
                          parameter_id,generation,revision,observed_at,published_at,unit_key,\
                          quality,failure,value_kind,float_value,integer_value,bool_value,text_value) \
@@ -1225,83 +1246,83 @@ impl SqliteStore {
                             sample.unit().id(), quality, failure, value_kind,
                             float_value, integer_value, bool_value, text_value],
                     )?;
-                }
-                RecordingFact::Output {
-                    actuator,
-                    attempt_id,
-                    dispatch_id,
-                    stage,
-                    value,
-                    source,
-                    ..
-                } => {
-                    let stage = match stage {
-                        OutputStage::RejectedBeforeSend => "rejected_before_send",
-                        OutputStage::ExpiredBeforeSend => "expired_before_send",
-                        OutputStage::Requested => "requested",
-                        OutputStage::Authorized => "authorized",
-                        OutputStage::SendStarted => "send_started",
-                        OutputStage::Acknowledged => "acknowledged",
-                        OutputStage::ReadbackVerified => "readback_verified",
-                        OutputStage::Failed => "failed",
-                        OutputStage::Ambiguous => "ambiguous",
-                        OutputStage::TransportUncertain => "transport_uncertain",
-                        OutputStage::SafeRequested => "safe_requested",
-                        OutputStage::SafeSendStarted => "safe_send_started",
-                        OutputStage::SafeAcknowledged => "safe_acknowledged",
-                        OutputStage::SafeReadbackVerified => "safe_readback_verified",
-                        OutputStage::Revoked => "revoked",
-                    };
-                    let evidence_source = match source {
-                        lab_core::recording::OutputEvidenceSource::None => "none",
-                        lab_core::recording::OutputEvidenceSource::VirtualSimulation => {
-                            "virtual_simulation"
-                        }
-                        lab_core::recording::OutputEvidenceSource::TransportProtocol => {
-                            "transport_protocol"
-                        }
-                    };
-                    let attempt_blob = attempt_id.map(u64_blob);
-                    let dispatch_blob = dispatch_id.map(|id| {
-                        let (instance, sequence) = id.diagnostic_parts();
-                        let mut bytes = [0u8; 16];
-                        bytes[..8].copy_from_slice(&instance.to_be_bytes());
-                        bytes[8..].copy_from_slice(&sequence.to_be_bytes());
-                        bytes
-                    });
-                    transaction.execute(
-                        "INSERT INTO output_events(boot_id,record_seq,attempt_id,dispatch_id,\
+                    }
+                    RecordingFact::Output {
+                        actuator,
+                        attempt_id,
+                        dispatch_id,
+                        stage,
+                        value,
+                        source,
+                        ..
+                    } => {
+                        let stage = match stage {
+                            OutputStage::RejectedBeforeSend => "rejected_before_send",
+                            OutputStage::ExpiredBeforeSend => "expired_before_send",
+                            OutputStage::Requested => "requested",
+                            OutputStage::Authorized => "authorized",
+                            OutputStage::SendStarted => "send_started",
+                            OutputStage::Acknowledged => "acknowledged",
+                            OutputStage::ReadbackVerified => "readback_verified",
+                            OutputStage::Failed => "failed",
+                            OutputStage::Ambiguous => "ambiguous",
+                            OutputStage::TransportUncertain => "transport_uncertain",
+                            OutputStage::SafeRequested => "safe_requested",
+                            OutputStage::SafeSendStarted => "safe_send_started",
+                            OutputStage::SafeAcknowledged => "safe_acknowledged",
+                            OutputStage::SafeReadbackVerified => "safe_readback_verified",
+                            OutputStage::Revoked => "revoked",
+                        };
+                        let evidence_source = match source {
+                            lab_core::recording::OutputEvidenceSource::None => "none",
+                            lab_core::recording::OutputEvidenceSource::VirtualSimulation => {
+                                "virtual_simulation"
+                            }
+                            lab_core::recording::OutputEvidenceSource::TransportProtocol => {
+                                "transport_protocol"
+                            }
+                        };
+                        let attempt_blob = attempt_id.map(u64_blob);
+                        let dispatch_blob = dispatch_id.map(|id| {
+                            let (instance, sequence) = id.diagnostic_parts();
+                            let mut bytes = [0u8; 16];
+                            bytes[..8].copy_from_slice(&instance.to_be_bytes());
+                            bytes[8..].copy_from_slice(&sequence.to_be_bytes());
+                            bytes
+                        });
+                        transaction.execute(
+                            "INSERT INTO output_events(boot_id,record_seq,attempt_id,dispatch_id,\
                          instrument_id,parameter_id,stage,value,evidence_source,evidence_basis) \
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'runtime')",
-                        params![
-                            self.boot_id.as_slice(),
-                            record_id.as_slice(),
-                            attempt_blob.as_ref().map(|blob| blob.as_slice()),
-                            dispatch_blob.as_ref().map(|blob| blob.as_slice()),
-                            u64_blob(actuator.instrument().get()).as_slice(),
-                            u64_blob(actuator.parameter().get()).as_slice(),
-                            stage,
-                            value,
-                            evidence_source
-                        ],
-                    )?;
-                }
-                RecordingFact::Controller {
-                    controller,
-                    state,
-                    config_revision,
-                    pid,
-                    ..
-                } => {
-                    let state = format!("{state:?}").to_ascii_lowercase();
-                    let settings = pid.map(|pid| {
-                        serde_json::json!({
-                            "kp":pid.kp,"ki":pid.ki,"kd":pid.kd,
-                            "output_min":pid.output_min,"output_max":pid.output_max,
-                        })
-                        .to_string()
-                    });
-                    transaction.execute(
+                            params![
+                                self.boot_id.as_slice(),
+                                record_id.as_slice(),
+                                attempt_blob.as_ref().map(|blob| blob.as_slice()),
+                                dispatch_blob.as_ref().map(|blob| blob.as_slice()),
+                                u64_blob(actuator.instrument().get()).as_slice(),
+                                u64_blob(actuator.parameter().get()).as_slice(),
+                                stage,
+                                value,
+                                evidence_source
+                            ],
+                        )?;
+                    }
+                    RecordingFact::Controller {
+                        controller,
+                        state,
+                        config_revision,
+                        pid,
+                        ..
+                    } => {
+                        let state = format!("{state:?}").to_ascii_lowercase();
+                        let settings = pid.map(|pid| {
+                            serde_json::json!({
+                                "kp":pid.kp,"ki":pid.ki,"kd":pid.kd,
+                                "output_min":pid.output_min,"output_max":pid.output_max,
+                            })
+                            .to_string()
+                        });
+                        transaction.execute(
                         "INSERT INTO controller_events(boot_id,record_seq,controller_id,after_state,
                          event_kind,config_revision,diagnostics)
                          VALUES(?1,?2,?3,?4,?5,?6,?7)",
@@ -1310,34 +1331,35 @@ impl SqliteStore {
                             if pid.is_some() {"configuration"} else {"lifecycle"},
                             u64_blob(*config_revision).as_slice(),settings],
                     )?;
-                }
-                RecordingFact::Reference {
-                    reference,
-                    revision,
-                    value,
-                    target,
-                    rate,
-                    unit,
-                    at,
-                    ..
-                } => {
-                    transaction.execute(
-                        "INSERT INTO reference_events(boot_id,record_seq,reference_id,revision,
+                    }
+                    RecordingFact::Reference {
+                        reference,
+                        revision,
+                        value,
+                        target,
+                        rate,
+                        unit,
+                        at,
+                        ..
+                    } => {
+                        transaction.execute(
+                            "INSERT INTO reference_events(boot_id,record_seq,reference_id,revision,
                          event_kind,value,target,rate,unit_key,progress_at)
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                        params![
-                            self.boot_id.as_slice(),
-                            record_id.as_slice(),
-                            u64_blob(reference.get()).as_slice(),
-                            u64_blob(*revision).as_slice(),
-                            if target.is_some() { "ramp" } else { "fixed" },
-                            value,
-                            target,
-                            rate,
-                            unit.id(),
-                            duration_blob(*at)?.as_slice()
-                        ],
-                    )?;
+                            params![
+                                self.boot_id.as_slice(),
+                                record_id.as_slice(),
+                                u64_blob(reference.get()).as_slice(),
+                                u64_blob(*revision).as_slice(),
+                                if target.is_some() { "ramp" } else { "fixed" },
+                                value,
+                                target,
+                                rate,
+                                unit.id(),
+                                duration_blob(*at)?.as_slice()
+                            ],
+                        )?;
+                    }
                 }
             }
         }
@@ -2006,6 +2028,51 @@ impl SqliteStore {
 
 fn u64_blob(value: u64) -> [u8; 8] {
     value.to_be_bytes()
+}
+
+// A malformed native fact must roll back the entire mixed batch before any
+// checkpoint advances; SQLite may otherwise coerce NaN to NULL silently.
+fn validate_storage_fact(fact: &RecordingFact) -> Result<(), StorageError> {
+    match fact {
+        RecordingFact::Measurement { sample, .. } => {
+            if sample.value().is_some_and(|value| {
+                matches!(value,
+                Value::Float(number) if !number.is_finite())
+            }) {
+                return Err(StorageError("nonfinite measurement fact".into()));
+            }
+        }
+        RecordingFact::Output { value, .. } => {
+            if value.is_some_and(|value| !value.is_finite()) {
+                return Err(StorageError("nonfinite output fact".into()));
+            }
+        }
+        RecordingFact::Controller { pid, .. } => {
+            if pid.is_some_and(|pid| {
+                !pid.kp.is_finite()
+                    || !pid.ki.is_finite()
+                    || !pid.kd.is_finite()
+                    || !pid.output_min.is_finite()
+                    || !pid.output_max.is_finite()
+            }) {
+                return Err(StorageError("nonfinite controller fact".into()));
+            }
+        }
+        RecordingFact::Reference {
+            value,
+            target,
+            rate,
+            ..
+        } => {
+            if !value.is_finite()
+                || target.is_some_and(|target| !target.is_finite())
+                || rate.is_some_and(|rate| !rate.is_finite())
+            {
+                return Err(StorageError("nonfinite Reference fact".into()));
+            }
+        }
+    }
+    Ok(())
 }
 
 // Clock facts follow the same records/projection transaction as every other
