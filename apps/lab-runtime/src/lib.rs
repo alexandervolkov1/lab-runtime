@@ -3,3 +3,5 @@
 //! M3 keeps JSON parsing here so Core does not depend on a serialization format.
 
 pub mod definition;
+/// Explicit monotonic scheduling and trusted virtual host composition.
+pub mod host;
