@@ -29,6 +29,7 @@ fn bounded_worker_admits_a_group_without_waiting_for_its_sqlite_commit() {
     let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
     worker.request_start("worker fixture").unwrap();
     await_state(&mut worker, RecordingState::Recording);
+    let start_watermark = worker.poll().persisted_through_sequence;
     let mut runtime = Runtime::new();
     let instrument = InstrumentId::new(76);
     runtime
@@ -53,10 +54,13 @@ fn bounded_worker_admits_a_group_without_waiting_for_its_sqlite_commit() {
     worker.try_admit(facts).unwrap();
     assert_eq!(worker.poll().outstanding_records, 1);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while worker.poll().persisted_through_sequence < 2 && Instant::now() < deadline {
+    while worker.poll().persisted_through_sequence <= start_watermark && Instant::now() < deadline {
         std::thread::yield_now();
     }
-    assert_eq!(worker.poll().persisted_through_sequence, 2);
+    assert_eq!(
+        worker.poll().persisted_through_sequence,
+        start_watermark + 1
+    );
     assert_eq!(worker.poll().outstanding_records, 0);
     worker.request_stop().unwrap();
     await_state(&mut worker, RecordingState::Idle);
@@ -71,6 +75,7 @@ fn quiet_recording_progress_requires_a_committed_sqlite_probe() {
     let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
     worker.request_start("quiet fixture").unwrap();
     await_state(&mut worker, RecordingState::Recording);
+    let start_watermark = worker.poll().persisted_through_sequence;
     worker.request_probe_at(Duration::from_millis(250)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while worker.poll().confirmed_submission != Some(Duration::from_millis(250))
@@ -82,7 +87,7 @@ fn quiet_recording_progress_requires_a_committed_sqlite_probe() {
         worker.poll().confirmed_submission,
         Some(Duration::from_millis(250))
     );
-    assert_eq!(worker.poll().persisted_through_sequence, 1);
+    assert_eq!(worker.poll().persisted_through_sequence, start_watermark);
     worker.request_stop().unwrap();
     await_state(&mut worker, RecordingState::Idle);
     worker.request_finish().unwrap();

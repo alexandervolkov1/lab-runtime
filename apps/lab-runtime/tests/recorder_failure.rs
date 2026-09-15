@@ -110,6 +110,15 @@ fn accepted_prefix_commits_before_reserved_writable_ingress_gap_seal() {
     assert_eq!(measurements, 1);
     assert_eq!(gaps, 1);
     assert_eq!(coverage, "gap");
+    let gap_wall: (Option<i64>, Option<String>) = db
+        .query_row(
+            "SELECT wall_estimate_us,wall_basis FROM records WHERE kind='recorder_gap'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(gap_wall.0.is_some());
+    assert_eq!(gap_wall.1.as_deref(), Some("boot_anchor"));
     let (first, known, last_confirmed): (Vec<u8>, Vec<u8>, Vec<u8>) = db
         .query_row(
             "SELECT first_missing,known_count,last_confirmed FROM gaps",
@@ -119,7 +128,7 @@ fn accepted_prefix_commits_before_reserved_writable_ingress_gap_seal() {
         .unwrap();
     assert_eq!(u64::from_be_bytes(first.try_into().unwrap()), 2);
     assert_eq!(u64::from_be_bytes(known.try_into().unwrap()), 1);
-    assert_eq!(u64::from_be_bytes(last_confirmed.try_into().unwrap()), 2);
+    assert_eq!(u64::from_be_bytes(last_confirmed.try_into().unwrap()), 3);
     drop(db);
     std::fs::remove_file(path).unwrap();
 }

@@ -4,7 +4,7 @@
 //! The network reactor is a separate adapter added after this host foundation.
 
 use crate::host::{Clock, HostCore, ShutdownStatus, SystemClock};
-use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy};
+use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor};
 use lab_core::Error as DomainError;
 use lab_core::managed::ComponentError;
 use std::{
@@ -116,10 +116,13 @@ impl ServiceHost {
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
         listener.set_nonblocking(true)?;
         if let Some(recording) = options.recording() {
-            let worker = RecorderWorker::open_with_boot(
+            let anchor = TimeAnchor::capture(|| clock.now(), || Ok(std::time::SystemTime::now()))?;
+            let worker = RecorderWorker::open_with_boot_clock(
                 &recording.path,
                 RecorderLimits::default(),
                 &boot_id,
+                anchor,
+                clock,
             )?;
             host.attach_recorder(worker, recording.policy, clock.now())?;
         }
@@ -149,6 +152,14 @@ impl ServiceHost {
             write!(&mut boot_id, "{byte:02x}")?;
         }
         let clock = SystemClock::new();
+        let boot_anchor = if options.recording().is_some() {
+            Some(TimeAnchor::capture(
+                || clock.now(),
+                || Ok(std::time::SystemTime::now()),
+            )?)
+        } else {
+            None
+        };
         let mut host = HostCore::virtual_demo()?;
         host.set_boot_id(&boot_id);
         if !host.shutdown_status().safe_confirmed {
@@ -187,10 +198,12 @@ impl ServiceHost {
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
         listener.set_nonblocking(true)?;
         if let Some(recording) = options.recording() {
-            let worker = RecorderWorker::open_with_boot(
+            let worker = RecorderWorker::open_with_boot_clock(
                 &recording.path,
                 RecorderLimits::default(),
                 &boot_id,
+                boot_anchor.expect("recording startup captured its boot anchor"),
+                clock,
             )?;
             host.attach_recorder(worker, recording.policy, clock.now())?;
         }

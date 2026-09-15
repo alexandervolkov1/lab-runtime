@@ -14,10 +14,12 @@ use std::{
     error::Error,
     fmt,
     path::Path,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
+mod time;
 mod worker;
+pub use time::TimeAnchor;
 pub use worker::{RecorderLimits, RecorderWorker, RecordingState, RecordingStatus, WriterBarrier};
 
 /// Recording availability policy selected at trusted host startup.
@@ -359,6 +361,8 @@ pub struct SqliteStore {
     current_activation_no: Option<u64>,
     boot_sealed: bool,
     coverage_gap: bool,
+    boot_anchor: TimeAnchor,
+    next_anchor_no: u64,
 }
 
 impl SqliteStore {
@@ -374,6 +378,21 @@ impl SqliteStore {
 
     /// Open with the serving M6 Runtime boot ID; no second storage boot is invented.
     pub fn open_with_boot(path: &Path, boot: &str) -> Result<Self, StorageError> {
+        let origin = Instant::now();
+        let anchor = TimeAnchor::capture(|| origin.elapsed(), || Ok(SystemTime::now()))?;
+        Self::open_with_boot_anchor(path, boot, anchor)
+    }
+
+    /// Open with an anchor bracketed against the serving process's monotonic
+    /// origin. The worker owns all subsequent SQL; UTC remains display metadata.
+    pub fn open_with_boot_anchor(
+        path: &Path,
+        boot: &str,
+        anchor: TimeAnchor,
+    ) -> Result<Self, StorageError> {
+        if anchor.wall_us().is_none() {
+            return Err(StorageError("boot UTC anchor unavailable".into()));
+        }
         let boot_id = parse_boot_id(boot)?;
         if !path.is_absolute() || path.to_string_lossy().starts_with("\\\\") {
             return Err(StorageError(
@@ -402,11 +421,11 @@ impl SqliteStore {
                  ('schema_version','runtime_boots','runs','recording_intervals',\
                   'configurations','provenance_content','object_snapshots','records',\
                   'measurements','operation_events','controller_events','reference_events',\
-                  'output_events','runtime_events','gaps','durable_checkpoints')",
+                  'output_events','runtime_events','gaps','durable_checkpoints','clock_anchors')",
                 [],
                 |row| row.get(0),
             )?;
-            if required != 16 {
+            if required != 17 {
                 return Err(StorageError(
                     "version-one schema tables are incomplete".into(),
                 ));
@@ -504,8 +523,30 @@ impl SqliteStore {
             [],
         )?;
         transaction.execute(
-            "INSERT INTO runtime_boots(boot_id,build_version,state) VALUES(?1,?2,'active')",
-            params![boot_id.as_slice(), env!("CARGO_PKG_VERSION")],
+            "INSERT INTO runtime_boots(boot_id,build_version,state,started_wall_us,
+             anchor_before,anchor_after,anchor_uncertainty_ns)
+             VALUES(?1,?2,'active',?3,?4,?5,?6)",
+            params![
+                boot_id.as_slice(),
+                env!("CARGO_PKG_VERSION"),
+                anchor.wall_us(),
+                duration_blob(anchor.before())?.as_slice(),
+                duration_blob(anchor.after())?.as_slice(),
+                u64_blob(anchor.uncertainty_ns()).as_slice()
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO clock_anchors(boot_id,anchor_no,kind,monotonic_before,
+             monotonic_after,uncertainty_ns,wall_us,unavailable_reason)
+             VALUES(?1,?2,'boot',?3,?4,?5,?6,NULL)",
+            params![
+                boot_id.as_slice(),
+                u64_blob(1).as_slice(),
+                duration_blob(anchor.before())?.as_slice(),
+                duration_blob(anchor.after())?.as_slice(),
+                u64_blob(anchor.uncertainty_ns()).as_slice(),
+                anchor.wall_us()
+            ],
         )?;
         transaction.execute(
             "INSERT INTO durable_checkpoints(boot_id,commit_no,persisted_through_seq) \
@@ -532,7 +573,101 @@ impl SqliteStore {
             current_activation_no: None,
             boot_sealed: false,
             coverage_gap: false,
+            boot_anchor: anchor,
+            next_anchor_no: 2,
         })
+    }
+
+    /// Commit one independently observed UTC anchor without changing the
+    /// initial boot mapping or any domain fact's monotonic timestamp.
+    pub fn append_clock_anchor(
+        &mut self,
+        kind: &str,
+        anchor: &TimeAnchor,
+    ) -> Result<(), StorageError> {
+        if !matches!(kind, "periodic" | "interval_start" | "interval_end") {
+            return Err(StorageError("invalid clock anchor kind".into()));
+        }
+        let next = self
+            .next_anchor_no
+            .checked_add(1)
+            .ok_or_else(|| StorageError("clock anchor identity exhausted".into()))?;
+        let sequence = self
+            .next_record_sequence
+            .checked_add(1)
+            .ok_or_else(|| StorageError("clock record identity exhausted".into()))?;
+        let commit = self
+            .commit_no
+            .checked_add(1)
+            .ok_or_else(|| StorageError("clock commit identity exhausted".into()))?;
+        let time = duration_blob(anchor.after())?;
+        let wall_estimate = self.boot_anchor.estimate_us(anchor.after())?;
+        let payload = serde_json::json!({
+            "kind":kind,
+            "monotonic_before_ns":anchor.before().as_nanos().to_string(),
+            "monotonic_after_ns":anchor.after().as_nanos().to_string(),
+            "uncertainty_ns":anchor.uncertainty_ns().to_string(),
+            "actual_wall_us":anchor.wall_us(),
+            "unavailable_reason":anchor.unavailable_reason(),
+            "wall_basis":"boot_anchor"
+        })
+        .to_string();
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,
+             published_at,observed_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+             VALUES(?1,?2,?3,?4,'clock_anchor',1,?5,?5,?5,?6,'boot_anchor',
+             'recorder_clock',?7)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(sequence).as_slice(),
+                self.run_no.map(u64_blob).map(|value| value.to_vec()),
+                self.interval_no.map(u64_blob).map(|value| value.to_vec()),
+                time.as_slice(),
+                wall_estimate,
+                payload.as_bytes()
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO runtime_events(boot_id,record_seq,category,severity,code,data)
+             VALUES(?1,?2,'clock','info',?3,?4)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(sequence).as_slice(),
+                kind,
+                payload.as_bytes()
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO clock_anchors(boot_id,anchor_no,record_seq,kind,monotonic_before,
+             monotonic_after,uncertainty_ns,wall_us,unavailable_reason)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(self.next_anchor_no).as_slice(),
+                u64_blob(sequence).as_slice(),
+                kind,
+                duration_blob(anchor.before())?.as_slice(),
+                duration_blob(anchor.after())?.as_slice(),
+                u64_blob(anchor.uncertainty_ns()).as_slice(),
+                anchor.wall_us(),
+                anchor.unavailable_reason()
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3
+             WHERE boot_id=?1",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(commit).as_slice(),
+                u64_blob(sequence).as_slice()
+            ],
+        )?;
+        transaction.commit()?;
+        self.next_anchor_no = next;
+        self.next_record_sequence = sequence;
+        self.commit_no = commit;
+        Ok(())
     }
 
     /// Return the stable identity retained across process reopen.
@@ -815,6 +950,28 @@ impl SqliteStore {
         policy: RecordingPolicy,
         boundary: &BoundarySnapshot,
     ) -> Result<(), StorageError> {
+        self.start_run_impl(label, policy, boundary, None)
+    }
+
+    /// Commit the actual interval-start UTC bracket in the same durable
+    /// transaction as the frozen boundary and its checkpoint.
+    pub fn start_run_with_boundary_anchor(
+        &mut self,
+        label: &str,
+        policy: RecordingPolicy,
+        boundary: &BoundarySnapshot,
+        anchor: &TimeAnchor,
+    ) -> Result<(), StorageError> {
+        self.start_run_impl(label, policy, boundary, Some(anchor))
+    }
+
+    fn start_run_impl(
+        &mut self,
+        label: &str,
+        policy: RecordingPolicy,
+        boundary: &BoundarySnapshot,
+        anchor: Option<&TimeAnchor>,
+    ) -> Result<(), StorageError> {
         if self.run_no.is_some()
             || label.len() > 128
             || label.trim().is_empty()
@@ -834,19 +991,35 @@ impl SqliteStore {
             .next_record_sequence
             .checked_add(1)
             .ok_or_else(|| StorageError("boundary record identity exhausted".into()))?;
+        let anchor_record = anchor
+            .map(|_| {
+                boundary_record
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("start anchor record identity exhausted".into()))
+            })
+            .transpose()?;
+        let final_record = anchor_record.unwrap_or(boundary_record);
+        let next_anchor = anchor
+            .map(|_| {
+                self.next_anchor_no
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("start clock anchor identity exhausted".into()))
+            })
+            .transpose()?;
         let boundary_commit = self
             .commit_no
             .checked_add(1)
             .ok_or_else(|| StorageError("boundary commit identity exhausted".into()))?;
         let at = duration_blob(boundary.at)?;
+        let boundary_wall = self.boot_anchor.estimate_us(boundary.at)?;
         let transaction = self.connection.transaction()?;
         let policy = match policy {
             RecordingPolicy::Required => "required",
             RecordingPolicy::BestEffort => "best-effort",
         };
         transaction.execute(
-            "INSERT INTO runs(boot_id,run_no,label,policy,state,coverage,initial_activation_id) \
-             VALUES(?1,?2,?3,?4,'recording','complete',?5)",
+            "INSERT INTO runs(boot_id,run_no,label,policy,state,coverage,initial_activation_id,
+             started_wall_us) VALUES(?1,?2,?3,?4,'recording','complete',?5,?6)",
             params![
                 self.boot_id.as_slice(),
                 u64_blob(run_no).as_slice(),
@@ -855,6 +1028,7 @@ impl SqliteStore {
                 self.current_activation_no
                     .map(u64_blob)
                     .map(|id| id.to_vec()),
+                anchor.and_then(TimeAnchor::wall_us),
             ],
         )?;
         transaction.execute(
@@ -868,14 +1042,16 @@ impl SqliteStore {
         )?;
         transaction.execute(
             "INSERT INTO records(boot_id,record_seq,run_no,interval_no,
-            kind,version,published_at,captured_at,origin,payload)
-            VALUES(?1,?2,?3,?4,'boundary_snapshot',1,?5,?5,'host_lifecycle',?6)",
+            kind,version,published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+            VALUES(?1,?2,?3,?4,'boundary_snapshot',1,?5,?5,?6,
+            'boot_anchor','host_lifecycle',?7)",
             params![
                 self.boot_id.as_slice(),
                 u64_blob(boundary_record).as_slice(),
                 u64_blob(run_no).as_slice(),
                 u64_blob(interval_no).as_slice(),
                 at.as_slice(),
+                boundary_wall,
                 boundary.data.as_bytes()
             ],
         )?;
@@ -897,13 +1073,26 @@ impl SqliteStore {
                 u64_blob(boundary_record).as_slice()
             ],
         )?;
+        if let (Some(anchor), Some(sequence)) = (anchor, anchor_record) {
+            insert_clock_projection(
+                &transaction,
+                &self.boot_id,
+                sequence,
+                self.next_anchor_no,
+                "interval_start",
+                anchor,
+                Some(run_no),
+                Some(interval_no),
+                &self.boot_anchor,
+            )?;
+        }
         transaction.execute(
             "UPDATE durable_checkpoints SET commit_no=?2,
             persisted_through_seq=?3,coverage='complete' WHERE boot_id=?1",
             params![
                 self.boot_id.as_slice(),
                 u64_blob(boundary_commit).as_slice(),
-                u64_blob(boundary_record).as_slice()
+                u64_blob(final_record).as_slice()
             ],
         )?;
         transaction.commit()?;
@@ -911,7 +1100,10 @@ impl SqliteStore {
         self.interval_no = Some(interval_no);
         self.next_run_no = following_run;
         self.next_interval_no = following_interval;
-        self.next_record_sequence = boundary_record;
+        self.next_record_sequence = final_record;
+        if let Some(next_anchor) = next_anchor {
+            self.next_anchor_no = next_anchor;
+        }
         self.commit_no = boundary_commit;
         Ok(())
     }
@@ -919,6 +1111,25 @@ impl SqliteStore {
     /// Atomically commit one bounded fact group and its cumulative checkpoint.
     /// Call only on the storage worker; the Runtime owner never waits here.
     pub fn append_facts(&mut self, facts: &[RecordingFact]) -> Result<u64, StorageError> {
+        let capture = facts
+            .last()
+            .map(|fact| match fact {
+                RecordingFact::Measurement { sample, .. } => sample.at(),
+                RecordingFact::Output { at, .. }
+                | RecordingFact::Controller { at, .. }
+                | RecordingFact::Reference { at, .. } => *at,
+            })
+            .unwrap_or(Duration::ZERO);
+        self.append_facts_with_capture(facts, capture)
+    }
+
+    /// Commit an owner group with its original host-admission time, independent
+    /// of each observation's occurrence and publication timestamps.
+    pub fn append_facts_with_capture(
+        &mut self,
+        facts: &[RecordingFact],
+        captured_at: Duration,
+    ) -> Result<u64, StorageError> {
         if facts.len() > 256 || self.run_no.is_none() {
             return Err(StorageError("invalid or oversized recording group".into()));
         }
@@ -943,9 +1154,17 @@ impl SqliteStore {
                 RecordingFact::Reference { at, .. } => ("reference", *at),
             };
             let at = duration_blob(time)?;
+            let observed = match fact {
+                RecordingFact::Measurement { sample, .. } => sample.freshness_at(),
+                _ => time,
+            };
+            let observed = duration_blob(observed)?;
+            let captured = duration_blob(captured_at)?;
+            let wall_estimate = self.boot_anchor.estimate_us(time)?;
             transaction.execute(
                 "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,\
-                 fact_seq,published_at) VALUES(?1,?2,?3,?4,?5,1,?6,?7)",
+                 fact_seq,published_at,observed_at,captured_at,wall_estimate_us,wall_basis)
+                 VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,?9,?10,'boot_anchor')",
                 params![
                     self.boot_id.as_slice(),
                     record_id.as_slice(),
@@ -953,7 +1172,10 @@ impl SqliteStore {
                     interval_no.as_slice(),
                     kind,
                     fact_id.as_slice(),
-                    at.as_slice()
+                    at.as_slice(),
+                    observed.as_slice(),
+                    captured.as_slice(),
+                    wall_estimate
                 ],
             )?;
             match fact {
@@ -1149,17 +1371,20 @@ impl SqliteStore {
             .ok_or_else(|| StorageError("operation commit identity exhausted".into()))?;
         let run = self.run_no.expect("checked above");
         let interval = self.interval_no.expect("active run owns interval");
+        let wall_estimate = self.boot_anchor.estimate_us(operation.at)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,\
-             published_at,captured_at,origin,payload) VALUES(?1,?2,?3,?4,'operation',1,\
-             ?5,?5,'application',?6)",
+             published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+             VALUES(?1,?2,?3,?4,'operation',1,?5,?5,?6,'boot_anchor',
+             'application',?7)",
             params![
                 self.boot_id.as_slice(),
                 u64_blob(sequence).as_slice(),
                 u64_blob(run).as_slice(),
                 u64_blob(interval).as_slice(),
                 duration_blob(operation.at)?.as_slice(),
+                wall_estimate,
                 operation.data.as_bytes()
             ],
         )?;
@@ -1217,22 +1442,93 @@ impl SqliteStore {
 
     /// Seal the current run in a transaction; no later facts enter that interval.
     pub fn stop_run(&mut self) -> Result<(), StorageError> {
+        self.stop_run_impl(None)
+    }
+
+    /// Seal an interval with its actual UTC end bracket and final clock fact
+    /// in the same transaction as the sealed coverage/checkpoint rows.
+    pub fn stop_run_with_anchor(&mut self, anchor: &TimeAnchor) -> Result<(), StorageError> {
+        self.stop_run_impl(Some(anchor))
+    }
+
+    fn stop_run_impl(&mut self, anchor: Option<&TimeAnchor>) -> Result<(), StorageError> {
         let Some(run_no) = self.run_no else {
             return Err(StorageError("no active recording run".into()));
         };
+        let interval_no = self.interval_no.expect("run exists");
+        let anchor_record = anchor
+            .map(|_| {
+                self.next_record_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("end anchor record identity exhausted".into()))
+            })
+            .transpose()?;
+        let anchor_commit = anchor
+            .map(|_| {
+                self.commit_no
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("end anchor commit identity exhausted".into()))
+            })
+            .transpose()?;
+        let next_anchor = anchor
+            .map(|_| {
+                self.next_anchor_no
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("end clock anchor identity exhausted".into()))
+            })
+            .transpose()?;
         let transaction = self.connection.transaction()?;
+        if let (Some(anchor), Some(sequence)) = (anchor, anchor_record) {
+            insert_clock_projection(
+                &transaction,
+                &self.boot_id,
+                sequence,
+                self.next_anchor_no,
+                "interval_end",
+                anchor,
+                Some(run_no),
+                Some(interval_no),
+                &self.boot_anchor,
+            )?;
+        }
         transaction.execute(
-            "UPDATE recording_intervals SET state='sealed' WHERE boot_id=?1 AND interval_no=?2",
+            "UPDATE recording_intervals SET state='sealed',end_seq=?3
+             WHERE boot_id=?1 AND interval_no=?2",
             params![
                 self.boot_id.as_slice(),
-                u64_blob(self.interval_no.expect("run exists")).as_slice()
+                u64_blob(interval_no).as_slice(),
+                anchor_record.map(u64_blob).map(|value| value.to_vec())
             ],
         )?;
         transaction.execute(
-            "UPDATE runs SET state='sealed' WHERE boot_id=?1 AND run_no=?2",
-            params![self.boot_id.as_slice(), u64_blob(run_no).as_slice()],
+            "UPDATE runs SET state='sealed',ended_wall_us=?3 WHERE boot_id=?1 AND run_no=?2",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(run_no).as_slice(),
+                anchor.and_then(TimeAnchor::wall_us)
+            ],
         )?;
+        if let (Some(sequence), Some(commit)) = (anchor_record, anchor_commit) {
+            transaction.execute(
+                "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3
+                 WHERE boot_id=?1",
+                params![
+                    self.boot_id.as_slice(),
+                    u64_blob(commit).as_slice(),
+                    u64_blob(sequence).as_slice()
+                ],
+            )?;
+        }
         transaction.commit()?;
+        if let Some(sequence) = anchor_record {
+            self.next_record_sequence = sequence;
+        }
+        if let Some(commit) = anchor_commit {
+            self.commit_no = commit;
+        }
+        if let Some(next_anchor) = next_anchor {
+            self.next_anchor_no = next_anchor;
+        }
         self.run_no = None;
         self.interval_no = None;
         Ok(())
@@ -1272,17 +1568,20 @@ impl SqliteStore {
         .to_string();
         let record = u64_blob(sequence);
         let cutoff = duration_blob(gap.at)?;
+        let wall_estimate = self.boot_anchor.estimate_us(gap.at)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO records(boot_id,record_seq,run_no,interval_no,
-            kind,version,published_at,captured_at,origin,payload)
-            VALUES(?1,?2,?3,?4,'recorder_gap',1,?5,?5,'host_lifecycle',?6)",
+            kind,version,published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+            VALUES(?1,?2,?3,?4,'recorder_gap',1,?5,?5,?6,
+            'boot_anchor','host_lifecycle',?7)",
             params![
                 self.boot_id.as_slice(),
                 record.as_slice(),
                 u64_blob(run).as_slice(),
                 u64_blob(interval).as_slice(),
                 cutoff.as_slice(),
+                wall_estimate,
                 summary.as_bytes()
             ],
         )?;
@@ -1709,6 +2008,78 @@ fn u64_blob(value: u64) -> [u8; 8] {
     value.to_be_bytes()
 }
 
+// Clock facts follow the same records/projection transaction as every other
+// durable source fact; actual UTC remains independent of the fixed boot map.
+// The full boot/run/interval scope is passed into one atomic projection so an
+// actual UTC anchor cannot silently attach to another recording interval.
+#[expect(clippy::too_many_arguments, reason = "explicit clock fact scope")]
+fn insert_clock_projection(
+    transaction: &rusqlite::Transaction<'_>,
+    boot_id: &[u8; 16],
+    sequence: u64,
+    anchor_no: u64,
+    kind: &str,
+    anchor: &TimeAnchor,
+    run_no: Option<u64>,
+    interval_no: Option<u64>,
+    boot_anchor: &TimeAnchor,
+) -> Result<(), StorageError> {
+    let time = duration_blob(anchor.after())?;
+    let wall_estimate = boot_anchor.estimate_us(anchor.after())?;
+    let payload = serde_json::json!({
+        "kind":kind,
+        "monotonic_before_ns":anchor.before().as_nanos().to_string(),
+        "monotonic_after_ns":anchor.after().as_nanos().to_string(),
+        "uncertainty_ns":anchor.uncertainty_ns().to_string(),
+        "actual_wall_us":anchor.wall_us(),
+        "unavailable_reason":anchor.unavailable_reason(),
+        "wall_basis":"boot_anchor"
+    })
+    .to_string();
+    transaction.execute(
+        "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,
+         published_at,observed_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+         VALUES(?1,?2,?3,?4,'clock_anchor',1,?5,?5,?5,?6,'boot_anchor',
+         'recorder_clock',?7)",
+        params![
+            boot_id.as_slice(),
+            u64_blob(sequence).as_slice(),
+            run_no.map(u64_blob).map(|value| value.to_vec()),
+            interval_no.map(u64_blob).map(|value| value.to_vec()),
+            time.as_slice(),
+            wall_estimate,
+            payload.as_bytes()
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO runtime_events(boot_id,record_seq,category,severity,code,data)
+         VALUES(?1,?2,'clock','info',?3,?4)",
+        params![
+            boot_id.as_slice(),
+            u64_blob(sequence).as_slice(),
+            kind,
+            payload.as_bytes()
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO clock_anchors(boot_id,anchor_no,record_seq,kind,monotonic_before,
+         monotonic_after,uncertainty_ns,wall_us,unavailable_reason)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![
+            boot_id.as_slice(),
+            u64_blob(anchor_no).as_slice(),
+            u64_blob(sequence).as_slice(),
+            kind,
+            duration_blob(anchor.before())?.as_slice(),
+            time.as_slice(),
+            u64_blob(anchor.uncertainty_ns()).as_slice(),
+            anchor.wall_us(),
+            anchor.unavailable_reason()
+        ],
+    )?;
+    Ok(())
+}
+
 fn parse_boot_id(text: &str) -> Result<[u8; 16], StorageError> {
     if text.len() != 32
         || !text
@@ -1865,8 +2236,17 @@ fn create_schema(connection: &mut Connection) -> Result<(), StorageError> {
              record_encoding INTEGER NOT NULL, created_wall_us INTEGER);
          CREATE TABLE runtime_boots(boot_id BLOB PRIMARY KEY CHECK(length(boot_id)=16),
              build_version TEXT NOT NULL, started_wall_us INTEGER, ended_wall_us INTEGER,
+             anchor_before BLOB, anchor_after BLOB, anchor_uncertainty_ns BLOB,
              state TEXT NOT NULL, exit_summary TEXT, recovered_by_boot BLOB);
          CREATE INDEX runtime_boots_unfinished ON runtime_boots(state,boot_id);
+         CREATE TABLE clock_anchors(boot_id BLOB NOT NULL,anchor_no BLOB NOT NULL,
+             record_seq BLOB,
+             kind TEXT NOT NULL,monotonic_before BLOB NOT NULL,
+             monotonic_after BLOB NOT NULL,uncertainty_ns BLOB NOT NULL,
+             wall_us INTEGER,unavailable_reason TEXT,
+             PRIMARY KEY(boot_id,anchor_no),
+             FOREIGN KEY(boot_id) REFERENCES runtime_boots(boot_id),
+             FOREIGN KEY(boot_id,record_seq) REFERENCES records(boot_id,record_seq));
          CREATE TABLE runs(boot_id BLOB NOT NULL, run_no BLOB NOT NULL CHECK(length(run_no)=8),
              label TEXT NOT NULL, policy TEXT NOT NULL, state TEXT NOT NULL,
              coverage TEXT NOT NULL, started_wall_us INTEGER, ended_wall_us INTEGER,
@@ -1896,6 +2276,7 @@ fn create_schema(connection: &mut Connection) -> Result<(), StorageError> {
              run_no BLOB, interval_no BLOB, kind TEXT NOT NULL,
              version INTEGER NOT NULL CHECK(version=1), fact_seq BLOB,
              published_at BLOB, observed_at BLOB, captured_at BLOB, wall_estimate_us INTEGER,
+             wall_basis TEXT,
              origin TEXT, target TEXT, cause TEXT, payload BLOB,
              PRIMARY KEY(boot_id,record_seq),
              FOREIGN KEY(boot_id,run_no) REFERENCES runs(boot_id,run_no),

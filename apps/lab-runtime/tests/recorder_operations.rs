@@ -273,6 +273,22 @@ fn accepted_retune_and_terminal_outcome_survive_client_disconnect_and_sqlite_reo
         )
         .unwrap();
     assert_eq!(archived_boot, serving_boot);
+    let mapped: Vec<(Option<i64>, Option<String>)> = archive
+        .prepare(
+            "SELECT r.wall_estimate_us,r.wall_basis FROM records r JOIN operation_events o
+                  ON o.boot_id=r.boot_id AND o.record_seq=r.record_seq ORDER BY r.record_seq",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(mapped.len(), 2);
+    assert!(
+        mapped
+            .iter()
+            .all(|(wall, basis)| wall.is_some() && basis.as_deref() == Some("boot_anchor"))
+    );
     drop(archive);
     std::fs::remove_file(path).unwrap();
 }

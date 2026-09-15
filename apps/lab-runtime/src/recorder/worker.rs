@@ -6,8 +6,9 @@
 use super::{
     BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, ProvenanceEntry,
     ProvenanceObject, RecorderGap, RecordingPolicy, RunsCursor, RunsPage, SqliteStore,
-    StorageError,
+    StorageError, TimeAnchor,
 };
+use crate::host::{Clock, SystemClock};
 use lab_core::{Value, recording::RecordingFact};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -18,7 +19,7 @@ use std::{
         mpsc::{self, SyncSender, TrySendError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant, SystemTime},
 };
 
 const MAX_GROUPS: usize = 4;
@@ -26,6 +27,22 @@ const MAX_HISTORY_JOBS: usize = 8;
 const MAX_RECORDS: usize = 1024;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GROUP_BYTES: usize = 512 * 1024;
+
+// The worker reads UTC against the exact serving M6 monotonic origin. Offline
+// workers keep their own single origin; neither source enters Core decisions.
+#[derive(Clone, Copy)]
+enum MonotonicSource {
+    Serving(SystemClock),
+    Offline(Instant),
+}
+impl MonotonicSource {
+    fn now(self) -> Duration {
+        match self {
+            Self::Serving(clock) => clock.now(),
+            Self::Offline(origin) => origin.elapsed(),
+        }
+    }
+}
 
 /// Trusted fault-harness barrier that holds only the SQLite worker before work.
 /// The Runtime owner never waits on this barrier or shares its mutable state.
@@ -252,7 +269,19 @@ impl RecorderWorker {
         limits: RecorderLimits,
         boot_id: &str,
     ) -> Result<Self, StorageError> {
-        Self::open_internal(path, limits, boot_id, None)
+        Self::open_internal(path, limits, boot_id, None, None, None)
+    }
+
+    /// Open using the authoritative M6 clock origin's bracketed boot UTC.
+    /// This is a trusted host-only seam; no client may choose an anchor.
+    pub fn open_with_boot_clock(
+        path: &Path,
+        limits: RecorderLimits,
+        boot_id: &str,
+        anchor: TimeAnchor,
+        clock: SystemClock,
+    ) -> Result<Self, StorageError> {
+        Self::open_internal(path, limits, boot_id, None, Some(anchor), Some(clock))
     }
 
     /// Fault-harness composition for testing blocked disk without blocking Core.
@@ -265,7 +294,7 @@ impl RecorderWorker {
         getrandom::fill(&mut entropy)
             .map_err(|error| StorageError(format!("boot entropy unavailable: {error}")))?;
         let boot: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-        Self::open_internal(path, limits, &boot, Some(barrier))
+        Self::open_internal(path, limits, &boot, Some(barrier), None, None)
     }
 
     fn open_internal(
@@ -273,6 +302,8 @@ impl RecorderWorker {
         limits: RecorderLimits,
         boot_id: &str,
         barrier: Option<WriterBarrier>,
+        anchor: Option<TimeAnchor>,
+        clock: Option<SystemClock>,
     ) -> Result<Self, StorageError> {
         if !limits.valid() {
             return Err(StorageError("invalid bounded recorder limits".into()));
@@ -293,10 +324,20 @@ impl RecorderWorker {
         let thread_jobs = Arc::clone(&active_history_jobs);
         let worker_path = path.to_path_buf();
         let worker_boot = boot_id.to_owned();
+        let source = clock
+            .map(MonotonicSource::Serving)
+            .unwrap_or_else(|| MonotonicSource::Offline(Instant::now()));
         let handle = thread::Builder::new()
             .name("lab-recorder-sqlite".into())
             .spawn(move || {
-                let opened = SqliteStore::open_with_boot(&worker_path, &worker_boot);
+                let opened = anchor
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                    })
+                    .and_then(|anchor| {
+                        SqliteStore::open_with_boot_anchor(&worker_path, &worker_boot, anchor)
+                    });
                 let _ = ready_sender.send(
                     opened
                         .as_ref()
@@ -312,6 +353,7 @@ impl RecorderWorker {
                         &thread_runs,
                         &thread_jobs,
                         barrier.as_ref(),
+                        source,
                     );
                 }
                 // The connection and WAL handles have been dropped before a
@@ -871,6 +913,12 @@ fn fact_charge(fact: &RecordingFact) -> usize {
     }
 }
 
+// Keep the immutable clock source and each bounded mailbox explicit at the one
+// storage thread boundary; none is shared with the Runtime state owner.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit storage thread ownership"
+)]
 fn worker_loop(
     mut store: SqliteStore,
     receiver: mpsc::Receiver<Message>,
@@ -879,8 +927,25 @@ fn worker_loop(
     runs: &Arc<Mutex<BTreeMap<u64, Result<RunsPage, StorageError>>>>,
     active_jobs: &Arc<Mutex<BTreeSet<u64>>>,
     barrier: Option<&WriterBarrier>,
+    source: MonotonicSource,
 ) -> bool {
+    let mut last_periodic = store.boot_anchor.after();
     loop {
+        if source.now().saturating_sub(last_periodic) >= Duration::from_secs(1) {
+            let result = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                .and_then(|anchor| store.append_clock_anchor("periodic", &anchor));
+            if let Err(error) = result {
+                let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                status.state = RecordingState::Failed;
+                status
+                    .first_error
+                    .get_or_insert_with(|| error.to_string().chars().take(512).collect());
+                return false;
+            }
+            last_periodic = source.now();
+            receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
+                store.current_record_sequence();
+        }
         let message = match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(message) => message,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -937,26 +1002,30 @@ fn worker_loop(
                         .activation_root = Some(root);
                 })
             }
-            Message::Start(label, policy, submitted_at, boundary) => store
-                .start_run_with_boundary(&label, policy, &boundary)
-                .map(|_| {
-                    let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                    status.state = RecordingState::Recording;
-                    status.persisted = store.current_record_sequence();
-                    status.confirmed_submission = Some(submitted_at);
-                    status.run_no = store.current_run_no();
-                    status.interval_no = store.current_interval_no();
-                }),
-            Message::Facts(facts, bytes, submitted_at) => {
-                store.append_facts(&facts).map(|sequence| {
+            Message::Start(label, policy, submitted_at, boundary) => {
+                TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                    .and_then(|anchor| {
+                        store.start_run_with_boundary_anchor(&label, policy, &boundary, &anchor)
+                    })
+                    .map(|_| {
+                        let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                        status.state = RecordingState::Recording;
+                        status.persisted = store.current_record_sequence();
+                        status.confirmed_submission = Some(submitted_at);
+                        status.run_no = store.current_run_no();
+                        status.interval_no = store.current_interval_no();
+                    })
+            }
+            Message::Facts(facts, bytes, submitted_at) => store
+                .append_facts_with_capture(&facts, submitted_at)
+                .map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
                     status.confirmed_submission = Some(submitted_at);
                     status.released_records += facts.len();
                     status.released_bytes += bytes;
                     status.released_groups += 1;
-                })
-            }
+                }),
             Message::Operation(operation, bytes) => {
                 store.append_operation(&operation).map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
@@ -982,12 +1051,15 @@ fn worker_loop(
             }),
             Message::History { .. } => unreachable!("history was handled before lifecycle match"),
             Message::Runs { .. } => unreachable!("runs were handled before lifecycle match"),
-            Message::Stop => store.stop_run().map(|_| {
-                let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                status.state = RecordingState::Idle;
-                status.run_no = None;
-                status.interval_no = None;
-            }),
+            Message::Stop => TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                .and_then(|anchor| store.stop_run_with_anchor(&anchor))
+                .map(|_| {
+                    let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                    status.state = RecordingState::Idle;
+                    status.persisted = store.current_record_sequence();
+                    status.run_no = None;
+                    status.interval_no = None;
+                }),
             Message::Finish => {
                 if let Err(error) = store.finish_boot(Duration::ZERO) {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
