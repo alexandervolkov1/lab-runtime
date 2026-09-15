@@ -25,6 +25,7 @@ const MAX_CLIENTS: usize = 8;
 const QUEUE: usize = 64;
 const CLIENT_IN: usize = 8;
 const CLIENT_OUT: usize = 8;
+const CLIENT_EVENTS: usize = 16;
 const SWEEP_BYTES: usize = 8192;
 
 enum Incoming {
@@ -38,6 +39,10 @@ enum Outgoing {
         consumed: bool,
         hello: bool,
     },
+    Event {
+        connection: u64,
+        frame: Vec<u8>,
+    },
 }
 
 struct Peer {
@@ -47,7 +52,9 @@ struct Peer {
     handshake_since: Instant,
     replied_hello: bool,
     replies: VecDeque<Vec<u8>>,
-    writing: Option<(Vec<u8>, usize)>,
+    events: VecDeque<Vec<u8>>,
+    writing: Option<(Vec<u8>, usize, bool)>,
+    last_reply: bool,
     last_write: Instant,
     pending: usize,
 }
@@ -61,20 +68,32 @@ impl Peer {
             handshake_since: now,
             replied_hello: false,
             replies: VecDeque::new(),
+            events: VecDeque::new(),
             writing: None,
+            last_reply: false,
             last_write: now,
             pending: 0,
         }
     }
     fn queued(&self) -> usize {
-        self.replies.len() + usize::from(self.writing.is_some())
+        self.replies.len() + self.events.len() + usize::from(self.writing.is_some())
+    }
+    fn reply_queued(&self) -> usize {
+        self.replies.len() + usize::from(self.writing.as_ref().is_some_and(|(_, _, reply)| *reply))
+    }
+    fn event_queued(&self) -> usize {
+        self.events.len() + usize::from(self.writing.as_ref().is_some_and(|(_, _, reply)| !*reply))
     }
     fn read(&mut self, id: u64, to_owner: &SyncSender<Incoming>) -> io::Result<bool> {
         if self.pending >= CLIENT_IN {
             return Ok(true);
         }
         let mut scratch = [0u8; SWEEP_BYTES];
-        match self.stream.read(&mut scratch) {
+        let remaining = wire::FRAME_LIMIT.saturating_sub(self.input.len());
+        if remaining == 0 && !self.input.contains(&b'\n') {
+            return Ok(false);
+        }
+        match self.stream.read(&mut scratch[..remaining.min(SWEEP_BYTES)]) {
             Ok(0) => return Ok(false),
             Ok(count) => {
                 if self.input.is_empty() {
@@ -116,9 +135,17 @@ impl Peer {
         let mut budget = SWEEP_BYTES;
         for _ in 0..4 {
             if self.writing.is_none() {
-                self.writing = self.replies.pop_front().map(|bytes| (bytes, 0));
+                let pick_event = self.last_reply && !self.events.is_empty();
+                self.writing = if pick_event {
+                    self.events.pop_front().map(|bytes| (bytes, 0, false))
+                } else {
+                    self.replies
+                        .pop_front()
+                        .map(|bytes| (bytes, 0, true))
+                        .or_else(|| self.events.pop_front().map(|bytes| (bytes, 0, false)))
+                };
             }
-            let Some((bytes, offset)) = &mut self.writing else {
+            let Some((bytes, offset, reply)) = &mut self.writing else {
                 break;
             };
             if budget == 0 {
@@ -134,6 +161,7 @@ impl Peer {
                     budget -= count;
                     self.last_write = Instant::now();
                     if *offset == bytes.len() {
+                        self.last_reply = *reply;
                         self.writing = None;
                     }
                 }
@@ -189,7 +217,7 @@ fn reactor(
                     hello,
                 }) => {
                     if let Some(peer) = peers.get_mut(&id) {
-                        if peer.queued() >= CLIENT_OUT {
+                        if peer.reply_queued() >= CLIENT_OUT {
                             peers.remove(&id);
                             let _ = to_owner.try_send(Incoming::Detach(id));
                         } else {
@@ -201,6 +229,22 @@ fn reactor(
                             if consumed {
                                 peer.pending = peer.pending.saturating_sub(1);
                             }
+                        }
+                    }
+                }
+                Ok(Outgoing::Event {
+                    connection: id,
+                    frame,
+                }) => {
+                    if let Some(peer) = peers.get_mut(&id) {
+                        if peer.event_queued() >= CLIENT_EVENTS {
+                            peers.remove(&id);
+                            let _ = to_owner.try_send(Incoming::Detach(id));
+                        } else {
+                            if peer.queued() == 0 {
+                                peer.last_write = Instant::now();
+                            }
+                            peer.events.push_back(frame);
                         }
                     }
                 }
@@ -235,7 +279,7 @@ fn reactor(
 pub fn run(
     mut service: ServiceHost,
     stop: Arc<AtomicBool>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let listener = service.listener().try_clone()?;
     listener.set_nonblocking(true)?;
     let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Incoming>(QUEUE);
@@ -300,6 +344,21 @@ pub fn run(
                 }
             }
             rotation = (rotation + 1) % ids.len();
+        }
+        for id in queued.keys().copied() {
+            for event in app.pump_events(&service, id) {
+                let frame = wire::encode_frame(&event)?;
+                if outgoing_tx
+                    .try_send(Outgoing::Event {
+                        connection: id,
+                        frame,
+                    })
+                    .is_err()
+                {
+                    app.detach(&service, id);
+                    break;
+                }
+            }
         }
         if let Some(status) = service.shutdown_step()? {
             net_stop.store(true, Ordering::Release);

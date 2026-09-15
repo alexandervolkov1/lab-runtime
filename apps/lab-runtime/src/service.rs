@@ -61,7 +61,8 @@ impl ServiceHost {
             use std::fmt::Write;
             write!(&mut boot_id, "{byte:02x}")?;
         }
-        let host = HostCore::virtual_demo()?;
+        let mut host = HostCore::virtual_demo()?;
+        host.set_boot_id(&boot_id);
         if !host.shutdown_status().safe_confirmed {
             return Err(io::Error::other("startup safe evidence unavailable").into());
         }

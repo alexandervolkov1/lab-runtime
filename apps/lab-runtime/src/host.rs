@@ -4,6 +4,7 @@
 //! infer a cadence from a native controller's failure threshold. A skipped slot
 //! receives one actual-time opportunity, never a replay at an old deadline.
 
+use crate::events::{EventError, EventLog};
 use lab_core::{
     Command, CommandResult, Error, InstrumentId, Query, QueryResult, Runtime, Sample,
     SampleQuality, SignalId, Unit,
@@ -165,6 +166,7 @@ pub struct ShutdownStatus {
 /// Sole mutable Core owner plus one explicit schedule; callers serialize commands.
 pub struct HostCore {
     runtime: Runtime,
+    events: EventLog,
     plan: SchedulePlan,
     consumed: BTreeMap<ControllerId, Option<Sample>>,
     last_now: Duration,
@@ -249,8 +251,15 @@ impl HostCore {
             proposal_ttl: Duration::from_millis(200),
         }))?;
         runtime.command(Command::PrepareController(CONTROLLER))?;
+        let events = EventLog::new(
+            &runtime,
+            &[CONTROLLER],
+            &[REFERENCE],
+            "00000000000000000000000000000000",
+        );
         Ok(Self {
             runtime,
+            events,
             plan: SchedulePlan::virtual_demo(),
             consumed: BTreeMap::new(),
             last_now: Duration::ZERO,
@@ -277,6 +286,7 @@ impl HostCore {
         self.stopping = true;
         self.runtime
             .command(Command::QuiesceManaged { at: clock.now() })?;
+        self.observe(clock.now(), None)?;
         let identities: Vec<_> = self.plan.controllers.iter().map(|(id, _, _)| *id).collect();
         for id in identities {
             let QueryResult::Controller(snapshot) = self.runtime.query(Query::Controller(id))?
@@ -291,6 +301,9 @@ impl HostCore {
                     controller: id,
                     at: clock.now(),
                 })?;
+                self.events
+                    .observe(&self.runtime, clock.now(), None)
+                    .map_err(event_domain_error)?;
             }
         }
         let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
@@ -299,6 +312,7 @@ impl HostCore {
             command: OutputCommand::RequestSafe,
             at: clock.now(),
         })?;
+        self.observe(clock.now(), None)?;
         self.plan.safety.next_due = clock.now();
         Ok(())
     }
@@ -332,6 +346,15 @@ impl HostCore {
 
     /// Serialize a local domain Command on this owner; snapshots are separate.
     pub fn command(&mut self, command: Command) -> Result<CommandResult, Error> {
+        self.command_with_cause(command, None)
+    }
+
+    /// Serialize one command and publish resulting facts with optional causing ID.
+    pub fn command_with_cause(
+        &mut self,
+        command: Command,
+        cause: Option<(String, u64)>,
+    ) -> Result<CommandResult, Error> {
         if self.stopping {
             return Err(Error::InvalidConfiguration("host is stopping"));
         }
@@ -340,7 +363,10 @@ impl HostCore {
             | Command::ResumeController { controller, .. } => Some(*controller),
             _ => None,
         };
-        let outcome = self.runtime.command(command)?;
+        let outcome = self.runtime.command(command);
+        let at = self.last_now;
+        self.observe(at, cause.as_ref().map(|(s, n)| (s.as_str(), *n)))?;
+        let outcome = outcome?;
         if let Some(controller) = start
             && let QueryResult::ControllerConfig(config) =
                 self.runtime.query(Query::ControllerConfig(controller))?
@@ -353,6 +379,24 @@ impl HostCore {
             self.consumed.insert(controller, sample);
         }
         Ok(outcome)
+    }
+
+    /// Borrow the owner-local bounded semantic publication ring.
+    pub const fn event_log(&self) -> &EventLog {
+        &self.events
+    }
+    /// Borrow the ring mutably only from the serialized service owner.
+    pub fn event_log_mut(&mut self) -> &mut EventLog {
+        &mut self.events
+    }
+    /// Install the OS process identity before listener readiness.
+    pub fn set_boot_id(&mut self, boot: &str) {
+        self.events.set_boot_id(boot);
+    }
+    fn observe(&mut self, at: Duration, cause: Option<(&str, u64)>) -> Result<(), Error> {
+        self.events
+            .observe(&self.runtime, at, cause)
+            .map_err(event_domain_error)
     }
 
     /// Return an owned pure domain snapshot without polling clocks or workers.
@@ -376,6 +420,7 @@ impl HostCore {
             } else {
                 Command::PollComponents { at: clock.now() }
             })?;
+            self.observe(clock.now(), None)?;
             report.safety += 1;
             report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
         }
@@ -393,6 +438,9 @@ impl HostCore {
                     parameter: lab_core::TEMPERATURE,
                     at: clock.now(),
                 });
+                self.events
+                    .observe(&self.runtime, clock.now(), None)
+                    .map_err(event_domain_error)?;
                 if let Err(error) = outcome
                     && !matches!(error, Error::MeasurementUnavailable { .. })
                 {
@@ -412,6 +460,9 @@ impl HostCore {
                     reference: *reference,
                     at: clock.now(),
                 })?;
+                self.events
+                    .observe(&self.runtime, clock.now(), None)
+                    .map_err(event_domain_error)?;
                 report.references += 1;
                 report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
             }
@@ -448,6 +499,9 @@ impl HostCore {
                         controller: *controller,
                         at: clock.now(),
                     })?;
+                    self.events
+                        .observe(&self.runtime, clock.now(), None)
+                        .map_err(event_domain_error)?;
                     self.consumed.insert(*controller, latest);
                     report.controller_ticks += 1;
                 }
@@ -471,5 +525,12 @@ impl HostCore {
     /// Trusted profile's native controller identity.
     pub const fn controller_id(&self) -> ControllerId {
         CONTROLLER
+    }
+}
+fn event_domain_error(error: EventError) -> Error {
+    match error {
+        EventError::Gap | EventError::Future => Error::InvalidConfiguration("event cursor invalid"),
+        EventError::Exhausted => Error::InvalidConfiguration("event sequence exhausted"),
+        EventError::Oversized => Error::InvalidConfiguration("event record exceeds M6 bound"),
     }
 }

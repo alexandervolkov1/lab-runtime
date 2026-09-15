@@ -4,6 +4,7 @@
 
 pub mod application;
 pub mod definition;
+pub mod events;
 /// Explicit monotonic scheduling and trusted virtual host composition.
 pub mod host;
 pub mod server;

@@ -11,17 +11,40 @@ use crate::{
 use lab_core::control::{
     ControllerError, ControllerId, ControllerSnapshot, ControllerState, PidConfig,
 };
+use lab_core::output::{ActuatorId, DispatchOutcome, OutputOwner, OutputSnapshot, OutputState};
 use lab_core::reference::{ReferenceId, ReferenceSnapshot};
 use lab_core::{
-    Command, CommandResult, Error, InstrumentId, ParameterId, Query, QueryResult, SignalId,
+    AccessMode, Command, CommandResult, Error, InstrumentId, ParameterDescriptor, ParameterId,
+    ParameterRole, Query, QueryResult, SignalId, ValueSpec, WriteEffect,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::time::Duration;
+
+struct FrozenSnapshot {
+    token: String,
+    cursor: u64,
+    records: Vec<Value>,
+    expires: Duration,
+}
+struct Subscription {
+    token: String,
+    scan: u64,
+    kinds: Vec<String>,
+    targets: Vec<FilterTarget>,
+}
+struct FilterTarget {
+    kind: String,
+    target: Value,
+}
 
 /// Single-owner fixed API state; a TCP connection carries no domain authority.
 pub struct Application {
     sessions: SessionStore,
     clients: BTreeMap<u64, String>,
+    snapshots: BTreeMap<u64, FrozenSnapshot>,
+    subscriptions: BTreeMap<u64, Subscription>,
+    next_token: u64,
 }
 impl Application {
     /// Create bounded process-local coordination state for one fresh boot.
@@ -29,13 +52,22 @@ impl Application {
         Ok(Self {
             sessions: SessionStore::new(boot_id)?,
             clients: BTreeMap::new(),
+            snapshots: BTreeMap::new(),
+            subscriptions: BTreeMap::new(),
+            next_token: 1,
         })
     }
 
     /// Detach a connection while retaining already admitted operation outcomes.
     pub fn detach(&mut self, service: &ServiceHost, connection: u64) {
         self.clients.remove(&connection);
+        self.snapshots.remove(&connection);
+        self.subscriptions.remove(&connection);
         self.sessions.detach(connection, service.clock().now());
+    }
+    /// Expire frozen connection snapshots at a trusted monotonic owner instant.
+    pub fn expire_snapshots_at(&mut self, now: Duration) {
+        self.snapshots.retain(|_, s| now < s.expires);
     }
 
     /// Process one parsed request in owner order. Replies are owned and bounded by
@@ -68,8 +100,8 @@ impl Application {
                                 "next_seq":opened.next_seq.to_string(),"state":"ready",
                                 "capabilities":["virtual","native_controller","ramp_reference"],
                                 "limits":{"clients":8,"scopes":16,"frame_bytes":16384},
-                                "event_oldest":{"boot_id":service.boot_id(),"seq":"0"},
-                                "event_latest":{"boot_id":service.boot_id(),"seq":"0"}})
+                                "event_oldest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()},
+                                "event_latest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()}})
                         })
                 }
             }
@@ -82,12 +114,18 @@ impl Application {
         };
         vec![match result {
             Ok(value) => json!({"v":1,"msg_id":msg,"type":"result","result":value}),
+            Err("event_gap") => {
+                json!({"v":1,"msg_id":msg,"type":"error","accepted":false,"code":"event_gap",
+                "message":"event_gap","resync_required":true,
+                "oldest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()},
+                "latest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()}})
+            }
             Err(code) => error_reply(&msg, code),
         }]
     }
 
     fn handle_query(
-        &self,
+        &mut self,
         service: &ServiceHost,
         connection: u64,
         request: &WireRequest,
@@ -96,6 +134,147 @@ impl Application {
         let scope = self.clients.get(&connection).ok_or("hello_required")?;
         let owner = service.owner();
         let result = match request.op.as_str() {
+            "runtime_snapshot" => {
+                let cursor = owner.event_log().latest_cursor();
+                let mut records = owner.event_log().snapshot_records();
+                let QueryResult::Instruments(instruments) =
+                    owner.query(Query::Discover).map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                records.insert(0,json!({"kind":"catalog","target":{"id":"runtime"},"data":{
+                    "instruments":instruments.iter().map(|d|json!({"id":d.id.get().to_string(),"name":d.name})).collect::<Vec<_>>()}}));
+                let footprint: usize = records
+                    .iter()
+                    .map(|r| {
+                        serde_json::to_vec(r)
+                            .map(|v| v.len() * 2 + 128)
+                            .unwrap_or(usize::MAX)
+                    })
+                    .sum();
+                if footprint > 256 * 1024
+                    || records.iter().any(|r| {
+                        serde_json::to_vec(r)
+                            .map(|v| v.len() > 4096)
+                            .unwrap_or(true)
+                    })
+                {
+                    return Err("snapshot_capacity");
+                }
+                let token = self.issue_token(service.boot_id())?;
+                let expires = service.clock().now() + Duration::from_secs(5);
+                self.snapshots.insert(
+                    connection,
+                    FrozenSnapshot {
+                        token: token.clone(),
+                        cursor,
+                        records,
+                        expires,
+                    },
+                );
+                self.page(service, connection, &token, 0)?
+            }
+            "snapshot_page" => {
+                let token = args
+                    .get("snapshot")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                let index = id_field(args, "index")?;
+                self.page(service, connection, token, index as usize)?
+            }
+            "snapshot_release" => {
+                let token = args
+                    .get("snapshot")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                let removed = self
+                    .snapshots
+                    .get(&connection)
+                    .is_some_and(|s| s.token == token);
+                if removed {
+                    self.snapshots.remove(&connection);
+                }
+                json!({"released":removed})
+            }
+            "subscribe" => {
+                if self.subscriptions.contains_key(&connection) {
+                    return Err("subscription_busy");
+                }
+                let after = args.get("after").ok_or("invalid_args")?;
+                let boot = after
+                    .get("boot_id")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                if boot != service.boot_id() {
+                    return Err("instance_changed");
+                }
+                let seq = id_field(after, "seq")?;
+                match owner.event_log().scan_after(seq, 1) {
+                    Ok(_) => {}
+                    Err(crate::events::EventError::Gap) => return Err("event_gap"),
+                    Err(crate::events::EventError::Future) => return Err("invalid_cursor"),
+                    Err(_) => return Err("event_error"),
+                }
+                let filter = args.get("filter").ok_or("invalid_args")?;
+                let kinds = filter
+                    .get("kinds")
+                    .and_then(Value::as_array)
+                    .ok_or("invalid_args")?;
+                let targets = filter
+                    .get("targets")
+                    .and_then(Value::as_array)
+                    .ok_or("invalid_args")?;
+                if kinds.len() > 8 || targets.len() > 16 {
+                    return Err("invalid_args");
+                }
+                let mut selected = Vec::new();
+                for kind in kinds {
+                    let name = kind.as_str().ok_or("invalid_args")?;
+                    if ![
+                        "signal",
+                        "controller",
+                        "reference",
+                        "component",
+                        "output",
+                        "operation",
+                        "host",
+                    ]
+                    .contains(&name)
+                    {
+                        return Err("invalid_args");
+                    }
+                    selected.push(name.to_string());
+                }
+                let selected_targets = targets
+                    .iter()
+                    .map(parse_filter_target)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let token = self.issue_token(service.boot_id())?;
+                self.subscriptions.insert(
+                    connection,
+                    Subscription {
+                        token: token.clone(),
+                        scan: seq,
+                        kinds: selected,
+                        targets: selected_targets,
+                    },
+                );
+                json!({"subscription":token,"accepted_cursor":{"boot_id":service.boot_id(),"seq":seq.to_string()}})
+            }
+            "unsubscribe" => {
+                let token = args
+                    .get("subscription")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                let removed = self
+                    .subscriptions
+                    .get(&connection)
+                    .is_some_and(|s| s.token == token);
+                if removed {
+                    self.subscriptions.remove(&connection);
+                }
+                json!({"removed":removed})
+            }
             "reference" => {
                 let id = id_field(args, "reference")?;
                 match owner
@@ -108,13 +287,53 @@ impl Application {
             }
             "controller" => {
                 let id = id_field(args, "controller")?;
-                match owner
+                let QueryResult::Controller(snap) = owner
                     .query(Query::Controller(ControllerId::new(id)))
                     .map_err(domain_code)?
-                {
-                    QueryResult::Controller(snap) => controller_json(snap),
-                    _ => return Err("internal_error"),
-                }
+                else {
+                    return Err("internal_error");
+                };
+                let QueryResult::ControllerConfig(config) = owner
+                    .query(Query::ControllerConfig(ControllerId::new(id)))
+                    .map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                let mut view = controller_json(snap);
+                view["config"] = json!({"input":{"instrument":config.input.instrument().get().to_string(),"parameter":config.input.parameter().get().to_string()},
+                    "output":{"instrument":config.output.instrument().get().to_string(),"parameter":config.output.parameter().get().to_string()},
+                    "reference":config.reference.get().to_string(),"pid":{"kp":config.pid.kp,"ki":config.pid.ki,"kd":config.pid.kd,
+                        "output_min":config.pid.output_min,"output_max":config.pid.output_max},
+                    "max_input_age_ns":nanos(config.max_input_age),"max_tick_gap_ns":nanos(config.max_tick_gap),
+                    "lease_lifetime_ns":nanos(config.lease_lifetime),"proposal_ttl_ns":nanos(config.proposal_ttl),
+                    "ema":{"time_constant_ns":nanos(config.ema.time_constant),"warmup_samples":config.ema.warmup_samples}});
+                view
+            }
+            "describe" => {
+                let id = id_field(args, "instrument")?;
+                let QueryResult::Descriptor(descriptor) = owner
+                    .query(Query::DescribeInstrument(InstrumentId::new(id)))
+                    .map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                let parameters: Vec<_> = descriptor.parameters.iter().map(parameter_json).collect();
+                json!({"id":descriptor.id.get().to_string(),"name":descriptor.name,"parameters":parameters})
+            }
+            "output" => {
+                let actuator = args.get("actuator").ok_or("invalid_args")?;
+                let instrument = id_field(actuator, "instrument")?;
+                let parameter = id_field(actuator, "parameter")?;
+                let QueryResult::Output(snapshot) = owner
+                    .query(Query::Output(ActuatorId::new(
+                        InstrumentId::new(instrument),
+                        ParameterId::new(parameter),
+                    )))
+                    .map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                output_json(snapshot)
             }
             "latest" => {
                 let signal = args.get("signal").ok_or("invalid_args")?;
@@ -163,6 +382,105 @@ impl Application {
         Ok(result)
     }
 
+    fn issue_token(&mut self, boot: &str) -> Result<String, &'static str> {
+        let counter = self.next_token;
+        self.next_token = self.next_token.checked_add(1).ok_or("counter_exhausted")?;
+        Ok(format!("{boot}:{counter}"))
+    }
+    fn page(
+        &self,
+        service: &ServiceHost,
+        connection: u64,
+        token: &str,
+        index: usize,
+    ) -> Result<Value, &'static str> {
+        let snapshot = self.snapshots.get(&connection).ok_or("snapshot_expired")?;
+        if snapshot.token != token {
+            return Err("snapshot_expired");
+        }
+        if service.clock().now() >= snapshot.expires {
+            return Err("snapshot_expired");
+        }
+        if index > snapshot.records.len() {
+            return Err("invalid_args");
+        }
+        let mut page = Vec::new();
+        let mut next = index;
+        while next < snapshot.records.len() {
+            let record = &snapshot.records[next];
+            let bytes = serde_json::to_vec(record)
+                .map_err(|_| "internal_error")?
+                .len();
+            let current: usize = page
+                .iter()
+                .map(|v: &Value| serde_json::to_vec(v).map(|a| a.len()).unwrap_or(8192))
+                .sum();
+            if current + bytes + 1024 > 8192 && !page.is_empty() {
+                break;
+            }
+            if bytes + 1024 > 8192 {
+                return Err("snapshot_capacity");
+            }
+            page.push(record.clone());
+            next += 1;
+        }
+        Ok(
+            json!({"snapshot":token,"cursor":{"boot_id":service.boot_id(),"seq":snapshot.cursor.to_string()},
+            "records":page,"count":snapshot.records.len().to_string(),"next_index":(next<snapshot.records.len()).then(||next.to_string()),
+            "expires_at":nanos(snapshot.expires)}),
+        )
+    }
+
+    /// Offer at most four matching retained semantic events after scanning 32.
+    /// A filtered scan emits progress so a client can advance its applied cursor.
+    pub fn pump_events(&mut self, service: &ServiceHost, connection: u64) -> Vec<Value> {
+        let Some(sub) = self.subscriptions.get_mut(&connection) else {
+            return Vec::new();
+        };
+        let initial_scan = sub.scan;
+        let events = match service.owner().event_log().scan_after(sub.scan, 32) {
+            Ok(events) => events,
+            Err(_) => {
+                self.subscriptions.remove(&connection);
+                return vec![
+                    json!({"v":1,"type":"error","code":"event_gap","resync_required":true}),
+                ];
+            }
+        };
+        let mut offered = Vec::new();
+        let mut scanned = sub.scan;
+        for event in events {
+            let seq = event["seq"]
+                .as_str()
+                .and_then(decimal_u64)
+                .unwrap_or(scanned);
+            scanned = seq;
+            if (sub.kinds.is_empty()
+                || event["kind"]
+                    .as_str()
+                    .is_some_and(|k| sub.kinds.iter().any(|s| s == k)))
+                && (sub.targets.is_empty()
+                    || sub
+                        .targets
+                        .iter()
+                        .any(|t| event["kind"] == t.kind && event["target"] == t.target))
+            {
+                offered.push(event);
+                if offered.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        sub.scan = scanned;
+        if offered.is_empty() && scanned > initial_scan {
+            offered.push(
+                json!({"v":1,"type":"subscription_progress","subscription":sub.token,
+            "boot_id":service.boot_id(),"seq":scanned.to_string()}),
+            );
+        }
+        offered
+    }
+
     fn handle_mutation(
         &mut self,
         service: &mut ServiceHost,
@@ -194,7 +512,7 @@ impl Application {
             Admission::Accepted => {}
         }
         let accepted = operation_reply(&msg, &rid, OperationState::Accepted);
-        let outcome = dispatch(service, payload).map_or_else(
+        let outcome = dispatch(service, payload, &rid).map_or_else(
             |error| OperationState::Failed(domain_code(error).into()),
             |value| OperationState::Completed(value.to_string()),
         );
@@ -202,6 +520,16 @@ impl Application {
         self.sessions
             .complete(&scope, rid.seq, outcome.clone(), service.clock().now())
             .expect("bounded typed terminal record for admitted scope");
+        let event_state = operation_state(outcome.clone());
+        let published_at = service.clock().now();
+        if service
+            .owner_mut()
+            .event_log_mut()
+            .operation_terminal(published_at, &scope, rid.seq, event_state)
+            .is_err()
+        {
+            let _ = service.request_shutdown();
+        }
         vec![accepted, operation_reply(&msg, &rid, outcome)]
     }
 }
@@ -239,7 +567,11 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
         _ => return Err("unsupported_operation"),
     })
 }
-fn dispatch(service: &mut ServiceHost, mutation: Mutation) -> Result<Value, Error> {
+fn dispatch(
+    service: &mut ServiceHost,
+    mutation: Mutation,
+    rid: &WireRequestId,
+) -> Result<Value, Error> {
     let at = service.clock().now();
     let command = match mutation {
         Mutation::RetuneRamp {
@@ -290,7 +622,10 @@ fn dispatch(service: &mut ServiceHost, mutation: Mutation) -> Result<Value, Erro
             return Ok(json!({"state":"stopping"}));
         }
     };
-    match service.owner_mut().command(command)? {
+    match service
+        .owner_mut()
+        .command_with_cause(command, Some((rid.scope.clone(), rid.seq)))?
+    {
         CommandResult::ReferenceRetuned(retuned) => Ok(
             json!({"reference":"1","revision":retuned.revision.to_string(),
             "value":retuned.state.current,"target":retuned.state.target,"rate":retuned.state.rate,
@@ -327,12 +662,74 @@ fn float_field(args: &Value, field: &str) -> Result<f64, &'static str> {
         .filter(|v| v.is_finite())
         .ok_or("invalid_args")
 }
-fn controller_json(s: ControllerSnapshot) -> Value {
+fn parse_filter_target(value: &Value) -> Result<FilterTarget, &'static str> {
+    let object = value.as_object().ok_or("invalid_args")?;
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or("invalid_args")?;
+    let target = match kind {
+        "instrument" | "controller" | "reference" | "component" => {
+            if object.len() != 2 || !object.contains_key("id") {
+                return Err("invalid_args");
+            }
+            json!({"id":id_field(value,"id")?.to_string()})
+        }
+        "signal" | "output" => {
+            if object.len() != 3
+                || !object.contains_key("instrument")
+                || !object.contains_key("parameter")
+            {
+                return Err("invalid_args");
+            }
+            json!({"instrument":id_field(value,"instrument")?.to_string(),"parameter":id_field(value,"parameter")?.to_string()})
+        }
+        _ => return Err("invalid_args"),
+    };
+    Ok(FilterTarget {
+        kind: kind.into(),
+        target,
+    })
+}
+pub(crate) fn controller_json(s: ControllerSnapshot) -> Value {
     json!({"controller":s.id.get().to_string(),"state":state_name(s.state),
         "revision":s.config_revision.to_string(),"last_tick":s.last_tick.map(nanos),
         "latest_output":s.latest_output.map(|v|v.output)})
 }
-fn reference_json(id: u64, s: ReferenceSnapshot) -> Value {
+fn parameter_json(p: &ParameterDescriptor) -> Value {
+    let spec = match &p.value_spec {
+        ValueSpec::Float { min, max } => json!({"type":"float","min":min,"max":max}),
+        ValueSpec::Integer { min, max } => {
+            json!({"type":"integer","min":min.to_string(),"max":max.to_string()})
+        }
+        ValueSpec::Boolean => json!({"type":"boolean"}),
+        ValueSpec::Text { max_bytes } => json!({"type":"text","max_bytes":max_bytes}),
+        ValueSpec::Enum { choices } => json!({"type":"enum","choices":choices}),
+    };
+    json!({"id":p.id.get().to_string(),"name":p.name,"unit":{"id":p.unit.id(),"symbol":p.unit.symbol()},
+        "value_spec":spec,"access":match p.access {AccessMode::ReadOnly=>"read_only",AccessMode::ReadWrite=>"read_write",AccessMode::WriteOnly=>"write_only"},
+        "role":match p.role {ParameterRole::Measurement=>"measurement",ParameterRole::Configuration=>"configuration",ParameterRole::Actuator=>"actuator",ParameterRole::Action=>"action",ParameterRole::Diagnostic=>"diagnostic"},
+        "write_effect":match p.write_effect {WriteEffect::None=>"none",WriteEffect::ConfigurationOnly=>"configuration_only",WriteEffect::OutputAffecting=>"output_affecting"},
+        "signal":p.signal.map(|s|json!({"instrument":s.instrument().get().to_string(),"parameter":s.parameter().get().to_string()}))})
+}
+pub(crate) fn output_json(s: OutputSnapshot) -> Value {
+    let owner = s.lease.map(|l| match l.owner() {
+        OutputOwner::Manual(id) => json!({"kind":"manual","id":id.to_string()}),
+        OutputOwner::Automatic(id) => json!({"kind":"automatic","id":id.to_string()}),
+    });
+    let observation = |o: Option<lab_core::output::OutputObservation>| {
+        o.map(|v| json!({"value":v.value,"at":nanos(v.at)}))
+    };
+    json!({"state":match s.state {OutputState::Unverified=>"unverified",OutputState::SafePending=>"safe_pending",
+            OutputState::Disarmed=>"disarmed",OutputState::ArmedManual=>"armed_manual",OutputState::ArmedAuto=>"armed_auto",OutputState::FaultLatched=>"fault_latched"},
+        "owner":owner,"epoch":s.epoch.to_string(),"lease_expires_at":s.lease.map(|l|nanos(l.expires())),
+        "fault_latched":s.fault_latched,"safe_confirmed":s.safe_confirmed,"pending":s.pending,
+        "in_flight":s.in_flight.is_some(),"requested":s.requested,"sent":observation(s.sent),
+        "acknowledged":observation(s.acknowledged),"readback":observation(s.readback),
+        "outcome":s.outcome.map(|o|match o {DispatchOutcome::Acknowledged=>"acknowledged",DispatchOutcome::ReadbackVerified=>"readback_verified",
+            DispatchOutcome::Failed=>"failed",DispatchOutcome::Ambiguous=>"ambiguous"})})
+}
+pub(crate) fn reference_json(id: u64, s: ReferenceSnapshot) -> Value {
     match s {
         ReferenceSnapshot::Fixed {
             value,
@@ -348,7 +745,7 @@ fn reference_json(id: u64, s: ReferenceSnapshot) -> Value {
             "unit":{"id":state.unit.id().to_string(),"symbol":state.unit.symbol()}}),
     }
 }
-fn state_name(s: ControllerState) -> &'static str {
+pub(crate) fn state_name(s: ControllerState) -> &'static str {
     match s {
         ControllerState::Created => "created",
         ControllerState::Ready => "ready",
@@ -358,19 +755,19 @@ fn state_name(s: ControllerState) -> &'static str {
         ControllerState::Failed => "failed",
     }
 }
-fn quality_name(s: lab_core::SampleQuality) -> &'static str {
+pub(crate) fn quality_name(s: lab_core::SampleQuality) -> &'static str {
     match s {
         lab_core::SampleQuality::Good => "good",
         lab_core::SampleQuality::Unavailable => "unavailable",
     }
 }
-fn sample_value(sample: &lab_core::Sample) -> Value {
+pub(crate) fn sample_value(sample: &lab_core::Sample) -> Value {
     match sample.value() {
         Some(lab_core::Value::Float(v)) => json!(v),
         _ => Value::Null,
     }
 }
-fn nanos(at: std::time::Duration) -> String {
+pub(crate) fn nanos(at: std::time::Duration) -> String {
     at.as_nanos().to_string()
 }
 fn operation_status(a: Admission) -> Value {
