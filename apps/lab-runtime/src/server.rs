@@ -506,6 +506,23 @@ mod bounded_peer_tests {
     }
 
     #[test]
+    fn one_sweep_partial_write_resumes_at_the_exact_byte_offset() {
+        let (mut peer, mut client) = peer();
+        let frame = vec![b'x'; wire::FRAME_LIMIT];
+        peer.replies.push_back(frame.clone());
+        assert!(peer.write().unwrap());
+        assert_eq!(peer.writing.as_ref().unwrap().1, SWEEP_BYTES);
+        assert!(peer.write().unwrap());
+        assert!(peer.writing.is_none());
+        let mut received = vec![0u8; wire::FRAME_LIMIT];
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client.read_exact(&mut received).unwrap();
+        assert_eq!(received, frame);
+    }
+
+    #[test]
     fn replay_gap_is_offered_then_affected_socket_detaches_without_affecting_owner() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
