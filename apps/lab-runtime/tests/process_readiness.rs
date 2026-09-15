@@ -58,6 +58,15 @@ fn serve_binary_reports_ephemeral_loopback_readiness_then_exits_after_shutdown()
             .unwrap(),
         )
         .unwrap();
+    response.clear();
+    replies.read_line(&mut response).unwrap();
+    let accepted: Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(accepted["state"], "accepted");
+    response.clear();
+    replies.read_line(&mut response).unwrap();
+    let terminal: Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(terminal["state"], "completed");
+    assert_eq!(terminal["result"]["safe_confirmed"], true);
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().unwrap() {

@@ -175,6 +175,28 @@ impl EventLog {
         self.targets.push(Target::Component(id));
         self.targets.sort_by_key(Target::key);
     }
+    /// Track a trusted native controller registered after initial composition.
+    pub fn track_controller(&mut self, id: ControllerId) {
+        if !self
+            .targets
+            .iter()
+            .any(|t| matches!(t,Target::Controller(existing) if *existing==id))
+        {
+            self.targets.push(Target::Controller(id));
+            self.targets.sort_by_key(Target::key);
+        }
+    }
+    /// Track a trusted Reference registered after initial composition.
+    pub fn track_reference(&mut self, id: ReferenceId) {
+        if !self
+            .targets
+            .iter()
+            .any(|t| matches!(t,Target::Reference(existing) if *existing==id))
+        {
+            self.targets.push(Target::Reference(id));
+            self.targets.sort_by_key(Target::key);
+        }
+    }
     fn track_new_signals(&mut self, runtime: &Runtime) {
         if let Ok(QueryResult::Instruments(instruments)) = runtime.query(Query::Discover) {
             for instrument in instruments {
@@ -186,6 +208,16 @@ impl EventLog {
                             .any(|t| matches!(t,Target::Signal(existing) if *existing==signal))
                     {
                         self.targets.push(Target::Signal(signal));
+                    }
+                    if p.role == ParameterRole::Actuator {
+                        let actuator = ActuatorId::new(instrument.id, p.id);
+                        if !self
+                            .targets
+                            .iter()
+                            .any(|t| matches!(t,Target::Output(existing) if *existing==actuator))
+                        {
+                            self.targets.push(Target::Output(actuator));
+                        }
                     }
                 }
             }
@@ -256,6 +288,16 @@ impl EventLog {
             json!({"scope":scope}),
             data,
             Some((scope, seq)),
+        )
+    }
+    /// Publish the bounded owner lifecycle fact before a terminal operation.
+    pub fn host_state(&mut self, at: Duration, state: &str, data: Value) -> Result<(), EventError> {
+        self.append(
+            at,
+            "host",
+            json!({"id":"runtime"}),
+            json!({"state":state,"status":data}),
+            None,
         )
     }
     fn append(

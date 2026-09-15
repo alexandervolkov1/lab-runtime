@@ -292,6 +292,7 @@ pub fn run(
         Application::new(service.boot_id()).map_err(|_| io::Error::other("invalid boot"))?;
     let mut queued = BTreeMap::<u64, VecDeque<WireRequest>>::new();
     let mut rotation = 0usize;
+    let mut terminal_since: Option<Instant> = None;
     loop {
         if stop.load(Ordering::Acquire) {
             service.request_shutdown()?;
@@ -361,15 +362,30 @@ pub fn run(
             }
         }
         if let Some(status) = service.shutdown_step()? {
-            net_stop.store(true, Ordering::Release);
-            let net = reactor_thread
-                .join()
-                .map_err(|_| io::Error::other("network reactor panicked"))?;
-            net?;
-            if status.exit_success {
-                return Ok(());
-            } else {
-                return Err(io::Error::other("safe shutdown incomplete").into());
+            if terminal_since.is_none() {
+                for (id, value) in app.finish_shutdown(&mut service, status) {
+                    if let Ok(frame) = wire::encode_frame(&value) {
+                        let _ = outgoing_tx.try_send(Outgoing::Reply {
+                            connection: id,
+                            frame,
+                            consumed: false,
+                            hello: false,
+                        });
+                    }
+                }
+                terminal_since = Some(Instant::now());
+            }
+            if terminal_since.is_some_and(|at| at.elapsed() >= Duration::from_millis(200)) {
+                net_stop.store(true, Ordering::Release);
+                let net = reactor_thread
+                    .join()
+                    .map_err(|_| io::Error::other("network reactor panicked"))?;
+                net?;
+                if status.exit_success {
+                    return Ok(());
+                } else {
+                    return Err(io::Error::other("safe shutdown incomplete").into());
+                }
             }
         }
         thread::sleep(Duration::from_millis(5));

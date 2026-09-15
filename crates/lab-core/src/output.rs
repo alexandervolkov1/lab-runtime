@@ -132,6 +132,10 @@ pub struct OutputLease {
     expires: Duration,
 }
 impl OutputLease {
+    /// Immutable authority instance identity; renewal never replaces this value.
+    pub fn instance(self) -> u64 {
+        self.instance
+    }
     /// Revocation counter captured when the lease was issued.
     pub fn epoch(self) -> u64 {
         self.epoch

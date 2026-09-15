@@ -9,4 +9,4 @@ mod supervisor;
 pub mod fixtures;
 
 pub use runner::run_bounded;
-pub use supervisor::LuaSupervisor;
+pub use supervisor::{LuaSupervisor, WorkerBarrier};

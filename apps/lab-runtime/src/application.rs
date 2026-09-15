@@ -38,6 +38,12 @@ struct FilterTarget {
     kind: String,
     target: Value,
 }
+struct PendingShutdown {
+    connection: u64,
+    scope: String,
+    seq: u64,
+    msg: String,
+}
 
 /// Single-owner fixed API state; a TCP connection carries no domain authority.
 pub struct Application {
@@ -46,6 +52,7 @@ pub struct Application {
     snapshots: BTreeMap<u64, FrozenSnapshot>,
     subscriptions: BTreeMap<u64, Subscription>,
     next_token: u64,
+    pending_shutdown: Option<PendingShutdown>,
 }
 impl Application {
     /// Create bounded process-local coordination state for one fresh boot.
@@ -56,6 +63,7 @@ impl Application {
             snapshots: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             next_token: 1,
+            pending_shutdown: None,
         })
     }
 
@@ -69,6 +77,74 @@ impl Application {
     /// Expire frozen connection snapshots at a trusted monotonic owner instant.
     pub fn expire_snapshots_at(&mut self, now: Duration) {
         self.snapshots.retain(|_, s| now < s.expires);
+    }
+    /// Store the safe/cleanup terminal outcome before any network offer.
+    pub fn finish_shutdown(
+        &mut self,
+        service: &mut ServiceHost,
+        status: crate::host::ShutdownStatus,
+    ) -> Vec<(u64, Value)> {
+        let Some(pending) = self.pending_shutdown.take() else {
+            return Vec::new();
+        };
+        let result = json!({"safe_confirmed":status.safe_confirmed,"unfinished_workers":status.unfinished_workers,
+            "cleanup_complete":status.unfinished_workers==0,"exit_success":status.exit_success,
+            "outputs":service.owner().output_safe_records()});
+        let state = if status.exit_success {
+            OperationState::Completed(result.to_string())
+        } else {
+            OperationState::FailedWithResult {
+                code: if status.safe_confirmed {
+                    "cleanup_incomplete"
+                } else {
+                    "safe_unconfirmed"
+                }
+                .into(),
+                detail: result.to_string(),
+            }
+        };
+        self.sessions
+            .complete(
+                &pending.scope,
+                pending.seq,
+                state.clone(),
+                service.clock().now(),
+            )
+            .expect("retained admitted shutdown record");
+        let event_state = operation_state(state.clone());
+        let published = service.clock().now();
+        let owner = service.owner_mut();
+        if owner
+            .event_log_mut()
+            .host_state(
+                published,
+                if status.exit_success {
+                    "stopped"
+                } else {
+                    "failed"
+                },
+                result.clone(),
+            )
+            .is_ok()
+        {
+            let _ = owner.event_log_mut().operation_terminal(
+                published,
+                &pending.scope,
+                pending.seq,
+                event_state,
+            );
+        }
+        if self.clients.get(&pending.connection) != Some(&pending.scope) {
+            return Vec::new();
+        }
+        let rid = WireRequestId {
+            scope: pending.scope,
+            seq: pending.seq,
+        };
+        vec![(
+            pending.connection,
+            operation_reply(&pending.msg, &rid, state),
+        )]
     }
 
     /// Process one parsed request in owner order. Replies are owned and bounded by
@@ -141,6 +217,7 @@ impl Application {
             "runtime_snapshot" => {
                 let cursor = owner.event_log().latest_cursor();
                 let mut records = owner.event_log().snapshot_records();
+                records.extend(owner.resource_records());
                 let QueryResult::Instruments(instruments) =
                     owner.query(Query::Discover).map_err(domain_code)?
                 else {
@@ -529,6 +606,16 @@ impl Application {
             Ok(payload) => payload,
             Err(code) => return vec![error_reply(&msg, code)],
         };
+        if service.is_stopping() && self.sessions.next_seq(&scope).ok() == Some(rid.seq) {
+            return vec![error_reply(
+                &msg,
+                if matches!(&payload, Mutation::Shutdown) {
+                    "shutdown_in_progress"
+                } else {
+                    "shutdown_before_execution"
+                },
+            )];
+        }
         let now = service.clock().now();
         match self.sessions.admit(&scope, rid.seq, payload.clone(), now) {
             Admission::Known(state) => return vec![operation_reply(&msg, &rid, state)],
@@ -540,6 +627,26 @@ impl Application {
             Admission::Accepted => {}
         }
         let accepted = operation_reply(&msg, &rid, OperationState::Accepted);
+        if matches!(&payload, Mutation::Shutdown) {
+            match service.request_shutdown() {
+                Ok(()) => {
+                    self.pending_shutdown = Some(PendingShutdown {
+                        connection,
+                        scope,
+                        seq: rid.seq,
+                        msg,
+                    });
+                    return vec![accepted];
+                }
+                Err(error) => {
+                    let failed = OperationState::Failed(domain_code(error).into());
+                    self.sessions
+                        .complete(&scope, rid.seq, failed.clone(), service.clock().now())
+                        .expect("admitted shutdown record");
+                    return vec![accepted, operation_reply(&msg, &rid, failed)];
+                }
+            }
+        }
         let outcome = dispatch(service, payload, &rid).map_or_else(
             |error| OperationState::Failed(domain_code(error).into()),
             |value| OperationState::Completed(value.to_string()),
@@ -646,8 +753,9 @@ fn dispatch(
             at,
         },
         Mutation::Shutdown => {
-            service.request_shutdown()?;
-            return Ok(json!({"state":"stopping"}));
+            return Err(Error::InvalidConfiguration(
+                "shutdown dispatch is host-only",
+            ));
         }
     };
     match service
@@ -750,7 +858,7 @@ pub(crate) fn output_json(s: OutputSnapshot) -> Value {
     };
     json!({"state":match s.state {OutputState::Unverified=>"unverified",OutputState::SafePending=>"safe_pending",
             OutputState::Disarmed=>"disarmed",OutputState::ArmedManual=>"armed_manual",OutputState::ArmedAuto=>"armed_auto",OutputState::FaultLatched=>"fault_latched"},
-        "owner":owner,"epoch":s.epoch.to_string(),"lease_expires_at":s.lease.map(|l|nanos(l.expires())),
+        "owner":owner,"instance":s.lease.map(|l|l.instance().to_string()),"epoch":s.epoch.to_string(),"lease_expires_at":s.lease.map(|l|nanos(l.expires())),
         "fault_latched":s.fault_latched,"safe_confirmed":s.safe_confirmed,"pending":s.pending,
         "in_flight":s.in_flight.is_some(),"requested":s.requested,"sent":observation(s.sent),
         "acknowledged":observation(s.acknowledged),"readback":observation(s.readback),
@@ -811,6 +919,8 @@ fn operation_state(s: OperationState) -> Value {
             json!({"state":"completed","result":serde_json::from_str::<Value>(&text).unwrap_or(Value::Null)})
         }
         OperationState::Failed(code) => json!({"state":"failed","code":code}),
+        OperationState::FailedWithResult { code, detail } => json!({"state":"failed","code":code,
+            "result":serde_json::from_str::<Value>(&detail).unwrap_or(Value::Null)}),
     }
 }
 fn operation_reply(msg: &str, rid: &WireRequestId, s: OperationState) -> Value {

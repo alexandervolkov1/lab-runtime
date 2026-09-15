@@ -133,3 +133,44 @@ fn a_pure_query_does_not_refresh_or_advance_reference_without_the_scheduler() {
     assert_eq!(before[0]["result"], after[0]["result"]);
     assert_eq!(first_latest[0]["result"], second_latest[0]["result"]);
 }
+
+#[test]
+fn shutdown_is_accepted_first_and_terminal_only_after_safe_evidence_is_recorded() {
+    let (mut service, mut app) = startup();
+    let scope = hello(&mut service, &mut app, 1);
+    let replies = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"stop","op":"runtime_shutdown",
+        "request_id":{"scope":scope,"seq":"1"},"args":{}})),
+    );
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["state"], "accepted");
+    let state = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"status","op":"operation_status",
+        "args":{"request_id":{"scope":scope,"seq":"1"}}})),
+    );
+    assert_eq!(state[0]["result"]["state"], "accepted");
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break app.finish_shutdown(&mut service, status);
+        }
+        std::thread::yield_now();
+    };
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].1["state"], "completed");
+    assert_eq!(terminal[0].1["result"]["safe_confirmed"], true);
+    assert_eq!(
+        terminal[0].1["result"]["outputs"][0]["safe_confirmed"],
+        true
+    );
+    let status = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"later","op":"operation_status",
+        "args":{"request_id":{"scope":scope,"seq":"1"}}})),
+    );
+    assert_eq!(status[0]["result"]["state"], "completed");
+}

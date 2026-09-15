@@ -149,7 +149,17 @@ impl ServiceHost {
         }
         self.stopping_since = Some(std::time::Instant::now());
         let clock = self.clock;
-        self.host.begin_shutdown(&clock)
+        self.host.begin_shutdown(&clock)?;
+        let at = self.clock.now();
+        self.host
+            .event_log_mut()
+            .host_state(at, "stopping", serde_json::json!({}))
+            .map_err(|_| DomainError::InvalidConfiguration("host event limit"))?;
+        Ok(())
+    }
+    /// Stop barrier is raised before further client mutation admission.
+    pub const fn is_stopping(&self) -> bool {
+        self.stopping_since.is_some()
     }
 
     /// Progress trusted safe work once; never sleep or join on the owner lane.

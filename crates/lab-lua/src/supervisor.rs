@@ -3,7 +3,7 @@
 use crate::runner::run_bounded;
 use lab_core::managed::{
     ComponentCompletion, ComponentError, ComponentExecutor, ComponentResult, Correlation,
-    Invocation,
+    Invocation, InvocationPhase,
 };
 use std::{
     sync::{
@@ -20,6 +20,42 @@ static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const WORKERS: usize = 2;
 const JOB_DEADLINE: Duration = Duration::from_millis(100);
 const WORKER_STACK: usize = 2 * 1024 * 1024;
+
+/// Trusted fixture gate proving both fixed worker slots have entered a Step.
+/// It is never given to a guest or exposed as a network command. Release it even
+/// after an assertion failure so the global worker ledger can unwind.
+pub struct WorkerBarrier {
+    enabled: AtomicBool,
+    entered: AtomicUsize,
+    released: AtomicBool,
+}
+impl WorkerBarrier {
+    /// Create a disabled gate; ordinary Init can finish before Step exhaustion.
+    pub const fn new() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            entered: AtomicUsize::new(0),
+            released: AtomicBool::new(false),
+        }
+    }
+    /// Gate future Step execution on both real fixed worker threads.
+    pub fn enable(&self) {
+        self.enabled.store(true, Ordering::Release);
+    }
+    /// Count worker slots that reached the gate, before guest VM work.
+    pub fn entered(&self) -> usize {
+        self.entered.load(Ordering::Acquire)
+    }
+    /// Let gated work finish or observe its already-expired cancellation.
+    pub fn release(&self) {
+        self.released.store(true, Ordering::Release);
+    }
+}
+impl Default for WorkerBarrier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 type WorkerRunner =
     fn(&Invocation, Instant, Arc<AtomicBool>) -> Result<ComponentResult, ComponentError>;
 
@@ -64,10 +100,21 @@ impl LuaSupervisor {
     pub fn new() -> Result<Self, ComponentError> {
         Self::new_with_runner(run_bounded)
     }
+    /// Construct the same two-worker supervisor with a trusted test barrier.
+    /// After release every admitted Step still executes the real bounded Lua VM.
+    pub fn new_with_barrier(barrier: Arc<WorkerBarrier>) -> Result<Self, ComponentError> {
+        Self::new_with_runner_and_barrier(run_bounded, Some(barrier))
+    }
 
     // A private runner substitution lets the unit harness block the actual
     // supervisor slots. Runtime and scripts never receive this test seam.
     fn new_with_runner(runner: WorkerRunner) -> Result<Self, ComponentError> {
+        Self::new_with_runner_and_barrier(runner, None)
+    }
+    fn new_with_runner_and_barrier(
+        runner: WorkerRunner,
+        barrier: Option<Arc<WorkerBarrier>>,
+    ) -> Result<Self, ComponentError> {
         // Reserve the whole pool atomically: concurrent constructors cannot
         // each admit one worker while believing they own the fixed capacity.
         ACTIVE_WORKERS
@@ -77,12 +124,22 @@ impl LuaSupervisor {
         for id in 0..WORKERS {
             let (jobs, job_receiver) = mpsc::sync_channel::<Work>(1);
             let (results, completions) = mpsc::sync_channel::<ComponentCompletion>(1);
+            let worker_barrier = barrier.clone();
             let worker = thread::Builder::new()
                 .name(format!("lab-lua-{id}"))
                 .stack_size(WORKER_STACK)
                 .spawn(move || {
                     let _guard = WorkerGuard;
                     while let Ok(work) = job_receiver.recv() {
+                        if let Some(gate) = &worker_barrier
+                            && gate.enabled.load(Ordering::Acquire)
+                            && work.invocation.phase == InvocationPhase::Step
+                        {
+                            gate.entered.fetch_add(1, Ordering::AcqRel);
+                            while !gate.released.load(Ordering::Acquire) {
+                                thread::yield_now();
+                            }
+                        }
                         let outcome = runner(&work.invocation, work.deadline, work.cancelled);
                         // This timestamp follows conversion and VM destruction.
                         let timely = Instant::now() < work.deadline;

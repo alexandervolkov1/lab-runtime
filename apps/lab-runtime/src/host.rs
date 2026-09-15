@@ -19,6 +19,7 @@ use lab_core::{
     plant::ThermalPlantConfig,
     processing::EmaConfig,
     reference::{ReferenceConfig, ReferenceId},
+    transport::{ByteTransport, ExecutorState, ResourceId, TransactionOutcome},
 };
 use std::{
     collections::BTreeMap,
@@ -30,6 +31,9 @@ const REFERENCE: ReferenceId = ReferenceId::new(1);
 const CONTROLLER: ControllerId = ControllerId::new(1);
 const LUA_SOURCE: ComponentId = ComponentId::new(201);
 const LUA_FILTER: ComponentId = ComponentId::new(202);
+const DEPENDENT_PLANT: InstrumentId = InstrumentId::new(301);
+const DEPENDENT_CONTROLLER: ControllerId = ControllerId::new(2);
+const DEPENDENT_REFERENCE: ReferenceId = ReferenceId::new(2);
 
 /// Trusted elapsed-time source; production and deterministic tests share the interface.
 pub trait Clock {
@@ -182,6 +186,8 @@ pub struct HostCore {
     consumed: BTreeMap<ControllerId, Option<Sample>>,
     consumed_managed: BTreeMap<ComponentId, Option<Sample>>,
     components: Vec<(ComponentId, &'static str)>,
+    outputs: Vec<ActuatorId>,
+    resources: Vec<ResourceId>,
     last_now: Duration,
     stopping: bool,
 }
@@ -277,6 +283,8 @@ impl HostCore {
             consumed: BTreeMap::new(),
             consumed_managed: BTreeMap::new(),
             components: Vec::new(),
+            outputs: vec![actuator],
+            resources: Vec::new(),
             last_now: Duration::ZERO,
             stopping: false,
         })
@@ -398,6 +406,159 @@ impl HostCore {
         &self.components
     }
 
+    /// Add one trusted managed-input controller fixture after Transform init.
+    /// It has a separate safe output; the independent native plant remains bound.
+    pub fn add_managed_dependent_fixture(&mut self) -> Result<(), Error> {
+        if !self.standard_lua_initialized() {
+            return Err(Error::InvalidConfiguration(
+                "managed fixture requires committed Transform",
+            ));
+        }
+        if self.outputs.len() >= 8 {
+            return Err(Error::InvalidConfiguration("M6 output limit"));
+        }
+        self.runtime
+            .command(Command::RegisterThermalPlant(ThermalPlantConfig {
+                id: DEPENDENT_PLANT,
+                name: "Managed-input thermal plant".into(),
+                history_capacity: 64,
+                ambient_temperature: 20.0,
+                initial_temperature: 20.0,
+                gain_per_percent: 0.8,
+                time_constant: Duration::from_secs(8),
+            }))?;
+        let actuator = ActuatorId::new(DEPENDENT_PLANT, lab_core::HEATER_POWER);
+        self.runtime.command(Command::Output {
+            actuator,
+            at: Duration::ZERO,
+            command: OutputCommand::BindProfile(SafeProfile {
+                min: 0.0,
+                max: 100.0,
+                safe_value: 0.0,
+                max_lease: Duration::from_secs(2),
+                max_proposal_ttl: Duration::from_millis(200),
+                required_evidence: EvidenceLevel::Readback,
+            }),
+        })?;
+        self.runtime.command(Command::Output {
+            actuator,
+            at: Duration::ZERO,
+            command: OutputCommand::RequestSafe,
+        })?;
+        let CommandResult::Output(OutputResult::Dispatched(safe)) =
+            self.runtime.command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::BeginDispatch,
+            })?
+        else {
+            return Err(Error::InvalidConfiguration(
+                "managed fixture safe dispatch absent",
+            ));
+        };
+        self.runtime.command(Command::Output {
+            actuator,
+            at: Duration::ZERO,
+            command: OutputCommand::Complete {
+                dispatch_id: safe.id(),
+                outcome: DispatchOutcome::ReadbackVerified,
+            },
+        })?;
+        self.outputs.push(actuator);
+        self.runtime
+            .command(Command::RegisterReference(ReferenceConfig::Fixed {
+                id: DEPENDENT_REFERENCE,
+                value: 60.0,
+                unit: Unit::CELSIUS,
+            }))?;
+        self.events.track_reference(DEPENDENT_REFERENCE);
+        self.runtime
+            .command(Command::RegisterController(NativeControllerConfig {
+                id: DEPENDENT_CONTROLLER,
+                input: SignalId::new(InstrumentId::new(LUA_FILTER.get()), lab_core::TEMPERATURE),
+                output: actuator,
+                reference: DEPENDENT_REFERENCE,
+                ema: EmaConfig {
+                    time_constant: Duration::from_millis(200),
+                    warmup_samples: 1,
+                    unit: Unit::CELSIUS,
+                },
+                pid: PidConfig {
+                    kp: 3.0,
+                    ki: 0.4,
+                    kd: 0.2,
+                    output_min: 0.0,
+                    output_max: 100.0,
+                },
+                max_input_age: Duration::from_millis(750),
+                max_tick_gap: Duration::from_millis(750),
+                lease_lifetime: Duration::from_secs(2),
+                proposal_ttl: Duration::from_millis(200),
+            }))?;
+        self.runtime
+            .command(Command::PrepareController(DEPENDENT_CONTROLLER))?;
+        self.events.track_controller(DEPENDENT_CONTROLLER);
+        self.plan
+            .plants
+            .push((DEPENDENT_PLANT, Periodic::new(Duration::from_millis(100))));
+        self.plan.references.push((
+            DEPENDENT_REFERENCE,
+            Periodic::new(Duration::from_millis(100)),
+        ));
+        self.plan.controllers.push((
+            DEPENDENT_CONTROLLER,
+            SignalId::new(InstrumentId::new(LUA_FILTER.get()), lab_core::TEMPERATURE),
+            Periodic::new(Duration::from_millis(200)),
+        ));
+        self.observe(self.last_now, None)?;
+        Ok(())
+    }
+    /// Number of configured safe outputs in this trusted bounded host.
+    pub fn configured_output_count(&self) -> usize {
+        self.outputs.len()
+    }
+    /// Install one trusted bounded M3 byte resource without raw TCP I/O.
+    pub fn register_transport(
+        &mut self,
+        id: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+    ) -> Result<(), Error> {
+        if self.stopping {
+            return Err(Error::InvalidConfiguration("host is stopping"));
+        }
+        if self.resources.len() >= 8 {
+            return Err(Error::InvalidConfiguration("M6 resource limit"));
+        }
+        self.runtime.register_transport(id, adapter)?;
+        self.resources.push(id);
+        Ok(())
+    }
+    /// Freeze bounded M3 resource status alongside facts without polling it.
+    pub fn resource_records(&self) -> Vec<serde_json::Value> {
+        self.resources.iter().filter_map(|id|match self.runtime.query(Query::Transport(*id)){
+            Ok(QueryResult::Transport(s))=>Some(serde_json::json!({"kind":"resource","target":{"id":id.get().to_string()},
+                "data":{"state":match s.state{ExecutorState::Idle=>"idle",ExecutorState::InFlight=>"in_flight",
+                    ExecutorState::Recovering=>"recovering",ExecutorState::Offline=>"offline"},
+                    "queue_len":s.queue_len,"generation":s.generation.to_string(),"active":s.active.map(|a|a.get().to_string()),
+                    "latest":s.latest.map(|r|serde_json::json!({"id":r.id.get().to_string(),"outcome":match r.outcome{
+                        TransactionOutcome::Completed=>"completed",TransactionOutcome::QueueExpired=>"queue_expired",TransactionOutcome::Failed=>"failed"},
+                        "started":r.started,"generation":r.generation.to_string()}))}})),_=>None}).collect()
+    }
+    /// Retain per-output Rust authority/evidence facts through safe shutdown.
+    pub fn output_safe_records(&self) -> Vec<serde_json::Value> {
+        self.outputs.iter().map(|actuator|match self.runtime.query(Query::Output(*actuator)){
+            Ok(QueryResult::Output(s))=>serde_json::json!({"instrument":actuator.instrument().get().to_string(),
+                "parameter":actuator.parameter().get().to_string(),"safe_confirmed":s.safe_confirmed,
+                "lease_present":s.lease.is_some(),"fault_latched":s.fault_latched,
+                "readback":s.readback.map(|r|serde_json::json!({"value":r.value,"at":r.at.as_nanos().to_string()})),
+                "state":match s.state{lab_core::output::OutputState::Unverified=>"unverified",
+                    lab_core::output::OutputState::SafePending=>"safe_pending",lab_core::output::OutputState::Disarmed=>"disarmed",
+                    lab_core::output::OutputState::ArmedManual=>"armed_manual",lab_core::output::OutputState::ArmedAuto=>"armed_auto",
+                    lab_core::output::OutputState::FaultLatched=>"fault_latched"}}),
+            _=>serde_json::json!({"instrument":actuator.instrument().get().to_string(),
+                "parameter":actuator.parameter().get().to_string(),"safe_confirmed":false,"state":"unknown"})}).collect()
+    }
+
     /// Fence producers before Rust begins a new required safe procedure.
     pub fn begin_shutdown(&mut self, clock: &impl Clock) -> Result<(), Error> {
         if self.stopping {
@@ -426,26 +587,22 @@ impl HostCore {
                     .map_err(event_domain_error)?;
             }
         }
-        let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
-        self.runtime.command(Command::Output {
-            actuator,
-            command: OutputCommand::RequestSafe,
-            at: clock.now(),
-        })?;
-        self.observe(clock.now(), None)?;
+        for actuator in self.outputs.clone() {
+            self.runtime.command(Command::Output {
+                actuator,
+                command: OutputCommand::RequestSafe,
+                at: clock.now(),
+            })?;
+            self.observe(clock.now(), None)?;
+        }
         self.plan.safety.next_due = clock.now();
         Ok(())
     }
 
     /// Copy output evidence and worker cleanup status without progressing either.
     pub fn shutdown_status(&self) -> ShutdownStatus {
-        let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
-        let safe_confirmed = match self.runtime.query(Query::Output(actuator)) {
-            Ok(QueryResult::Output(snapshot)) => {
-                snapshot.safe_confirmed && snapshot.lease.is_none()
-            }
-            _ => false,
-        };
+        let safe_confirmed=self.outputs.iter().all(|actuator|matches!(self.runtime.query(Query::Output(*actuator)),
+            Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed && snapshot.lease.is_none()));
         let unfinished_workers = self.runtime.unfinished_component_workers();
         ShutdownStatus {
             safe_confirmed,

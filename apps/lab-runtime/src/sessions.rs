@@ -107,6 +107,13 @@ pub enum OperationState {
     Completed(String),
     /// Domain action rejected or failed after admission, with a bounded code.
     Failed(String),
+    /// Failed domain/host outcome with a retained bounded evidence summary.
+    FailedWithResult {
+        /// Stable machine-readable failure code.
+        code: String,
+        /// Bounded JSON summary available to reconnecting clients.
+        detail: String,
+    },
 }
 impl OperationState {
     fn terminal(&self) -> bool {
@@ -322,6 +329,7 @@ impl SessionStore {
     ) -> Result<(), SessionError> {
         let size = match &state {
             OperationState::Completed(text) | OperationState::Failed(text) => text.len(),
+            OperationState::FailedWithResult { code, detail } => code.len() + detail.len(),
             _ => return Err(SessionError::InvalidOutcome),
         };
         if size > 4096 {
