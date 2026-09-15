@@ -1832,6 +1832,18 @@ fn recording_status_json(
         "outstanding_records":status.outstanding_records,
         "outstanding_bytes":status.outstanding_bytes,
         "outstanding_groups":status.outstanding_groups,
+        "limits":{"records":status.limits.records,"bytes":status.limits.bytes,
+            "groups":status.limits.groups},
+        "main_logical_bytes":status.storage.as_ref().map(|health|
+            health.main_logical_bytes.to_string()),
+        "main_quota_bytes":status.storage.as_ref().map(|health|
+            health.main_quota_bytes.to_string()),
+        "wal_bytes":status.storage.as_ref().map(|health|
+            health.wal_bytes.to_string()),
+        "wal_threshold_bytes":status.storage.as_ref().map(|health|
+            health.wal_threshold_bytes.to_string()),
+        "wal_checkpoints":status.storage.as_ref().map(|health|
+            health.wal_checkpoints.to_string()),
         "coverage":status.coverage,
         "first_missing_fact_seq":status.first_missing_fact.map(|id|id.to_string()),
         "failure_persisted":status.failure_persisted,

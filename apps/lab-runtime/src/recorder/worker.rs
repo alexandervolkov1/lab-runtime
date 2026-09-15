@@ -6,7 +6,7 @@
 use super::{
     AnnotationRecord, BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord,
     ProvenanceEntry, ProvenanceObject, RecorderGap, RecordingPolicy, RunsCursor, RunsPage,
-    SqliteStore, StorageError, TimeAnchor,
+    SqliteStore, StorageError, StorageHealth, TimeAnchor,
 };
 use crate::host::{Clock, SystemClock};
 use lab_core::{Value, recording::RecordingFact};
@@ -210,6 +210,10 @@ pub struct RecordingStatus {
     pub failure_persisted: bool,
     /// Worker thread closed its SQLite connection; independent of coverage.
     pub worker_closed: bool,
+    /// Hard owner ingress limits selected before the worker starts.
+    pub limits: RecorderLimits,
+    /// Last worker-observed main/WAL footprint; absent only before readiness.
+    pub storage: Option<StorageHealth>,
 }
 
 #[derive(Clone)]
@@ -226,6 +230,7 @@ struct Receipt {
     terminal_seal_committed: bool,
     activation_root: Option<[u8; 32]>,
     failure_persisted: bool,
+    storage: Option<StorageHealth>,
 }
 impl Default for Receipt {
     fn default() -> Self {
@@ -242,6 +247,7 @@ impl Default for Receipt {
             terminal_seal_committed: false,
             activation_root: None,
             failure_persisted: false,
+            storage: None,
         }
     }
 }
@@ -392,6 +398,14 @@ impl RecorderWorker {
                     })
                     .and_then(|anchor| {
                         SqliteStore::open_with_boot_anchor(&worker_path, &worker_boot, anchor)
+                    })
+                    .and_then(|store| {
+                        let health = store.storage_health()?;
+                        thread_receipt
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .storage = Some(health);
+                        Ok(store)
                     });
                 let _ = ready_sender.send(
                     opened
@@ -460,6 +474,8 @@ impl RecorderWorker {
                 first_missing_fact: None,
                 failure_persisted: false,
                 worker_closed: false,
+                limits,
+                storage: None,
             },
             database_id,
             boot_id: boot_id.to_owned(),
@@ -1108,6 +1124,7 @@ impl RecorderWorker {
                 self.cached.terminal_seal_committed = receipt.terminal_seal_committed;
                 self.cached.activation_root = receipt.activation_root;
                 self.cached.failure_persisted = receipt.failure_persisted;
+                self.cached.storage = receipt.storage;
                 if self
                     .periodic_pending
                     .is_some_and(|id| receipt.persisted >= id)
@@ -1358,13 +1375,16 @@ fn worker_loop(
                             first_record,
                         )
                     })
-                    .map(|_| {
+                    .and_then(|_| {
+                        let health = store.storage_health()?;
                         let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                         status.state = RecordingState::Recording;
                         status.persisted = store.current_record_sequence();
                         status.confirmed_submission = Some(submitted_at);
                         status.run_no = store.current_run_no();
                         status.interval_no = store.current_interval_no();
+                        status.storage = Some(health);
+                        Ok(())
                     })
             }
             Message::Facts(facts, bytes, submitted_at, queued_at, first_record) => {
@@ -1549,6 +1569,14 @@ fn worker_loop(
                 return true;
             }
         };
+        let result = result.and_then(|()| {
+            let health = store.storage_health()?;
+            receipt
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .storage = Some(health);
+            Ok(())
+        });
         if let Err(error) = result {
             let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
             status.state = RecordingState::Failed;

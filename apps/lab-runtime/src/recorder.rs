@@ -243,6 +243,21 @@ impl From<rusqlite::Error> for StorageError {
     }
 }
 
+/// Worker-observed storage footprint; status reads this receipt without SQL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageHealth {
+    /// Logical main database page bytes, including committed WAL-only changes.
+    pub main_logical_bytes: u64,
+    /// Checked hard main-file page quota in bytes.
+    pub main_quota_bytes: u64,
+    /// Actual sidecar size at the worker observation point.
+    pub wal_bytes: u64,
+    /// Current checked WAL checkpoint threshold.
+    pub wal_threshold_bytes: u64,
+    /// Successful explicit threshold checkpoints in this boot.
+    pub wal_checkpoints: u64,
+}
+
 /// Cooperative VM/time limit for one indexed history selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryBudget {
@@ -815,6 +830,23 @@ impl SqliteStore {
             Err(error) => return Err(StorageError(format!("WAL metadata: {error}"))),
         };
         Ok((bytes, self.wal_checkpoints))
+    }
+
+    /// Capture an owned footprint on the storage thread after a SQL boundary.
+    pub fn storage_health(&self) -> Result<StorageHealth, StorageError> {
+        let (page_size, page_count, quota_pages) = self.storage_pages()?;
+        let (wal_bytes, wal_checkpoints) = self.wal_health()?;
+        Ok(StorageHealth {
+            main_logical_bytes: page_size
+                .checked_mul(page_count)
+                .ok_or_else(|| StorageError("main footprint overflow".into()))?,
+            main_quota_bytes: page_size
+                .checked_mul(quota_pages)
+                .ok_or_else(|| StorageError("main quota overflow".into()))?,
+            wal_bytes,
+            wal_threshold_bytes: self.wal_threshold_bytes,
+            wal_checkpoints,
+        })
     }
 
     /// Trusted small real-file limit for checkpoint fault acceptance. It may
