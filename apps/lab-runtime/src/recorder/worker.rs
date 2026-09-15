@@ -54,6 +54,7 @@ struct BarrierState {
     hold_start: bool,
     hold_after_fact_commit: bool,
     hold_terminal_operation: bool,
+    panic_before_fact_sql: bool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -67,6 +68,7 @@ impl WriterBarrier {
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
+            panic_before_fact_sql: false,
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -77,6 +79,7 @@ impl WriterBarrier {
             hold_start: true,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
+            panic_before_fact_sql: false,
         }))
     }
     /// Hold after a real fact transaction commits but before its owner receipt.
@@ -88,6 +91,7 @@ impl WriterBarrier {
             hold_start: false,
             hold_after_fact_commit: true,
             hold_terminal_operation: false,
+            panic_before_fact_sql: false,
         }))
     }
     /// Hold only a terminal operation before SQL, after earlier acceptance commits.
@@ -99,6 +103,18 @@ impl WriterBarrier {
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: true,
+            panic_before_fact_sql: false,
+        }))
+    }
+    /// Terminate the storage thread before one fact transaction for fault tests.
+    pub fn panic_before_fact_sql() -> Self {
+        Self(Arc::new(BarrierState {
+            held: AtomicBool::new(false),
+            reached: AtomicBool::new(false),
+            hold_start: false,
+            hold_after_fact_commit: false,
+            hold_terminal_operation: false,
+            panic_before_fact_sql: true,
         }))
     }
     /// Release any worker held at a deterministic storage stage.
@@ -1009,7 +1025,14 @@ impl RecorderWorker {
         if let Some(receipt) = fresh_receipt {
             self.apply_receipt(receipt);
         }
-        let worker_closed = !self.alive.load(Ordering::Acquire);
+        let alive = self.alive.load(Ordering::Acquire);
+        let panicked = alive && self._thread.is_finished();
+        if panicked {
+            // A Rust panic bypasses the worker's final alive/receipt stores.
+            // Detect it without joining or claiming that queued facts committed.
+            self.fail("storage worker panicked");
+        }
+        let worker_closed = !alive || panicked;
         if worker_closed
             && !matches!(
                 self.cached.state,
@@ -1345,6 +1368,10 @@ fn worker_loop(
                     })
             }
             Message::Facts(facts, bytes, submitted_at, queued_at, first_record) => {
+                if let Some(barrier) = barrier.filter(|barrier| barrier.0.panic_before_fact_sql) {
+                    barrier.0.reached.store(true, Ordering::Release);
+                    panic!("injected recorder worker panic before fact SQL");
+                }
                 let mut batch = vec![(facts, bytes, submitted_at, first_record)];
                 let mut records = batch[0].0.len();
                 let mut accounted_bytes = bytes;

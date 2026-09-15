@@ -1,7 +1,9 @@
 //! BestEffort ingress loss leaves a durable gap without inventing lost effects.
 
 use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
-use lab_runtime::recorder::{RecorderLimits, RecorderWorker, RecordingState, WriterBarrier};
+use lab_runtime::recorder::{
+    RecorderLimits, RecorderWorker, RecordingState, SqliteStore, WriterBarrier,
+};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -129,6 +131,102 @@ fn accepted_prefix_commits_before_reserved_writable_ingress_gap_seal() {
     assert_eq!(u64::from_be_bytes(first.try_into().unwrap()), 2);
     assert_eq!(u64::from_be_bytes(known.try_into().unwrap()), 1);
     assert_eq!(u64::from_be_bytes(last_confirmed.try_into().unwrap()), 3);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn worker_panic_before_fact_sql_is_visible_without_a_fabricated_receipt() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::panic_before_fact_sql();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let old_boot = worker.boot_id().to_owned();
+    worker.request_start("panic before fact").unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    }
+    let start_watermark = worker.poll().persisted_through_sequence;
+    let instrument = InstrumentId::new(973);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "panic fact".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    worker
+        .try_admit_at(runtime.take_recording_facts(), Duration::from_secs(1))
+        .unwrap();
+    while !barrier.reached() {
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    }
+    let failed = loop {
+        let status = worker.poll();
+        if status.worker_closed {
+            break status;
+        }
+        assert!(
+            Instant::now() < by,
+            "panic must be detected promptly: {status:?}"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(failed.state, RecordingState::Failed);
+    assert!(
+        failed
+            .first_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("panicked")
+    );
+    assert_eq!(failed.persisted_through_sequence, start_watermark);
+    assert_eq!(failed.coverage, "unknown_tail");
+    assert_eq!(failed.outstanding_records, 1);
+    for _ in 0..3 {
+        let repeated = worker.poll();
+        assert_eq!(repeated.first_error, failed.first_error);
+        assert_eq!(repeated.persisted_through_sequence, start_watermark);
+        assert_eq!(repeated.outstanding_records, 1);
+    }
+    drop(worker);
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(reopened.database_id().len(), 32);
+    assert_ne!(reopened.boot_id(), old_boot);
+    drop(reopened);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let old_rows: i64 = db
+        .query_row(
+            "SELECT count(*) FROM measurements WHERE boot_id=(SELECT boot_id FROM runs WHERE label='panic before fact')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_rows, 0);
+    let (state, coverage): (String, String) = db
+        .query_row(
+            "SELECT state,coverage FROM runs WHERE label='panic before fact'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "interrupted");
+    assert_eq!(coverage, "unknown_tail");
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
