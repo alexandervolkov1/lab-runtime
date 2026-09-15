@@ -1,11 +1,14 @@
 //! Application admission records domain outcomes before any reply delivery.
 
+use lab_core::reference::{ReferenceConfig, ReferenceId};
+use lab_core::{Command, Unit};
 use lab_runtime::{
     application::Application,
     service::{ServiceHost, ServiceOptions},
     wire::decode_frame,
 };
 use serde_json::{Value, json};
+use std::time::Duration;
 
 fn startup() -> (ServiceHost, Application) {
     let service = ServiceHost::startup(
@@ -140,6 +143,99 @@ fn two_live_scopes_racing_on_one_revision_have_exactly_one_committed_retune() {
     );
     assert_eq!(current[0]["result"]["revision"], "2");
     assert_eq!(current[0]["result"]["target"], 61.0);
+}
+
+#[test]
+fn retune_outcome_reports_the_registered_reference_identity_instead_of_a_profile_constant() {
+    let (mut service, mut app) = startup();
+    service
+        .owner_mut()
+        .command(Command::RegisterReference(ReferenceConfig::Ramp {
+            id: ReferenceId::new(2),
+            start: 20.0,
+            target: 20.0,
+            rate: 1.0,
+            unit: Unit::CELSIUS,
+            at: Duration::ZERO,
+        }))
+        .unwrap();
+    service
+        .owner_mut()
+        .event_log_mut()
+        .track_reference(ReferenceId::new(2));
+    let scope = hello(&mut service, &mut app, 1);
+    let result = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"r2","op":"reference_retune","request_id":{"scope":scope,"seq":"1"},
+            "args":{"reference":"2","expected_revision":"1","target":45.0,"rate":2.0}
+        })),
+    );
+    assert_eq!(result[1]["state"], "completed");
+    assert_eq!(result[1]["result"]["reference"], "2");
+}
+
+#[test]
+fn accepted_shutdown_barrier_rejects_other_clients_queued_start_before_any_output_lease() {
+    let (mut service, mut app) = startup();
+    let stopping_scope = hello(&mut service, &mut app, 1);
+    let other_scope = hello(&mut service, &mut app, 2);
+    let accepted = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"stop","op":"runtime_shutdown",
+            "request_id":{"scope":stopping_scope,"seq":"1"},"args":{}
+        })),
+    );
+    assert_eq!(accepted[0]["state"], "accepted");
+    let start = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"late","op":"controller_start",
+            "request_id":{"scope":other_scope,"seq":"1"},"args":{"controller":"1"}
+        })),
+    );
+    assert_eq!(start[0]["code"], "shutdown_before_execution");
+    assert_eq!(start[0]["accepted"], false);
+    let current = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"q","op":"controller","args":{"controller":"1"}
+        })),
+    );
+    assert_ne!(current[0]["result"]["state"], "running");
+    assert_eq!(
+        current[0]["result"]["latest_output"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn stopping_owner_refuses_new_hello_scope_and_reports_service_state_honestly() {
+    let (mut service, mut app) = startup();
+    let scope = hello(&mut service, &mut app, 1);
+    let stop = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"stop","op":"runtime_shutdown",
+            "request_id":{"scope":scope,"seq":"1"},"args":{}
+        })),
+    );
+    assert_eq!(stop[0]["state"], "accepted");
+    let late = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"late","op":"hello","args":{"scope":null}
+        })),
+    );
+    assert_eq!(late[0]["code"], "shutdown_in_progress");
+    assert_eq!(late[0]["accepted"], false);
 }
 
 #[test]

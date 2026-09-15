@@ -88,13 +88,16 @@ impl Application {
             return Vec::new();
         };
         let result = json!({"safe_confirmed":status.safe_confirmed,"unfinished_workers":status.unfinished_workers,
+            "fatal_error":status.fatal_error,
             "cleanup_complete":status.unfinished_workers==0,"exit_success":status.exit_success,
             "outputs":service.owner().output_safe_records()});
         let state = if status.exit_success {
             OperationState::Completed(result.to_string())
         } else {
             OperationState::FailedWithResult {
-                code: if status.safe_confirmed {
+                code: if status.fatal_error {
+                    "fatal_owner_error"
+                } else if status.safe_confirmed {
                     "cleanup_incomplete"
                 } else {
                     "safe_unconfirmed"
@@ -157,7 +160,9 @@ impl Application {
     ) -> Vec<Value> {
         let msg = request.msg_id.clone();
         let result = if request.op == "hello" {
-            if self.clients.contains_key(&connection) {
+            if service.is_stopping() {
+                Err("shutdown_in_progress")
+            } else if self.clients.contains_key(&connection) {
                 Err("already_hello")
             } else {
                 let old = request.args.get("scope").and_then(Value::as_str);
@@ -708,6 +713,10 @@ fn dispatch(
     rid: &WireRequestId,
 ) -> Result<Value, Error> {
     let at = service.clock().now();
+    let retune_reference = match &mutation {
+        Mutation::RetuneRamp { reference, .. } => Some(*reference),
+        _ => None,
+    };
     let command = match mutation {
         Mutation::RetuneRamp {
             reference,
@@ -763,7 +772,7 @@ fn dispatch(
         .command_with_cause(command, Some((rid.scope.clone(), rid.seq)))?
     {
         CommandResult::ReferenceRetuned(retuned) => Ok(
-            json!({"reference":"1","revision":retuned.revision.to_string(),
+            json!({"reference":retune_reference.ok_or(Error::InvalidConfiguration("unexpected retune identity"))?.to_string(),"revision":retuned.revision.to_string(),
             "value":retuned.state.current,"target":retuned.state.target,"rate":retuned.state.rate,
             "committed_at":nanos(retuned.state.last_at)}),
         ),
