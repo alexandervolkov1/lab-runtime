@@ -1,6 +1,9 @@
 //! Historical SQL is an Operation; page Query uses a bounded retained result.
 
-use lab_core::Command;
+use lab_core::{
+    Command, InstrumentId, ParameterId, Sample, SignalId, Unit, Value as DomainValue,
+    recording::RecordingFact,
+};
 use lab_runtime::{
     application::Application,
     host::Clock,
@@ -240,4 +243,129 @@ fn run_discovery_operation_lists_archived_runs_after_service_reopen() {
         std::thread::yield_now();
     }
     assert!(!path.exists());
+}
+
+#[test]
+fn escaped_archived_values_page_through_public_api_with_bounded_complete_frames() {
+    let path = temporary_database();
+    let old_boot = "77777777777777777777777777777777";
+    let instrument = InstrumentId::new(97);
+    let parameter = ParameterId::new(23);
+    let signal = SignalId::new(instrument, parameter);
+    let mut archive = lab_runtime::recorder::SqliteStore::open_with_boot(&path, old_boot).unwrap();
+    archive.start_run("escaped API archive").unwrap();
+    archive
+        .append_facts(
+            &(1..=3u64)
+                .map(|sequence| RecordingFact::Measurement {
+                    sequence,
+                    sample: Sample::validated_good(
+                        signal,
+                        Unit::CELSIUS,
+                        Duration::from_secs(1),
+                        DomainValue::Text("\0".repeat(1000)),
+                    )
+                    .unwrap(),
+                    generation: 1,
+                    revision: 1,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    archive.stop_run().unwrap();
+    archive.finish_boot(Duration::from_secs(2)).unwrap();
+    archive.close().unwrap();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"hello",
+        "op":"hello","args":{"scope":null}})),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let status = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"status",
+        "op":"recording_status","args":{}})),
+    );
+    let database_id = status[0]["result"]["database_id"].clone();
+    let mut cursor = Value::Null;
+    let mut ids = Vec::new();
+    for sequence in 1..=3u64 {
+        let request = app.handle(
+            &mut service,
+            1,
+            frame(json!({
+                "v":1,"msg_id":format!("read-{sequence}"),"op":"history_read",
+                "request_id":{"scope":scope,"seq":sequence.to_string()},
+                "args":{"mode":"measurements","database_id":database_id,
+                    "boot_id":old_boot,"run_id":{"boot_id":old_boot,"run_no":"1"},
+                    "signal":{"instrument":instrument.get().to_string(),
+                        "parameter":parameter.get().to_string()},
+                    "from_ns":"0","to_ns":"2000000000","max_records":128,"cursor":cursor}
+            })),
+        );
+        assert_eq!(request[0]["state"], "accepted");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let terminal = loop {
+            let rows = app.poll_history(&mut service);
+            if !rows.is_empty() {
+                break rows;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "history worker missed bounded completion"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(terminal[0].1["state"], "completed", "{terminal:?}");
+        let token = terminal[0].1["result"]["page_token"].clone();
+        let reply = app.handle(
+            &mut service,
+            1,
+            frame(json!({"v":1,
+            "msg_id":format!("page-{sequence}"),"op":"history_page",
+            "args":{"page_token":token}})),
+        );
+        let result = &reply[0]["result"];
+        assert_eq!(result["rows"].as_array().unwrap().len(), 1);
+        assert!(serde_json::to_vec(result).unwrap().len() <= 8 * 1024);
+        assert!(encode_frame(&reply[0]).unwrap().len() <= 16_384);
+        ids.push(result["rows"][0]["record_seq"].as_str().unwrap().to_owned());
+        cursor = result["next_cursor"].clone();
+        let released = app.handle(
+            &mut service,
+            1,
+            frame(json!({"v":1,
+            "msg_id":format!("release-{sequence}"),"op":"history_release",
+            "args":{"page_token":token}})),
+        );
+        assert_eq!(released[0]["type"], "result");
+    }
+    assert!(cursor.is_null());
+    assert_eq!(
+        ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        3
+    );
+    service.request_shutdown().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while service.shutdown_step().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    drop(app);
+    drop(service);
+    std::fs::remove_file(path).unwrap();
 }
