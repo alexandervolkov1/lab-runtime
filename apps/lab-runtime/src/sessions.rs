@@ -77,6 +77,13 @@ pub enum Mutation {
         /// Checked run counter within that boot.
         run_no: u64,
     },
+    /// Bounded informational record accepted by Recorder ingress, not evidence.
+    ExperimentAnnotate {
+        /// Validated human-readable annotation name.
+        name: String,
+        /// Validated canonical JSON data, with no caller-supplied authority.
+        data_json: String,
+    },
     /// Explicit indexed historical selection, with no Runtime mutation.
     HistoryReadMeasurements {
         /// Stable archive database identity.

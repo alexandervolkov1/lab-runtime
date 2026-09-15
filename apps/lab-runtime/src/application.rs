@@ -3,8 +3,8 @@
 //! precede any attempt to send a reply.
 
 use crate::recorder::{
-    HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, RecordingPolicy, RecordingState,
-    RecordingStatus, RunsCursor, RunsPage,
+    AnnotationRecord, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, RecordingPolicy,
+    RecordingState, RecordingStatus, RunsCursor, RunsPage, bounded_annotation_data,
 };
 use crate::{
     host::Clock,
@@ -487,7 +487,7 @@ impl Application {
                             if service.owner().recording_status().is_some() {
                                 capabilities.push("recorder_sqlite_v1");
                                 capabilities.push("history_raw_paged_v1");
-                                operations.extend(["recording_status","recording_start","recording_stop"]);
+                                operations.extend(["recording_status","recording_start","recording_stop","experiment_annotate"]);
                                 operations.extend(["history_read","history_page","history_release"]);
                             }
                             json!({"boot_id":service.boot_id(),"v":1,"scope":opened.scope,
@@ -981,6 +981,30 @@ impl Application {
             Admission::Accepted => {}
         }
         let accepted = operation_reply(&msg, &rid, OperationState::Accepted);
+        if let Mutation::ExperimentAnnotate { name, data_json } = &payload {
+            let annotation = AnnotationRecord {
+                scope: scope.clone(),
+                request_seq: rid.seq,
+                name: name.clone(),
+                data_json: data_json.clone(),
+                at: now,
+            };
+            let outcome = service.owner_mut().annotate(annotation).map_or_else(
+                |error| OperationState::Failed(domain_code(error).into()),
+                |sequence| {
+                    OperationState::Completed(
+                        json!({
+                            "record_seq":sequence.to_string(),"durability":"pending"
+                        })
+                        .to_string(),
+                    )
+                },
+            );
+            self.sessions
+                .complete(&scope, rid.seq, outcome.clone(), service.clock().now())
+                .expect("admitted bounded annotation operation");
+            return vec![accepted, operation_reply(&msg, &rid, outcome)];
+        }
         if let Mutation::HistoryReadRuns {
             database_id,
             max_records,
@@ -1320,6 +1344,7 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
         Mutation::Shutdown => ("shutdown", json!({})),
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }
+        | Mutation::ExperimentAnnotate { .. }
         | Mutation::HistoryReadMeasurements { .. }
         | Mutation::HistoryReadRuns { .. } => return None,
     };
@@ -1401,6 +1426,20 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
             Mutation::RecordingStop {
                 boot_id: boot_id.to_owned(),
                 run_no: id_field(run, "run_no")?,
+            }
+        }
+        "experiment_annotate" => {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            let data = args.get("data").ok_or("invalid_args")?;
+            if name.trim().is_empty() || name.len() > 64 || !bounded_annotation_data(data) {
+                return Err("invalid_args");
+            }
+            Mutation::ExperimentAnnotate {
+                name: name.to_owned(),
+                data_json: data.to_string(),
             }
         }
         "history_read" => {
@@ -1550,6 +1589,7 @@ fn dispatch(
         }
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }
+        | Mutation::ExperimentAnnotate { .. }
         | Mutation::HistoryReadMeasurements { .. }
         | Mutation::HistoryReadRuns { .. } => {
             return Err(Error::InvalidConfiguration(

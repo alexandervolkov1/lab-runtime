@@ -119,6 +119,99 @@ impl OperationRecord {
     }
 }
 
+/// Validated informational client record; Runtime assigns origin and identity.
+#[derive(Clone, Debug)]
+pub struct AnnotationRecord {
+    /// Original logical actor scope, independent of connection lifetime.
+    pub scope: String,
+    /// Original checked logical request sequence.
+    pub request_seq: u64,
+    /// Validated annotation name, at most 64 UTF-8 bytes.
+    pub name: String,
+    /// Validated canonical JSON data; it cannot supply physical evidence.
+    pub data_json: String,
+    /// Runtime-owner monotonic admission time in this boot.
+    pub at: Duration,
+}
+
+impl AnnotationRecord {
+    fn valid(&self) -> bool {
+        self.scope.len() <= 64
+            && self.request_seq > 0
+            && !self.name.trim().is_empty()
+            && self.name.len() <= 64
+            && self.data_json.len() <= 2 * 1024
+            && serde_json::from_str(&self.data_json)
+                .ok()
+                .is_some_and(|data| bounded_annotation_data(&data))
+    }
+
+    fn charge(&self) -> Option<usize> {
+        self.scope
+            .capacity()
+            .checked_add(self.name.capacity())?
+            .checked_add(self.data_json.capacity())?
+            .checked_add(self.data_json.len().checked_mul(3)?)?
+            .checked_add(512)
+    }
+}
+
+/// Check all nested annotation bounds before a logical operation is admitted.
+/// Sixfold string charges cover JSON control-character escaping.
+pub fn bounded_annotation_data(data: &serde_json::Value) -> bool {
+    fn visit(
+        value: &serde_json::Value,
+        depth: usize,
+        nodes: &mut usize,
+        bytes: &mut usize,
+    ) -> Option<()> {
+        if depth > 4 {
+            return None;
+        }
+        *nodes = nodes.checked_add(1)?;
+        if *nodes > 64 {
+            return None;
+        }
+        match value {
+            serde_json::Value::Null => *bytes = bytes.checked_add(4)?,
+            serde_json::Value::Bool(_) => *bytes = bytes.checked_add(5)?,
+            serde_json::Value::Number(number) => {
+                *bytes = bytes.checked_add(number.to_string().len())?;
+            }
+            serde_json::Value::String(string) => {
+                if string.len() > 512 {
+                    return None;
+                }
+                *bytes = bytes.checked_add(string.len().checked_mul(6)?.checked_add(2)?)?;
+            }
+            serde_json::Value::Array(values) => {
+                *bytes = bytes.checked_add(values.len().checked_add(2)?)?;
+                for child in values {
+                    visit(child, depth + 1, nodes, bytes)?;
+                }
+            }
+            serde_json::Value::Object(members) => {
+                *bytes = bytes.checked_add(members.len().checked_add(2)?)?;
+                for (key, child) in members {
+                    if key.len() > 512 {
+                        return None;
+                    }
+                    *nodes = nodes.checked_add(1)?;
+                    if *nodes > 64 {
+                        return None;
+                    }
+                    *bytes = bytes.checked_add(key.len().checked_mul(6)?.checked_add(3)?)?;
+                    visit(child, depth + 1, nodes, bytes)?;
+                }
+            }
+        }
+        (*bytes <= 2 * 1024).then_some(())
+    }
+    let mut nodes = 0;
+    let mut bytes = 0;
+    visit(data, 1, &mut nodes, &mut bytes).is_some()
+}
+
 const APPLICATION_ID: i32 = 0x4c41_4252; // "LABR"; unrelated SQLite files are rejected.
 const SCHEMA_VERSION: i64 = 1;
 const MAX_RAW_PAGE: usize = 128;
@@ -1668,6 +1761,81 @@ impl SqliteStore {
             return Err(StorageError("operation record reservation mismatch".into()));
         }
         self.append_operation(operation)
+    }
+
+    /// Atomically commit one informational annotation at its owner-reserved ID.
+    /// Caller data stays nested under `data` and never supplies record origin.
+    pub fn append_annotation_assigned(
+        &mut self,
+        annotation: &AnnotationRecord,
+        record_seq: u64,
+    ) -> Result<u64, StorageError> {
+        if self.run_no.is_none()
+            || !annotation.valid()
+            || self.next_record_sequence.checked_add(1) != Some(record_seq)
+        {
+            return Err(StorageError(
+                "annotation reservation or interval invalid".into(),
+            ));
+        }
+        self.require_main_reserve()?;
+        self.require_wal_budget()?;
+        let data: serde_json::Value = serde_json::from_str(&annotation.data_json)
+            .map_err(|_| StorageError("annotation data invalid".into()))?;
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "name":annotation.name,
+            "data":data,
+            "actor_scope":annotation.scope,
+            "request_seq":annotation.request_seq.to_string(),
+        }))
+        .map_err(|_| StorageError("annotation encoding failed".into()))?;
+        if payload.len() > 4 * 1024 {
+            return Err(StorageError("annotation envelope too large".into()));
+        }
+        let commit = self
+            .commit_no
+            .checked_add(1)
+            .ok_or_else(|| StorageError("annotation commit identity exhausted".into()))?;
+        let wall = self.boot_anchor.estimate_us(annotation.at)?;
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,\
+             published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)\
+             VALUES(?1,?2,?3,?4,'annotation',1,?5,?5,?6,'boot_anchor',\
+             'local_client',?7)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(record_seq).as_slice(),
+                u64_blob(self.run_no.expect("checked active run")).as_slice(),
+                u64_blob(self.interval_no.expect("active run has interval")).as_slice(),
+                duration_blob(annotation.at)?.as_slice(),
+                wall,
+                payload.as_slice(),
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO runtime_events(boot_id,record_seq,category,severity,code,data)\
+             VALUES(?1,?2,'annotation','info',?3,?4)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(record_seq).as_slice(),
+                annotation.name,
+                payload.as_slice()
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3\
+             WHERE boot_id=?1",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(commit).as_slice(),
+                u64_blob(record_seq).as_slice()
+            ],
+        )?;
+        transaction.commit()?;
+        self.next_record_sequence = record_seq;
+        self.commit_no = commit;
+        Ok(record_seq)
     }
 
     /// Commit a real durable progress marker even during an otherwise quiet run.

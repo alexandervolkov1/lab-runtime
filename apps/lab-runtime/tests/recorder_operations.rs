@@ -25,6 +25,140 @@ fn temporary_database() -> PathBuf {
 }
 
 #[test]
+fn annotation_completion_reports_pending_ingress_before_a_held_sqlite_commit() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let now = service.clock().now();
+    service
+        .owner_mut()
+        .start_recording("annotation", now)
+        .unwrap();
+    let ready_by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < ready_by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let initial = service
+        .owner()
+        .recording_status()
+        .unwrap()
+        .persisted_through_sequence;
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let scope = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"h","op":"hello","args":{"scope":null}
+        })),
+    )[0]["result"]["scope"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for invalid_args in [
+        json!({"name":"n".repeat(65),"data":{}}),
+        json!({"name":"n","data":"\0".repeat(400)}),
+        json!({"name":"n","data":vec![0;65]}),
+        json!({"name":"n","data":{"a":{"b":{"c":{"d":1}}}}}),
+    ] {
+        let rejected = app.handle(
+            &mut service,
+            1,
+            frame(json!({
+                "v":1,"msg_id":"bad","op":"experiment_annotate",
+                "request_id":{"scope":scope,"seq":"1"},"args":invalid_args
+            })),
+        );
+        assert_eq!(rejected[0]["type"], "error");
+        assert_eq!(rejected[0]["accepted"], false);
+    }
+    for injected in ["origin", "ack", "safe_evidence", "readback_verified"] {
+        let mut args = json!({"name":"n","data":{}});
+        args[injected] = json!(true);
+        let decoded = decode_frame(
+            &encode_frame(&json!({
+                "v":1,"msg_id":"injected","op":"experiment_annotate",
+                "request_id":{"scope":scope,"seq":"1"},"args":args
+            }))
+            .unwrap(),
+        );
+        assert!(
+            decoded.is_err(),
+            "untrusted {injected} field passed wire validation"
+        );
+    }
+    let request = json!({"v":1,"msg_id":"a","op":"experiment_annotate",
+        "request_id":{"scope":scope,"seq":"1"},
+        "args":{"name":"checkpoint","data":{"temperature":42,"note":"operator"}}});
+    let replies = app.handle(&mut service, 1, frame(request.clone()));
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[0]["state"], "accepted");
+    assert_eq!(replies[1]["state"], "completed");
+    assert_eq!(replies[1]["result"]["durability"], "pending");
+    let reserved = replies[1]["result"]["record_seq"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!(reserved > initial);
+    let duplicate = app.handle(&mut service, 1, frame(request));
+    assert_eq!(duplicate.len(), 1);
+    assert_eq!(duplicate[0]["result"]["record_seq"], reserved.to_string());
+    let held_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < held_by);
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .persisted_through_sequence,
+        initial
+    );
+    barrier.release();
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(3);
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.recorder_flushed);
+    drop(app);
+    drop(service);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let (kind, origin, payload): (String, String, Vec<u8>) = archive
+        .query_row(
+            "SELECT kind,origin,payload FROM records WHERE record_seq=?1",
+            [reserved.to_be_bytes().to_vec()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "annotation");
+    assert_eq!(origin, "local_client");
+    let data: Value = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(data["actor_scope"], scope);
+    assert_eq!(data["name"], "checkpoint");
+    assert_eq!(data["data"]["temperature"], 42);
+    drop(archive);
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
 fn recording_start_returns_accepted_before_durable_completion_and_duplicate_does_not_restart() {
     let path = temporary_database();
     let path_text = path.to_string_lossy();

@@ -4,9 +4,9 @@
 //! receipt inspection; shutdown requests never join a worker stuck in OS I/O.
 
 use super::{
-    BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, ProvenanceEntry,
-    ProvenanceObject, RecorderGap, RecordingPolicy, RunsCursor, RunsPage, SqliteStore,
-    StorageError, TimeAnchor,
+    AnnotationRecord, BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord,
+    ProvenanceEntry, ProvenanceObject, RecorderGap, RecordingPolicy, RunsCursor, RunsPage,
+    SqliteStore, StorageError, TimeAnchor,
 };
 use crate::host::{Clock, SystemClock};
 use lab_core::{Value, recording::RecordingFact};
@@ -221,6 +221,7 @@ enum Message {
     Facts(Vec<RecordingFact>, usize, Duration, Instant, u64),
     ClockAnchor(u64),
     Operation(OperationRecord, usize, u64),
+    Annotation(AnnotationRecord, usize, u64),
     GapSeal(RecorderGap, u64),
     Probe(Duration),
     History {
@@ -819,6 +820,60 @@ impl RecorderWorker {
         }
     }
 
+    /// Reserve the exact annotation record ID after an atomic bounded transfer.
+    /// Its returned ID is an ingress receipt, never a durable confirmation.
+    pub fn try_admit_annotation(
+        &mut self,
+        annotation: AnnotationRecord,
+    ) -> Result<u64, StorageError> {
+        self.poll();
+        if self.cached.state != RecordingState::Recording || !annotation.valid() {
+            return Err(StorageError("annotation outside active interval".into()));
+        }
+        let bytes = annotation
+            .charge()
+            .ok_or_else(|| StorageError("annotation credit arithmetic exhausted".into()))?;
+        if bytes > 64 * 1024
+            || bytes > MAX_GROUP_BYTES
+            || self.charged_groups >= self.limits.groups
+            || self.charged_records >= self.limits.records
+            || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
+        {
+            self.fail_with_gap(RecorderGap {
+                reason: "recorder annotation ingress capacity exhausted".into(),
+                at: annotation.at,
+                first_missing_fact: None,
+                known_missing_count: Some(1),
+                last_accepted_fact: self.last_accepted_fact,
+            });
+            return Err(StorageError("annotation ingress capacity exhausted".into()));
+        }
+        let assigned = *self.planned_range(1)?.start();
+        let at = annotation.at;
+        match self
+            .sender
+            .try_send(Message::Annotation(annotation, bytes, assigned))
+        {
+            Ok(()) => {
+                self.reserved_through = assigned;
+                self.charged_records += 1;
+                self.charged_bytes += bytes;
+                self.charged_groups += 1;
+                Ok(assigned)
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                self.fail_with_gap(RecorderGap {
+                    reason: "recorder annotation ingress unavailable".into(),
+                    at,
+                    first_missing_fact: None,
+                    known_missing_count: Some(1),
+                    last_accepted_fact: self.last_accepted_fact,
+                });
+                Err(StorageError("annotation ingress unavailable".into()))
+            }
+        }
+    }
+
     /// Queue a durable stop barrier after all previously admitted groups.
     pub fn request_stop(&mut self) -> Result<(), StorageError> {
         self.request_stop_with_summary(serde_json::json!({"pending_operations":[]}), Duration::ZERO)
@@ -1322,6 +1377,16 @@ fn worker_loop(
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
                     status.confirmed_submission = Some(operation.at);
+                    status.released_records += 1;
+                    status.released_bytes += bytes;
+                    status.released_groups += 1;
+                }),
+            Message::Annotation(annotation, bytes, assigned) => store
+                .append_annotation_assigned(&annotation, assigned)
+                .map(|sequence| {
+                    let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                    status.persisted = sequence;
+                    status.confirmed_submission = Some(annotation.at);
                     status.released_records += 1;
                     status.released_bytes += bytes;
                     status.released_groups += 1;

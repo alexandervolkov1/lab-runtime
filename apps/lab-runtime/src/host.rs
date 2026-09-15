@@ -6,9 +6,9 @@
 
 use crate::events::{EventError, EventLog};
 use crate::recorder::{
-    BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, ProvenanceEntry,
-    ProvenanceObject, RecorderGap, RecorderWorker, RecordingPolicy, RecordingState,
-    RecordingStatus, RunsCursor, RunsPage, StorageError,
+    AnnotationRecord, BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord,
+    ProvenanceEntry, ProvenanceObject, RecorderGap, RecorderWorker, RecordingPolicy,
+    RecordingState, RecordingStatus, RunsCursor, RunsPage, StorageError,
 };
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
@@ -784,6 +784,28 @@ impl HostCore {
             self.pending_operations.remove(&key);
         }
         self.poll_recorder(at);
+    }
+
+    /// Admit one informational annotation while the current interval is active.
+    /// The returned identity proves FIFO admission only; SQL remains pending.
+    pub fn annotate(&mut self, annotation: AnnotationRecord) -> Result<u64, Error> {
+        let at = annotation.at;
+        if self.recording_status.as_ref().map(|status| status.state)
+            != Some(RecordingState::Recording)
+        {
+            return Err(Error::RecordingUnavailable);
+        }
+        let result = self
+            .recorder
+            .as_mut()
+            .ok_or(Error::RecordingUnavailable)?
+            .try_admit_annotation(annotation)
+            .map_err(|_| Error::RecordingUnavailable);
+        if result.is_err() && self.recording_policy == Some(RecordingPolicy::Required) {
+            self.runtime.recording_failure(at);
+        }
+        self.poll_recorder(at);
+        result
     }
 
     /// Schedule indexed archive work on the storage worker, never on this owner.

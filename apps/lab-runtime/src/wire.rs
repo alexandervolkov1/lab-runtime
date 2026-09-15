@@ -328,6 +328,7 @@ fn operation_keys(op: &str) -> Option<(bool, &'static [&'static str])> {
         "recording_status" => (false, &[]),
         "recording_start" => (true, &["label"]),
         "recording_stop" => (true, &["run_id"]),
+        "experiment_annotate" => (true, &["name", "data"]),
         "history_read" => (
             true,
             &[
