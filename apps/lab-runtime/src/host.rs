@@ -918,8 +918,9 @@ impl HostCore {
                 }
             }
             RecordingState::Idle if !self.recorder_finish_requested => {
+                let summary = self.frozen_shutdown_evidence();
                 if let Some(worker) = self.recorder.as_mut()
-                    && worker.request_finish().is_ok()
+                    && worker.request_finish_with_summary(summary, now).is_ok()
                 {
                     self.recorder_finish_requested = true;
                 }
@@ -928,8 +929,9 @@ impl HostCore {
             RecordingState::Failed
                 if status.failure_persisted && !self.recorder_finish_requested =>
             {
+                let summary = self.frozen_shutdown_evidence();
                 if let Some(worker) = self.recorder.as_mut()
-                    && worker.request_finish().is_ok()
+                    && worker.request_finish_with_summary(summary, now).is_ok()
                 {
                     self.recorder_finish_requested = true;
                 }
@@ -1325,6 +1327,31 @@ impl HostCore {
                     lab_core::output::OutputState::FaultLatched=>"fault_latched"}}),
             _=>serde_json::json!({"instrument":actuator.instrument().get().to_string(),
                 "parameter":actuator.parameter().get().to_string(),"safe_confirmed":false,"state":"unknown"})}).collect()
+    }
+
+    // This snapshot is taken only after the safety grace has resolved; it
+    // reports unknown evidence as unknown and cannot confirm physical safety.
+    fn frozen_shutdown_evidence(&self) -> serde_json::Value {
+        let controllers: Vec<_> = self
+            .plan
+            .controllers
+            .iter()
+            .map(
+                |(id, _, _)| match self.runtime.query(Query::Controller(*id)) {
+                    Ok(QueryResult::Controller(snapshot)) => serde_json::json!({
+                        "id":id.get().to_string(),
+                        "state":format!("{:?}",snapshot.state),
+                    }),
+                    _ => serde_json::json!({"id":id.get().to_string(),"state":"unknown"}),
+                },
+            )
+            .collect();
+        serde_json::json!({
+            "outputs":self.output_safe_records(),
+            "resources":self.resource_records(),
+            "controllers":controllers,
+            "unfinished_managed_workers":self.runtime.unfinished_component_workers(),
+        })
     }
 
     /// Fence producers before Rust begins a new required safe procedure.

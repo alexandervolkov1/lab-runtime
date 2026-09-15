@@ -220,7 +220,7 @@ enum Message {
         limit: usize,
     },
     Stop,
-    Finish,
+    Finish(serde_json::Value, Duration),
 }
 
 /// Runtime-owned ingress to one SQLite worker. No method executes disk I/O.
@@ -758,6 +758,18 @@ impl RecorderWorker {
 
     /// Ask the worker to close after accepted work and lifecycle barriers.
     pub fn request_finish(&mut self) -> Result<(), StorageError> {
+        self.request_finish_with_summary(
+            serde_json::json!({"safety_evidence":"unprovided"}),
+            Duration::ZERO,
+        )
+    }
+
+    /// Seal a trusted frozen shutdown observation after the accepted prefix.
+    pub fn request_finish_with_summary(
+        &mut self,
+        summary: serde_json::Value,
+        at: Duration,
+    ) -> Result<(), StorageError> {
         if self.finish_requested {
             return Ok(());
         }
@@ -767,7 +779,14 @@ impl RecorderWorker {
         ) {
             return Err(StorageError("finish requires idle or failed run".into()));
         }
-        self.send_control(Message::Finish)?;
+        if serde_json::to_vec(&summary)
+            .map_err(|error| StorageError(format!("shutdown evidence: {error}")))?
+            .len()
+            > 16 * 1024
+        {
+            return Err(StorageError("shutdown evidence exceeds 16 KiB".into()));
+        }
+        self.send_control(Message::Finish(summary, at))?;
         self.finish_requested = true;
         Ok(())
     }
@@ -999,7 +1018,7 @@ fn worker_loop(
             }
             other => other,
         };
-        if !matches!(message, Message::Finish | Message::Activation(_, _))
+        if !matches!(message, Message::Finish(_, _) | Message::Activation(_, _))
             && (!matches!(message, Message::Start(_, _, _, _))
                 || barrier.is_some_and(|barrier| barrier.0.hold_start))
             && let Some(barrier) = barrier
@@ -1114,8 +1133,11 @@ fn worker_loop(
                     status.run_no = None;
                     status.interval_no = None;
                 }),
-            Message::Finish => {
-                if let Err(error) = store.finish_boot(Duration::ZERO) {
+            Message::Finish(summary, at) => {
+                let anchor = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()));
+                let result = anchor
+                    .and_then(|anchor| store.finish_boot_with_summary(at, &summary, Some(&anchor)));
+                if let Err(error) = result {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.state = RecordingState::Failed;
                     status

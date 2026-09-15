@@ -93,6 +93,30 @@ fn shutdown_seals_active_interval_and_closes_worker_before_reporting_flush_succe
         )
         .unwrap();
     assert_eq!(sealed_intervals, 1);
+    let (exit_summary, ended_wall): (String, Option<i64>) = archive
+        .query_row(
+            "SELECT exit_summary,ended_wall_us FROM runtime_boots WHERE state='sealed'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let summary: serde_json::Value = serde_json::from_str(&exit_summary).unwrap();
+    assert_eq!(summary["outputs"][0]["safe_confirmed"], true);
+    assert_eq!(summary["outputs"][0]["lease_present"], false);
+    assert_eq!(summary["unfinished_managed_workers"], 0);
+    assert!(ended_wall.is_some(), "final worker anchor must observe UTC");
+    let shutdown_at: Vec<u8> = archive
+        .query_row(
+            "SELECT published_at FROM records WHERE kind='shutdown'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(
+        shutdown_at,
+        vec![0u8; 16],
+        "finish must use owner monotonic time"
+    );
     drop(archive);
     let reopened = SqliteStore::open(&path).unwrap();
     drop(reopened);

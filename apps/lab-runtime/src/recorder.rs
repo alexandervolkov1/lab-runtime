@@ -1811,14 +1811,47 @@ impl SqliteStore {
     /// Commit a terminal boot seal after every accepted run/fact barrier.
     /// Presence of this row proves SQL commit, independently of its later receipt.
     pub fn finish_boot(&mut self, at: Duration) -> Result<(), StorageError> {
+        self.finish_boot_with_summary(
+            at,
+            &serde_json::json!({"safety_evidence":"unprovided"}),
+            None,
+        )
+    }
+
+    /// Atomically seal the frozen trusted shutdown observation and actual UTC anchor.
+    pub fn finish_boot_with_summary(
+        &mut self,
+        at: Duration,
+        evidence: &serde_json::Value,
+        anchor: Option<&TimeAnchor>,
+    ) -> Result<(), StorageError> {
         if self.run_no.is_some() || self.boot_sealed {
             return Err(StorageError(
                 "boot finish requires a stopped, unsealed recorder".into(),
             ));
         }
+        let evidence_bytes = serde_json::to_vec(evidence)
+            .map_err(|error| StorageError(format!("shutdown evidence: {error}")))?;
+        if evidence_bytes.len() > 16 * 1024 || !evidence.is_object() {
+            return Err(StorageError("invalid bounded shutdown evidence".into()));
+        }
+        let anchor_sequence = anchor
+            .map(|_| {
+                self.next_record_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("terminal clock identity exhausted".into()))
+            })
+            .transpose()?;
+        let anchor_no = anchor
+            .map(|_| {
+                self.next_anchor_no
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError("terminal anchor identity exhausted".into()))
+            })
+            .transpose()?;
         let next_record = self
             .next_record_sequence
-            .checked_add(1)
+            .checked_add(if anchor.is_some() { 2 } else { 1 })
             .ok_or_else(|| StorageError("terminal record identity exhausted".into()))?;
         let next_commit = self
             .commit_no
@@ -1826,16 +1859,40 @@ impl SqliteStore {
             .ok_or_else(|| StorageError("terminal commit identity exhausted".into()))?;
         let record = u64_blob(next_record);
         let published = duration_blob(at)?;
-        let summary = serde_json::json!({
-            "accepted_prefix_through_seq":self.next_record_sequence.to_string(),
-            "coverage":if self.coverage_gap {"gap"} else {"complete"},
-        })
-        .to_string();
+        let mut summary = evidence.as_object().expect("validated object").clone();
+        summary.insert(
+            "accepted_prefix_through_seq".into(),
+            serde_json::Value::String(self.next_record_sequence.to_string()),
+        );
+        summary.insert(
+            "coverage".into(),
+            serde_json::Value::String(if self.coverage_gap { "gap" } else { "complete" }.into()),
+        );
+        let summary = serde_json::Value::Object(summary).to_string();
         let transaction = self.connection.transaction()?;
+        if let (Some(anchor), Some(anchor_sequence), Some(anchor_no)) =
+            (anchor, anchor_sequence, anchor_no)
+        {
+            insert_clock_projection(
+                &transaction,
+                &self.boot_id,
+                anchor_sequence,
+                anchor_no,
+                "boot_end",
+                anchor,
+                None,
+                None,
+                &self.boot_anchor,
+            )?;
+        }
         let changed = transaction.execute(
-            "UPDATE runtime_boots SET state='sealed',exit_summary=?2 \
+            "UPDATE runtime_boots SET state='sealed',exit_summary=?2,ended_wall_us=?3 \
              WHERE boot_id=?1 AND state='active'",
-            params![self.boot_id.as_slice(), summary],
+            params![
+                self.boot_id.as_slice(),
+                summary,
+                anchor.and_then(TimeAnchor::wall_us)
+            ],
         )?;
         if changed != 1 {
             return Err(StorageError("active boot seal target missing".into()));
@@ -1870,6 +1927,9 @@ impl SqliteStore {
         transaction.commit()?;
         self.next_record_sequence = next_record;
         self.commit_no = next_commit;
+        if let Some(anchor_no) = anchor_no {
+            self.next_anchor_no = anchor_no;
+        }
         self.boot_sealed = true;
         Ok(())
     }
