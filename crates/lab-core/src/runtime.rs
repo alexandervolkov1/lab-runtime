@@ -385,6 +385,8 @@ pub struct Runtime {
     unsettled_outputs: BTreeMap<ResourceId, (ActuatorId, crate::output::DispatchId)>,
     output_time: Duration,
     transport_time: Duration,
+    recording_facts: crate::recording::FactOutbox,
+    required_recording: crate::recording::RequiredGate,
 }
 
 struct PendingRead {
@@ -441,6 +443,150 @@ impl Runtime {
     /// Create an empty owner with no registered instruments, measurements or active work.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Arm bounded source-fact capture for a host-owned recording run.
+    /// This does not assert that any fact has reached durable storage.
+    pub fn enable_recording_facts(&mut self) {
+        self.recording_facts.enable();
+    }
+
+    /// Stop fact capture at a durable interval boundary; discarded idle facts
+    /// never masquerade as a complete recorded interval.
+    pub fn disable_recording_facts(&mut self) {
+        self.recording_facts.disable();
+    }
+
+    /// Drain captured facts without disk I/O or waiting for a host worker.
+    pub fn take_recording_facts(&mut self) -> Vec<crate::recording::RecordingFact> {
+        self.recording_facts.take()
+    }
+
+    /// Report a sticky capture overflow; the host must apply its selected policy.
+    pub fn recording_facts_overflowed(&self) -> bool {
+        self.recording_facts.overflowed()
+    }
+
+    /// First attempted fact identity whose payload was not retained in the
+    /// bounded outbox; None means no known capture loss in this run.
+    pub fn recording_first_lost_fact(&self) -> Option<u64> {
+        self.recording_facts.first_lost_sequence()
+    }
+
+    /// Count of suppressed facts, or None after its checked counter exhausts.
+    pub fn recording_suppressed_fact_count(&self) -> Option<u64> {
+        self.recording_facts.suppressed_facts()
+    }
+
+    /// Install a closed Required prerequisite before exposing tracked control.
+    /// This local trusted seam is intentionally absent from all wire DTOs.
+    pub fn require_recording(&mut self, _at: Duration) {
+        self.required_recording.enabled = true;
+        self.required_recording.open = false;
+        self.required_recording.failed = false;
+        self.required_recording.valid_until = None;
+        self.required_recording.confirmed_submission = None;
+        self.required_recording.generation = self.required_recording.generation.saturating_add(1);
+    }
+
+    /// Open Required control after the start barrier actually committed.
+    /// The deadline derives from the original submission time, never receipt arrival.
+    pub fn confirm_recording_start(
+        &mut self, submitted_at: Duration, now: Duration,
+    ) -> Result<(), Error> {
+        if !self.required_recording.enabled || self.required_recording.failed
+            || submitted_at > now
+        {
+            return Err(Error::RecordingUnavailable);
+        }
+        let deadline = submitted_at.checked_add(crate::recording::REQUIRED_PROGRESS_AGE)
+            .ok_or(Error::RecordingUnavailable)?;
+        if now >= deadline {
+            self.recording_failure(now);
+            return Err(Error::RecordingUnavailable);
+        }
+        self.required_recording.confirmed_submission = Some(submitted_at);
+        self.required_recording.valid_until = Some(deadline);
+        self.required_recording.open = true;
+        Ok(())
+    }
+
+    /// Advance the gate only for confirmed, strictly newer worker submissions.
+    pub fn confirm_recording_progress(
+        &mut self, submitted_at: Duration, now: Duration,
+    ) -> Result<(), Error> {
+        self.service_required_recording_deadline(now);
+        if !self.required_recording.open || submitted_at > now
+            || self.required_recording.confirmed_submission.is_some_and(|old| submitted_at <= old)
+        {
+            return Err(Error::RecordingUnavailable);
+        }
+        let deadline = submitted_at.checked_add(crate::recording::REQUIRED_PROGRESS_AGE)
+            .ok_or(Error::RecordingUnavailable)?;
+        if now >= deadline {
+            self.recording_failure(now);
+            return Err(Error::RecordingUnavailable);
+        }
+        self.required_recording.confirmed_submission = Some(submitted_at);
+        self.required_recording.valid_until = Some(deadline);
+        Ok(())
+    }
+
+    /// Close Required recording and trip all tracked control without disk I/O.
+    /// A safe service opportunity remains available after this call.
+    pub fn recording_failure(&mut self, at: Duration) {
+        if !self.required_recording.enabled || self.required_recording.failed {
+            return;
+        }
+        self.required_recording.open = false;
+        self.required_recording.failed = true;
+        self.required_recording.valid_until = None;
+        // Remove Warming as well as Running eligibility before any output trip.
+        for (id, controller) in &mut self.controllers {
+            if matches!(controller.state, ControllerState::Warming | ControllerState::Running) {
+                controller.state = ControllerState::Failed;
+                controller.lease = None;
+                self.recording_facts.controller(*id, ControllerState::Failed,
+                    controller.config_revision, None, at);
+            }
+        }
+        // Trip every tracked output even if one authority rejects its transition.
+        // Safety dispatch stays on the ordinary Core/transport service path.
+        for (actuator, authority) in &mut self.outputs {
+            if authority.command(OutputCommand::Trip, at).is_ok() {
+                self.recording_facts.output(
+                    *actuator, crate::recording::OutputStage::Revoked, None, at,
+                );
+            }
+        }
+    }
+
+    /// Close a clean Required interval after all tracked control is paused.
+    /// A later start requires a new committed barrier and never rearms output.
+    pub fn close_required_recording(&mut self) {
+        if self.required_recording.enabled {
+            self.required_recording.open = false;
+            self.required_recording.valid_until = None;
+        }
+    }
+
+    fn service_required_recording_deadline(&mut self, at: Duration) {
+        if self.required_recording.enabled && self.recording_facts.overflowed() {
+            self.recording_failure(at);
+        }
+        if self.required_recording.enabled && self.required_recording.open
+            && self.required_recording.valid_until.is_some_and(|deadline| at >= deadline)
+        {
+            self.recording_failure(at);
+        }
+    }
+
+    fn require_recording_open(&mut self, at: Duration) -> Result<(), Error> {
+        self.service_required_recording_deadline(at);
+        if self.required_recording.enabled && !self.required_recording.open {
+            return Err(Error::RecordingUnavailable);
+        }
+        Ok(())
     }
 
     /// Install exactly one trusted nonblocking executor port before staging work.
@@ -528,6 +674,18 @@ impl Runtime {
                 command,
                 at,
             } => {
+                self.service_required_recording_deadline(at);
+                let ordinary = matches!(
+                    command,
+                    OutputCommand::Acquire { .. } | OutputCommand::Propose(_)
+                        | OutputCommand::AcknowledgeFault
+                ) || matches!(command, OutputCommand::BeginDispatch)
+                    && self.outputs.get(&actuator).is_some_and(|authority| {
+                        authority.snapshot().state != crate::output::OutputState::SafePending
+                    });
+                if ordinary {
+                    self.require_recording_open(at)?;
+                }
                 if !self.outputs.contains_key(&actuator) {
                     return Err(OutputError::UnknownActuator.into());
                 }
@@ -557,11 +715,61 @@ impl Runtime {
                         _ => {}
                     }
                 }
+                let issued = command.clone();
+                let was_safe_completion = self.outputs.get(&actuator)
+                    .and_then(|authority| authority.snapshot().in_flight)
+                    .is_some_and(|dispatch| dispatch.is_safe());
                 let result = self
                     .outputs
                     .get_mut(&actuator)
                     .ok_or(OutputError::UnknownActuator)?
                     .command(command, at)?;
+                match (&issued, &result) {
+                    (OutputCommand::RequestSafe, OutputResult::Updated) => {
+                        self.recording_facts.output(actuator,
+                            crate::recording::OutputStage::SafeRequested, None, at);
+                    }
+                    (OutputCommand::Trip, OutputResult::Updated) => {
+                        self.recording_facts.output(actuator,
+                            crate::recording::OutputStage::Revoked, None, at);
+                    }
+                    (OutputCommand::Propose(_), OutputResult::Queued) => {
+                        self.recording_facts.output(
+                            actuator, crate::recording::OutputStage::Requested,
+                            self.outputs.get(&actuator).and_then(|authority| authority.snapshot().requested), at,
+                        );
+                    }
+                    (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch))
+                        if !dispatch.is_safe() => {
+                            self.recording_facts.output(
+                                actuator, crate::recording::OutputStage::Authorized,
+                                Some(dispatch.value()), at,
+                            );
+                            self.recording_facts.output(
+                                actuator, crate::recording::OutputStage::SendStarted,
+                                Some(dispatch.value()), at,
+                            );
+                    }
+                    (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch)) => {
+                        self.recording_facts.output(actuator,
+                            crate::recording::OutputStage::SafeSendStarted,
+                            Some(dispatch.value()), at);
+                    }
+                    (OutputCommand::Complete { outcome, .. }, OutputResult::Completed) => {
+                        let stage = match (was_safe_completion, outcome) {
+                            (true, DispatchOutcome::Acknowledged) => crate::recording::OutputStage::SafeAcknowledged,
+                            (true, DispatchOutcome::ReadbackVerified) => crate::recording::OutputStage::SafeReadbackVerified,
+                            (false, DispatchOutcome::Acknowledged) => crate::recording::OutputStage::Acknowledged,
+                            (false, DispatchOutcome::ReadbackVerified) => crate::recording::OutputStage::ReadbackVerified,
+                            (_, DispatchOutcome::Failed) => crate::recording::OutputStage::Failed,
+                            (_, DispatchOutcome::Ambiguous) => crate::recording::OutputStage::Ambiguous,
+                        };
+                        self.recording_facts.output_with_source(actuator, stage,
+                            self.outputs.get(&actuator).and_then(|authority| authority.snapshot().sent.map(|sent| sent.value)), at,
+                            crate::recording::OutputEvidenceSource::VirtualSimulation);
+                    }
+                    _ => {}
+                }
                 if let OutputResult::Dispatched(dispatch) = result {
                     self.apply_virtual_dispatch(actuator, dispatch.value())?;
                     Ok(CommandResult::Output(OutputResult::Dispatched(dispatch)))
@@ -622,34 +830,40 @@ impl Runtime {
                 let reference = RuntimeReference::new(config)
                     .map_err(|_| ControllerError::InvalidConfiguration)?;
                 self.references.insert(id, reference);
+                self.capture_reference_fact(id, match config {
+                    ReferenceConfig::Fixed { .. } => Duration::ZERO,
+                    ReferenceConfig::Ramp { at, .. } => at,
+                });
                 Ok(CommandResult::ReferenceRegistered(id))
             }
-            Command::EvaluateReference { reference, at } => self
-                .references
-                .get_mut(&reference)
-                .ok_or(ControllerError::UnknownReference.into())
-                .and_then(|item| {
+            Command::EvaluateReference { reference, at } => {
+                let result = self.references.get_mut(&reference)
+                    .ok_or(ControllerError::UnknownReference.into()).and_then(|item| {
                     item.value_at(at)
                         .map(CommandResult::ReferenceEvaluated)
                         .map_err(map_reference_error)
                         .map_err(Into::into)
-                }),
+                });
+                if result.is_ok() { self.capture_reference_fact(reference, at); }
+                result
+            }
             Command::RetuneRampReference {
                 reference,
                 target,
                 rate,
                 expected_revision,
                 at,
-            } => self
-                .references
-                .get_mut(&reference)
-                .ok_or(ControllerError::UnknownReference.into())
-                .and_then(|item| {
+            } => {
+                let result = self.references.get_mut(&reference)
+                    .ok_or(ControllerError::UnknownReference.into()).and_then(|item| {
                     item.retune(target, rate, expected_revision, at)
                         .map(CommandResult::ReferenceRetuned)
                         .map_err(map_reference_error)
                         .map_err(Into::into)
-                }),
+                });
+                if result.is_ok() { self.capture_reference_fact(reference, at); }
+                result
+            }
             Command::RegisterController(config) => {
                 let id = config.id;
                 if self.controllers.contains_key(&id) {
@@ -661,6 +875,8 @@ impl Runtime {
                 let controller = NativeController::new(config)?;
                 let snapshot = controller.snapshot();
                 self.controllers.insert(id, controller);
+                self.recording_facts.controller(id, snapshot.state,
+                    snapshot.config_revision, Some(config.pid), self.output_time);
                 Ok(CommandResult::ControllerUpdated(snapshot))
             }
             Command::ConfigureControllerPid {
@@ -668,26 +884,51 @@ impl Runtime {
                 pid,
                 expected_revision,
             } => self.configure_controller_pid(controller, pid, expected_revision),
-            Command::PrepareController(id) => self.prepare_controller(id),
-            Command::StartController { controller, at } => {
-                self.start_or_resume_controller(controller, at, ControllerState::Ready)
+            Command::PrepareController(id) => {
+                let result = self.prepare_controller(id);
+                if result.is_ok() { self.capture_controller_fact(id, self.output_time); }
+                result
             }
-            Command::TickController { controller, at } => self.tick_controller(controller, at),
-            Command::PauseController { controller, at } => self.pause_controller(controller, at),
+            Command::StartController { controller, at } => {
+                self.require_recording_open(at)?;
+                let result = self.start_or_resume_controller(controller, at, ControllerState::Ready);
+                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                result
+            }
+            Command::TickController { controller, at } => {
+                self.require_recording_open(at)?;
+                let result = self.tick_controller(controller, at);
+                self.capture_controller_fact(controller, at);
+                result
+            }
+            Command::PauseController { controller, at } => {
+                let result = self.pause_controller(controller, at);
+                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                result
+            }
             Command::ResumeController { controller, at } => {
-                self.start_or_resume_controller(controller, at, ControllerState::Paused)
+                self.require_recording_open(at)?;
+                let result = self.start_or_resume_controller(controller, at, ControllerState::Paused);
+                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                result
             }
             Command::ResetFailedController { controller, at } => {
-                self.reset_failed_controller(controller, at)
+                let result = self.reset_failed_controller(controller, at);
+                if result.is_ok() { self.capture_controller_fact(controller, at); }
+                result
             }
             Command::InjectPlantMeasurementFailure { instrument, at } => {
                 let plant = self
                     .thermal_plants
                     .get_mut(&instrument)
                     .ok_or(Error::UnknownInstrument(instrument))?;
-                plant
-                    .inject_failure(at)
-                    .map(CommandResult::MeasurementFailed)
+                let result = plant.inject_failure(at);
+                if result.is_ok()
+                    && let Some(sample) = plant.signal.latest().cloned()
+                {
+                    self.recording_facts.measurement(sample, 1, 1);
+                }
+                result.map(CommandResult::MeasurementFailed)
             }
             Command::RegisterMetakon(config) => {
                 let id = config.definition.id;
@@ -938,16 +1179,25 @@ impl Runtime {
                 at,
             } => {
                 if let Some(instance) = self.instruments.get_mut(&instrument) {
-                    instance
-                        .refresh(parameter, at)
-                        .map(CommandResult::MeasurementRefreshed)
+                    let result = instance.refresh(parameter, at);
+                    if parameter == TEMPERATURE
+                        && let Some(sample) = instance.signal.latest().cloned()
+                        && sample.at() == at
+                    {
+                        self.recording_facts.measurement(sample, 1, 1);
+                    }
+                    result.map(CommandResult::MeasurementRefreshed)
                 } else if let Some(instance) = self.thermal_plants.get_mut(&instrument) {
                     if parameter != TEMPERATURE {
                         return Err(Error::OperationNotAllowed(parameter));
                     }
-                    instance
-                        .refresh(at)
-                        .map(CommandResult::MeasurementRefreshed)
+                    let result = instance.refresh(at);
+                    if let Some(sample) = instance.signal.latest().cloned()
+                        && sample.at() == at
+                    {
+                        self.recording_facts.measurement(sample, 1, 1);
+                    }
+                    result.map(CommandResult::MeasurementRefreshed)
                 } else if self.metakon_instruments.contains_key(&instrument) {
                     Err(Error::OperationNotAllowed(parameter))
                 } else {
@@ -1124,6 +1374,8 @@ impl Runtime {
         controller.reset_algorithms();
         controller.last_tick = None;
         controller.config_revision = next;
+        self.recording_facts.controller(id, controller.state,
+            controller.config_revision, Some(pid), self.output_time);
         Ok(CommandResult::ControllerUpdated(controller.snapshot()))
     }
 
@@ -1625,6 +1877,11 @@ impl Runtime {
                 crate::MeasurementFailure::ComponentFailure,
             ));
         }
+        if let Some(sample) = component.signal.latest().cloned()
+            && sample.at() == at
+        {
+            self.recording_facts.measurement(sample, component.generation, component.revision);
+        }
         let dependents: Vec<_> = self
             .managed
             .iter()
@@ -1661,6 +1918,11 @@ impl Runtime {
                         at,
                         crate::MeasurementFailure::ComponentFailure,
                     ));
+                }
+                if let Some(sample) = other.signal.latest().cloned()
+                    && sample.at() == at
+                {
+                    self.recording_facts.measurement(sample, other.generation, other.revision);
                 }
             }
         }
@@ -1774,7 +2036,7 @@ impl Runtime {
             self.fail_component(id, at);
             return;
         };
-        if component.signal.push(sample).is_err() {
+        if component.signal.push(sample.clone()).is_err() {
             self.fail_component(id, at);
             return;
         }
@@ -1792,6 +2054,7 @@ impl Runtime {
         component.diagnostics = result.diagnostics;
         component.last_service = Some(at);
         component.last_observation = Some(source_at);
+        self.recording_facts.measurement(sample, component.generation, component.revision);
     }
 
     fn poll_components(&mut self, at: Duration) -> Result<(), Error> {
@@ -2274,6 +2537,30 @@ impl Runtime {
             .ok_or(ControllerError::InvalidConfiguration)
     }
 
+    fn capture_reference_fact(&mut self, id: ReferenceId, at: Duration) {
+        let Some(snapshot) = self.references.get(&id).map(RuntimeReference::snapshot) else {
+            return;
+        };
+        match snapshot {
+            crate::reference::ReferenceSnapshot::Fixed { value, unit, revision, .. } =>
+                self.recording_facts.reference(crate::recording::ReferenceDetails {
+                    reference:id,revision,value,target:None,rate:None,unit,at,
+                }),
+            crate::reference::ReferenceSnapshot::Ramp { state, revision, .. } =>
+                self.recording_facts.reference(crate::recording::ReferenceDetails {
+                    reference:id,revision,value:state.current,
+                    target:Some(state.target),rate:Some(state.rate),unit:state.unit,at,
+                }),
+        }
+    }
+
+    fn capture_controller_fact(&mut self, id: ControllerId, at: Duration) {
+        if let Some(controller) = self.controllers.get(&id) {
+            self.recording_facts.controller(id, controller.state,
+                controller.config_revision, None, at);
+        }
+    }
+
     fn deliver_simulated(
         &mut self,
         actuator: ActuatorId,
@@ -2284,6 +2571,15 @@ impl Runtime {
             .get_mut(&actuator)
             .ok_or(OutputError::UnknownActuator)?
             .command(OutputCommand::Propose(proposal), at)?;
+        self.recording_facts.output(
+            actuator,
+            crate::recording::OutputStage::Requested,
+            self.outputs.get(&actuator).and_then(|output| output.snapshot().requested),
+            at,
+        );
+        // A one-call PID can propose and send in the same owner unit. Recheck
+        // capture capacity before that unit reaches its ordinary send boundary.
+        self.require_recording_open(at)?;
         let dispatch = match self
             .outputs
             .get_mut(&actuator)
@@ -2293,6 +2589,18 @@ impl Runtime {
             OutputResult::Dispatched(dispatch) => dispatch,
             _ => unreachable!("BeginDispatch has one successful result kind"),
         };
+        self.recording_facts.output(
+            actuator,
+            crate::recording::OutputStage::Authorized,
+            Some(dispatch.value()),
+            at,
+        );
+        self.recording_facts.output(
+            actuator,
+            crate::recording::OutputStage::SendStarted,
+            Some(dispatch.value()),
+            at,
+        );
         if let Err(error) = self.apply_virtual_dispatch(actuator, dispatch.value()) {
             self.outputs
                 .get_mut(&actuator)
@@ -2304,6 +2612,12 @@ impl Runtime {
                     },
                     at,
                 )?;
+            self.recording_facts.output(
+                actuator,
+                crate::recording::OutputStage::Failed,
+                Some(dispatch.value()),
+                at,
+            );
             return Err(error);
         }
         self.outputs
@@ -2316,6 +2630,13 @@ impl Runtime {
                 },
                 at,
             )?;
+        self.recording_facts.output_with_source(
+            actuator,
+            crate::recording::OutputStage::ReadbackVerified,
+            Some(dispatch.value()),
+            at,
+            crate::recording::OutputEvidenceSource::VirtualSimulation,
+        );
         Ok(())
     }
 
@@ -2329,6 +2650,8 @@ impl Runtime {
             OutputResult::Dispatched(dispatch) => dispatch,
             _ => unreachable!("BeginDispatch has one successful result kind"),
         };
+        self.recording_facts.output(actuator,
+            crate::recording::OutputStage::SafeSendStarted, Some(dispatch.value()), at);
         self.apply_virtual_dispatch(actuator, dispatch.value())?;
         self.outputs
             .get_mut(&actuator)
@@ -2340,6 +2663,9 @@ impl Runtime {
                 },
                 at,
             )?;
+        self.recording_facts.output_with_source(actuator,
+            crate::recording::OutputStage::SafeReadbackVerified, Some(dispatch.value()), at,
+            crate::recording::OutputEvidenceSource::VirtualSimulation);
         Ok(())
     }
 
@@ -2389,10 +2715,12 @@ impl Runtime {
     /// This explicit service needs host scheduling; a finite lease alone cannot send safe bytes.
     /// It does not run EMA/PID or renew a native owner and never waits on a script VM.
     fn service_safety(&mut self, at: Duration) -> Result<(), Error> {
+        self.service_required_recording_deadline(at);
         self.check_output_time(at)?;
         let identities: Vec<_> = self.controllers.keys().copied().collect();
         for id in identities {
             let mut controller = self.controllers.remove(&id).expect("listed above");
+            let before_state = controller.state;
             let live = matches!(
                 controller.state,
                 ControllerState::Warming | ControllerState::Running
@@ -2417,6 +2745,10 @@ impl Runtime {
                         let _ = self.fail_controller(&mut controller, at);
                     }
                 }
+            }
+            if controller.state != before_state {
+                self.recording_facts.controller(id, controller.state,
+                    controller.config_revision, None, at);
             }
             self.controllers.insert(id, controller);
         }
@@ -2464,10 +2796,13 @@ impl Runtime {
     }
 
     fn poll_transports(&mut self, at: Duration) -> Result<(), Error> {
+        self.service_required_recording_deadline(at);
         self.check_transport_time(at)?;
         self.check_output_time(at)?;
         let resources: Vec<_> = self.resources.keys().copied().collect();
         for resource in resources {
+            self.service_required_recording_deadline(at);
+            let required_open = !self.required_recording.enabled || self.required_recording.open;
             // Temporarily taking the executor lets the coordinator borrow the
             // authority registry during the serialized final-check/write call.
             let mut executor = self
@@ -2476,7 +2811,11 @@ impl Runtime {
                 .ok_or(TransportError::UnknownResource)?;
             let instruments = &self.metakon_instruments;
             let outputs = &mut self.outputs;
+            let recording_facts = &mut self.recording_facts;
             let event = executor.poll_authorized(at, &mut |intent, step| {
+                if !intent.safe && !required_open {
+                    return Err(());
+                }
                 let instrument = instruments.get(&intent.actuator.instrument()).ok_or(())?;
                 let binding = instrument.binding;
                 if binding.resource != resource
@@ -2491,10 +2830,22 @@ impl Runtime {
                         authority.validate_transport(intent, at).map_err(|_| ())?;
                         Ok(None)
                     }
-                    AuthorizationStep::Started => authority
-                        .begin_transport(intent, at)
-                        .map(Some)
-                        .map_err(|_| ()),
+                    AuthorizationStep::Started => {
+                        let dispatch = authority.begin_transport(intent, at).map_err(|_| ())?;
+                        if intent.safe {
+                            recording_facts.output(intent.actuator,
+                                crate::recording::OutputStage::SafeSendStarted,
+                                Some(intent.value), at);
+                        } else {
+                            recording_facts.output(intent.actuator,
+                                crate::recording::OutputStage::Authorized,
+                                Some(intent.value), at);
+                            recording_facts.output(intent.actuator,
+                                crate::recording::OutputStage::SendStarted,
+                                Some(intent.value), at);
+                        }
+                        Ok(Some(dispatch))
+                    }
                 }
             })?;
             self.resources.insert(resource, executor);
@@ -2543,10 +2894,25 @@ impl Runtime {
                 } else {
                     self.push_transport_failure(&pending, at)?;
                 }
+                if let Some(instrument) = self.metakon_instruments.get(&pending.instrument)
+                    && let Some(descriptor) = instrument.descriptor.parameter(pending.parameter)
+                    && let Some(signal) = descriptor.signal
+                    && let Some(sample) = instrument.signals.get(&signal).and_then(|buffer| buffer.latest()).cloned()
+                    && sample.at() == at
+                {
+                    self.recording_facts.measurement(
+                        sample, instrument.binding.binding_generation,
+                        instrument.binding.mapping_revision,
+                    );
+                }
             }
             TransportEvent::OutputUncertain { intent, dispatch } => {
                 if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                     authority.transport_uncertain(dispatch)?;
+                    self.recording_facts.output_with_source(intent.actuator,
+                        crate::recording::OutputStage::TransportUncertain,
+                        Some(intent.value), at,
+                        crate::recording::OutputEvidenceSource::TransportProtocol);
                 }
             }
             TransportEvent::OutputTerminal {
@@ -2584,9 +2950,20 @@ impl Runtime {
                                 crate::output::DispatchOutcome::Acknowledged,
                                 at,
                             )?;
+                            self.recording_facts.output_with_source(intent.actuator,
+                                if intent.safe {
+                                    crate::recording::OutputStage::SafeAcknowledged
+                                } else {
+                                    crate::recording::OutputStage::Acknowledged
+                                }, Some(intent.value), at,
+                                crate::recording::OutputEvidenceSource::TransportProtocol);
                         }
                     } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.transport_uncertain(dispatch)?;
+                        self.recording_facts.output_with_source(intent.actuator,
+                            crate::recording::OutputStage::TransportUncertain,
+                            Some(intent.value), at,
+                            crate::recording::OutputEvidenceSource::TransportProtocol);
                         self.unsettled_outputs
                             .insert(resource, (intent.actuator, dispatch));
                         self.resources
@@ -2600,6 +2977,10 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
+                    self.recording_facts.output_with_source(intent.actuator,
+                        crate::recording::OutputStage::Ambiguous,
+                        Some(intent.value), at,
+                        crate::recording::OutputEvidenceSource::TransportProtocol);
                 }
             }
             TransportEvent::BoundaryRecovered => {
@@ -2611,6 +2992,10 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
+                    self.recording_facts.output_with_source(actuator,
+                        crate::recording::OutputStage::Ambiguous,
+                        authority.snapshot().sent.map(|sent| sent.value), at,
+                        crate::recording::OutputEvidenceSource::TransportProtocol);
                 }
             }
             TransportEvent::BoundaryFailed => {}

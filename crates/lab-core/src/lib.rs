@@ -14,6 +14,7 @@ mod model;
 pub mod output;
 pub mod plant;
 pub mod processing;
+pub mod recording;
 pub mod reference;
 mod runtime;
 mod signal;

@@ -531,6 +531,8 @@ pub enum Error {
     OperationNotAllowed(ParameterId),
     /// A configuration is inconsistent or exceeds a declared resource limit.
     InvalidConfiguration(&'static str),
+    /// Required durable-progress prerequisite is closed or has expired.
+    RecordingUnavailable,
     /// The attempted observation does not follow the previous one in monotonic time.
     NonMonotonicTime {
         /// Identity of the associated measurement stream, when one exists.
@@ -579,6 +581,7 @@ impl fmt::Display for Error {
                 write!(f, "operation not allowed for parameter {}", id.get())
             }
             Self::InvalidConfiguration(reason) => write!(f, "invalid configuration: {reason}"),
+            Self::RecordingUnavailable => f.write_str("required recording unavailable"),
             Self::NonMonotonicTime {
                 signal,
                 previous,
