@@ -1,5 +1,16 @@
 //! Shutdown must erect a producer barrier before waiting for output safety.
 
+use lab_core::instrument::{
+    DataInstrumentDefinition, DataParameterDefinition, KnownOperation, MetakonBinding,
+    MetakonInstrumentConfig,
+};
+use lab_core::output::{ActuatorId, EvidenceLevel, OutputCommand, SafeProfile};
+use lab_core::transport::{
+    ByteTransport, ExecutorState, RecoveryStatus, ResourceId, TransportIoError,
+};
+use lab_core::{
+    AccessMode, InstrumentId, ParameterId, ParameterRole, Unit, ValueSpec, WriteEffect,
+};
 use lab_core::{
     Command, Query, QueryResult,
     control::ControllerState,
@@ -171,4 +182,161 @@ fn service_shutdown_grace_stays_nonblocking_and_reports_stalled_cleanup() {
     assert!(terminal.safe_confirmed);
     assert_eq!(terminal.unfinished_workers, 2);
     assert!(!terminal.exit_success);
+}
+
+struct NeverClean;
+impl ByteTransport for NeverClean {
+    fn try_write(&mut self, _: &[u8]) -> Result<usize, TransportIoError> {
+        Ok(0)
+    }
+    fn try_read(&mut self, _: &mut [u8]) -> Result<usize, TransportIoError> {
+        Ok(0)
+    }
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        Ok(RecoveryStatus::Pending)
+    }
+}
+
+#[test]
+fn failed_m3_recovery_and_two_stalled_workers_expire_grace_with_unconfirmed_safe_evidence() {
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.install_component_executor(Box::new(TwoStalledWorkers(Arc::new(AtomicBool::new(
+        false,
+    )))))
+    .unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
+        host,
+    )
+    .unwrap();
+    let resource = ResourceId::new(9);
+    let instrument = InstrumentId::new(90);
+    let parameter = ParameterId::new(6);
+    let actuator = ActuatorId::new(instrument, parameter);
+    let at = service.clock_copy().now();
+    let owner = service.owner_mut();
+    owner
+        .register_transport(resource, Box::new(NeverClean))
+        .unwrap();
+    owner
+        .command(Command::RegisterMetakon(MetakonInstrumentConfig {
+            definition: DataInstrumentDefinition {
+                schema_version: 1,
+                id: instrument,
+                name: "failed recovery fixture".into(),
+                parameters: vec![
+                    DataParameterDefinition {
+                        id: ParameterId::new(1),
+                        name: "probe".into(),
+                        value_spec: ValueSpec::Float {
+                            min: -100.0,
+                            max: 100.0,
+                        },
+                        unit: Unit::CELSIUS,
+                        access: AccessMode::ReadOnly,
+                        role: ParameterRole::Measurement,
+                        write_effect: WriteEffect::None,
+                        operation: KnownOperation::Temperature,
+                        scale: 1.0,
+                    },
+                    DataParameterDefinition {
+                        id: parameter,
+                        name: "safe target".into(),
+                        value_spec: ValueSpec::Float {
+                            min: 0.0,
+                            max: 100.0,
+                        },
+                        unit: Unit::PERCENT,
+                        access: AccessMode::ReadWrite,
+                        role: ParameterRole::Actuator,
+                        write_effect: WriteEffect::OutputAffecting,
+                        operation: KnownOperation::Output,
+                        scale: 1.0,
+                    },
+                ],
+            },
+            binding: MetakonBinding {
+                resource,
+                device: 15,
+                channel: 0,
+                binding_generation: 1,
+                mapping_revision: 1,
+                expected_output_unit: Some(Unit::PERCENT),
+            },
+            history_capacity: 2,
+        }))
+        .unwrap();
+    owner
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::BindProfile(SafeProfile {
+                min: 0.0,
+                max: 100.0,
+                safe_value: 0.0,
+                max_lease: Duration::from_secs(1),
+                max_proposal_ttl: Duration::from_millis(100),
+                required_evidence: EvidenceLevel::Acknowledgement,
+            }),
+            at,
+        })
+        .unwrap();
+    owner.track_trusted_output(actuator).unwrap();
+    owner
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::RequestSafe,
+            at,
+        })
+        .unwrap();
+    owner
+        .command(Command::QueueMetakonRead {
+            instrument,
+            parameter: ParameterId::new(1),
+            at,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(50),
+        })
+        .unwrap();
+    owner.command(Command::PollTransports { at }).unwrap();
+    let QueryResult::Transport(started) = owner.query(Query::Transport(resource)).unwrap() else {
+        panic!()
+    };
+    assert_eq!(started.state, ExecutorState::InFlight);
+    service.request_shutdown().unwrap();
+    let began = std::time::Instant::now();
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break status;
+        }
+        assert!(
+            began.elapsed() < Duration::from_millis(2500),
+            "bounded safe grace exceeded"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(!terminal.safe_confirmed);
+    assert_eq!(terminal.unfinished_workers, 2);
+    assert!(!terminal.exit_success);
+    let outputs = service.owner().output_safe_records();
+    assert!(
+        outputs
+            .iter()
+            .any(|r| r["instrument"] == "90" && r["safe_confirmed"] == false)
+    );
+    let resources = service.owner().resource_records();
+    assert!(
+        resources
+            .iter()
+            .any(|r| r["data"]["state"] == "recovering" || r["data"]["state"] == "offline"),
+        "resources={resources:?}"
+    );
+    let QueryResult::Transport(snapshot) =
+        service.owner().query(Query::Transport(resource)).unwrap()
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        snapshot.state,
+        ExecutorState::Recovering | ExecutorState::Offline
+    ));
 }

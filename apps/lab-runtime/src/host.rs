@@ -517,6 +517,27 @@ impl HostCore {
     pub fn configured_output_count(&self) -> usize {
         self.outputs.len()
     }
+    /// Include a trusted registered output in the owner's bounded shutdown
+    /// evidence set. This local composition seam grants no wire authority;
+    /// registration and the safe profile must precede active service use.
+    pub fn track_trusted_output(&mut self, actuator: ActuatorId) -> Result<(), Error> {
+        if self.stopping {
+            return Err(Error::InvalidConfiguration("host is stopping"));
+        }
+        if self.outputs.contains(&actuator) {
+            return Ok(());
+        }
+        if self.outputs.len() >= 8 {
+            return Err(Error::InvalidConfiguration("M6 output limit"));
+        }
+        let QueryResult::Output(_) = self.runtime.query(Query::Output(actuator))? else {
+            return Err(Error::InvalidConfiguration(
+                "trusted output is not registered",
+            ));
+        };
+        self.outputs.push(actuator);
+        Ok(())
+    }
     /// Install one trusted bounded M3 byte resource without raw TCP I/O.
     pub fn register_transport(
         &mut self,
