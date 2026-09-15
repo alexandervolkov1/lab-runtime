@@ -137,6 +137,39 @@ fn staged_models_share_generic_discovery_and_never_publish_init_as_good() {
     };
     assert!(found.iter().any(|item| item.id == InstrumentId::new(201)));
     assert!(found.iter().any(|item| item.id == InstrumentId::new(202)));
+    for (id, rate) in [(201, 1.0), (202, 2.0)] {
+        runtime
+            .command(Command::InvokeComponent {
+                component: ComponentId::new(id),
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        let job = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+        assert_eq!(
+            job.definition.config.fields.get("rate"),
+            Some(&lab_core::managed::PlainValue::Number(rate))
+        );
+        complete(
+            &mailbox,
+            job,
+            ComponentStatus::Ready,
+            Some(20.0 + rate),
+            PlainData::default(),
+        );
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+        let QueryResult::Latest(Some(observed)) = runtime
+            .query(Query::GetLatestSignal(SignalId::new(
+                InstrumentId::new(id),
+                TEMPERATURE,
+            )))
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(observed.value(), Some(&Value::Float(20.0 + rate)));
+    }
 }
 
 fn complete(
@@ -422,26 +455,44 @@ fn forged_completion_identity_and_invalid_candidate_never_commit_partial_state()
         })
         .unwrap();
     let job = mailbox.lock().unwrap().submitted.pop_front().unwrap();
-    let mut forged = job.correlation;
-    forged.generation += 1;
-    mailbox
-        .lock()
-        .unwrap()
-        .completed
-        .push_back(ComponentCompletion {
-            correlation: forged,
-            timely: true,
-            outcome: Ok(ComponentResult {
-                status: ComponentStatus::Ready,
-                value: Some(999.0),
-                unit: Unit::CELSIUS,
-                state: PlainData::default(),
-                diagnostics: vec![],
-            }),
-        });
-    runtime
-        .command(Command::PollComponents { at: Duration::ZERO })
-        .unwrap();
+    let mut wrong_runtime = job.correlation;
+    wrong_runtime.runtime += 1;
+    let mut wrong_component = job.correlation;
+    wrong_component.component = ComponentId::new(202);
+    let mut wrong_generation = job.correlation;
+    wrong_generation.generation += 1;
+    let mut wrong_attempt = job.correlation;
+    wrong_attempt.attempt += 1;
+    let mut wrong_revision = job.correlation;
+    wrong_revision.revision += 1;
+    for forged in [
+        wrong_runtime,
+        wrong_component,
+        wrong_generation,
+        wrong_attempt,
+        wrong_revision,
+    ] {
+        mailbox
+            .lock()
+            .unwrap()
+            .completed
+            .push_back(ComponentCompletion {
+                correlation: forged,
+                timely: true,
+                outcome: Ok(ComponentResult {
+                    status: ComponentStatus::Ready,
+                    value: Some(999.0),
+                    unit: Unit::CELSIUS,
+                    state: PlainData::default(),
+                    diagnostics: vec![],
+                }),
+            });
+    }
+    for _ in 0..3 {
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+    }
     let QueryResult::Component(pending) = runtime
         .query(Query::Component(ComponentId::new(201)))
         .unwrap()
@@ -455,6 +506,7 @@ fn forged_completion_identity_and_invalid_candidate_never_commit_partial_state()
         "mutated".into(),
         lab_core::managed::PlainValue::Number(99.0),
     );
+    let original = job.correlation;
     complete(
         &mailbox,
         job,
@@ -462,6 +514,24 @@ fn forged_completion_identity_and_invalid_candidate_never_commit_partial_state()
         Some(f64::NAN),
         candidate,
     );
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    mailbox
+        .lock()
+        .unwrap()
+        .completed
+        .push_back(ComponentCompletion {
+            correlation: original,
+            timely: true,
+            outcome: Ok(ComponentResult {
+                status: ComponentStatus::Ready,
+                value: Some(999.0),
+                unit: Unit::CELSIUS,
+                state: PlainData::default(),
+                diagnostics: vec![],
+            }),
+        });
     runtime
         .command(Command::PollComponents { at: Duration::ZERO })
         .unwrap();
@@ -663,4 +733,289 @@ fn adapter_deadline_fences_even_a_late_completion_from_the_current_generation() 
         panic!()
     };
     assert_eq!(latest.quality(), SampleQuality::Unavailable);
+}
+
+#[test]
+fn trusted_plain_data_and_source_boundary_admission_is_atomic() {
+    let mut data = PlainData::default();
+    data.fields.insert(
+        "payload".into(),
+        lab_core::managed::PlainValue::Text("x".repeat(128)),
+    );
+    data.fields.insert(
+        "array".into(),
+        lab_core::managed::PlainValue::Numbers(vec![1.0; 64]),
+    );
+    assert!(data.validate().is_ok());
+    data.fields.insert(
+        "extra".into(),
+        lab_core::managed::PlainValue::Numbers(vec![2.0; 65]),
+    );
+    assert!(data.validate().is_err());
+    data.fields.remove("extra");
+    data.fields.insert(
+        "payload".into(),
+        lab_core::managed::PlainValue::Text("x".repeat(129)),
+    );
+    assert!(data.validate().is_err());
+    let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(FakeExecutor(mailbox.clone())))
+        .unwrap();
+    let mut too_long = definition(201, 1.0);
+    too_long.source = "x".repeat(lab_core::managed::MAX_SOURCE_BYTES + 1);
+    assert!(
+        runtime
+            .command(Command::StageComponent {
+                definition: too_long,
+                replaces: None,
+                at: Duration::ZERO,
+            })
+            .is_err()
+    );
+    assert!(mailbox.lock().unwrap().submitted.is_empty());
+    let mut exact = definition(201, 1.0);
+    exact.source = "x".repeat(lab_core::managed::MAX_SOURCE_BYTES);
+    runtime
+        .command(Command::StageComponent {
+            definition: exact,
+            replaces: None,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    assert_eq!(mailbox.lock().unwrap().submitted.len(), 1);
+}
+
+#[test]
+fn valid_old_inflight_completion_cannot_restore_good_after_generation_commit() {
+    let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(FakeExecutor(mailbox.clone())))
+        .unwrap();
+    runtime
+        .command(Command::StageComponent {
+            definition: definition(201, 1.0),
+            replaces: None,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let init = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete(
+        &mailbox,
+        init,
+        ComponentStatus::Init,
+        None,
+        PlainData::default(),
+    );
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime
+        .command(Command::InvokeComponent {
+            component: ComponentId::new(201),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let first = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete(
+        &mailbox,
+        first,
+        ComponentStatus::Ready,
+        Some(42.0),
+        PlainData::default(),
+    );
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime
+        .command(Command::InvokeComponent {
+            component: ComponentId::new(201),
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let old_pending = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    runtime
+        .command(Command::StageComponent {
+            definition: definition(201, 2.0),
+            replaces: Some(ComponentId::new(201)),
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let replacement = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete(
+        &mailbox,
+        replacement,
+        ComponentStatus::Init,
+        None,
+        PlainData::default(),
+    );
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let signal = SignalId::new(InstrumentId::new(201), TEMPERATURE);
+    let QueryResult::Latest(Some(after_reload)) =
+        runtime.query(Query::GetLatestSignal(signal)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(after_reload.quality(), SampleQuality::Unavailable);
+    complete(
+        &mailbox,
+        old_pending,
+        ComponentStatus::Ready,
+        Some(999.0),
+        PlainData::default(),
+    );
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let QueryResult::Component(new) = runtime
+        .query(Query::Component(ComponentId::new(201)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(new.generation, 2);
+    assert_eq!(new.state, ComponentState::Warming);
+    assert_eq!(new.good_steps, 0);
+    let QueryResult::Latest(Some(last)) = runtime.query(Query::GetLatestSignal(signal)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(last, after_reload);
+}
+
+#[test]
+fn eight_committed_components_and_one_stage_remain_fixed_capacity() {
+    let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(FakeExecutor(mailbox.clone())))
+        .unwrap();
+    for id in 201..209 {
+        runtime
+            .command(Command::StageComponent {
+                definition: definition(id, 1.0),
+                replaces: None,
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        let pending = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+        assert!(matches!(
+            runtime.command(Command::StageComponent {
+                definition: definition(300, 1.0),
+                replaces: None,
+                at: Duration::ZERO
+            }),
+            Err(lab_core::Error::Component(
+                lab_core::managed::ComponentError::Busy
+            ))
+        ));
+        complete(
+            &mailbox,
+            pending,
+            ComponentStatus::Init,
+            None,
+            PlainData::default(),
+        );
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+    }
+    assert!(
+        runtime
+            .command(Command::StageComponent {
+                definition: definition(209, 1.0),
+                replaces: None,
+                at: Duration::ZERO
+            })
+            .is_err()
+    );
+    assert!(mailbox.lock().unwrap().submitted.is_empty());
+    let QueryResult::Instruments(all) = runtime.query(Query::Discover).unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        all.iter()
+            .filter(|item| (201..209).contains(&item.id.get()))
+            .count(),
+        8
+    );
+}
+
+#[test]
+fn core_rejects_out_of_range_and_premature_ready_before_state_or_good_commit() {
+    let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(FakeExecutor(mailbox.clone())))
+        .unwrap();
+    for (id, value, warmup) in [(201, 501.0, 1), (202, 40.0, 3)] {
+        let mut candidate = definition(id, 1.0);
+        candidate.manifest.warmup_samples = warmup;
+        runtime
+            .command(Command::StageComponent {
+                definition: candidate,
+                replaces: None,
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        let init = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+        complete(
+            &mailbox,
+            init,
+            ComponentStatus::Init,
+            None,
+            PlainData::default(),
+        );
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+        runtime
+            .command(Command::InvokeComponent {
+                component: ComponentId::new(id),
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        let step = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+        let mut candidate_state = PlainData::default();
+        candidate_state.fields.insert(
+            "attempt".into(),
+            lab_core::managed::PlainValue::Number(99.0),
+        );
+        complete(
+            &mailbox,
+            step,
+            ComponentStatus::Ready,
+            Some(value),
+            candidate_state,
+        );
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+        let QueryResult::Component(snapshot) = runtime
+            .query(Query::Component(ComponentId::new(id)))
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(snapshot.state, ComponentState::Failed);
+        assert_eq!(snapshot.committed_state, PlainData::default());
+        let QueryResult::Latest(Some(latest)) = runtime
+            .query(Query::GetLatestSignal(SignalId::new(
+                InstrumentId::new(id),
+                TEMPERATURE,
+            )))
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(latest.quality(), SampleQuality::Unavailable);
+    }
 }

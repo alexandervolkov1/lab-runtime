@@ -13,7 +13,10 @@ use lab_core::{
         ComponentManifest, Correlation, Invocation, PlainData,
     },
     metakon::crc,
-    output::{ActuatorId, EvidenceLevel, OutputCommand, OutputResult, OutputState, SafeProfile},
+    output::{
+        ActuatorId, EvidenceLevel, OutputCommand, OutputOwner, OutputResult, OutputState,
+        SafeProfile,
+    },
     plant::ThermalPlantConfig,
     processing::EmaConfig,
     reference::{ReferenceConfig, ReferenceId},
@@ -211,6 +214,71 @@ fn worker_barrier_allows_renewed_native_ticks_bus_recovery_and_rust_safe_before_
         .command(Command::PrepareController(ControllerId::new(42)))
         .unwrap();
 
+    let manual_id = InstrumentId::new(303);
+    let manual = ActuatorId::new(manual_id, lab_core::HEATER_POWER);
+    runtime
+        .command(Command::RegisterThermalPlant(ThermalPlantConfig {
+            id: manual_id,
+            name: "independent manual virtual plant".into(),
+            history_capacity: 16,
+            ambient_temperature: 20.0,
+            initial_temperature: 20.0,
+            gain_per_percent: 0.8,
+            time_constant: Duration::from_secs(8),
+        }))
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator: manual,
+            command: OutputCommand::BindProfile(SafeProfile {
+                min: 0.0,
+                max: 100.0,
+                safe_value: 0.0,
+                max_lease: Duration::from_secs(10),
+                max_proposal_ttl: Duration::from_secs(2),
+                required_evidence: EvidenceLevel::Readback,
+            }),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator: manual,
+            command: OutputCommand::RequestSafe,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let lab_core::CommandResult::Output(OutputResult::Dispatched(initial_safe)) = runtime
+        .command(Command::Output {
+            actuator: manual,
+            command: OutputCommand::BeginDispatch,
+            at: Duration::ZERO,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .command(Command::Output {
+            actuator: manual,
+            command: OutputCommand::Complete {
+                dispatch_id: initial_safe.id(),
+                outcome: lab_core::output::DispatchOutcome::ReadbackVerified,
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator: manual,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(9),
+                lifetime: Duration::from_secs(2),
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap();
+
     let wire = Rc::new(RefCell::new(Wire::default()));
     runtime
         .register_transport(ResourceId::new(7), Box::new(BadCrcTransport(wire.clone())))
@@ -288,6 +356,13 @@ fn worker_barrier_allows_renewed_native_ticks_bus_recovery_and_rust_safe_before_
             .as_ref()
             .is_some_and(|lease| lease.expires() > Duration::from_secs(16))
     );
+
+    let QueryResult::Output(manual_safe) = runtime.query(Query::Output(manual)).unwrap() else {
+        panic!()
+    };
+    assert!(manual_safe.lease.is_none());
+    assert!(manual_safe.safe_confirmed);
+    assert_eq!(manual_safe.readback.unwrap().value, 0.0);
 
     runtime
         .command(Command::QueueMetakonRead {

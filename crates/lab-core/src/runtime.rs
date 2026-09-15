@@ -2605,3 +2605,83 @@ fn map_reference_error(error: ReferenceError) -> ControllerError {
         ReferenceError::InvalidTime => ControllerError::InvalidTickTime,
     }
 }
+
+#[cfg(test)]
+mod managed_identity_tests {
+    use super::*;
+    use crate::managed::{
+        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId, ComponentKind,
+        ComponentManifest, ComponentResult, ComponentStatus, Correlation, Invocation, PlainData,
+    };
+
+    #[derive(Default)]
+    struct InitExecutor(Option<ComponentCompletion>);
+    impl ComponentExecutor for InitExecutor {
+        fn try_submit(&mut self, job: Invocation) -> Result<(), ComponentError> {
+            self.0 = Some(ComponentCompletion {
+                correlation: job.correlation,
+                timely: true,
+                outcome: Ok(ComponentResult {
+                    status: ComponentStatus::Init,
+                    value: None,
+                    unit: Unit::CELSIUS,
+                    state: PlainData::default(),
+                    diagnostics: vec![],
+                }),
+            });
+            Ok(())
+        }
+        fn try_poll(&mut self) -> Option<ComponentCompletion> {
+            self.0.take()
+        }
+        fn try_cancel(&mut self, _: Correlation) {}
+    }
+
+    #[test]
+    fn generation_exhaustion_rejects_replacement_without_staging_or_reusing_identity() {
+        let id = ComponentId::new(201);
+        let candidate = ComponentDefinition {
+            manifest: ComponentManifest {
+                schema_version: 1,
+                id,
+                instrument: InstrumentId::new(201),
+                name: "model".into(),
+                parameter: TEMPERATURE,
+                kind: ComponentKind::Source,
+                unit: Unit::CELSIUS,
+                min: 0.0,
+                max: 100.0,
+                warmup_samples: 1,
+                max_input_age: Duration::from_secs(2),
+                history_capacity: 8,
+            },
+            source: "return function(ctx) return ctx end".into(),
+            config: PlainData::default(),
+        };
+        let mut runtime = Runtime::new();
+        runtime
+            .install_component_executor(Box::new(InitExecutor::default()))
+            .unwrap();
+        runtime
+            .command(Command::StageComponent {
+                definition: candidate.clone(),
+                replaces: None,
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+        runtime.managed.get_mut(&id).unwrap().generation = u64::MAX;
+        assert_eq!(
+            runtime.command(Command::StageComponent {
+                definition: candidate,
+                replaces: Some(id),
+                at: Duration::ZERO,
+            }),
+            Err(ComponentError::IdentityExhausted.into())
+        );
+        assert!(runtime.staged.is_none());
+        assert_eq!(runtime.managed.get(&id).unwrap().generation, u64::MAX);
+    }
+}

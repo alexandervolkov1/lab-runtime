@@ -140,6 +140,27 @@ fn forbidden_evidence_keys_and_invalid_scalar_or_state_are_rejected() {
 
 #[test]
 fn result_and_plain_state_limits_are_checked_independently_of_the_vm_heap() {
+    let exact = format!(
+        "return function(ctx) return {{status='ready',value=1,unit_id='degC',state={{}},diagnostics={{'{}'}}}} end",
+        "x".repeat(256)
+    );
+    assert!(
+        run_bounded(
+            &job(&exact, InvocationPhase::Step),
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(AtomicBool::new(false))
+        )
+        .is_ok()
+    );
+    let excess = exact.replacen(&"x".repeat(256), &"x".repeat(257), 1);
+    assert!(
+        run_bounded(
+            &job(&excess, InvocationPhase::Step),
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(AtomicBool::new(false))
+        )
+        .is_err()
+    );
     for source in [
         "return function(ctx) local t={}; for i=1,17 do t['key'..i]=i end; return {status='ready',value=1,unit_id='degC',state=t,diagnostics={}} end",
         "return function(ctx) local s='x'; for i=1,9 do s=s..s end; return {status='ready',value=1,unit_id='degC',state={},diagnostics={s}} end",

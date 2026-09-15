@@ -2,7 +2,8 @@
 
 use crate::runner::run_bounded;
 use lab_core::managed::{
-    ComponentCompletion, ComponentError, ComponentExecutor, Correlation, Invocation,
+    ComponentCompletion, ComponentError, ComponentExecutor, ComponentResult, Correlation,
+    Invocation,
 };
 use std::{
     sync::{
@@ -19,6 +20,8 @@ static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const WORKERS: usize = 2;
 const JOB_DEADLINE: Duration = Duration::from_millis(100);
 const WORKER_STACK: usize = 2 * 1024 * 1024;
+type WorkerRunner =
+    fn(&Invocation, Instant, Arc<AtomicBool>) -> Result<ComponentResult, ComponentError>;
 
 struct WorkerGuard;
 
@@ -59,6 +62,12 @@ pub struct LuaSupervisor {
 impl LuaSupervisor {
     /// Launch exactly two slots, or reject if a previous abandoned pool is still alive.
     pub fn new() -> Result<Self, ComponentError> {
+        Self::new_with_runner(run_bounded)
+    }
+
+    // A private runner substitution lets the unit harness block the actual
+    // supervisor slots. Runtime and scripts never receive this test seam.
+    fn new_with_runner(runner: WorkerRunner) -> Result<Self, ComponentError> {
         // Reserve the whole pool atomically: concurrent constructors cannot
         // each admit one worker while believing they own the fixed capacity.
         ACTIVE_WORKERS
@@ -74,7 +83,7 @@ impl LuaSupervisor {
                 .spawn(move || {
                     let _guard = WorkerGuard;
                     while let Ok(work) = job_receiver.recv() {
-                        let outcome = run_bounded(&work.invocation, work.deadline, work.cancelled);
+                        let outcome = runner(&work.invocation, work.deadline, work.cancelled);
                         // This timestamp follows conversion and VM destruction.
                         let timely = Instant::now() < work.deadline;
                         let completion = ComponentCompletion {
@@ -249,5 +258,107 @@ impl Drop for LuaSupervisor {
             // never waits on a VM stuck in native work or an uncaught script.
             slot.jobs.take();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lab_core::{
+        InstrumentId, TEMPERATURE, Unit,
+        managed::{
+            ComponentDefinition, ComponentId, ComponentKind, ComponentManifest, Correlation,
+            InvocationPhase, PlainData,
+        },
+    };
+
+    static REACHED: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE: AtomicBool = AtomicBool::new(false);
+
+    fn blocked_runner(
+        _: &Invocation,
+        _: Instant,
+        _: Arc<AtomicBool>,
+    ) -> Result<ComponentResult, ComponentError> {
+        REACHED.fetch_add(1, Ordering::AcqRel);
+        while !RELEASE.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        Err(ComponentError::Executor)
+    }
+
+    fn init(id: u64) -> Invocation {
+        Invocation {
+            correlation: Correlation {
+                runtime: 1,
+                component: ComponentId::new(id),
+                generation: 1,
+                attempt: 0,
+                revision: 0,
+            },
+            phase: InvocationPhase::Init,
+            definition: ComponentDefinition {
+                manifest: ComponentManifest {
+                    schema_version: 1,
+                    id: ComponentId::new(id),
+                    instrument: InstrumentId::new(id),
+                    name: "test-only worker barrier".into(),
+                    parameter: TEMPERATURE,
+                    kind: ComponentKind::Source,
+                    unit: Unit::CELSIUS,
+                    min: 0.0,
+                    max: 100.0,
+                    warmup_samples: 1,
+                    max_input_age: Duration::from_secs(1),
+                    history_capacity: 8,
+                },
+                source: "return function(ctx) return ctx end".into(),
+                config: PlainData::default(),
+            },
+            state: PlainData::default(),
+            at: Duration::ZERO,
+            dt: Duration::ZERO,
+            input: None,
+        }
+    }
+
+    #[test]
+    fn actual_supervisor_shutdown_reports_two_unfinished_workers_without_losing_the_ledger() {
+        REACHED.store(0, Ordering::Release);
+        RELEASE.store(false, Ordering::Release);
+        let mut pool = LuaSupervisor::new_with_runner(blocked_runner).unwrap();
+        pool.try_submit(init(201)).unwrap();
+        pool.try_submit(init(202)).unwrap();
+        let reached_deadline = Instant::now() + Duration::from_secs(2);
+        while REACHED.load(Ordering::Acquire) != 2 {
+            assert!(
+                Instant::now() < reached_deadline,
+                "barrier workers never started"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(pool.try_submit(init(203)), Err(ComponentError::Busy));
+        thread::sleep(Duration::from_millis(105));
+        assert!(pool.try_expire(init(201).correlation));
+        assert!(pool.try_expire(init(202).correlation));
+        assert!(pool.try_poll().is_none());
+        let shutdown_at = Instant::now();
+        assert_eq!(pool.request_shutdown(), 2);
+        assert!(shutdown_at.elapsed() < Duration::from_millis(300));
+        assert_eq!(LuaSupervisor::active_workers(), 2);
+        assert!(matches!(LuaSupervisor::new(), Err(ComponentError::Busy)));
+        RELEASE.store(true, Ordering::Release);
+        let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+        while LuaSupervisor::active_workers() != 0 {
+            assert!(
+                Instant::now() < cleanup_deadline,
+                "blocked workers failed to leave after release"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(pool.request_shutdown(), 0); // Joins only finished test threads.
+        drop(pool);
+        let mut recovered = LuaSupervisor::new().unwrap();
+        assert_eq!(recovered.request_shutdown(), 0);
     }
 }

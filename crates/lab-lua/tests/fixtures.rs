@@ -20,11 +20,12 @@ fn invocation(
     source: &str,
     kind: ComponentKind,
     phase: InvocationPhase,
-    at: u64,
+    clock: (u64, u64),
     config: PlainData,
     state: PlainData,
     input: Option<CapturedInput>,
 ) -> Invocation {
+    let (at, dt) = clock;
     let id = ComponentId::new(210);
     Invocation {
         correlation: Correlation {
@@ -59,7 +60,7 @@ fn invocation(
         },
         state,
         at: Duration::from_secs(at),
-        dt: Duration::from_secs(if at == 0 { 0 } else { 1 }),
+        dt: Duration::from_secs(dt),
         input,
     }
 }
@@ -84,7 +85,7 @@ fn virtual_temperature_model_feeds_three_sample_mean_through_plain_state() {
         VIRTUAL_MODEL_SOURCE,
         ComponentKind::Source,
         InvocationPhase::Init,
-        0,
+        (0, 0),
         config.clone(),
         PlainData::default(),
         None,
@@ -98,25 +99,25 @@ fn virtual_temperature_model_feeds_three_sample_mean_through_plain_state() {
         MOVING_MEAN_SOURCE,
         kind,
         InvocationPhase::Init,
-        0,
+        (0, 0),
         PlainData::default(),
         PlainData::default(),
         None,
     ))
     .state;
     let mut model_state = model_state;
-    for at in 0..=2 {
+    for (step, at) in [0, 2, 5].into_iter().enumerate() {
         let model = run(&invocation(
             VIRTUAL_MODEL_SOURCE,
             ComponentKind::Source,
             InvocationPhase::Step,
-            at,
+            (step as u64, u64::from(step != 0)),
             config.clone(),
             model_state,
             None,
         ));
         assert_eq!(model.status, ComponentStatus::Ready);
-        assert_eq!(model.value, Some((at + 1) as f64));
+        assert_eq!(model.value, Some((step + 1) as f64));
         model_state = model.state;
         let input = CapturedInput {
             signal: input_signal,
@@ -129,20 +130,44 @@ fn virtual_temperature_model_feeds_three_sample_mean_through_plain_state() {
             MOVING_MEAN_SOURCE,
             kind,
             InvocationPhase::Step,
-            at,
+            (
+                at,
+                match step {
+                    0 => 0,
+                    1 => 2,
+                    _ => 3,
+                },
+            ),
             PlainData::default(),
             mean_state,
             Some(input),
         ));
         assert_eq!(
             mean.status,
-            if at == 2 {
+            if step == 2 {
                 ComponentStatus::Ready
             } else {
                 ComponentStatus::Warming
             }
         );
-        assert_eq!(mean.value, if at == 2 { Some(2.0) } else { None });
+        assert_eq!(mean.value, if step == 2 { Some(2.0) } else { None });
         mean_state = mean.state;
     }
+    let mut variant = PlainData::default();
+    variant
+        .fields
+        .insert("baseline".into(), PlainValue::Number(5.0));
+    variant
+        .fields
+        .insert("rate".into(), PlainValue::Number(2.0));
+    let second = run(&invocation(
+        VIRTUAL_MODEL_SOURCE,
+        ComponentKind::Source,
+        InvocationPhase::Step,
+        (2, 2),
+        variant,
+        PlainData::default(),
+        None,
+    ));
+    assert_eq!(second.value, Some(9.0));
 }
