@@ -1,11 +1,157 @@
 //! UTC display metadata must never replace monotonic fact order or control time.
 
-use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_core::{Command, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig};
 use lab_runtime::{
-    host::{Clock, SystemClock},
+    host::{Clock, HostCore, SystemClock},
     recorder::{RecorderLimits, RecorderWorker, RecordingState, SqliteStore, TimeAnchor},
 };
-use std::{path::PathBuf, time::Duration};
+use std::{cell::Cell, path::PathBuf, time::Duration};
+
+struct DeterministicClock(Cell<Duration>);
+impl Clock for DeterministicClock {
+    fn now(&self) -> Duration {
+        self.0.get()
+    }
+}
+
+#[test]
+fn deterministic_native_control_is_identical_across_forward_backward_and_failed_wall_reads() {
+    let anchors = [
+        TimeAnchor::valid(
+            Duration::from_secs(1),
+            1_000_000,
+            Duration::from_secs(1) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+        TimeAnchor::valid(
+            Duration::from_secs(1),
+            9_999_999_999,
+            Duration::from_secs(1) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+        TimeAnchor::valid(
+            Duration::from_secs(1),
+            -9_999_999_999,
+            Duration::from_secs(1) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+        TimeAnchor::unavailable(
+            Duration::from_secs(1),
+            "wall_read_failed",
+            Duration::from_secs(1) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+    ];
+    let mut traces = Vec::new();
+    for (case, anchor) in anchors.into_iter().enumerate() {
+        let path = temporary_database();
+        let boot_id = format!("{:032x}", case + 1);
+        let boot_anchor =
+            TimeAnchor::valid(Duration::ZERO, -1_000_000, Duration::from_nanos(200)).unwrap();
+        let mut store = SqliteStore::open_with_boot_anchor(&path, &boot_id, boot_anchor).unwrap();
+        store.start_run("wall-independent native control").unwrap();
+        let mut host = HostCore::virtual_demo().unwrap();
+        let clock = DeterministicClock(Cell::new(Duration::ZERO));
+        host.service(&clock).unwrap();
+        host.command(Command::StartController {
+            controller: host.controller_id(),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+        let mut trace = Vec::new();
+        for tenth in 1..=20 {
+            clock.0.set(Duration::from_millis(tenth * 100));
+            let report = host.service(&clock).unwrap();
+            if tenth == 10 {
+                store.append_clock_anchor("periodic", &anchor).unwrap();
+            }
+            let QueryResult::Controller(controller) =
+                host.query(Query::Controller(host.controller_id())).unwrap()
+            else {
+                panic!("controller query changed kind")
+            };
+            let QueryResult::Reference(reference) =
+                host.query(Query::Reference(host.reference_id())).unwrap()
+            else {
+                panic!("reference query changed kind")
+            };
+            let QueryResult::Latest(sample) = host
+                .query(Query::GetLatestSignal(host.temperature()))
+                .unwrap()
+            else {
+                panic!("sample query changed kind")
+            };
+            let QueryResult::Output(output) = host
+                .query(Query::Output(lab_core::output::ActuatorId::new(
+                    host.plant_id(),
+                    lab_core::HEATER_POWER,
+                )))
+                .unwrap()
+            else {
+                panic!("output query changed kind")
+            };
+            // Lease instance numbers are process-wide allocation identities.
+            // Compare their safety deadlines and every control/output decision.
+            trace.push((
+                report,
+                (
+                    controller.state,
+                    controller.ema,
+                    controller.pid,
+                    controller.lease.map(|lease| lease.expires()),
+                    controller.last_tick,
+                    controller.latest_output,
+                ),
+                (reference, sample),
+                (
+                    output.state,
+                    output.epoch,
+                    output.fault_latched,
+                    output.safe_confirmed,
+                    output.lease.map(|lease| lease.expires()),
+                    output.requested,
+                    output.sent,
+                    output.acknowledged,
+                    output.readback,
+                    output.outcome,
+                ),
+            ));
+        }
+        let seal = TimeAnchor::valid(
+            Duration::from_secs(2),
+            2_000_000,
+            Duration::from_secs(2) + Duration::from_nanos(100),
+        )
+        .unwrap();
+        store.stop_run_with_anchor(&seal).unwrap();
+        store.finish_boot(Duration::from_secs(2)).unwrap();
+        store.close().unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let observed: (Option<i64>, Option<String>, i64, Vec<u8>) = db
+            .query_row(
+                "SELECT c.wall_us,c.unavailable_reason,r.wall_estimate_us,r.published_at
+             FROM clock_anchors c JOIN records r
+             ON r.boot_id=c.boot_id AND r.record_seq=c.record_seq
+             WHERE c.kind='periodic'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(observed.0, anchor.wall_us());
+        assert_eq!(observed.1, anchor.unavailable_reason().map(str::to_owned));
+        assert_eq!(observed.2, -1, "boot mapping must not follow later UTC");
+        assert_eq!(observed.3, (1_000_000_100u64).to_be_bytes());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+        traces.push(trace);
+    }
+    for changed in &traces[1..] {
+        assert_eq!(
+            changed, &traces[0],
+            "PID/EMA, Reference, lease, sample and output decisions changed with UTC"
+        );
+    }
+}
 
 #[test]
 fn boot_mapping_remains_stable_across_later_utc_jump_and_supports_pre_epoch_time() {
