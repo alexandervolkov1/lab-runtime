@@ -177,8 +177,18 @@ fn wait_for(
                 at: Duration::from_secs(at),
             })
             .unwrap();
-        let QueryResult::Component(snapshot) = runtime.query(Query::Component(id)).unwrap() else {
-            panic!()
+        let snapshot = match runtime.query(Query::Component(id)) {
+            Ok(QueryResult::Component(snapshot)) => snapshot,
+            Err(lab_core::Error::Component(lab_core::managed::ComponentError::Unknown)) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "Lua stage did not settle for {}",
+                    id.get()
+                );
+                thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            other => panic!("unexpected component snapshot: {other:?}"),
         };
         let published = if publication {
             let signal = SignalId::new(snapshot.instrument, TEMPERATURE);
@@ -339,6 +349,66 @@ fn lua_model_filter_native_authority_failure_reload_and_independent_control() {
     assert_eq!(running.state, ControllerState::Running);
     assert!(running.latest_output.is_some());
     let prior_epoch = running.lease.unwrap().epoch();
+
+    // A real Lua syntax failure during replacement init must leave generation 1
+    // and its committed observation usable. No partial definition is installed.
+    runtime
+        .command(Command::StageComponent {
+            definition: component(
+                MODEL,
+                ComponentKind::Source,
+                1,
+                "return function(",
+                config.clone(),
+            ),
+            replaces: Some(MODEL),
+            at: Duration::from_secs(3),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        runtime
+            .command(Command::PollComponents {
+                at: Duration::from_secs(3),
+            })
+            .unwrap();
+        let mut invalid = component(
+            MODEL,
+            ComponentKind::Source,
+            1,
+            VIRTUAL_MODEL_SOURCE,
+            config.clone(),
+        );
+        invalid.manifest.unit = Unit::PERCENT;
+        match runtime.command(Command::StageComponent {
+            definition: invalid,
+            replaces: Some(MODEL),
+            at: Duration::from_secs(3),
+        }) {
+            Err(lab_core::Error::Component(lab_core::managed::ComponentError::Busy)) => {}
+            Err(lab_core::Error::Component(
+                lab_core::managed::ComponentError::InvalidConfiguration,
+            )) => break,
+            other => panic!("unexpected invalid-stage outcome: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "syntax candidate never settled");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let QueryResult::Component(retained) = runtime.query(Query::Component(MODEL)).unwrap() else {
+        panic!()
+    };
+    assert_eq!(retained.generation, 1);
+    assert_eq!(retained.state, ComponentState::Ready);
+    let QueryResult::Latest(Some(unchanged)) = runtime
+        .query(Query::GetLatestSignal(SignalId::new(
+            InstrumentId::new(MODEL.get()),
+            TEMPERATURE,
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(unchanged.quality(), lab_core::SampleQuality::Good);
 
     refresh_and_tick_native(&mut runtime, 4);
     runtime
