@@ -88,10 +88,18 @@ impl Peer {
         if self.pending >= CLIENT_IN {
             return Ok(true);
         }
+        if !self.dispatch_buffered(id, to_owner) {
+            return Ok(false);
+        }
+        if self.pending >= CLIENT_IN {
+            return Ok(true);
+        }
         let mut scratch = [0u8; SWEEP_BYTES];
         let remaining = wire::FRAME_LIMIT.saturating_sub(self.input.len());
-        if remaining == 0 && !self.input.contains(&b'\n') {
-            return Ok(false);
+        if remaining == 0 {
+            // A full buffered frame has already been dispatched, or admission
+            // is temporarily backpressured; never read into an empty slice.
+            return Ok(self.input.contains(&b'\n'));
         }
         match self.stream.read(&mut scratch[..remaining.min(SWEEP_BYTES)]) {
             Ok(0) => return Ok(false),
@@ -107,6 +115,9 @@ impl Peer {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e),
         }
+        Ok(self.dispatch_buffered(id, to_owner))
+    }
+    fn dispatch_buffered(&mut self, id: u64, to_owner: &SyncSender<Incoming>) -> bool {
         for _ in 0..4 {
             if self.pending >= CLIENT_IN {
                 break;
@@ -117,7 +128,7 @@ impl Peer {
             let frame = self.input[..=end].to_vec();
             let request = match wire::decode_frame(&frame) {
                 Ok(r) => r,
-                Err(_) => return Ok(false),
+                Err(_) => return false,
             };
             match to_owner.try_send(Incoming::Request(id, request)) {
                 Ok(()) => {
@@ -126,10 +137,10 @@ impl Peer {
                     self.partial_since = (!self.input.is_empty()).then(Instant::now);
                 }
                 Err(TrySendError::Full(_)) => break,
-                Err(TrySendError::Disconnected(_)) => return Ok(false),
+                Err(TrySendError::Disconnected(_)) => return false,
             }
         }
-        Ok(true)
+        true
     }
     fn write(&mut self) -> io::Result<bool> {
         let mut budget = SWEEP_BYTES;
@@ -389,5 +400,49 @@ pub fn run(
             }
         }
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(test)]
+mod bounded_peer_tests {
+    use super::*;
+
+    fn peer() -> (Peer, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        (Peer::new(server), client)
+    }
+
+    #[test]
+    fn a_complete_frame_at_the_exact_input_cap_is_dispatched_before_further_read() {
+        let (mut peer, client) = peer();
+        let mut frame =
+            b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n".to_vec();
+        frame.splice(0..0, vec![b' '; wire::FRAME_LIMIT - frame.len()]);
+        assert_eq!(frame.len(), wire::FRAME_LIMIT);
+        peer.input = frame;
+        drop(client);
+        let (tx, rx) = mpsc::sync_channel(1);
+        let _ = peer.read(9, &tx).unwrap();
+        assert!(
+            matches!(rx.try_recv().unwrap(), Incoming::Request(9, request) if request.op == "hello")
+        );
+    }
+
+    #[test]
+    fn fixed_first_byte_and_unsent_write_deadlines_close_tricklers() {
+        let (mut peer, _client) = peer();
+        let past = Instant::now() - Duration::from_millis(2100);
+        peer.handshake_since = past;
+        assert!(peer.timed_out());
+        peer.replied_hello = true;
+        peer.partial_since = Some(past);
+        assert!(peer.timed_out());
+        peer.partial_since = None;
+        peer.replies.push_back(vec![b'X'; wire::FRAME_LIMIT]);
+        peer.last_write = past;
+        assert!(peer.timed_out());
     }
 }

@@ -8,7 +8,11 @@ use serde::{
     de::{self, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Map, Number, Value};
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::BTreeSet,
+    fmt,
+    io::{self, Write},
+};
 
 /// Maximum complete NDJSON frame including its line feed.
 pub const FRAME_LIMIT: usize = 16_384;
@@ -247,16 +251,38 @@ pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
 
 /// Encode one owned response/event with the same hard outgoing frame limit.
 pub fn encode_frame(value: &Value) -> Result<Vec<u8>, WireError> {
-    let mut encoded = serde_json::to_vec(value)
-        .map_err(|_| WireError::new("encode_failed", "response could not be encoded"))?;
-    if encoded.len() >= FRAME_LIMIT {
-        return Err(WireError::new(
-            "frame_too_large",
-            "response exceeds frame limit",
-        ));
+    // serde writes incrementally into a hard-cap writer, so an oversized owned
+    // result never creates an unbounded second transport allocation.
+    struct Limited {
+        bytes: Vec<u8>,
+        overflowed: bool,
     }
-    encoded.push(b'\n');
-    Ok(encoded)
+    impl Write for Limited {
+        fn write(&mut self, chunk: &[u8]) -> io::Result<usize> {
+            if chunk.len() > (FRAME_LIMIT - 1).saturating_sub(self.bytes.len()) {
+                self.overflowed = true;
+                return Err(io::Error::other("outgoing frame limit"));
+            }
+            self.bytes.extend_from_slice(chunk);
+            Ok(chunk.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut limited = Limited {
+        bytes: Vec::with_capacity(1024),
+        overflowed: false,
+    };
+    if serde_json::to_writer(&mut limited, value).is_err() {
+        return Err(if limited.overflowed {
+            WireError::new("frame_too_large", "response exceeds frame limit")
+        } else {
+            WireError::new("encode_failed", "response could not be encoded")
+        });
+    }
+    limited.bytes.push(b'\n');
+    Ok(limited.bytes)
 }
 
 /// Parse u64 without signs, leading zeros or JSON-number precision loss.
@@ -350,7 +376,11 @@ fn lexical_limits(body: &[u8]) -> Result<(), WireError> {
     let mut in_string = false;
     let mut escape = false;
     let mut depth = 0usize;
-    let mut separators = 1usize;
+    // Colons count object member values; each nonempty array contributes its
+    // first element and each array comma another. This is a total-frame budget,
+    // including singleton objects that contain no comma.
+    let mut values = 1usize;
+    let mut containers: Vec<(u8, bool)> = Vec::with_capacity(DEPTH_LIMIT);
     for &byte in body {
         if in_string {
             if escape {
@@ -364,6 +394,13 @@ fn lexical_limits(body: &[u8]) -> Result<(), WireError> {
             }
             continue;
         }
+        if let Some((b'[', first_seen)) = containers.last_mut()
+            && !*first_seen
+            && !byte.is_ascii_whitespace()
+            && byte != b']'
+        {
+            *first_seen = true;
+        }
         match byte {
             b'"' => in_string = true,
             b'{' | b'[' => {
@@ -371,15 +408,20 @@ fn lexical_limits(body: &[u8]) -> Result<(), WireError> {
                 if depth > DEPTH_LIMIT {
                     return Err(WireError::new("json_depth", "JSON depth exceeds 16"));
                 }
+                containers.push((byte, false));
             }
-            b'}' | b']' => depth = depth.saturating_sub(1),
-            b',' => {
-                separators += 1;
-                if separators > VALUE_LIMIT {
-                    return Err(WireError::new("json_values", "JSON value limit"));
+            b'}' | b']' => {
+                if let Some((b'[', true)) = containers.pop() {
+                    values += 1;
                 }
+                depth = depth.saturating_sub(1);
             }
+            b':' => values += 1,
+            b',' if containers.last().is_some_and(|(kind, _)| *kind == b'[') => values += 1,
             _ => {}
+        }
+        if values > VALUE_LIMIT {
+            return Err(WireError::new("json_values", "JSON value limit"));
         }
     }
     Ok(())

@@ -52,6 +52,16 @@ fn duplicate_keys_at_any_level_depth_and_value_budgets_are_rejected() {
         decode_frame(values.as_bytes()).unwrap_err().code,
         "json_values"
     );
+    // Commas alone undercount singleton values nested in many small objects.
+    let singleton_objects = vec!["{\"x\":0}"; 600].join(",");
+    let nested = format!(
+        "{{\"v\":1,\"msg_id\":\"h\",\"op\":\"discover\",\"args\":{{\"extra\":[{singleton_objects}]}}}}\n"
+    );
+    assert!(nested.len() < FRAME_LIMIT);
+    assert_eq!(
+        decode_frame(nested.as_bytes()).unwrap_err().code,
+        "json_values"
+    );
 }
 
 #[test]
@@ -59,6 +69,11 @@ fn oversize_utf8_schema_version_and_unadvertised_output_commands_fail_closed() {
     let mut oversize = hello();
     oversize.splice(0..0, vec![b' '; FRAME_LIMIT]);
     assert_eq!(decode_frame(&oversize).unwrap_err().code, "frame_too_large");
+    let oversized_result = json!({"records":vec!["x".repeat(512); 40]});
+    assert_eq!(
+        encode_frame(&oversized_result).unwrap_err().code,
+        "frame_too_large"
+    );
     let mut bad_utf8 = hello();
     bad_utf8.insert(4, 0xff);
     assert_eq!(decode_frame(&bad_utf8).unwrap_err().code, "invalid_utf8");
