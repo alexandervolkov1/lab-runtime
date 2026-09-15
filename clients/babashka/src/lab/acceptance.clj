@@ -87,6 +87,18 @@
                         (client/command! connection "reference_retune"
                                          {:reference reference :expected_revision (:revision before-retune)
                                           :target 55.0 :rate 2.0}))
+            old-elapsed (/ (- (Long/parseLong (:committed_at continuous))
+                              (Long/parseLong (:last_at before-retune))) 1.0e9)
+            expected-value (min 60.0 (+ (:value before-retune) (* 5.0 old-elapsed)))
+            _ (when (or (neg? old-elapsed)
+                        (> (Math/abs (- (:value continuous) expected-value)) 0.001))
+                (throw (ex-info "ramp_retune_discontinuous" {:before before-retune
+                                                              :result continuous})))
+            controller-after (controller! connection controller)
+            _ (when (or (not= (:state controller-after) "running")
+                        (not= (:revision controller-after) (:revision pid))
+                        (not (<= 0.0 (:latest_output controller-after) 100.0)))
+                (throw (ex-info "pid_changed_or_stopped_on_ramp_retune" {})))
             _ (client/drain-buffered! connection)
             lease (:output movement)
             checkpoint {:checkpoint "a" :boot_id @(:boot-id connection)
@@ -116,6 +128,7 @@
     (try
       (when (not= @(:boot-id connection) (:boot_id checkpoint))
         (throw (ex-info "instance_changed" {})))
+      (reset! (:cursor connection) (:cursor checkpoint))
       (let [retune-status (client/operation-status! connection (:retune_request_id checkpoint))
             _ (when (not= (:state retune-status) "completed")
                 (throw (ex-info "retune_outcome_not_retained" {:status retune-status})))

@@ -1,5 +1,7 @@
-{:paths ["src"]
+{:paths ["src" "test"]
  :tasks {accept-a {:requires ([lab.acceptance :as acceptance])
                    :task (apply acceptance/-main "a" *command-line-args*)}
          accept-b {:requires ([lab.acceptance :as acceptance])
-                   :task (apply acceptance/-main "b" *command-line-args*)}}}
+                   :task (apply acceptance/-main "b" *command-line-args*)}
+         test-client {:requires ([lab.client-test :as tests])
+                      :task (tests/-main)}}}

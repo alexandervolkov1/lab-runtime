@@ -3,10 +3,13 @@
    An uncertain mutation keeps its original request ID; no hidden retry occurs."
   (:require [cheshire.core :as json])
   (:import [java.net Socket SocketTimeoutException]
-           [java.io ByteArrayOutputStream]))
+           [java.io ByteArrayOutputStream]
+           [java.nio ByteBuffer]
+           [java.nio.charset StandardCharsets CodingErrorAction CharacterCodingException]))
 
 (def ^:private frame-limit 16384)
 (def ^:private event-limit 16)
+(def ^:private snapshot-limit 262144)
 (def ^:private frame-timeout-ns 2000000000)
 
 (defn close! [client]
@@ -29,7 +32,14 @@
             (= byte ::timeout) (recur size)
             (= byte -1) (throw (ex-info "connection_closed" {:code "connection_closed"}))
             (>= size frame-limit) (throw (ex-info "frame_too_large" {:code "frame_too_large"}))
-            (= byte 10) (json/parse-string (.toString bytes "UTF-8") true)
+            (= byte 10)
+            (let [decoder (doto (.newDecoder StandardCharsets/UTF_8)
+                            (.onMalformedInput CodingErrorAction/REPORT)
+                            (.onUnmappableCharacter CodingErrorAction/REPORT))
+                  text (try (str (.decode decoder (ByteBuffer/wrap (.toByteArray bytes))))
+                            (catch CharacterCodingException error
+                              (throw (ex-info "invalid_utf8" {:code "invalid_utf8"} error))))]
+              (json/parse-string text true))
             :else (do (.write bytes (int byte)) (recur (inc size)))))))))
 
 (defn- write-frame! [client frame]
@@ -61,7 +71,11 @@
       (cond
         (or (= (:type frame) "event")
             (= (:type frame) "subscription_progress"))
-        (do (buffer-event! client frame) (recur accepted?))
+        (do (try (buffer-event! client frame)
+                 (catch Exception error
+                   (when (and command? accepted?) (reset! (:uncertain client) request-id))
+                   (throw error)))
+            (recur accepted?))
 
         (not= (:msg_id frame) msg-id)
         (throw (ex-info "unexpected_reply" {:code "unexpected_reply" :frame frame}))
@@ -136,19 +150,25 @@
   "Install every frozen page under one cursor, capped by the host's 256-KiB policy."
   [client]
   (let [first (query! client "runtime_snapshot" {})
-        token (:snapshot first)]
-    (loop [records (vec (:records first))
-           next-index (:next_index first)
-           pages 1]
-      (when (> pages 64)
-        (throw (ex-info "snapshot_pages_exceeded" {:code "resync_required"})))
-      (if (nil? next-index)
-        (do (query! client "snapshot_release" {:snapshot token})
-            {:cursor (:cursor first) :records records})
-        (let [page (query! client "snapshot_page" {:snapshot token :index next-index})]
-          (when (not= (:cursor page) (:cursor first))
-            (throw (ex-info "snapshot_cursor_changed" {:code "resync_required"})))
-          (recur (into records (:records page)) (:next_index page) (inc pages)))))))
+        token (:snapshot first)
+        page-bytes (fn [records] (alength (.getBytes (json/generate-string records) "UTF-8")))]
+    (try
+      (loop [records (vec (:records first))
+             next-index (:next_index first)
+             pages 1
+             bytes (page-bytes (:records first))]
+        (when (or (> pages 64) (> bytes snapshot-limit))
+          (throw (ex-info "snapshot_budget_exceeded" {:code "resync_required"})))
+        (if (nil? next-index)
+          {:cursor (:cursor first) :records records}
+          (let [page (query! client "snapshot_page" {:snapshot token :index next-index})]
+            (when (not= (:cursor page) (:cursor first))
+              (throw (ex-info "snapshot_cursor_changed" {:code "resync_required"})))
+            (recur (into records (:records page)) (:next_index page) (inc pages)
+                   (+ bytes (page-bytes (:records page)))))))
+      (finally
+        (try (query! client "snapshot_release" {:snapshot token})
+             (catch Exception _ nil))))))
 
 (defn subscribe! [client cursor]
   (query! client "subscribe" {:after cursor :filter {:kinds [] :targets []}}))
@@ -156,16 +176,29 @@
 (defn read-event!
   "Apply one buffered/live event or progress frame, then advance the applied cursor."
   [client]
-  (let [frame (if (seq @(:events client))
-                (let [event (first @(:events client))]
-                  (swap! (:events client) #(vec (subvec % 1))) event)
-                (read-frame client))]
-    (when (not (#{"event" "subscription_progress"} (:type frame)))
-      (throw (ex-info "unexpected_stream_frame" {:code "unexpected_stream_frame" :frame frame})))
-    (when (not= (:boot_id frame) @(:boot-id client))
-      (throw (ex-info "instance_changed" {:code "instance_changed"})))
-    (reset! (:cursor client) {:boot_id (:boot_id frame) :seq (:seq frame)})
-    frame))
+  (loop [discarded 0]
+    (when (>= discarded 32)
+      (throw (ex-info "duplicate_replay_budget" {:code "resync_required"})))
+    (let [frame (if (seq @(:events client))
+                  (let [event (first @(:events client))]
+                    (swap! (:events client) #(vec (subvec % 1))) event)
+                  (read-frame client))]
+      (when (= (:type frame) "error")
+        (throw (ex-info "resync_required" {:code (if (#{"event_gap" "instance_changed"} (:code frame))
+                                                   "resync_required" "unexpected_stream_error")
+                                             :reply frame})))
+      (when (not (#{"event" "subscription_progress"} (:type frame)))
+        (throw (ex-info "unexpected_stream_frame" {:code "unexpected_stream_frame" :frame frame})))
+      (when (not= (:boot_id frame) @(:boot-id client))
+        (throw (ex-info "instance_changed" {:code "instance_changed"})))
+      (let [current @(:cursor client)
+            old-seq (when (and current (= (:boot_id current) (:boot_id frame)))
+                      (java.math.BigInteger. (:seq current)))
+            new-seq (java.math.BigInteger. (:seq frame))]
+        (if (and old-seq (not (pos? (.compareTo new-seq old-seq))))
+          (recur (inc discarded))
+          (do (reset! (:cursor client) {:boot_id (:boot_id frame) :seq (:seq frame)})
+              frame))))))
 
 (defn drain-buffered!
   "Apply at most the fixed sixteen already buffered event/progress frames."
