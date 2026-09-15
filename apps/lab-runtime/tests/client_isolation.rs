@@ -1,0 +1,128 @@
+//! Real loopback connections exercise framed requests and autonomous ownership.
+
+use lab_runtime::{
+    server::run,
+    service::{ServiceHost, ServiceOptions},
+};
+use serde_json::{Value, json};
+use std::{
+    io::{BufRead, BufReader, Write},
+    net::TcpStream,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+fn start() -> (
+    std::net::SocketAddr,
+    Arc<AtomicBool>,
+    thread::JoinHandle<()>,
+) {
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let join = thread::spawn(move || {
+        let host = ServiceHost::startup(
+            ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"])
+                .unwrap(),
+        )
+        .unwrap();
+        ready_tx.send(host.bound_address()).unwrap();
+        run(host, flag).unwrap();
+    });
+    let addr = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    (addr, stop, join)
+}
+fn send(reader: &mut BufReader<TcpStream>, value: Value) -> Value {
+    let bytes = lab_runtime::wire::encode_frame(&value).unwrap();
+    reader.get_mut().write_all(&bytes).unwrap();
+    read(reader)
+}
+fn read(reader: &mut BufReader<TcpStream>) -> Value {
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(!line.is_empty(), "connection closed before response");
+    serde_json::from_str(&line).unwrap()
+}
+fn connect(addr: std::net::SocketAddr) -> BufReader<TcpStream> {
+    let stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    BufReader::new(stream)
+}
+fn hello(reader: &mut BufReader<TcpStream>) -> String {
+    let reply = send(
+        reader,
+        json!({"v":1,"msg_id":"h","op":"hello","args":{"scope":null}}),
+    );
+    assert_eq!(reply["type"], "result");
+    reply["result"]["scope"].as_str().unwrap().into()
+}
+
+#[test]
+fn fragmented_and_coalesced_frames_preserve_connection_order_and_hello_gate() {
+    let (addr, stop, join) = start();
+    let mut a = connect(addr);
+    let gate = send(
+        &mut a,
+        json!({"v":1,"msg_id":"early","op":"discover","args":{}}),
+    );
+    assert_eq!(gate["code"], "hello_required");
+    let hello_bytes = lab_runtime::wire::encode_frame(
+        &json!({"v":1,"msg_id":"h","op":"hello","args":{"scope":null}}),
+    )
+    .unwrap();
+    a.get_mut().write_all(&hello_bytes[..5]).unwrap();
+    a.get_mut().write_all(&hello_bytes[5..]).unwrap();
+    assert_eq!(read(&mut a)["type"], "result");
+    let first = lab_runtime::wire::encode_frame(
+        &json!({"v":1,"msg_id":"q1","op":"controller","args":{"controller":"1"}}),
+    )
+    .unwrap();
+    let second = lab_runtime::wire::encode_frame(
+        &json!({"v":1,"msg_id":"q2","op":"reference","args":{"reference":"1"}}),
+    )
+    .unwrap();
+    a.get_mut().write_all(&[first, second].concat()).unwrap();
+    assert_eq!(read(&mut a)["msg_id"], "q1");
+    assert_eq!(read(&mut a)["msg_id"], "q2");
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
+
+#[test]
+fn client_disconnect_does_not_stop_native_owner_or_other_client_queries() {
+    let (addr, stop, join) = start();
+    let mut a = connect(addr);
+    hello(&mut a);
+    let mut b = connect(addr);
+    hello(&mut b);
+    drop(a);
+    let before = send(
+        &mut b,
+        json!({"v":1,"msg_id":"m1","op":"latest","args":{"signal":{"instrument":"1","parameter":lab_core::TEMPERATURE.get().to_string()}}}),
+    );
+    let started = Instant::now();
+    let mut later = before.clone();
+    while started.elapsed() < Duration::from_secs(2) {
+        later = send(
+            &mut b,
+            json!({"v":1,"msg_id":"m2","op":"latest","args":{"signal":{"instrument":"1","parameter":lab_core::TEMPERATURE.get().to_string()}}}),
+        );
+        if later["result"]["observed_at"] != before["result"]["observed_at"] {
+            break;
+        }
+        thread::yield_now();
+    }
+    assert_ne!(
+        before["result"]["observed_at"],
+        later["result"]["observed_at"]
+    );
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
