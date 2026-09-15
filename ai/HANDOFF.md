@@ -10,26 +10,74 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: APPROVED_FOR_ASTRA_HIGH_M7_DESIGN
+STATUS: M7_IMPLEMENTATION_IN_PROGRESS
 
-Completed model:
+Current model:
 SOL_HIGH
 
 Completed work:
-M6 implementation and H1–H28 verification
+M7 Recorder/SQLite architecture and tests-first D1–D18 acceptance contract.
+
+Implementation contract:
+docs/implementation/MILESTONE_7_DESIGN.md
+
+M7 production implementation is in progress. Existing uncommitted M7 changes
+preceded the explicit SOL_HIGH switch and are being audited against D1-D18.
 
 External review result:
 M6 accepted as the implementation baseline for the first-release sequence.
 
-Next model:
-ASTRA_HIGH
+Authorized work:
+M7 tests-first implementation against MILESTONE_7_DESIGN.md only.
 
-Authorized next work:
-M7 Recorder/SQLite design only
+Model gate:
+ASTRA_HIGH -> SOL_HIGH crossed by the user's explicit instruction.
 
-Do not begin:
-M7 production implementation
-M8+
+Do not start:
+M8 or later milestones.
+
+M7 design checkpoint — 2026-09-15
+
+Inspected baseline: edb436a (main), initially clean working tree.
+Baseline verification completed successfully:
+
+git status
+git log --oneline -20
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+
+cargo test --workspace -- --list confirmed 189 named Rust tests.
+The workspace suite included actual Babashka A/B process acceptance.
+Release-profile verification was not repeated in this documentation phase.
+
+The design fixes Runtime ownership, bounded Core fact capture and storage ingress,
+separate boot/run/interval/activation identities, immutable provenance, monotonic
+and wall-clock mapping, typed output evidence, BestEffort/Required policies,
+Required revoke/fault/safe behavior, WAL/FULL single-connection SQLite, versioned
+schema/reopen, explicit bounded raw-history operations and finite shutdown/flush.
+
+The history service implements the release plan's bounded paged raw-observation
+option; downsampling is not advertised. M6 transient replay remains separate.
+
+Donor inspected read-only at 50d3d1e3de84c650e1aa0ffbf1625044f794d315.
+No donor tests were run or donor files changed. The original design checkpoint
+added no production code, tests or dependencies. A later continuation produced
+the uncommitted M7 implementation now under SOL_HIGH audit; its test sequence
+must be reported honestly. No M8 design, GUI or Lua expansion was added.
+ai/project_snapshot.txt was absent and was not created or modified.
+No commits were made at that design checkpoint. The user subsequently authorized
+small logical commits during SOL_HIGH work.
+
+Documentation validation: all 18 distinct D1–D18 acceptance rows are present,
+local design links resolve, Markdown fences balance, no trailing whitespace,
+and git diff --check passes. Only MILESTONE_7_DESIGN.md and the four authorized
+coordination/instruction files changed.
+
+No unresolved architectural contradiction was found at the design checkpoint.
+That checkpoint requested a model handoff, not external acceptance. SOL_HIGH must map D1–D18
+to actual red/green evidence in MILESTONE_7_REPORT.md, run the completion gates,
+then set READY_FOR_EXTERNAL_REVIEW here and STOP before M8.
+
 M6 review conclusion
 
 The supplied M6 checkpoint is accepted.
@@ -198,11 +246,10 @@ documentation plus reproducible tutorials.
 After v0.1.0 the default development mode should become a smaller educational
 workflow rather than large autonomous agent milestones.
 
-Current review authorization
-APPROVED_FOR_ASTRA_HIGH_M7_DESIGN
+Current model gate
+M7_IMPLEMENTATION_IN_PROGRESS
 
-Astra designs M7 only and then requests ASTRA_HIGH -> SOL_HIGH.
-
-Do not design M8 yet.
-
-Do not implement production M7 code under Astra.
+Current model: SOL_HIGH. M7 design is complete and accepted as the implementation
+contract. Audit and complete existing M7 work against D1-D18, recording any
+acceptance tests added after their production code honestly in the M7 report.
+M8 is not authorized. Set READY_FOR_EXTERNAL_REVIEW only after all M7 checks pass.

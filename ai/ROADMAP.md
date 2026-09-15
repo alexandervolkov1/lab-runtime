@@ -17,6 +17,19 @@ M6  autonomous headless Runtime + local API + real Babashka process
 
 M6 was verified at the supplied checkpoint with 189 named Rust tests plus real Babashka A/B acceptance and has now passed the external release-planning review.
 
+Current gate
+
+M7 Recorder/SQLite design and the tests-first D1–D18 acceptance contract are
+complete in docs/implementation/MILESTONE_7_DESIGN.md.
+
+Current model: SOL_HIGH
+Gate: ASTRA_HIGH -> SOL_HIGH crossed by explicit user instruction.
+Current work: audit and complete M7 implementation against MILESTONE_7_DESIGN.md.
+Do not start: M8.
+
+M7 implementation is in progress; it has not passed the D1-D18 or external
+review gates.
+
 First stable release sequence
 M7
     Runtime-owned Recorder

@@ -28,7 +28,7 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-ASTRA_HIGH — M7 Recorder/SQLite design only.
+SOL_HIGH — M7 Recorder/SQLite implementation only.
 ```
 
 M1–M6 are complete and M6 has passed the external release-planning review.
@@ -52,17 +52,24 @@ docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 
 `ai/WORK.md` is the authoritative instruction for the currently authorized phase.
 
-Do not implement M7 production code under ASTRA_HIGH.
+Current model: SOL_HIGH.
+
+Authorized work: audit and complete M7 tests-first implementation against
+`docs/implementation/MILESTONE_7_DESIGN.md`.
+
+The M7 design and D1-D18 acceptance contract are complete. Earlier uncommitted
+production changes must be verified with the corresponding acceptance coverage;
+record their actual test sequence honestly in the M7 report.
 
 Do not begin M8.
 
-The next required gate is:
+The crossed model gate is:
 
 ```text
 ASTRA_HIGH -> SOL_HIGH
 ```
 
-after the M7 Recorder/SQLite design and tests-first acceptance contract are complete.
+SOL_HIGH must finish M7 and request external review before any M8 work.
 
 If a genuine architectural contradiction is discovered, record the precise issue in
 `ai/HANDOFF.md`, set:
