@@ -340,3 +340,59 @@ fn failed_m3_recovery_and_two_stalled_workers_expire_grace_with_unconfirmed_safe
         ExecutorState::Recovering | ExecutorState::Offline
     ));
 }
+
+#[test]
+fn fatal_owner_clock_rejection_reaches_bounded_failed_shutdown_instead_of_abrupt_return() {
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.command(Command::ServiceSafety {
+        at: Duration::from_secs(100),
+    })
+    .unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
+        host,
+    )
+    .unwrap();
+    let began = std::time::Instant::now();
+    let _ = service.request_shutdown();
+    let terminal = loop {
+        match service.shutdown_step() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => panic!("fatal owner fault bypassed grace/evidence: {error}"),
+        }
+        assert!(began.elapsed() < Duration::from_millis(2500));
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(!terminal.exit_success);
+    assert!(terminal.fatal_error);
+    assert!(
+        terminal.safe_confirmed,
+        "already safe virtual output remains evidence-backed"
+    );
+}
+
+#[test]
+fn fatal_owner_reactor_path_offers_terminal_window_then_returns_nonzero() {
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.command(Command::ServiceSafety {
+        at: Duration::from_secs(100),
+    })
+    .unwrap();
+    let service = ServiceHost::startup_from_trusted_host(
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
+        host,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let result = lab_runtime::server::run(service, Arc::new(AtomicBool::new(false)));
+    assert!(
+        result.is_err(),
+        "fatal scheduler must cause nonzero process result"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(190),
+        "transport window was bypassed"
+    );
+    assert!(started.elapsed() < Duration::from_millis(2500));
+}

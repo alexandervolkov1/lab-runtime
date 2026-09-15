@@ -50,6 +50,7 @@ pub struct ServiceHost {
     stopping_since: Option<std::time::Instant>,
     safe_since: Option<std::time::Instant>,
     terminal: Option<ShutdownStatus>,
+    fatal: bool,
 }
 impl ServiceHost {
     /// Bind a trusted already-safe host fixture on loopback, without changing its
@@ -79,6 +80,7 @@ impl ServiceHost {
             stopping_since: None,
             safe_since: None,
             terminal: None,
+            fatal: false,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
@@ -139,6 +141,7 @@ impl ServiceHost {
             stopping_since: None,
             safe_since: None,
             terminal: None,
+            fatal: false,
         })
     }
 
@@ -149,13 +152,25 @@ impl ServiceHost {
         }
         self.stopping_since = Some(std::time::Instant::now());
         let clock = self.clock;
-        self.host.begin_shutdown(&clock)?;
+        if let Err(error) = self.host.begin_shutdown(&clock) {
+            self.fatal = true;
+            return Err(error);
+        }
         let at = self.clock.now();
         self.host
             .event_log_mut()
             .host_state(at, "stopping", serde_json::json!({}))
-            .map_err(|_| DomainError::InvalidConfiguration("host event limit"))?;
+            .map_err(|_| {
+                self.fatal = true;
+                DomainError::InvalidConfiguration("host event limit")
+            })?;
         Ok(())
+    }
+    /// Record a fatal owner fault and enter the same bounded evidence-preserving
+    /// shutdown path; a failed stop step still leaves the grace state active.
+    pub fn request_fatal_shutdown(&mut self) {
+        self.fatal = true;
+        let _ = self.request_shutdown();
     }
     /// Stop barrier is raised before further client mutation admission.
     pub const fn is_stopping(&self) -> bool {
@@ -172,8 +187,12 @@ impl ServiceHost {
             return Ok(None);
         };
         let clock = self.clock;
-        self.host.service(&clock)?;
-        let status = self.host.shutdown_status();
+        if self.host.service(&clock).is_err() {
+            self.fatal = true;
+        }
+        let mut status = self.host.shutdown_status();
+        status.fatal_error = self.fatal;
+        status.exit_success &= !self.fatal;
         let now = std::time::Instant::now();
         if status.safe_confirmed {
             self.safe_since.get_or_insert(now);

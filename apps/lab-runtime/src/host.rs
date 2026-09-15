@@ -174,6 +174,8 @@ pub struct ShutdownStatus {
     pub safe_confirmed: bool,
     /// Fixed executor slots still executing; Rust safe work never waits for them.
     pub unfinished_workers: usize,
+    /// A fatal owner/identity fault occurred even if virtual safe evidence remains.
+    pub fatal_error: bool,
     /// Safe evidence and worker cleanup both finished.
     pub exit_success: bool,
 }
@@ -628,6 +630,7 @@ impl HostCore {
         ShutdownStatus {
             safe_confirmed,
             unfinished_workers,
+            fatal_error: false,
             exit_success: safe_confirmed && unfinished_workers == 0,
         }
     }
