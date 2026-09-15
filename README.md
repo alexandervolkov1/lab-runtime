@@ -1,35 +1,51 @@
 # lab-runtime
 
-Milestones 1–4: a synchronous Rust owner with typed descriptors,
+Milestones 1–5 are implemented and externally reviewed: a synchronous Rust owner with typed descriptors,
 stable local identity, deterministic virtual measurements, pure queries and bounded
 recent signal state, bounded output authority, strict Metakon framing and a
 single-owner fault-injected byte executor. M4 adds a deterministic thermal plant and
-native EMA/Reference/PID control lifecycle. **No physical hardware I/O was tested.**
+native EMA/Reference/PID control lifecycle, corrected multi-sample Warming and finite
+native lease renewal. M5 adds bounded Lua model observations and transforms on two
+isolated worker slots. The reviewed checkpoint has **123 workspace tests**.
+
+The current phase is **ASTRA_HIGH — M6 design only**, covering an autonomous
+headless host, local API and real Babashka slice. Follow [ai/WORK.md](ai/WORK.md)
+and [ai/HANDOFF.md](ai/HANDOFF.md) for the active phase and model gate.
 
 ## Run and verify
 
 The workspace uses Rust edition 2024; verified with rustc/cargo 1.95.0 on Windows.
-There are exactly two packages. Core remains std-only; the host uses serde/serde_json
-only for strict data-definition loading.
+There are three workspace packages:
+
+- `lab-core`: std-only domain state, algorithms, transport and output authority.
+- `lab-lua`: bounded disposable Lua VMs and fixed workers; `mlua 0.11.6`, Lua 5.4,
+  vendored, with default features disabled.
+- `lab-runtime`: executable composition, strict data-definition loading and finite
+  integration demonstrations.
 
 ```powershell
 cargo run -p lab-runtime
 cargo test --workspace
+cargo test --workspace --release
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The executable prints generic introspection and five explicit virtual measurements,
-then exits. A three-sample window demonstrates oldest-first eviction. There is no
-background service, clock polling, sleep, serial port or network listener.
+then exits. A three-sample window demonstrates oldest-first eviction. It is still
+the finite M1 executable; autonomous scheduling and the local API are M6 work.
+The finite M5 integration test can be run with
+`cargo test -p lab-runtime --test milestone5_demo`.
 
 ## Contract and scope
 
 - All mutations use local Commands; Queries return owned snapshots without refresh.
 - Display names are not identity. Parameter IDs are scoped to an InstrumentId;
   a SignalId is their typed pair. Duplicate display names are allowed.
-- Samples use caller-supplied elapsed monotonic time, strictly increasing per signal.
-  Initial latest is unknown. A failed refresh stores Unavailable without a value.
+- Samples use caller-supplied elapsed monotonic time. Normal publication is strictly
+  increasing; managed failure/reload may invalidate Good at the same time. Derived
+  samples retain original observation freshness. Initial latest is unknown and a
+  failed observation stores Unavailable without a value.
 - Invalid configuration is atomic. Configuration preserves previous observations
   until the next refresh. MeasurementUnavailable is a typed error **after** storing
   the failed observation, unlike validation errors.
@@ -39,16 +55,23 @@ background service, clock polling, sleep, serial port or network listener.
   simulated send. Requested, sent, ACK and readback are separate observations.
 - Output time is explicit and nondecreasing. Commands tick the watchdog before
   producer validation; even rejected producer work may expire an existing lease.
-- Native controllers have Created/Ready/Running/Paused/Failed lifecycle. They consume
+- Native controllers have Created/Ready/Warming/Running/Paused/Failed lifecycle. Warming
+  accumulates distinct fresh inputs without a lease or PID output. They consume
   fresh typed samples, evaluate an independent Reference, and can affect the M4 plant
   only by proposing through the same lease/epoch/final-dispatch authority as clients.
 - Pause and controller failure revoke authority and complete the virtual safe action;
   resume resets EMA/PID memory and obtains a new lease epoch.
+- Healthy native delivery renews a finite lease through a private Runtime path;
+  old tokens become stale. Manual/client authority receives no native renewal privilege.
+- Lua can publish bounded model/filter observations, with fresh VMs, resource budgets,
+  independent acceptance deadlines and generation fencing. It has no output authority,
+  raw transport or physical-evidence capability. Explicit Rust `ServiceSafety` remains
+  independent of Lua progress and still requires a host caller.
 
-No physical serial adapter, Lua, Babashka/IPC, recorder or GUI is included. The executable
-remains the finite M1 demo; M2–M4 are exercised by milestone integration tests.
-This is not an autonomous runtime and does not prove physical safety or multi-day
-operation. M3 uses deterministic fake byte adapters; M4 uses a deterministic virtual plant.
+Babashka/API, Recorder, GUI and real Windows COM deployment are not implemented.
+No physical hardware acceptance was performed. M2–M5 are exercised through tests;
+the virtual proof does not establish physical safety or multi-day reliability.
+The later release sequence is recorded in [ai/ROADMAP.md](ai/ROADMAP.md).
 
 See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
 [completion report](docs/implementation/MILESTONE_1_REPORT.md),
@@ -58,6 +81,9 @@ See [M1 design](docs/implementation/MILESTONE_1_DESIGN.md),
 [M3 report](docs/implementation/MILESTONE_3_REPORT.md),
 [M4 contract](docs/implementation/MILESTONE_4_DESIGN.md),
 [M4 report](docs/implementation/MILESTONE_4_REPORT.md),
+[M4 lifecycle corrections](docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md),
+[M5 contract](docs/implementation/MILESTONE_5_DESIGN.md),
+[M5 report](docs/implementation/MILESTONE_5_REPORT.md),
 [target architecture](docs/architecture/HIGH_LEVEL_ARCHITECTURE.md),
 [migration analysis](docs/migration/V1_TO_LAB_RUNTIME_MAP.md), and
 [donor baseline](docs/migration/DONOR_BASELINE.md).

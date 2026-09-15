@@ -25,8 +25,9 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-WAITING_FOR_EXTERNAL_REVIEW: corrected M4 and bounded M5 are complete;
-stop before any M6 design or implementation
+ASTRA_HIGH — M6 design only: corrected M4 and bounded M5 passed external review;
+synchronize checkpoint docs, design M6 and its tests-first acceptance, then
+request ASTRA_HIGH -> SOL_HIGH and STOP before production implementation
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.
@@ -37,12 +38,18 @@ implement M3 before the user switches models. This direct user instruction overr
 IMPLEMENTATION_ROADMAP_M2_M6.md section 16's prohibition on M3 design. Later model
 handoffs also require an explicit stop; authorization through M6 never bypasses them.
 
-The user crossed the M4 gate and switched ASTRA_HIGH -> SOL_HIGH. The accepted
-Astra design and reviewer response are recorded in `ai/HANDOFF.md` and the two
-milestone contracts. SOL_HIGH corrected and verified M4 at 92 tests before adding
-Lua, then implemented and verified bounded M5 at 123 tests. The current instruction
-is the external-review stop in `ai/WORK.md`; do not begin M6 design or
-implementation or cross this review/model gate automatically.
+M1–M5 are implemented. SOL_HIGH corrected and verified M4 at 92 tests before adding
+bounded Lua model/transform support, then verified M5 at 123 tests. The external
+reviewer approved this checkpoint and the user authorized ASTRA_HIGH M6 design.
+The workspace has lab-core, lab-lua and lab-runtime; Warming owns no lease, native
+renewal follows successful trusted delivery, and Lua cannot bypass Rust safety.
+The executable is still finite: there is no autonomous M6 host, Babashka/API,
+Recorder, real COM deployment or hardware acceptance yet.
+
+Follow `ai/WORK.md` for the current design-only scope. Fix the M6 host, scheduling,
+local API, reconnect and actual Babashka acceptance contracts in documentation.
+Do not implement M6 production code under Astra or begin M7. Later model handoffs
+require an explicit user switch; authorization never bypasses the stop.
 
 Read `ai/HANDOFF.md` before each milestone. It is the only dedicated external-review
 handoff. Stop for unresolved architectural forks with WAITING_FOR_REVIEW; after M6
