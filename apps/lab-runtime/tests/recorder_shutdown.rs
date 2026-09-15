@@ -275,3 +275,74 @@ fn stop_and_finish_drain_all_four_accepted_groups_with_full_normal_credit() {
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn terminal_sqlite_insert_failure_rolls_back_boot_seal_and_keeps_safe_outcome_honest() {
+    let path = temporary_database();
+    let mut initial = SqliteStore::open(&path).unwrap();
+    initial.finish_boot(Duration::ZERO).unwrap();
+    drop(initial);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_terminal_shutdown BEFORE INSERT ON records
+        WHEN NEW.kind='shutdown' BEGIN SELECT RAISE(ABORT,'injected terminal insert failure'); END;")
+        .unwrap();
+    drop(db);
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    service.request_shutdown().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "finite Recorder flush grace was exceeded"
+        );
+        std::thread::yield_now();
+    };
+    assert!(terminal.safe_confirmed);
+    assert!(!terminal.recorder_flushed);
+    assert!(terminal.recorder_error);
+    assert!(!terminal.exit_success);
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let seals:i64=db.query_row("SELECT count(*) FROM records WHERE kind='shutdown' AND boot_id=(SELECT boot_id FROM runtime_boots WHERE state='active')",[],
+        |row|row.get(0)).unwrap();
+    let active: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_boots WHERE state='active'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seals, 0);
+    assert_eq!(
+        active, 1,
+        "failed terminal transaction cannot update boot state"
+    );
+    drop(db);
+    let reopened = SqliteStore::open(&path).unwrap();
+    drop(reopened);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let interrupted: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_boots WHERE state='interrupted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(interrupted, 1);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
