@@ -269,8 +269,8 @@ impl EventLog {
             if self.facts.get(&key) == Some(&data) {
                 continue;
             }
-            self.facts.insert(key, data.clone());
-            self.append(at, target.kind(), target.id(), data, cause)?;
+            self.append(at, target.kind(), target.id(), data.clone(), cause)?;
+            self.facts.insert(key, data);
         }
         Ok(())
     }
@@ -311,10 +311,10 @@ impl EventLog {
         let sequence = self.sequence.checked_add(1).ok_or(EventError::Exhausted)?;
         let record = json!({"v":1,"type":"event","boot_id":self.boot_id,"seq":sequence.to_string(),"published_at":nanos(at),
             "kind":kind,"target":target,"data":data,"request_id":cause.map(|(scope,seq)|json!({"scope":scope,"seq":seq.to_string()}))});
-        if serde_json::to_vec(&record)
+        if crate::wire::encode_frame(&record)
             .map_err(|_| EventError::Oversized)?
             .len()
-            > EVENT_SIZE_LIMIT
+            > EVENT_SIZE_LIMIT + 1
         {
             return Err(EventError::Oversized);
         }

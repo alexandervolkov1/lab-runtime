@@ -1,7 +1,11 @@
 //! Semantic owner events must capture committed changes after individual units.
 
 use lab_core::reference::ReferenceId;
-use lab_core::{Command, Query, QueryResult};
+use lab_core::{
+    Command, InstrumentId, MEASUREMENT_ENABLED, Query, QueryResult, TEMPERATURE, Value,
+    VirtualInstrumentConfig,
+};
+use lab_runtime::events::EventLog;
 use lab_runtime::host::{Clock, HostCore};
 use std::time::Duration;
 
@@ -77,4 +81,54 @@ fn scheduled_observation_and_reference_progress_publish_at_monotonic_cursor() {
         events.iter().find(|e| e["kind"] == "signal").unwrap()["data"]["observed_at"],
         sample.at().as_nanos().to_string()
     );
+}
+
+#[test]
+fn failed_latest_attempt_publishes_even_at_the_same_owner_publication_instant() {
+    let instrument = InstrumentId::new(70);
+    let mut runtime = lab_core::Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "failed-attempt fixture".into(),
+            history_capacity: 4,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    let mut log = EventLog::new(&runtime, &[], &[], "0123456789abcdef0123456789abcdef");
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: TEMPERATURE,
+            at: Duration::from_millis(100),
+        })
+        .unwrap();
+    log.observe(&runtime, Duration::from_millis(100), None)
+        .unwrap();
+    let before = log.latest_cursor();
+    runtime
+        .command(Command::ConfigureParameter {
+            instrument,
+            parameter: MEASUREMENT_ENABLED,
+            value: Value::Boolean(false),
+        })
+        .unwrap();
+    assert!(
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument,
+                parameter: TEMPERATURE,
+                at: Duration::from_millis(101),
+            })
+            .is_err()
+    );
+    log.observe(&runtime, Duration::from_millis(100), None)
+        .unwrap();
+    let failed = log.after(before).unwrap();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["kind"], "signal");
+    assert_eq!(failed[0]["data"]["quality"], "unavailable");
+    assert_eq!(failed[0]["data"]["value"], serde_json::Value::Null);
+    assert_eq!(failed[0]["published_at"], "100000000");
 }
