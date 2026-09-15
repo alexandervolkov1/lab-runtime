@@ -180,6 +180,84 @@ fn unknown_nonempty_database_is_rejected_without_converting_it_to_wal() {
 }
 
 #[test]
+fn real_sqlite_connection_caps_main_file_at_one_gib_by_checked_page_count() {
+    let path = temporary_database();
+    let store = SqliteStore::open(&path).unwrap();
+    let (page_size, page_count, max_pages) = store.storage_pages().unwrap();
+    assert!(page_size >= 512);
+    assert!(page_count > 0);
+    assert_eq!(max_pages, (1024u64 * 1024 * 1024 / page_size));
+    assert!(page_count < max_pages);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn five_percent_page_reserve_rejects_new_run_before_mutating_history() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    let (_, pages, _) = store.storage_pages().unwrap();
+    store.lower_main_quota_for_testing(pages + 2).unwrap();
+    assert!(store.start_run("must not start inside reserve").is_err());
+    assert_eq!(store.current_record_sequence(), 0);
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let runs: i64 = db
+        .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(runs, 0);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn wal_threshold_checkpoints_between_ordinary_transactions_and_reports_actual_bytes() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("wal budget").unwrap();
+    let before = store.wal_health().unwrap();
+    assert!(
+        before.0 > 0,
+        "a real WAL file should contain the start transaction"
+    );
+    store.lower_wal_threshold_for_testing(1).unwrap();
+    let mut runtime = Runtime::new();
+    let instrument = InstrumentId::new(982);
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "wal sample".into(),
+            history_capacity: 2,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    for second in 1..=2 {
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument,
+                parameter: lab_core::TEMPERATURE,
+                at: Duration::from_secs(second),
+            })
+            .unwrap();
+        store.append_facts(&runtime.take_recording_facts()).unwrap();
+    }
+    let after = store.wal_health().unwrap();
+    assert!(
+        after.1 >= 2,
+        "both ordinary transactions must check the real WAL"
+    );
+    assert!(
+        after.0 > 0,
+        "WAL bytes are reported, not treated as a hard cap"
+    );
+    store.stop_run().unwrap();
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn incompatible_record_encoding_is_rejected_before_recovering_the_old_boot() {
     let path = temporary_database();
     let mut original =

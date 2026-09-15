@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fmt,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -122,6 +122,8 @@ impl OperationRecord {
 const APPLICATION_ID: i32 = 0x4c41_4252; // "LABR"; unrelated SQLite files are rejected.
 const SCHEMA_VERSION: i64 = 1;
 const MAX_RAW_PAGE: usize = 128;
+const MAIN_FILE_QUOTA_BYTES: u64 = 1024 * 1024 * 1024;
+const WAL_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Stable, nonrecursive storage failure surfaced to the host policy.
 #[derive(Debug)]
@@ -363,6 +365,10 @@ pub struct SqliteStore {
     coverage_gap: bool,
     boot_anchor: TimeAnchor,
     next_anchor_no: u64,
+    main_quota_pages: u64,
+    wal_path: PathBuf,
+    wal_threshold_bytes: u64,
+    wal_checkpoints: u64,
 }
 
 impl SqliteStore {
@@ -477,6 +483,33 @@ impl SqliteStore {
             }
             validate_unfinished_entries(&connection)?;
         }
+        let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
+        let page_count: i64 =
+            connection.pragma_query_value(None, "page_count", |row| row.get(0))?;
+        let page_size = u64::try_from(page_size)
+            .map_err(|_| StorageError("invalid SQLite page size".into()))?;
+        let page_count = u64::try_from(page_count)
+            .map_err(|_| StorageError("invalid SQLite page count".into()))?;
+        if !(512..=65_536).contains(&page_size) || !page_size.is_power_of_two() {
+            return Err(StorageError("incompatible SQLite page size".into()));
+        }
+        let main_quota_pages = MAIN_FILE_QUOTA_BYTES / page_size;
+        if page_count > main_quota_pages {
+            return Err(StorageError(
+                "existing main database exceeds one GiB".into(),
+            ));
+        }
+        connection.pragma_update(
+            None,
+            "max_page_count",
+            i64::try_from(main_quota_pages)
+                .map_err(|_| StorageError("main page quota exceeds SQLite range".into()))?,
+        )?;
+        let actual_max: i64 =
+            connection.pragma_query_value(None, "max_page_count", |row| row.get(0))?;
+        if u64::try_from(actual_max).ok() != Some(main_quota_pages) {
+            return Err(StorageError("SQLite main page quota unavailable".into()));
+        }
         let locking_mode: String =
             connection.pragma_query_value(None, "locking_mode", |row| row.get(0))?;
         if locking_mode != "exclusive" {
@@ -491,6 +524,7 @@ impl SqliteStore {
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
+        connection.pragma_update(None, "wal_autocheckpoint", 1_000i64)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "cache_size", -2048)?;
         connection.pragma_update(None, "mmap_size", 0)?;
@@ -558,6 +592,8 @@ impl SqliteStore {
             ],
         )?;
         transaction.commit()?;
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push("-wal");
         Ok(Self {
             connection,
             database_id,
@@ -575,7 +611,104 @@ impl SqliteStore {
             coverage_gap: false,
             boot_anchor: anchor,
             next_anchor_no: 2,
+            main_quota_pages,
+            wal_path: PathBuf::from(sidecar),
+            wal_threshold_bytes: WAL_THRESHOLD_BYTES,
+            wal_checkpoints: 0,
         })
+    }
+
+    /// Worker-side observation of page size, logical main page count and the
+    /// active hard cap. This is storage metadata, never a Runtime Query.
+    pub fn storage_pages(&self) -> Result<(u64, u64, u64), StorageError> {
+        let page_size: i64 = self
+            .connection
+            .pragma_query_value(None, "page_size", |row| row.get(0))?;
+        let page_count: i64 = self
+            .connection
+            .pragma_query_value(None, "page_count", |row| row.get(0))?;
+        let max_pages: i64 = self
+            .connection
+            .pragma_query_value(None, "max_page_count", |row| row.get(0))?;
+        Ok((
+            u64::try_from(page_size).map_err(|_| StorageError("invalid page size".into()))?,
+            u64::try_from(page_count).map_err(|_| StorageError("invalid page count".into()))?,
+            u64::try_from(max_pages).map_err(|_| StorageError("invalid max page count".into()))?,
+        ))
+    }
+
+    /// Trusted real-file fault profile for testing the reserve boundary with
+    /// small files; it cannot enlarge the production one-GiB cap.
+    pub fn lower_main_quota_for_testing(&mut self, pages: u64) -> Result<(), StorageError> {
+        let (_, current, _) = self.storage_pages()?;
+        if pages < current || pages > self.main_quota_pages {
+            return Err(StorageError("invalid smaller main page quota".into()));
+        }
+        self.connection.pragma_update(
+            None,
+            "max_page_count",
+            i64::try_from(pages)
+                .map_err(|_| StorageError("test page quota exceeds range".into()))?,
+        )?;
+        let (_, _, actual) = self.storage_pages()?;
+        if actual != pages {
+            return Err(StorageError("test page quota was not applied".into()));
+        }
+        self.main_quota_pages = pages;
+        Ok(())
+    }
+
+    /// Worker-only WAL observation: actual sidecar bytes and the count of
+    /// successful explicit threshold checkpoints in this boot.
+    pub fn wal_health(&self) -> Result<(u64, u64), StorageError> {
+        let bytes = match std::fs::metadata(&self.wal_path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(StorageError(format!("WAL metadata: {error}"))),
+        };
+        Ok((bytes, self.wal_checkpoints))
+    }
+
+    /// Trusted small real-file limit for checkpoint fault acceptance. It may
+    /// lower but never enlarge the production sixteen-MiB threshold.
+    pub fn lower_wal_threshold_for_testing(&mut self, bytes: u64) -> Result<(), StorageError> {
+        if bytes == 0 || bytes > WAL_THRESHOLD_BYTES {
+            return Err(StorageError("invalid smaller WAL threshold".into()));
+        }
+        self.wal_threshold_bytes = bytes;
+        Ok(())
+    }
+
+    fn require_wal_budget(&mut self) -> Result<(), StorageError> {
+        let (bytes, _) = self.wal_health()?;
+        if bytes < self.wal_threshold_bytes {
+            return Ok(());
+        }
+        let (busy, _log, _checkpointed): (i64, i64, i64) =
+            self.connection
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?;
+        if busy != 0 || self.wal_health()?.0 >= self.wal_threshold_bytes {
+            return Err(StorageError("WAL threshold checkpoint failed".into()));
+        }
+        self.wal_checkpoints = self
+            .wal_checkpoints
+            .checked_add(1)
+            .ok_or_else(|| StorageError("WAL checkpoint counter exhausted".into()))?;
+        Ok(())
+    }
+
+    fn require_main_reserve(&self) -> Result<(), StorageError> {
+        let (_, page_count, max_pages) = self.storage_pages()?;
+        if max_pages != self.main_quota_pages
+            || page_count >= self.main_quota_pages.saturating_mul(95) / 100
+        {
+            return Err(StorageError(
+                "main database five-percent reserve exhausted".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Commit one independently observed UTC anchor without changing the
@@ -588,6 +721,8 @@ impl SqliteStore {
         if !matches!(kind, "periodic" | "interval_start" | "interval_end") {
             return Err(StorageError("invalid clock anchor kind".into()));
         }
+        self.require_main_reserve()?;
+        self.require_wal_budget()?;
         let next = self
             .next_anchor_no
             .checked_add(1)
@@ -710,6 +845,8 @@ impl SqliteStore {
         entries: &[ProvenanceEntry],
         objects: &[ProvenanceObject],
     ) -> Result<[u8; 32], StorageError> {
+        self.require_main_reserve()?;
+        self.require_wal_budget()?;
         if entries.is_empty() || entries.len() > 128 {
             return Err(StorageError("provenance count must be 1..=128".into()));
         }
@@ -972,6 +1109,8 @@ impl SqliteStore {
         boundary: &BoundarySnapshot,
         anchor: Option<&TimeAnchor>,
     ) -> Result<(), StorageError> {
+        self.require_main_reserve()?;
+        self.require_wal_budget()?;
         if self.run_no.is_some()
             || label.len() > 128
             || label.trim().is_empty()
@@ -1152,6 +1291,8 @@ impl SqliteStore {
         {
             return Err(StorageError("invalid or oversized recording batch".into()));
         }
+        self.require_main_reserve()?;
+        self.require_wal_budget()?;
         let mut next_sequence = self.next_record_sequence;
         let next_commit = self
             .commit_no
@@ -1383,6 +1524,8 @@ impl SqliteStore {
         if self.run_no.is_none() || !operation.valid() {
             return Err(StorageError("invalid operation recording fact".into()));
         }
+        self.require_main_reserve()?;
+        self.require_wal_budget()?;
         let sequence = self
             .next_record_sequence
             .checked_add(1)
