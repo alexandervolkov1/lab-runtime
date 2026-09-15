@@ -125,13 +125,7 @@ impl LuaSupervisor {
     /// Fence admission and request cancellation; report unfinished slots after
     /// at most 200 ms. Join only completed threads off the safety lane.
     pub fn request_shutdown(&mut self) -> usize {
-        self.closed = true;
-        for slot in &mut self.slots {
-            if let Some(busy) = &slot.busy {
-                busy.cancelled.store(true, Ordering::Release);
-            }
-            slot.jobs.take();
-        }
+        self.begin_shutdown();
         let deadline = Instant::now() + Duration::from_millis(200);
         while Instant::now() < deadline {
             if self
@@ -143,15 +137,7 @@ impl LuaSupervisor {
             }
             thread::yield_now();
         }
-        let unfinished = self
-            .slots
-            .iter()
-            .filter(|slot| {
-                slot.thread
-                    .as_ref()
-                    .is_some_and(|thread| !thread.is_finished())
-            })
-            .count();
+        let unfinished = self.unfinished_workers();
         for slot in &mut self.slots {
             if slot.thread.as_ref().is_some_and(JoinHandle::is_finished)
                 && let Some(thread) = slot.thread.take()
@@ -164,6 +150,27 @@ impl LuaSupervisor {
 }
 
 impl ComponentExecutor for LuaSupervisor {
+    fn begin_shutdown(&mut self) {
+        self.closed = true;
+        for slot in &mut self.slots {
+            if let Some(busy) = &slot.busy {
+                busy.cancelled.store(true, Ordering::Release);
+            }
+            slot.jobs.take();
+        }
+    }
+
+    fn unfinished_workers(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| {
+                slot.thread
+                    .as_ref()
+                    .is_some_and(|thread| !thread.is_finished())
+            })
+            .count()
+    }
+
     fn try_submit(&mut self, invocation: Invocation) -> Result<(), ComponentError> {
         if self.closed {
             return Err(ComponentError::Executor);

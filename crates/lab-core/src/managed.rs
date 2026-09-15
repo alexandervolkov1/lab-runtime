@@ -292,6 +292,13 @@ pub trait ComponentExecutor: Send {
     fn try_expire(&mut self, _correlation: Correlation) -> bool {
         false
     }
+    /// Fence new jobs and request cancellation without sleeping or joining.
+    /// Existing jobs may remain physically blocked; this is an acceptance fence.
+    fn begin_shutdown(&mut self) {}
+    /// Count workers that have not finished, without waiting for them.
+    fn unfinished_workers(&self) -> usize {
+        0
+    }
 }
 
 /// Domain-owned lifecycle of a committed, read-only managed observation.

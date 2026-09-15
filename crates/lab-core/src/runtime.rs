@@ -79,6 +79,11 @@ pub enum Command {
         /// Trusted nondecreasing Runtime service/publication time.
         at: Duration,
     },
+    /// Stop all managed admissions, fence pending results and fail their dependents.
+    QuiesceManaged {
+        /// Trusted nondecreasing Runtime shutdown time.
+        at: Duration,
+    },
     /// Mutate output authority or step the trusted deterministic simulated executor.
     Output {
         /// Canonical actuator binding, validated against its explicit descriptor.
@@ -250,6 +255,8 @@ pub enum CommandResult {
     ComponentInvoked(Correlation),
     /// Bounded completion/safety service was polled, possibly with no result.
     ComponentsPolled,
+    /// Managed admission is permanently fenced for this Runtime instance.
+    ManagedQuiesced,
     /// Authority outcome; queue acceptance is not delivery or safe-state confirmation.
     Output(OutputResult),
     /// Registration completed without starting acquisition or output authority.
@@ -365,6 +372,7 @@ pub struct Runtime {
     managed: BTreeMap<ComponentId, ManagedInstance>,
     staged: Option<StagedComponent>,
     executor: Option<Box<dyn ComponentExecutor>>,
+    managed_quiesced: bool,
     component_runtime: u64,
     instruments: BTreeMap<InstrumentId, VirtualInstrument>,
     metakon_instruments: BTreeMap<InstrumentId, MetakonInstrument>,
@@ -473,6 +481,13 @@ impl Runtime {
         Ok(())
     }
 
+    /// Inspect unfinished worker count without waiting for interpreter execution.
+    pub fn unfinished_component_workers(&self) -> usize {
+        self.executor
+            .as_ref()
+            .map_or(0, |executor| executor.unfinished_workers())
+    }
+
     /// Configuration/registration validation failures are atomic.
     /// MeasurementUnavailable commits a failed observation with the attempt time.
     /// Output commands first advance the explicit watchdog: expired authority may
@@ -488,6 +503,25 @@ impl Runtime {
             Command::PollComponents { at } => {
                 self.poll_components(at)?;
                 Ok(CommandResult::ComponentsPolled)
+            }
+            Command::QuiesceManaged { at } => {
+                self.check_output_time(at)?;
+                if !self.managed_quiesced {
+                    self.managed_quiesced = true;
+                    if let Some(staged) = self.staged.take()
+                        && let Some(executor) = self.executor.as_mut()
+                    {
+                        executor.try_cancel(staged.correlation);
+                    }
+                    let identities: Vec<_> = self.managed.keys().copied().collect();
+                    for id in identities {
+                        self.fail_component(id, at);
+                    }
+                    if let Some(executor) = self.executor.as_mut() {
+                        executor.begin_shutdown();
+                    }
+                }
+                Ok(CommandResult::ManagedQuiesced)
             }
             Command::Output {
                 actuator,
@@ -1244,6 +1278,9 @@ impl Runtime {
         replaces: Option<ComponentId>,
         at: Duration,
     ) -> Result<CommandResult, Error> {
+        if self.managed_quiesced {
+            return Err(ComponentError::Executor.into());
+        }
         if self.staged.is_some() {
             return Err(ComponentError::Busy.into());
         }
@@ -1497,6 +1534,9 @@ impl Runtime {
 
     fn invoke_component(&mut self, id: ComponentId, at: Duration) -> Result<CommandResult, Error> {
         self.check_output_time(at)?;
+        if self.managed_quiesced {
+            return Err(ComponentError::Executor.into());
+        }
         let component = self.managed.get(&id).ok_or(ComponentError::Unknown)?;
         if component.state == ComponentState::Failed {
             return Err(ComponentError::InvalidResult.into());
