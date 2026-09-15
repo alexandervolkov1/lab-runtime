@@ -260,6 +260,15 @@ pub struct ShutdownStatus {
     pub exit_success: bool,
 }
 
+// Only identity and one small Start intent survive across an inactive interval.
+// Ordinary command payloads are never retained in this owner-side tracker.
+struct PendingOperation {
+    command: &'static str,
+    accepted_at: Duration,
+    accepted_recorded: bool,
+    deferred_start: Option<OperationRecord>,
+}
+
 /// Sole mutable Core owner plus one explicit schedule; callers serialize commands.
 pub struct HostCore {
     runtime: Runtime,
@@ -278,6 +287,7 @@ pub struct HostCore {
     recording_status: Option<RecordingStatus>,
     last_recording_submission: Option<Duration>,
     recorder_finish_requested: bool,
+    pending_operations: BTreeMap<(String, u64), PendingOperation>,
 }
 impl HostCore {
     /// Construct the bounded trusted native virtual slice in safe Ready state.
@@ -382,6 +392,7 @@ impl HostCore {
             recording_status: None,
             last_recording_submission: None,
             recorder_finish_requested: false,
+            pending_operations: BTreeMap::new(),
         })
     }
 
@@ -713,11 +724,64 @@ impl HostCore {
     /// the command's truthful domain result or waiting for SQLite.
     pub fn record_operation(&mut self, operation: OperationRecord) {
         let at = operation.at;
-        if let Some(worker) = self.recorder.as_mut()
-            && worker.try_admit_operation(operation).is_err()
-            && self.recording_policy == Some(RecordingPolicy::Required)
-        {
-            self.runtime.recording_failure(at);
+        let key = (operation.scope.clone(), operation.request_seq);
+        let accepted = operation.phase == "accepted";
+        let state = self.recording_status.as_ref().map(|status| status.state);
+        if accepted {
+            if self.pending_operations.len() >= 64 && !self.pending_operations.contains_key(&key) {
+                if let Some(worker) = self.recorder.as_mut() {
+                    worker.fail_with_gap(RecorderGap {
+                        reason: "pending operation identity credit exhausted".into(),
+                        at,
+                        first_missing_fact: None,
+                        known_missing_count: Some(1),
+                        last_accepted_fact: None,
+                    });
+                }
+                if self.recording_policy == Some(RecordingPolicy::Required) {
+                    self.runtime.recording_failure(at);
+                }
+                self.poll_recorder(at);
+                return;
+            }
+            let defer =
+                state == Some(RecordingState::Idle) && operation.command == "recording_start";
+            self.pending_operations.insert(
+                key.clone(),
+                PendingOperation {
+                    command: operation.command,
+                    accepted_at: at,
+                    accepted_recorded: false,
+                    deferred_start: defer.then(|| operation.clone()),
+                },
+            );
+            if defer {
+                self.poll_recorder(at);
+                return;
+            }
+        }
+        let in_interval = matches!(
+            state,
+            Some(RecordingState::Starting | RecordingState::Recording)
+        );
+        let lifecycle_terminal = !accepted
+            && state == Some(RecordingState::Idle)
+            && operation.command == "recording_stop";
+        if in_interval || lifecycle_terminal {
+            let admitted = self
+                .recorder
+                .as_mut()
+                .is_some_and(|worker| worker.try_admit_operation(operation).is_ok());
+            if admitted && accepted {
+                if let Some(pending) = self.pending_operations.get_mut(&key) {
+                    pending.accepted_recorded = true;
+                }
+            } else if !admitted && self.recording_policy == Some(RecordingPolicy::Required) {
+                self.runtime.recording_failure(at);
+            }
+        }
+        if !accepted {
+            self.pending_operations.remove(&key);
         }
         self.poll_recorder(at);
     }
@@ -855,7 +919,10 @@ impl HostCore {
         let data = serde_json::json!({"captured_at_ns":at.as_nanos().to_string(),
             "latest_samples":latest_samples,"controller_revisions":controller_revisions,
             "reference_revisions":reference_revisions,"managed_revisions":managed_revisions,
-            "pending_operations":[]})
+            "pending_operations":self.pending_operations.iter().map(|((scope,seq),pending)|
+                serde_json::json!({"scope":scope,"request_seq":seq.to_string(),
+                    "command":pending.command,"accepted_at_ns":pending.accepted_at.as_nanos().to_string(),
+                    "accepted_recorded":pending.accepted_recorded})).collect::<Vec<_>>()})
         .to_string();
         if data.len() > 64 * 1024 {
             return Err(Error::InvalidConfiguration(
@@ -973,7 +1040,9 @@ impl HostCore {
         };
         let prior = self.recording_status.as_ref().map(|s| s.state);
         let status = worker.poll();
-        if prior != Some(RecordingState::Recording) && status.state == RecordingState::Recording {
+        let activated =
+            prior != Some(RecordingState::Recording) && status.state == RecordingState::Recording;
+        if activated {
             if self.recording_policy == Some(RecordingPolicy::Required)
                 && let Some(submitted) = status.confirmed_submission
             {
@@ -1003,6 +1072,38 @@ impl HostCore {
             let _ = worker.request_probe_at(now);
         }
         self.recording_status = Some(status);
+        if activated {
+            self.flush_deferred_start_acceptance(now);
+        }
+    }
+
+    // Start acceptance predates the new interval. The boundary records it as
+    // pending; its small original intent enters the FIFO after committed Start.
+    fn flush_deferred_start_acceptance(&mut self, now: Duration) {
+        let deferred: Vec<_> = self
+            .pending_operations
+            .iter()
+            .filter_map(|(key, pending)| {
+                pending
+                    .deferred_start
+                    .as_ref()
+                    .map(|operation| (key.clone(), operation.clone()))
+            })
+            .collect();
+        for (key, operation) in deferred {
+            let admitted = self
+                .recorder
+                .as_mut()
+                .is_some_and(|worker| worker.try_admit_operation(operation).is_ok());
+            if admitted {
+                if let Some(pending) = self.pending_operations.get_mut(&key) {
+                    pending.deferred_start = None;
+                    pending.accepted_recorded = true;
+                }
+            } else if self.recording_policy == Some(RecordingPolicy::Required) {
+                self.runtime.recording_failure(now);
+            }
+        }
     }
 
     fn admit_recording_facts(&mut self, now: Duration) {

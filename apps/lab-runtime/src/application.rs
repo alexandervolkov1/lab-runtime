@@ -269,6 +269,21 @@ impl Application {
                 service.clock().now(),
             )
             .expect("retained recording lifecycle operation");
+        let (phase, data) = recorded_terminal(&result);
+        let terminal_at = service.clock().now();
+        service.owner_mut().record_operation(OperationRecord {
+            scope: pending.scope.clone(),
+            request_seq: pending.seq,
+            command: if pending.start {
+                "recording_start"
+            } else {
+                "recording_stop"
+            },
+            phase,
+            data,
+            outcome_basis: "domain_result",
+            at: terminal_at,
+        });
         let published = service.clock().now();
         let _ = service.owner_mut().event_log_mut().operation_terminal(
             published,
@@ -1105,6 +1120,25 @@ impl Application {
             &payload,
             Mutation::RecordingStart { .. } | Mutation::RecordingStop { .. }
         ) {
+            let (command, data) = match &payload {
+                Mutation::RecordingStart { label } => {
+                    ("recording_start", json!({"label":label}).to_string())
+                }
+                Mutation::RecordingStop { boot_id, run_no } => (
+                    "recording_stop",
+                    json!({"boot_id":boot_id,"run_no":run_no.to_string()}).to_string(),
+                ),
+                _ => unreachable!(),
+            };
+            service.owner_mut().record_operation(OperationRecord {
+                scope: scope.clone(),
+                request_seq: rid.seq,
+                command,
+                phase: "accepted",
+                data,
+                outcome_basis: "application_admission",
+                at: now,
+            });
             let saved_run = service
                 .owner()
                 .recording_status()
@@ -1148,6 +1182,17 @@ impl Application {
                     self.sessions
                         .complete(&scope, rid.seq, failed.clone(), service.clock().now())
                         .expect("admitted recording operation");
+                    let (phase, data) = recorded_terminal(&failed);
+                    let terminal_at = service.clock().now();
+                    service.owner_mut().record_operation(OperationRecord {
+                        scope: scope.clone(),
+                        request_seq: rid.seq,
+                        command,
+                        phase,
+                        data,
+                        outcome_basis: "domain_result",
+                        at: terminal_at,
+                    });
                     return vec![accepted, operation_reply(&msg, &rid, failed)];
                 }
             }

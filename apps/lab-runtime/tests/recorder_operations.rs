@@ -113,8 +113,39 @@ fn recording_start_returns_accepted_before_durable_completion_and_duplicate_does
         })),
     );
     assert_eq!(closed_status[0]["result"]["state"], "idle");
+    service.request_shutdown().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while service.shutdown_step().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(service.shutdown_step().unwrap().unwrap().recorder_flushed);
     drop(app);
     drop(service);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let lifecycle: Vec<(String,String)> = archive.prepare(
+        "SELECT command,phase FROM operation_events WHERE command IN ('recording_start','recording_stop') ORDER BY record_seq"
+    ).unwrap().query_map([],|row|Ok((row.get(0)?,row.get(1)?))).unwrap()
+        .map(|row|row.unwrap()).collect();
+    assert_eq!(
+        lifecycle,
+        [
+            ("recording_start".into(), "accepted".into()),
+            ("recording_start".into(), "completed".into()),
+            ("recording_stop".into(), "accepted".into()),
+            ("recording_stop".into(), "completed".into()),
+        ]
+    );
+    let boundary: Vec<u8> = archive
+        .query_row(
+            "SELECT payload FROM records WHERE kind='boundary_snapshot'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let boundary: serde_json::Value = serde_json::from_slice(&boundary).unwrap();
+    assert_eq!(boundary["pending_operations"][0]["scope"], scope);
+    assert_eq!(boundary["pending_operations"][0]["request_seq"], "1");
+    drop(archive);
     let deadline = Instant::now() + Duration::from_secs(2);
     while std::fs::remove_file(&path).is_err() && Instant::now() < deadline {
         std::thread::yield_now();

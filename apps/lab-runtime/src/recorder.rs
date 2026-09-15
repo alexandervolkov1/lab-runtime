@@ -1521,7 +1521,10 @@ impl SqliteStore {
     /// Atomically commit one application fact and its checkpoint on the worker.
     /// The transaction can preserve an accepted-only result after a process crash.
     pub fn append_operation(&mut self, operation: &OperationRecord) -> Result<u64, StorageError> {
-        if self.run_no.is_none() || !operation.valid() {
+        let lifecycle_terminal = self.run_no.is_none()
+            && operation.command == "recording_stop"
+            && matches!(operation.phase, "completed" | "failed");
+        if !(self.run_no.is_some() || lifecycle_terminal) || !operation.valid() {
             return Err(StorageError("invalid operation recording fact".into()));
         }
         self.require_main_reserve()?;
@@ -1534,8 +1537,8 @@ impl SqliteStore {
             .commit_no
             .checked_add(1)
             .ok_or_else(|| StorageError("operation commit identity exhausted".into()))?;
-        let run = self.run_no.expect("checked above");
-        let interval = self.interval_no.expect("active run owns interval");
+        let run = self.run_no.map(u64_blob);
+        let interval = self.interval_no.map(u64_blob);
         let wall_estimate = self.boot_anchor.estimate_us(operation.at)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
@@ -1546,8 +1549,8 @@ impl SqliteStore {
             params![
                 self.boot_id.as_slice(),
                 u64_blob(sequence).as_slice(),
-                u64_blob(run).as_slice(),
-                u64_blob(interval).as_slice(),
+                run.as_ref().map(|value| value.as_slice()),
+                interval.as_ref().map(|value| value.as_slice()),
                 duration_blob(operation.at)?.as_slice(),
                 wall_estimate,
                 operation.data.as_bytes()

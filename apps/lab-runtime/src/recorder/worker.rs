@@ -682,10 +682,14 @@ impl RecorderWorker {
     /// already committed application outcome.
     pub fn try_admit_operation(&mut self, operation: OperationRecord) -> Result<(), StorageError> {
         self.poll();
-        if !matches!(
+        let lifecycle_terminal = self.cached.state == RecordingState::Idle
+            && operation.command == "recording_stop"
+            && matches!(operation.phase, "completed" | "failed");
+        if !(matches!(
             self.cached.state,
             RecordingState::Starting | RecordingState::Recording
-        ) || !operation.valid()
+        ) || lifecycle_terminal)
+            || !operation.valid()
         {
             return Err(StorageError("operation fact not admissible".into()));
         }
