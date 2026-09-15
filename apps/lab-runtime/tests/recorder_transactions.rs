@@ -294,6 +294,43 @@ fn unknown_nonempty_database_is_rejected_without_converting_it_to_wal() {
 }
 
 #[test]
+fn incompatible_single_hash_provenance_key_is_rejected_without_rewriting_existing_bytes() {
+    let path = temporary_database();
+    drop(SqliteStore::open(&path).unwrap());
+    let external = rusqlite::Connection::open(&path).unwrap();
+    external
+        .execute_batch(
+            "DROP TABLE provenance_content;
+             CREATE TABLE provenance_content(content_hash BLOB PRIMARY KEY,
+                 encoding TEXT NOT NULL,kind TEXT NOT NULL,content BLOB NOT NULL);
+             INSERT INTO provenance_content VALUES(x'0101010101010101010101010101010101010101010101010101010101010101',
+                 'opaque','sentinel',x'70657273697374');",
+        )
+        .unwrap();
+    drop(external);
+    assert!(SqliteStore::open(&path).is_err());
+    let unchanged = rusqlite::Connection::open(&path).unwrap();
+    let bytes: Vec<u8> = unchanged
+        .query_row(
+            "SELECT content FROM provenance_content WHERE kind='sentinel'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bytes, b"persist");
+    let key: i64 = unchanged
+        .query_row(
+            "SELECT pk FROM pragma_table_info('provenance_content') WHERE name='content_hash'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(key, 1);
+    drop(unchanged);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn real_sqlite_connection_caps_main_file_at_one_gib_by_checked_page_count() {
     let path = temporary_database();
     let store = SqliteStore::open(&path).unwrap();

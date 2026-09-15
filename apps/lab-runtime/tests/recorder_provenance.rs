@@ -371,6 +371,99 @@ fn provenance_commits_loaded_script_bytes_not_later_path_contents_and_deduplicat
     std::fs::remove_file(source_path).unwrap();
 }
 
+#[test]
+fn identical_bytes_in_distinct_provenance_roles_reopen_with_both_typed_references() {
+    let path = temporary_database();
+    let bytes = b"same trusted bytes".to_vec();
+    let hash = Sha256::digest(&bytes);
+    let mut store = SqliteStore::open(&path).unwrap();
+    let root = store
+        .commit_provenance(&[
+            ProvenanceEntry {
+                kind: "native_definition".into(),
+                encoding: "utf8".into(),
+                content: bytes.clone(),
+            },
+            ProvenanceEntry {
+                kind: "managed_lua_source".into(),
+                encoding: "utf8".into(),
+                content: bytes.clone(),
+            },
+            ProvenanceEntry {
+                kind: "native_definition".into(),
+                encoding: "opaque".into(),
+                content: bytes.clone(),
+            },
+        ])
+        .unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    for (kind, encoding) in [
+        ("native_definition", "utf8"),
+        ("managed_lua_source", "utf8"),
+        ("native_definition", "opaque"),
+    ] {
+        let stored: Vec<u8> = db
+            .query_row(
+                "SELECT content FROM provenance_content WHERE content_hash=?1 AND kind=?2 AND encoding=?3",
+                rusqlite::params![hash.as_slice(), kind, encoding],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, bytes);
+    }
+    let manifest: Vec<u8> = db
+        .query_row(
+            "SELECT content FROM provenance_content WHERE content_hash=?1 AND kind='activation_manifest' AND encoding='json_v1'",
+            [root.as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let refs: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(refs["entries"].as_array().unwrap().len(), 3);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn oversized_managed_source_and_manifest_pressure_reject_without_any_activation_rows() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    let large_source = ProvenanceEntry {
+        kind: "managed_lua_source".into(),
+        encoding: "utf8".into(),
+        content: vec![b'a'; 32 * 1024 + 1],
+    };
+    assert!(store.commit_provenance(&[large_source]).is_err());
+    let entry = ProvenanceEntry {
+        kind: "native_definition".into(),
+        encoding: "utf8".into(),
+        content: b"trusted".to_vec(),
+    };
+    assert!(store.commit_provenance(&[]).is_err());
+    assert!(store.commit_provenance(&vec![entry.clone(); 129]).is_err());
+    let pressure = (0..16u8)
+        .map(|ordinal| ProvenanceEntry {
+            kind: "native_definition".into(),
+            encoding: "opaque".into(),
+            content: vec![ordinal; 64 * 1024],
+        })
+        .collect::<Vec<_>>();
+    assert!(store.commit_provenance(&pressure).is_err());
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    for table in ["provenance_content", "configurations"] {
+        let count: i64 = db
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "{table} must remain unchanged after rejection");
+    }
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[derive(Default)]
 struct ComponentMailbox {
     submitted: VecDeque<Invocation>,

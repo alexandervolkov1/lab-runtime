@@ -593,6 +593,27 @@ impl SqliteStore {
             if loss_index != ["boot_id", "run_no"] {
                 return Err(StorageError("incompatible interval history index".into()));
             }
+            let provenance_key: Vec<(String, i64)> = connection
+                .prepare("PRAGMA table_info('provenance_content')")?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            let mut provenance_key = provenance_key
+                .iter()
+                .filter(|(_, key)| *key > 0)
+                .cloned()
+                .collect::<Vec<_>>();
+            provenance_key.sort_by_key(|(_, key)| *key);
+            if provenance_key
+                != [
+                    ("content_hash".into(), 1),
+                    ("kind".into(), 2),
+                    ("encoding".into(), 3),
+                ]
+            {
+                return Err(StorageError("incompatible provenance identity key".into()));
+            }
             let (declared_schema, record_encoding, identity): (i64, i64, String) = connection
                 .query_row(
                     "SELECT schema_version,record_encoding,database_id FROM schema_version
@@ -1000,6 +1021,7 @@ impl SqliteStore {
                 || entry.encoding.len() > 64
                 || entry.content.is_empty()
                 || entry.content.len() > 64 * 1024
+                || (entry.kind == "managed_lua_source" && entry.content.len() > 32 * 1024)
             {
                 return Err(StorageError("invalid bounded provenance entry".into()));
             }
@@ -1106,8 +1128,8 @@ impl SqliteStore {
         for (entry, hash) in indexed {
             let existing: Option<Vec<u8>> = transaction
                 .query_row(
-                    "SELECT content FROM provenance_content WHERE content_hash=?1",
-                    params![hash.as_slice()],
+                    "SELECT content FROM provenance_content WHERE content_hash=?1 AND kind=?2 AND encoding=?3",
+                    params![hash.as_slice(), entry.kind, entry.encoding],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -1125,7 +1147,7 @@ impl SqliteStore {
         }
         let existing_root: Option<Vec<u8>> = transaction
             .query_row(
-                "SELECT content FROM provenance_content WHERE content_hash=?1",
+                "SELECT content FROM provenance_content WHERE content_hash=?1 AND kind='activation_manifest' AND encoding='json_v1'",
                 params![root.as_slice()],
                 |row| row.get(0),
             )
@@ -2970,8 +2992,9 @@ fn create_schema(connection: &mut Connection) -> Result<(), StorageError> {
              committed_at BLOB, object_revisions TEXT,
              PRIMARY KEY(boot_id,activation_no),
              FOREIGN KEY(boot_id) REFERENCES runtime_boots(boot_id));
-         CREATE TABLE provenance_content(content_hash BLOB PRIMARY KEY CHECK(length(content_hash)=32),
-             encoding TEXT NOT NULL, kind TEXT NOT NULL, content BLOB NOT NULL);
+         CREATE TABLE provenance_content(content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+             encoding TEXT NOT NULL, kind TEXT NOT NULL, content BLOB NOT NULL,
+             PRIMARY KEY(content_hash,kind,encoding));
          CREATE TABLE object_snapshots(boot_id BLOB NOT NULL, activation_no BLOB NOT NULL,
              object_kind TEXT NOT NULL, object_id BLOB NOT NULL, logical_key TEXT,
              label TEXT, generation BLOB, descriptor TEXT, unit_key TEXT,
