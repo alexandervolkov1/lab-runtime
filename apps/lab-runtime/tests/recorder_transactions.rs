@@ -4,8 +4,13 @@ use lab_core::{
     Command, InstrumentId, Runtime, Sample, SignalId, Unit, Value, VirtualInstrumentConfig,
     recording::RecordingFact, reference::ReferenceId,
 };
-use lab_runtime::recorder::{HistoryFilter, SqliteStore};
-use std::{path::PathBuf, time::Duration};
+use lab_runtime::recorder::{
+    HistoryFilter, RecorderLimits, RecorderWorker, RecordingState, SqliteStore,
+};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 fn temporary_database() -> PathBuf {
     let mut entropy = [0u8; 16];
@@ -205,6 +210,118 @@ fn checkpoint_update_failure_rolls_back_fact_and_preserves_prior_boot_prefix() {
     assert!(checkpoints.contains(&old_checkpoint.to_be_bytes().to_vec()));
     assert!(checkpoints.contains(&boundary.to_be_bytes().to_vec()));
     drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn deferred_foreign_key_rejects_actual_commit_without_advancing_checkpoint() {
+    let path = temporary_database();
+    let signal = SignalId::new(InstrumentId::new(482), lab_core::TEMPERATURE);
+    let fact = |sequence, at| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(signal, Unit::CELSIUS, at, Value::Float(28.5)).unwrap(),
+        generation: 1,
+        revision: 1,
+    };
+    let mut old = SqliteStore::open_with_boot(&path, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    old.start_run("commit prefix").unwrap();
+    old.append_facts(&[fact(1, Duration::from_secs(1))])
+        .unwrap();
+    old.stop_run().unwrap();
+    old.finish_boot(Duration::from_secs(2)).unwrap();
+    let old_checkpoint = old.current_record_sequence();
+    old.close().unwrap();
+    let external = rusqlite::Connection::open(&path).unwrap();
+    external
+        .execute_batch(
+            "CREATE TABLE commit_gate(id INTEGER PRIMARY KEY);
+             CREATE TABLE deferred_probe(id INTEGER PRIMARY KEY,gate_id INTEGER NOT NULL,
+                 FOREIGN KEY(gate_id) REFERENCES commit_gate(id) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER fail_only_at_commit AFTER UPDATE OF persisted_through_seq ON durable_checkpoints
+             WHEN (SELECT count(*) FROM measurements)>=2
+             BEGIN INSERT INTO deferred_probe(gate_id) VALUES(999); END;",
+        )
+        .unwrap();
+    drop(external);
+    let mut next = SqliteStore::open_with_boot(&path, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+    next.start_run("commit rejected").unwrap();
+    let boundary = next.current_record_sequence();
+    let error = next
+        .append_facts(&[fact(2, Duration::from_secs(3))])
+        .unwrap_err();
+    assert!(error.to_string().contains("FOREIGN KEY"), "{error}");
+    assert_eq!(next.current_record_sequence(), boundary);
+    drop(next);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (measurements, probes): (i64, i64) = (
+        db.query_row("SELECT count(*) FROM measurements", [], |row| row.get(0))
+            .unwrap(),
+        db.query_row("SELECT count(*) FROM deferred_probe", [], |row| row.get(0))
+            .unwrap(),
+    );
+    assert_eq!((measurements, probes), (1, 0));
+    let checkpoints = db
+        .prepare("SELECT persisted_through_seq FROM durable_checkpoints ORDER BY boot_id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    assert!(checkpoints.contains(&old_checkpoint.to_be_bytes().to_vec()));
+    assert!(checkpoints.contains(&boundary.to_be_bytes().to_vec()));
+    drop(db);
+    let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+    let worker_boot = worker.boot_id().to_owned();
+    worker.request_start("worker commit rejected").unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    }
+    let worker_start = worker.poll().persisted_through_sequence;
+    worker
+        .try_admit_at(
+            vec![fact(3, Duration::from_secs(4))],
+            Duration::from_secs(4),
+        )
+        .unwrap();
+    let failed = loop {
+        let status = worker.poll();
+        if status.worker_closed {
+            break status;
+        }
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    };
+    assert_eq!(failed.state, RecordingState::Failed);
+    assert_eq!(failed.persisted_through_sequence, worker_start);
+    assert_eq!(failed.coverage, "unknown_tail");
+    assert!(
+        failed
+            .first_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("FOREIGN KEY")
+    );
+    drop(worker);
+    let recovered = SqliteStore::open(&path).unwrap();
+    assert_ne!(recovered.boot_id(), worker_boot);
+    drop(recovered);
+    let reopened = rusqlite::Connection::open(&path).unwrap();
+    let row_count: i64 = reopened
+        .query_row("SELECT count(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(row_count, 1);
+    let state: String = reopened
+        .query_row(
+            "SELECT state FROM runs WHERE label='worker commit rejected'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "interrupted");
+    drop(reopened);
     std::fs::remove_file(path).unwrap();
 }
 
