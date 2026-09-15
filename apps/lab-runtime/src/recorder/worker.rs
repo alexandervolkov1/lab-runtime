@@ -12,6 +12,7 @@ use crate::host::{Clock, SystemClock};
 use lab_core::{Value, recording::RecordingFact};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ops::RangeInclusive,
     path::Path,
     sync::{
         Arc, Mutex,
@@ -216,10 +217,11 @@ impl Default for Receipt {
 
 enum Message {
     Activation(Vec<ProvenanceEntry>, Vec<ProvenanceObject>),
-    Start(String, RecordingPolicy, Duration, BoundarySnapshot),
-    Facts(Vec<RecordingFact>, usize, Duration, Instant),
-    Operation(OperationRecord, usize),
-    GapSeal(RecorderGap),
+    Start(String, RecordingPolicy, Duration, BoundarySnapshot, u64),
+    Facts(Vec<RecordingFact>, usize, Duration, Instant, u64),
+    ClockAnchor(u64),
+    Operation(OperationRecord, usize, u64),
+    GapSeal(RecorderGap, u64),
     Probe(Duration),
     History {
         job: u64,
@@ -232,8 +234,8 @@ enum Message {
         cursor: Option<RunsCursor>,
         limit: usize,
     },
-    Stop(serde_json::Value, Duration),
-    Finish(serde_json::Value, Duration),
+    Stop(serde_json::Value, Duration, u64),
+    Finish(serde_json::Value, Duration, u64),
 }
 
 /// Runtime-owned ingress to one SQLite worker. No method executes disk I/O.
@@ -263,6 +265,10 @@ pub struct RecorderWorker {
     next_history_job: u64,
     live_history_jobs: BTreeSet<u64>,
     pending_cancellations: BTreeSet<u64>,
+    reserved_through: u64,
+    source: MonotonicSource,
+    last_periodic: Duration,
+    periodic_pending: Option<u64>,
     last_accepted_fact: Option<u64>,
     gap_scheduled: bool,
     finish_requested: bool,
@@ -342,6 +348,7 @@ impl RecorderWorker {
         let source = clock
             .map(MonotonicSource::Serving)
             .unwrap_or_else(|| MonotonicSource::Offline(Instant::now()));
+        let last_periodic = source.now();
         let handle = thread::Builder::new()
             .name("lab-recorder-sqlite".into())
             .spawn(move || {
@@ -431,6 +438,10 @@ impl RecorderWorker {
             next_history_job: 1,
             live_history_jobs: BTreeSet::new(),
             pending_cancellations: BTreeSet::new(),
+            reserved_through: 0,
+            source,
+            last_periodic,
+            periodic_pending: None,
             last_accepted_fact: None,
             gap_scheduled: false,
             finish_requested: false,
@@ -645,29 +656,37 @@ impl RecorderWorker {
         {
             return Err(StorageError("invalid recording start".into()));
         }
+        let assigned = self.planned_range(2)?;
         self.change_state(RecordingState::Starting);
         self.send_control(Message::Start(
             label.to_owned(),
             self.selected_policy,
             submitted_at,
             boundary,
+            *assigned.start(),
         ))?;
+        self.reserved_through = *assigned.end();
         self.last_probe_requested = Some(submitted_at);
         Ok(())
     }
 
     /// Try to transfer one complete capture group, charging in-flight payloads.
+    /// Return owner-assigned record identities while durability remains pending.
     /// Queue saturation latches failure; no producer waits for disk capacity.
-    pub fn try_admit(&mut self, facts: Vec<RecordingFact>) -> Result<(), StorageError> {
+    pub fn try_admit(
+        &mut self,
+        facts: Vec<RecordingFact>,
+    ) -> Result<RangeInclusive<u64>, StorageError> {
         self.try_admit_at(facts, Duration::ZERO)
     }
 
     /// Try to admit a complete group with its original owner submission time.
+    /// The returned range is reserved only after the whole FIFO transfer succeeds.
     pub fn try_admit_at(
         &mut self,
         facts: Vec<RecordingFact>,
         submitted_at: Duration,
-    ) -> Result<(), StorageError> {
+    ) -> Result<RangeInclusive<u64>, StorageError> {
         self.poll();
         if !matches!(
             self.cached.state,
@@ -706,19 +725,27 @@ impl RecorderWorker {
             return Err(StorageError("recorder ingress capacity exhausted".into()));
         }
         let record_count = facts.len();
+        let assigned = self.planned_range(record_count)?;
         let last_fact = facts.last().map(RecordingFact::sequence);
-        let message = Message::Facts(facts, bytes, submitted_at, Instant::now());
+        let message = Message::Facts(
+            facts,
+            bytes,
+            submitted_at,
+            Instant::now(),
+            *assigned.start(),
+        );
         match self.sender.try_send(message) {
             Ok(()) => {
+                self.reserved_through = *assigned.end();
                 self.charged_records += record_count;
                 self.charged_bytes += bytes;
                 self.charged_groups += 1;
                 self.last_accepted_fact = last_fact;
-                Ok(())
+                Ok(assigned)
             }
             Err(
-                TrySendError::Full(Message::Facts(facts, _, _, _))
-                | TrySendError::Disconnected(Message::Facts(facts, _, _, _)),
+                TrySendError::Full(Message::Facts(facts, _, _, _, _))
+                | TrySendError::Disconnected(Message::Facts(facts, _, _, _, _)),
             ) => {
                 self.fail_with_gap(RecorderGap {
                     reason: "recorder ingress unavailable".into(),
@@ -767,8 +794,13 @@ impl RecorderWorker {
             return Err(StorageError("recorder ingress capacity exhausted".into()));
         }
         let at = operation.at;
-        match self.sender.try_send(Message::Operation(operation, bytes)) {
+        let assigned = self.planned_range(1)?;
+        match self
+            .sender
+            .try_send(Message::Operation(operation, bytes, *assigned.start()))
+        {
             Ok(()) => {
+                self.reserved_through = *assigned.end();
                 self.charged_records += 1;
                 self.charged_bytes += bytes;
                 self.charged_groups += 1;
@@ -810,8 +842,11 @@ impl RecorderWorker {
                 "stop summary exceeds reserved seal credit".into(),
             ));
         }
+        let assigned = self.planned_range(2)?;
         self.change_state(RecordingState::Stopping);
-        self.send_control(Message::Stop(summary, requested_at))
+        self.send_control(Message::Stop(summary, requested_at, *assigned.start()))?;
+        self.reserved_through = *assigned.end();
+        Ok(())
     }
 
     /// Coalesce quiet-run probes at 250 ms and await their actual commit receipt.
@@ -864,7 +899,9 @@ impl RecorderWorker {
         {
             return Err(StorageError("shutdown evidence exceeds 16 KiB".into()));
         }
-        self.send_control(Message::Finish(summary, at))?;
+        let assigned = self.planned_range(2)?;
+        self.send_control(Message::Finish(summary, at, *assigned.start()))?;
+        self.reserved_through = *assigned.end();
         self.finish_requested = true;
         Ok(())
     }
@@ -874,7 +911,9 @@ impl RecorderWorker {
     pub fn poll(&mut self) -> RecordingStatus {
         self.drain_history_cancellations();
         let fresh_receipt = self.receipt.try_lock().ok().map(|receipt| receipt.clone());
-        self.reconcile_receipt(fresh_receipt)
+        let status = self.reconcile_receipt(fresh_receipt);
+        self.schedule_periodic();
+        status
     }
 
     fn reconcile_receipt(&mut self, fresh_receipt: Option<Receipt>) -> RecordingStatus {
@@ -938,6 +977,12 @@ impl RecorderWorker {
                 self.cached.terminal_seal_committed = receipt.terminal_seal_committed;
                 self.cached.activation_root = receipt.activation_root;
                 self.cached.failure_persisted = receipt.failure_persisted;
+                if self
+                    .periodic_pending
+                    .is_some_and(|id| receipt.persisted >= id)
+                {
+                    self.periodic_pending = None;
+                }
                 if self.probe_pending
                     && self.last_probe_requested.is_some_and(|requested| {
                         receipt
@@ -967,6 +1012,49 @@ impl RecorderWorker {
                     self.cached.first_error = receipt.first_error;
                 }
             }
+        }
+    }
+
+    fn planned_range(&self, count: usize) -> Result<RangeInclusive<u64>, StorageError> {
+        let first = self
+            .reserved_through
+            .checked_add(1)
+            .ok_or_else(|| StorageError("record identity exhausted".into()))?;
+        let last = self
+            .reserved_through
+            .checked_add(
+                u64::try_from(count).map_err(|_| StorageError("record count exhausted".into()))?,
+            )
+            .ok_or_else(|| StorageError("record identity exhausted".into()))?;
+        Ok(first..=last)
+    }
+
+    fn schedule_periodic(&mut self) {
+        if self.periodic_pending.is_some()
+            || self.finish_requested
+            || !matches!(
+                self.cached.state,
+                RecordingState::Idle | RecordingState::Recording
+            )
+        {
+            return;
+        }
+        let now = self.source.now();
+        if now.saturating_sub(self.last_periodic) < Duration::from_secs(1) {
+            return;
+        }
+        let Ok(assigned) = self.planned_range(1) else {
+            self.fail("clock record identity exhausted");
+            return;
+        };
+        if self
+            .sender
+            .try_send(Message::ClockAnchor(*assigned.start()))
+            .is_ok()
+        {
+            self.reserved_through = *assigned.end();
+            self.last_periodic = now;
+            self.periodic_pending = Some(*assigned.start());
         }
     }
 
@@ -1013,7 +1101,15 @@ impl RecorderWorker {
         self.cached.coverage = "gap";
         self.cached.first_missing_fact = gap.first_missing_fact;
         self.fail(&gap.reason);
-        if self.sender.try_send(Message::GapSeal(gap)).is_ok() {
+        let Ok(assigned) = self.planned_range(1) else {
+            return;
+        };
+        if self
+            .sender
+            .try_send(Message::GapSeal(gap, *assigned.start()))
+            .is_ok()
+        {
+            self.reserved_through = *assigned.end();
             self.gap_scheduled = true;
         }
     }
@@ -1050,33 +1146,15 @@ fn worker_loop(
     barrier: Option<&WriterBarrier>,
     source: MonotonicSource,
 ) -> bool {
-    let mut last_periodic = store.boot_anchor.after();
     let mut deferred: Option<Message> = None;
     loop {
         let message = if let Some(message) = deferred.take() {
             message
         } else {
-            // Admit older queued domain work before taking a new actual UTC
-            // sample, so a periodic clock fact never overtakes a held group.
             match receiver.try_recv() {
                 Ok(message) => message,
                 Err(mpsc::TryRecvError::Disconnected) => return false,
                 Err(mpsc::TryRecvError::Empty) => {
-                    if source.now().saturating_sub(last_periodic) >= Duration::from_secs(1) {
-                        let result = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
-                            .and_then(|anchor| store.append_clock_anchor("periodic", &anchor));
-                        if let Err(error) = result {
-                            let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                            status.state = RecordingState::Failed;
-                            status.first_error.get_or_insert_with(|| {
-                                error.to_string().chars().take(512).collect()
-                            });
-                            return false;
-                        }
-                        last_periodic = source.now();
-                        receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
-                            store.current_record_sequence();
-                    }
                     match receiver.recv_timeout(Duration::from_millis(100)) {
                         Ok(message) => message,
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -1116,9 +1194,11 @@ fn worker_loop(
             }
             other => other,
         };
-        if !matches!(message, Message::Finish(_, _) | Message::Activation(_, _))
-            && (!matches!(message, Message::Start(_, _, _, _))
-                || barrier.is_some_and(|barrier| barrier.0.hold_start))
+        if !matches!(
+            message,
+            Message::Finish(_, _, _) | Message::Activation(_, _)
+        ) && (!matches!(message, Message::Start(_, _, _, _, _))
+            || barrier.is_some_and(|barrier| barrier.0.hold_start))
             && !barrier.is_some_and(|barrier| barrier.0.hold_after_fact_commit)
             && let Some(barrier) = barrier
         {
@@ -1133,10 +1213,16 @@ fn worker_loop(
                         .activation_root = Some(root);
                 })
             }
-            Message::Start(label, policy, submitted_at, boundary) => {
+            Message::Start(label, policy, submitted_at, boundary, first_record) => {
                 TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
                     .and_then(|anchor| {
-                        store.start_run_with_boundary_anchor(&label, policy, &boundary, &anchor)
+                        store.start_run_with_boundary_anchor_assigned(
+                            &label,
+                            policy,
+                            &boundary,
+                            &anchor,
+                            first_record,
+                        )
                     })
                     .map(|_| {
                         let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
@@ -1147,8 +1233,8 @@ fn worker_loop(
                         status.interval_no = store.current_interval_no();
                     })
             }
-            Message::Facts(facts, bytes, submitted_at, queued_at) => {
-                let mut batch = vec![(facts, bytes, submitted_at)];
+            Message::Facts(facts, bytes, submitted_at, queued_at, first_record) => {
+                let mut batch = vec![(facts, bytes, submitted_at, first_record)];
                 let mut records = batch[0].0.len();
                 let mut accounted_bytes = bytes;
                 let deadline = queued_at + Duration::from_millis(100);
@@ -1159,7 +1245,13 @@ fn worker_loop(
                         break;
                     }
                     match receiver.recv_timeout(remaining) {
-                        Ok(Message::Facts(next_facts, next_bytes, next_at, next_queued)) => {
+                        Ok(Message::Facts(
+                            next_facts,
+                            next_bytes,
+                            next_at,
+                            next_queued,
+                            next_first,
+                        )) => {
                             if next_facts.len() > 256 - records
                                 || next_bytes > MAX_GROUP_BYTES - accounted_bytes
                             {
@@ -1168,12 +1260,13 @@ fn worker_loop(
                                     next_bytes,
                                     next_at,
                                     next_queued,
+                                    next_first,
                                 ));
                                 break;
                             }
                             records += next_facts.len();
                             accounted_bytes += next_bytes;
-                            batch.push((next_facts, next_bytes, next_at));
+                            batch.push((next_facts, next_bytes, next_at, next_first));
                         }
                         Ok(other) => {
                             deferred = Some(other);
@@ -1186,10 +1279,28 @@ fn worker_loop(
                 }
                 let views: Vec<(&[RecordingFact], Duration)> = batch
                     .iter()
-                    .map(|(facts, _, at)| (facts.as_slice(), *at))
+                    .map(|(facts, _, at, _)| (facts.as_slice(), *at))
                     .collect();
+                let mut expected = batch[0].3;
+                let aligned = batch.iter().all(|(facts, _, _, first)| {
+                    if *first != expected {
+                        return false;
+                    }
+                    let Some(next) = expected.checked_add(facts.len() as u64) else {
+                        return false;
+                    };
+                    expected = next;
+                    true
+                });
                 let last_submission = batch.last().expect("nonempty batch").2;
-                store.append_fact_groups(&views).map(|sequence| {
+                let committed = if aligned {
+                    store.append_fact_groups_assigned(&views, batch[0].3)
+                } else {
+                    Err(StorageError(
+                        "noncontiguous owner record reservation".into(),
+                    ))
+                };
+                committed.map(|sequence| {
                     if let Some(barrier) =
                         barrier.filter(|barrier| barrier.0.hold_after_fact_commit)
                     {
@@ -1205,35 +1316,52 @@ fn worker_loop(
                     status.released_groups += batch.len();
                 })
             }
-            Message::Operation(operation, bytes) => {
-                store.append_operation(&operation).map(|sequence| {
+            Message::Operation(operation, bytes, assigned) => store
+                .append_operation_assigned(&operation, assigned)
+                .map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
                     status.confirmed_submission = Some(operation.at);
                     status.released_records += 1;
                     status.released_bytes += bytes;
                     status.released_groups += 1;
+                }),
+            Message::GapSeal(gap, assigned) => {
+                store.fail_run_assigned(&gap, assigned).map(|sequence| {
+                    let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                    status.persisted = sequence;
+                    status.failure_persisted = true;
+                    status.run_no = None;
+                    status.interval_no = None;
                 })
             }
-            Message::GapSeal(gap) => store.fail_run(&gap).map(|sequence| {
-                let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                status.persisted = sequence;
-                status.failure_persisted = true;
-                status.run_no = None;
-                status.interval_no = None;
-            }),
             Message::Probe(submitted_at) => store.probe(submitted_at).map(|_| {
                 receipt
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .confirmed_submission = Some(submitted_at);
             }),
-            Message::History { .. } => unreachable!("history was handled before lifecycle match"),
-            Message::Runs { .. } => unreachable!("runs were handled before lifecycle match"),
-            Message::Stop(summary, requested_at) => {
+            Message::ClockAnchor(assigned) => {
                 TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
                     .and_then(|anchor| {
-                        store.stop_run_with_anchor_summary(&anchor, &summary, requested_at)
+                        store.append_clock_anchor_assigned("periodic", &anchor, assigned)
+                    })
+                    .map(|_| {
+                        receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
+                            store.current_record_sequence();
+                    })
+            }
+            Message::History { .. } => unreachable!("history was handled before lifecycle match"),
+            Message::Runs { .. } => unreachable!("runs were handled before lifecycle match"),
+            Message::Stop(summary, requested_at, assigned) => {
+                TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                    .and_then(|anchor| {
+                        store.stop_run_with_anchor_summary_assigned(
+                            &anchor,
+                            &summary,
+                            requested_at,
+                            assigned,
+                        )
                     })
                     .map(|_| {
                         let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
@@ -1243,10 +1371,11 @@ fn worker_loop(
                         status.interval_no = None;
                     })
             }
-            Message::Finish(summary, at) => {
+            Message::Finish(summary, at, assigned) => {
                 let anchor = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()));
-                let result = anchor
-                    .and_then(|anchor| store.finish_boot_with_summary(at, &summary, Some(&anchor)));
+                let result = anchor.and_then(|anchor| {
+                    store.finish_boot_with_summary_assigned(at, &summary, &anchor, assigned)
+                });
                 if let Err(error) = result {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.state = RecordingState::Failed;

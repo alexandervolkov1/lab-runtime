@@ -104,6 +104,138 @@ fn overallocated_fact_vector_is_charged_even_when_it_contains_one_small_fact() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn owner_assigns_contiguous_record_ids_to_a_whole_group_before_sqlite_commit() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    worker.request_start("assigned range").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let start_watermark = worker.poll().persisted_through_sequence;
+    let signal = SignalId::new(InstrumentId::new(179), lab_core::TEMPERATURE);
+    let facts = (1..=2u64)
+        .map(|sequence| RecordingFact::Measurement {
+            sequence,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                Duration::from_secs(1),
+                Value::Float(20.0 + sequence as f64),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+        })
+        .collect::<Vec<_>>();
+    let assigned = worker.try_admit_at(facts, Duration::from_secs(1)).unwrap();
+    assert_eq!(*assigned.start(), start_watermark + 1);
+    assert_eq!(*assigned.end(), start_watermark + 2);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(barrier.reached(), "writer did not hold the assigned group");
+    assert_eq!(worker.poll().persisted_through_sequence, start_watermark);
+    barrier.release();
+    while worker.poll().outstanding_records != 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().outstanding_records, 0);
+    worker.request_stop().unwrap();
+    await_state(&mut worker, RecordingState::Idle);
+    worker.request_finish().unwrap();
+    await_state(&mut worker, RecordingState::Closed);
+    drop(worker);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let identities = archive
+        .prepare("SELECT record_seq FROM measurements ORDER BY record_seq")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .map(|row| u64::from_be_bytes(row.unwrap().try_into().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(identities, vec![*assigned.start(), *assigned.end()]);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn owner_clock_reservation_preserves_group_order_during_a_real_writer_hold() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    worker.request_start("owner clock order").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let signal = SignalId::new(InstrumentId::new(180), lab_core::TEMPERATURE);
+    let fact = |sequence, at| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(signal, Unit::CELSIUS, at, Value::Float(sequence as f64))
+            .unwrap(),
+        generation: 1,
+        revision: 1,
+    };
+    let first = worker
+        .try_admit_at(
+            vec![fact(1, Duration::from_secs(1))],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !barrier.reached() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(barrier.reached());
+    // Time passing only triggers the next owner poll. The stored clock row
+    // and ID order below are the actual oracle for this periodic stimulus.
+    std::thread::sleep(Duration::from_millis(1100));
+    worker.poll();
+    let second = worker
+        .try_admit_at(
+            vec![fact(2, Duration::from_secs(2))],
+            Duration::from_secs(2),
+        )
+        .unwrap();
+    assert_eq!(*second.start(), *first.end() + 2);
+    barrier.release();
+    while worker.poll().outstanding_records != 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().outstanding_records, 0);
+    worker.request_stop().unwrap();
+    await_state(&mut worker, RecordingState::Idle);
+    worker.request_finish().unwrap();
+    await_state(&mut worker, RecordingState::Closed);
+    drop(worker);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let middle = archive
+        .prepare("SELECT record_seq,kind FROM records WHERE record_seq>=?1 AND record_seq<=?2 ORDER BY record_seq")
+        .unwrap()
+        .query_map(
+            rusqlite::params![first.start().to_be_bytes(), second.end().to_be_bytes()],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap()
+        .map(|row| {
+            let (id, kind) = row.unwrap();
+            (u64::from_be_bytes(id.try_into().unwrap()), kind)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        middle,
+        vec![
+            (*first.start(), "measurement".into()),
+            (*first.end() + 1, "clock_anchor".into()),
+            (*second.end(), "measurement".into())
+        ]
+    );
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn await_state(worker: &mut RecorderWorker, state: RecordingState) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while worker.poll().state != state && Instant::now() < deadline {

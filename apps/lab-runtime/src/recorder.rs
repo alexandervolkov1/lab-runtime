@@ -839,6 +839,19 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Commit only the exact owner-reserved clock identity in FIFO order.
+    pub fn append_clock_anchor_assigned(
+        &mut self,
+        kind: &str,
+        anchor: &TimeAnchor,
+        record_seq: u64,
+    ) -> Result<(), StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(record_seq) {
+            return Err(StorageError("clock record reservation mismatch".into()));
+        }
+        self.append_clock_anchor(kind, anchor)
+    }
+
     /// Return the stable identity retained across process reopen.
     pub fn database_id(&self) -> &str {
         &self.database_id
@@ -1133,6 +1146,21 @@ impl SqliteStore {
         boundary: &BoundarySnapshot,
         anchor: &TimeAnchor,
     ) -> Result<(), StorageError> {
+        self.start_run_impl(label, policy, boundary, Some(anchor))
+    }
+
+    /// Start only at the exact two-record boundary/clock range reserved by the owner.
+    pub fn start_run_with_boundary_anchor_assigned(
+        &mut self,
+        label: &str,
+        policy: RecordingPolicy,
+        boundary: &BoundarySnapshot,
+        anchor: &TimeAnchor,
+        first_record: u64,
+    ) -> Result<(), StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(first_record) {
+            return Err(StorageError("start record reservation mismatch".into()));
+        }
         self.start_run_impl(label, policy, boundary, Some(anchor))
     }
 
@@ -1552,6 +1580,18 @@ impl SqliteStore {
         Ok(next_sequence)
     }
 
+    /// Persist a whole group/batch only at the range assigned before owner transfer.
+    pub fn append_fact_groups_assigned(
+        &mut self,
+        groups: &[(&[RecordingFact], Duration)],
+        first_record: u64,
+    ) -> Result<u64, StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(first_record) {
+            return Err(StorageError("fact record reservation mismatch".into()));
+        }
+        self.append_fact_groups(groups)
+    }
+
     /// Atomically commit one application fact and its checkpoint on the worker.
     /// The transaction can preserve an accepted-only result after a process crash.
     pub fn append_operation(&mut self, operation: &OperationRecord) -> Result<u64, StorageError> {
@@ -1618,6 +1658,18 @@ impl SqliteStore {
         Ok(sequence)
     }
 
+    /// Commit an application fact only at its owner-reserved record identity.
+    pub fn append_operation_assigned(
+        &mut self,
+        operation: &OperationRecord,
+        record_seq: u64,
+    ) -> Result<u64, StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(record_seq) {
+            return Err(StorageError("operation record reservation mismatch".into()));
+        }
+        self.append_operation(operation)
+    }
+
     /// Commit a real durable progress marker even during an otherwise quiet run.
     /// A queue heartbeat is not a substitute for this SQL transaction.
     pub fn probe(&mut self, submitted_at: Duration) -> Result<(), StorageError> {
@@ -1668,6 +1720,20 @@ impl SqliteStore {
         summary: &serde_json::Value,
         requested_at: Duration,
     ) -> Result<(), StorageError> {
+        self.stop_run_impl(Some(anchor), summary, requested_at)
+    }
+
+    /// Seal only at the owner's exact interval-end clock/seal range.
+    pub fn stop_run_with_anchor_summary_assigned(
+        &mut self,
+        anchor: &TimeAnchor,
+        summary: &serde_json::Value,
+        requested_at: Duration,
+        first_record: u64,
+    ) -> Result<(), StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(first_record) {
+            return Err(StorageError("stop record reservation mismatch".into()));
+        }
         self.stop_run_impl(Some(anchor), summary, requested_at)
     }
 
@@ -1909,6 +1975,18 @@ impl SqliteStore {
         Ok(sequence)
     }
 
+    /// Persist a known loss marker only at its reserved owner identity.
+    pub fn fail_run_assigned(
+        &mut self,
+        gap: &RecorderGap,
+        record_seq: u64,
+    ) -> Result<u64, StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(record_seq) {
+            return Err(StorageError("gap record reservation mismatch".into()));
+        }
+        self.fail_run(gap)
+    }
+
     /// Commit a terminal boot seal after every accepted run/fact barrier.
     /// Presence of this row proves SQL commit, independently of its later receipt.
     pub fn finish_boot(&mut self, at: Duration) -> Result<(), StorageError> {
@@ -2034,6 +2112,20 @@ impl SqliteStore {
         }
         self.boot_sealed = true;
         Ok(())
+    }
+
+    /// Seal only at the two-record final clock/shutdown range reserved by owner.
+    pub fn finish_boot_with_summary_assigned(
+        &mut self,
+        at: Duration,
+        evidence: &serde_json::Value,
+        anchor: &TimeAnchor,
+        first_record: u64,
+    ) -> Result<(), StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(first_record) {
+            return Err(StorageError("finish record reservation mismatch".into()));
+        }
+        self.finish_boot_with_summary(at, evidence, Some(anchor))
     }
 
     /// Explicit close reports a failure after a committed seal separately.
