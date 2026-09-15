@@ -464,11 +464,12 @@ impl SqliteStore {
             let indexes: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
                  ('runtime_boots_unfinished','runs_unfinished','intervals_unfinished',
+                  'intervals_by_run',
                   'measurements_history','measurements_all_history','operation_identity')",
                 [],
                 |row| row.get(0),
             )?;
-            if indexes != 6 {
+            if indexes != 7 {
                 return Err(StorageError(
                     "version-one required indexes are incomplete".into(),
                 ));
@@ -491,6 +492,13 @@ impl SqliteStore {
                     "version-one history index is incompatible".into(),
                 ));
             }
+            let loss_index: Vec<String> = connection
+                .prepare("PRAGMA index_info('intervals_by_run')")?
+                .query_map([], |row| row.get::<_, String>(2))?
+                .collect::<Result<_, _>>()?;
+            if loss_index != ["boot_id", "run_no"] {
+                return Err(StorageError("incompatible interval history index".into()));
+            }
             let (declared_schema, record_encoding, identity): (i64, i64, String) = connection
                 .query_row(
                     "SELECT schema_version,record_encoding,database_id FROM schema_version
@@ -507,20 +515,6 @@ impl SqliteStore {
                 ));
             }
             validate_unfinished_entries(&connection)?;
-            // The original version-one files may predate the indexed history
-            // loss projection. Adding this read-only lookup index preserves all
-            // stored facts and avoids a scan through earlier intervals.
-            connection.execute_batch(
-                "CREATE INDEX IF NOT EXISTS intervals_by_run
-                 ON recording_intervals(boot_id,run_no)",
-            )?;
-            let loss_index: Vec<String> = connection
-                .prepare("PRAGMA index_info('intervals_by_run')")?
-                .query_map([], |row| row.get::<_, String>(2))?
-                .collect::<Result<_, _>>()?;
-            if loss_index != ["boot_id", "run_no"] {
-                return Err(StorageError("incompatible interval history index".into()));
-            }
         }
         let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
         let page_count: i64 =

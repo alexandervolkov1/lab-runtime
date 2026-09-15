@@ -135,6 +135,36 @@ fn reopen_rejects_an_unfinished_boot_checkpoint_ahead_of_its_committed_facts() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn reopen_rejects_missing_history_index_without_repairing_the_archive() {
+    let path = temporary_database();
+    let old_boot = "90909090909090909090909090909090";
+    let new_boot = "91919191919191919191919191919191";
+    let mut original = SqliteStore::open_with_boot(&path, old_boot).unwrap();
+    original.finish_boot(Duration::from_secs(1)).unwrap();
+    original.close().unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP INDEX intervals_by_run")
+        .unwrap();
+    drop(connection);
+    assert!(SqliteStore::open_with_boot(&path, new_boot).is_err());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let index_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='intervals_by_run'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let boot_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM runtime_boots", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!((index_count, boot_count), (0, 1));
+    drop(connection);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn hex_bytes(value: &str) -> Vec<u8> {
     (0..32)
         .step_by(2)
