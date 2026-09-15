@@ -153,6 +153,17 @@ fn actual_babashka_a_killed_after_running_and_b_reconciles_after_three_finite_le
     assert_eq!(final_state["safe_confirmed"], true);
     assert_eq!(final_state["lease_after_pause"], Value::Null);
     assert_eq!(final_state["shutdown_safe"], true);
+    eprintln!(
+        "real bb A/B: boot={} scope={} A_temp={:.4} B_temp={:.4} client_free_ms={} lease_advance_ms={} safe_pause={} shutdown_safe={}",
+        ready["boot_id"].as_str().unwrap(),
+        checkpoint["scope"].as_str().unwrap(),
+        checkpoint["temperature"].as_f64().unwrap(),
+        final_state["temperature"].as_f64().unwrap(),
+        client_free.as_millis(),
+        (later - prior) / 1_000_000,
+        final_state["safe_confirmed"],
+        final_state["shutdown_safe"],
+    );
     assert!(wait_exit(&mut b, Duration::from_secs(3)).success());
     assert!(wait_exit(&mut host, Duration::from_secs(3)).success());
     assert!(
