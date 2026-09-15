@@ -627,5 +627,38 @@ fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(ids.len(), 11);
     drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let plan = db
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT record_seq FROM measurements
+             WHERE boot_id=?1 AND run_no=?2 AND instrument_id=?3 AND parameter_id=?4
+               AND published_at>=?5 AND published_at<?6
+             ORDER BY published_at,record_seq LIMIT 9",
+        )
+        .unwrap()
+        .query_map(
+            rusqlite::params![
+                [0x98u8; 16].as_slice(),
+                1u64.to_be_bytes().as_slice(),
+                instrument.get().to_be_bytes().as_slice(),
+                lab_core::TEMPERATURE.get().to_be_bytes().as_slice(),
+                (Duration::from_secs(19_990).as_nanos() as u64)
+                    .to_be_bytes()
+                    .as_slice(),
+                (Duration::from_secs(20_001).as_nanos() as u64)
+                    .to_be_bytes()
+                    .as_slice(),
+            ],
+            |row| row.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("measurements_history")),
+        "narrow archive selection must use the keyset history index: {plan:?}"
+    );
+    drop(db);
     std::fs::remove_file(path).unwrap();
 }
