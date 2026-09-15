@@ -162,6 +162,14 @@ pub enum ComponentError {
     InvalidResult,
     /// Host's independent 100-ms acceptance deadline expired.
     Deadline,
+    /// Lua allocator reached the accounted 8-MiB heap ceiling.
+    MemoryLimit,
+    /// Top-level and callback execution exceeded the shared VM instruction budget.
+    InstructionLimit,
+    /// Trusted scalar host wrappers exceeded the 128-call budget.
+    HostCallLimit,
+    /// The supplied source could not compile as bounded text.
+    Syntax,
     /// The supplied nonblocking executor rejected or failed the job.
     Executor,
     /// Generation, state revision or attempt counter would wrap/reuse an identity.

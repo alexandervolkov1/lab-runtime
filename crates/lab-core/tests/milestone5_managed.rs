@@ -11,7 +11,10 @@ use lab_core::{
 };
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,6 +22,28 @@ use std::{
 struct Mailbox {
     submitted: VecDeque<Invocation>,
     completed: VecDeque<ComponentCompletion>,
+}
+
+struct ClockedExecutor {
+    mailbox: Arc<Mutex<Mailbox>>,
+    expired: Arc<AtomicBool>,
+}
+
+impl ComponentExecutor for ClockedExecutor {
+    fn try_submit(&mut self, job: Invocation) -> Result<(), lab_core::managed::ComponentError> {
+        self.mailbox.lock().unwrap().submitted.push_back(job);
+        Ok(())
+    }
+
+    fn try_poll(&mut self) -> Option<ComponentCompletion> {
+        self.mailbox.lock().unwrap().completed.pop_front()
+    }
+
+    fn try_cancel(&mut self, _: lab_core::managed::Correlation) {}
+
+    fn try_expire(&mut self, _: lab_core::managed::Correlation) -> bool {
+        self.expired.load(Ordering::Acquire)
+    }
 }
 
 struct FakeExecutor(Arc<Mutex<Mailbox>>);
@@ -554,4 +579,88 @@ fn late_transform_result_retains_old_input_freshness_and_exact_age_is_unusable()
     };
     assert_eq!(failed.unwrap().quality(), SampleQuality::Unavailable);
     assert_eq!(good.value(), Some(&Value::Float(1.0)));
+}
+
+#[test]
+fn adapter_deadline_fences_even_a_late_completion_from_the_current_generation() {
+    let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+    let expired = Arc::new(AtomicBool::new(false));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(ClockedExecutor {
+            mailbox: mailbox.clone(),
+            expired: expired.clone(),
+        }))
+        .unwrap();
+    runtime
+        .command(Command::StageComponent {
+            definition: definition(201, 1.0),
+            replaces: None,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let init = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete(
+        &mailbox,
+        init,
+        ComponentStatus::Init,
+        None,
+        PlainData::default(),
+    );
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime
+        .command(Command::InvokeComponent {
+            component: ComponentId::new(201),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let current = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    // The adapter clock has not reached its exclusive acceptance boundary.
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    let QueryResult::Component(before) = runtime
+        .query(Query::Component(ComponentId::new(201)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(before.pending, Some(current.correlation));
+    expired.store(true, Ordering::Release);
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    let current_generation = current.correlation.generation;
+    complete(
+        &mailbox,
+        current,
+        ComponentStatus::Ready,
+        Some(999.0),
+        PlainData::default(),
+    );
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    let QueryResult::Component(after) = runtime
+        .query(Query::Component(ComponentId::new(201)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(after.generation, current_generation);
+    assert_eq!(after.state, ComponentState::Failed);
+    assert!(after.pending.is_none());
+    assert_eq!(after.good_steps, 0);
+    let QueryResult::Latest(Some(latest)) = runtime
+        .query(Query::GetLatestSignal(SignalId::new(
+            InstrumentId::new(201),
+            TEMPERATURE,
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(latest.quality(), SampleQuality::Unavailable);
 }

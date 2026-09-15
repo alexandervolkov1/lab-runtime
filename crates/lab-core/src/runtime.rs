@@ -125,6 +125,13 @@ pub enum Command {
         /// Explicit monotonic Runtime time.
         at: Duration,
     },
+    /// Explicitly recover a failed native loop only after Rust safe evidence and fault acknowledgement.
+    ResetFailedController {
+        /// Existing failed native controller; no client session owns its lifetime.
+        controller: ControllerId,
+        /// Nondecreasing trusted Runtime recovery time.
+        at: Duration,
+    },
     /// Append an explicit unavailable attempt to an M4 thermal plant signal.
     InjectPlantMeasurementFailure {
         /// Registered thermal plant identity.
@@ -566,6 +573,9 @@ impl Runtime {
             Command::PauseController { controller, at } => self.pause_controller(controller, at),
             Command::ResumeController { controller, at } => {
                 self.start_or_resume_controller(controller, at, ControllerState::Paused)
+            }
+            Command::ResetFailedController { controller, at } => {
+                self.reset_failed_controller(controller, at)
             }
             Command::InjectPlantMeasurementFailure { instrument, at } => {
                 let plant = self
@@ -1470,6 +1480,11 @@ impl Runtime {
             .collect();
         for dependent in &dependents {
             if let Some(other) = self.managed.get_mut(dependent) {
+                if let Some(pending) = other.pending
+                    && let Some(executor) = self.executor.as_mut()
+                {
+                    executor.try_cancel(pending);
+                }
                 other.state = ComponentState::Failed;
                 other.pending = None;
                 other.pending_input = None;
@@ -1568,6 +1583,10 @@ impl Runtime {
             return;
         }
         let component = self.managed.get_mut(&id).expect("checked above");
+        let Some(next_revision) = component.revision.checked_add(1) else {
+            self.fail_component(id, at);
+            return;
+        };
         let count = component
             .good_steps
             .saturating_add(1)
@@ -1603,13 +1622,7 @@ impl Runtime {
             return;
         }
         component.committed = result.state;
-        component.revision = match component.revision.checked_add(1) {
-            Some(next) => next,
-            None => {
-                self.fail_component(id, at);
-                return;
-            }
-        };
+        component.revision = next_revision;
         component.good_steps = count;
         component.state = if result.status == ComponentStatus::Ready {
             ComponentState::Ready
@@ -2010,6 +2023,37 @@ impl Runtime {
         })();
         self.controllers.insert(id, controller);
         result
+    }
+
+    /// A validated new component generation never restarts Failed control implicitly.
+    /// Recovery requires prior Rust virtual safe readback and deliberate acknowledgement.
+    fn reset_failed_controller(
+        &mut self,
+        id: ControllerId,
+        at: Duration,
+    ) -> Result<CommandResult, Error> {
+        self.check_output_time(at)?;
+        let controller = self
+            .controllers
+            .get(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        if controller.state != ControllerState::Failed || controller.lease.is_some() {
+            return Err(ControllerError::InvalidState.into());
+        }
+        if self.warming_on(controller.config.output)
+            || !self
+                .outputs
+                .get(&controller.config.output)
+                .ok_or(OutputError::UnknownActuator)?
+                .can_prepare()
+        {
+            return Err(ControllerError::Output.into());
+        }
+        let controller = self.controllers.get_mut(&id).expect("validated above");
+        controller.reset_algorithms();
+        controller.last_tick = None;
+        controller.state = ControllerState::Paused;
+        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
     }
 
     fn fail_controller(
