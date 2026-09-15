@@ -864,79 +864,100 @@ impl RecorderWorker {
     pub fn poll(&mut self) -> RecordingStatus {
         self.drain_history_cancellations();
         let fresh_receipt = self.receipt.try_lock().ok().map(|receipt| receipt.clone());
+        self.reconcile_receipt(fresh_receipt)
+    }
+
+    fn reconcile_receipt(&mut self, fresh_receipt: Option<Receipt>) -> RecordingStatus {
         if let Some(receipt) = fresh_receipt {
-            if receipt.released_records < self.seen_released_records
-                || receipt.released_bytes < self.seen_released_bytes
-                || receipt.released_groups < self.seen_released_groups
-            {
-                self.fail("regressing storage receipt");
-            } else {
-                let new_records = receipt.released_records - self.seen_released_records;
-                let new_bytes = receipt.released_bytes - self.seen_released_bytes;
-                let new_groups = receipt.released_groups - self.seen_released_groups;
-                if new_records > self.charged_records
-                    || new_bytes > self.charged_bytes
-                    || new_groups > self.charged_groups
-                {
-                    self.fail("future storage receipt");
-                } else {
-                    self.charged_records -= new_records;
-                    self.charged_bytes -= new_bytes;
-                    self.charged_groups -= new_groups;
-                    self.seen_released_records = receipt.released_records;
-                    self.seen_released_bytes = receipt.released_bytes;
-                    self.seen_released_groups = receipt.released_groups;
-                    self.cached.persisted_through_sequence = receipt.persisted;
-                    self.cached.confirmed_submission = receipt.confirmed_submission;
-                    self.cached.run_no = receipt.run_no;
-                    self.cached.interval_no = receipt.interval_no;
-                    self.cached.terminal_seal_committed = receipt.terminal_seal_committed;
-                    self.cached.activation_root = receipt.activation_root;
-                    self.cached.failure_persisted = receipt.failure_persisted;
-                    if self.probe_pending
-                        && self.last_probe_requested.is_some_and(|requested| {
-                            receipt
-                                .confirmed_submission
-                                .is_some_and(|confirmed| confirmed >= requested)
-                        })
-                    {
-                        self.probe_pending = false;
-                    }
-                    // An owner-submitted lifecycle barrier remains pending
-                    // until the worker publishes its committed successor.
-                    let pending_start = self.cached.state == RecordingState::Starting
-                        && receipt.state == RecordingState::Idle;
-                    let pending_stop = self.cached.state == RecordingState::Stopping
-                        && receipt.state == RecordingState::Recording;
-                    let sticky_failure = self.cached.state == RecordingState::Failed;
-                    if !pending_start && !pending_stop && !sticky_failure {
-                        self.cached.state = receipt.state;
-                    }
-                    if receipt.state == RecordingState::Failed
-                        && self.cached.coverage == "complete"
-                        && self.cached.run_no.is_some()
-                    {
-                        self.cached.coverage = "unknown_tail";
-                    }
-                    if self.cached.first_error.is_none() {
-                        self.cached.first_error = receipt.first_error;
-                    }
-                }
-            }
+            self.apply_receipt(receipt);
         }
-        if !self.alive.load(Ordering::Acquire)
+        let worker_closed = !self.alive.load(Ordering::Acquire);
+        if worker_closed
             && !matches!(
                 self.cached.state,
                 RecordingState::Closed | RecordingState::Failed
             )
         {
-            self.fail("recorder worker exited unexpectedly");
+            // The worker may close between the first receipt clone and this
+            // alive check. Read its final published receipt once more before
+            // calling a successful seal/close an unexpected exit.
+            let final_receipt = self.receipt.try_lock().ok().map(|receipt| receipt.clone());
+            if let Some(receipt) = final_receipt {
+                self.apply_receipt(receipt);
+                if !matches!(
+                    self.cached.state,
+                    RecordingState::Closed | RecordingState::Failed
+                ) {
+                    self.fail("recorder worker exited unexpectedly");
+                }
+            }
         }
         self.cached.outstanding_records = self.charged_records;
         self.cached.outstanding_bytes = self.charged_bytes;
         self.cached.outstanding_groups = self.charged_groups;
-        self.cached.worker_closed = !self.alive.load(Ordering::Acquire);
+        self.cached.worker_closed = worker_closed;
         self.cached.clone()
+    }
+
+    fn apply_receipt(&mut self, receipt: Receipt) {
+        if receipt.released_records < self.seen_released_records
+            || receipt.released_bytes < self.seen_released_bytes
+            || receipt.released_groups < self.seen_released_groups
+        {
+            self.fail("regressing storage receipt");
+        } else {
+            let new_records = receipt.released_records - self.seen_released_records;
+            let new_bytes = receipt.released_bytes - self.seen_released_bytes;
+            let new_groups = receipt.released_groups - self.seen_released_groups;
+            if new_records > self.charged_records
+                || new_bytes > self.charged_bytes
+                || new_groups > self.charged_groups
+            {
+                self.fail("future storage receipt");
+            } else {
+                self.charged_records -= new_records;
+                self.charged_bytes -= new_bytes;
+                self.charged_groups -= new_groups;
+                self.seen_released_records = receipt.released_records;
+                self.seen_released_bytes = receipt.released_bytes;
+                self.seen_released_groups = receipt.released_groups;
+                self.cached.persisted_through_sequence = receipt.persisted;
+                self.cached.confirmed_submission = receipt.confirmed_submission;
+                self.cached.run_no = receipt.run_no;
+                self.cached.interval_no = receipt.interval_no;
+                self.cached.terminal_seal_committed = receipt.terminal_seal_committed;
+                self.cached.activation_root = receipt.activation_root;
+                self.cached.failure_persisted = receipt.failure_persisted;
+                if self.probe_pending
+                    && self.last_probe_requested.is_some_and(|requested| {
+                        receipt
+                            .confirmed_submission
+                            .is_some_and(|confirmed| confirmed >= requested)
+                    })
+                {
+                    self.probe_pending = false;
+                }
+                // An owner-submitted lifecycle barrier remains pending
+                // until the worker publishes its committed successor.
+                let pending_start = self.cached.state == RecordingState::Starting
+                    && receipt.state == RecordingState::Idle;
+                let pending_stop = self.cached.state == RecordingState::Stopping
+                    && receipt.state == RecordingState::Recording;
+                let sticky_failure = self.cached.state == RecordingState::Failed;
+                if !pending_start && !pending_stop && !sticky_failure {
+                    self.cached.state = receipt.state;
+                }
+                if receipt.state == RecordingState::Failed
+                    && self.cached.coverage == "complete"
+                    && self.cached.run_no.is_some()
+                {
+                    self.cached.coverage = "unknown_tail";
+                }
+                if self.cached.first_error.is_none() {
+                    self.cached.first_error = receipt.first_error;
+                }
+            }
+        }
     }
 
     fn send_control(&mut self, message: Message) -> Result<(), StorageError> {
@@ -1353,6 +1374,37 @@ mod cancellation_tests {
         assert_eq!(worker.poll().state, RecordingState::Closed);
         assert!(slots.lock().unwrap().is_empty());
         assert!(worker.try_take_runs(live).is_none());
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod close_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn closed_worker_rechecks_final_receipt_after_a_stale_owner_clone() {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("lab-m7-close-race-{suffix}.sqlite"));
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        worker.request_finish().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while worker.poll().state != RecordingState::Closed && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(worker.poll().state, RecordingState::Closed);
+        let stale = Receipt {
+            state: RecordingState::Idle,
+            terminal_seal_committed: true,
+            ..Receipt::default()
+        };
+        worker.cached.state = RecordingState::Stopping;
+        let reconciled = worker.reconcile_receipt(Some(stale));
+        assert_eq!(reconciled.state, RecordingState::Closed);
+        assert!(reconciled.terminal_seal_committed);
         drop(worker);
         std::fs::remove_file(path).unwrap();
     }
