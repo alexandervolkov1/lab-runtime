@@ -153,6 +153,62 @@ fn real_insert_error_rolls_back_all_new_rows_and_checkpoint_without_erasing_pref
 }
 
 #[test]
+fn checkpoint_update_failure_rolls_back_fact_and_preserves_prior_boot_prefix() {
+    let path = temporary_database();
+    let signal = SignalId::new(InstrumentId::new(481), lab_core::TEMPERATURE);
+    let fact = |sequence, at| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(signal, Unit::CELSIUS, at, Value::Float(27.5)).unwrap(),
+        generation: 1,
+        revision: 1,
+    };
+    let old_boot = "48484848484848484848484848484848";
+    let mut old = SqliteStore::open_with_boot(&path, old_boot).unwrap();
+    old.start_run("durable prefix").unwrap();
+    old.append_facts(&[fact(1, Duration::from_secs(1))])
+        .unwrap();
+    old.stop_run().unwrap();
+    old.finish_boot(Duration::from_secs(2)).unwrap();
+    let old_checkpoint = old.current_record_sequence();
+    old.close().unwrap();
+    let external = rusqlite::Connection::open(&path).unwrap();
+    external
+        .execute_batch(
+            "CREATE TRIGGER fail_final_checkpoint BEFORE UPDATE OF persisted_through_seq ON durable_checkpoints
+             WHEN (SELECT count(*) FROM measurements)>=2
+             BEGIN SELECT RAISE(ABORT,'injected checkpoint failure'); END;",
+        )
+        .unwrap();
+    drop(external);
+    let mut next = SqliteStore::open_with_boot(&path, "49494949494949494949494949494949").unwrap();
+    next.start_run("checkpoint failure").unwrap();
+    let boundary = next.current_record_sequence();
+    assert!(
+        next.append_facts(&[fact(2, Duration::from_secs(3))])
+            .is_err()
+    );
+    assert_eq!(next.current_record_sequence(), boundary);
+    drop(next);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let fact_rows: i64 = db
+        .query_row("SELECT count(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(fact_rows, 1);
+    let checkpoints = db
+        .prepare("SELECT persisted_through_seq FROM durable_checkpoints ORDER BY boot_id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    assert!(checkpoints.contains(&old_checkpoint.to_be_bytes().to_vec()));
+    assert!(checkpoints.contains(&boundary.to_be_bytes().to_vec()));
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn nonfinite_second_group_rejects_one_batch_without_committing_its_valid_prefix() {
     let path = temporary_database();
     let mut store = SqliteStore::open(&path).unwrap();
