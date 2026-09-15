@@ -6,7 +6,13 @@ use lab_core::{
     output::{ActuatorId, OutputState},
 };
 use lab_runtime::host::{Clock, HostCore, SchedulePlan};
-use std::{cell::Cell, time::Duration};
+use lab_runtime::service::{ServiceHost, ServiceOptions};
+use std::{
+    cell::Cell,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 struct TestClock(Cell<Duration>);
 impl TestClock {
@@ -180,4 +186,49 @@ fn safety_service_runs_once_per_due_slot_before_native_work() {
     );
     assert!(next.skipped_deadlines >= 9);
     assert_eq!(next.measurements, 1);
+}
+
+#[test]
+fn actual_owner_thread_progresses_without_any_tcp_client_and_shuts_down_safely() {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (running_tx, running_rx) = mpsc::sync_channel(1);
+    let owner = thread::spawn(move || {
+        let options =
+            ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"])
+                .unwrap();
+        let mut service = ServiceHost::startup(options).unwrap();
+        let clock = service.clock_copy();
+        ready_tx.send(service.bound_address()).unwrap();
+        service.owner_mut().service(&clock).unwrap();
+        service
+            .owner_mut()
+            .command(Command::StartController {
+                controller: lab_core::control::ControllerId::new(1),
+                at: clock.now(),
+            })
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(4);
+        loop {
+            service.owner_mut().service(&clock).unwrap();
+            let state = controller(service.owner());
+            if state.state == ControllerState::Running && state.pid.latest.is_some() {
+                let lease = state.lease.unwrap();
+                running_tx.send((clock.now(), lease.expires())).unwrap();
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "autonomous native path did not progress"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        service.owner_mut().begin_shutdown(&clock).unwrap();
+        service.owner_mut().service(&clock).unwrap();
+        service.owner().shutdown_status()
+    });
+    let addr = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(addr.ip().to_string(), "127.0.0.1");
+    let (now, expiry) = running_rx.recv_timeout(Duration::from_secs(4)).unwrap();
+    assert!(expiry > now);
+    assert!(owner.join().unwrap().exit_success);
 }

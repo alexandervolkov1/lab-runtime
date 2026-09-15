@@ -5,3 +5,5 @@
 pub mod definition;
 /// Explicit monotonic scheduling and trusted virtual host composition.
 pub mod host;
+/// Startup ownership, loopback binding and process-local boot identity.
+pub mod service;

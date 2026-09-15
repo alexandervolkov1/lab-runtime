@@ -32,6 +32,7 @@ pub trait Clock {
 }
 
 /// Production clock with one Instant origin, never wall time.
+#[derive(Clone, Copy)]
 pub struct SystemClock {
     origin: Instant,
 }
