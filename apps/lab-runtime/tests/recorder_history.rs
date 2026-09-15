@@ -1,6 +1,9 @@
 //! Indexed raw pages freeze a durable watermark while new rows append.
 
-use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_core::{
+    Command, InstrumentId, ParameterId, Runtime, Sample, SignalId, Unit, Value,
+    VirtualInstrumentConfig, recording::RecordingFact,
+};
 use lab_runtime::recorder::{
     HistoryBudget, HistoryFilter, RecorderLimits, RecorderWorker, SqliteStore,
 };
@@ -227,5 +230,118 @@ fn run_discovery_pages_old_boots_and_freezes_upper_key_across_new_runs() {
     let fresh = second.read_history_runs(None, 8).unwrap();
     assert_eq!(fresh.runs.len(), 4);
     drop(second);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn escaped_equal_time_rows_shorten_pages_without_shifting_frozen_identities() {
+    let path = temporary_database();
+    let boot = "66666666666666666666666666666666";
+    let instrument = InstrumentId::new(96);
+    let parameter = ParameterId::new(19);
+    let signal = SignalId::new(instrument, parameter);
+    let at = Duration::from_secs(1);
+    let long_text = "\0".repeat(1000);
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("escaped equal time").unwrap();
+    let facts: Vec<_> = (1..=3u64)
+        .map(|sequence| RecordingFact::Measurement {
+            sequence,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                at,
+                Value::Text(long_text.clone()),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+        })
+        .collect();
+    store.append_facts(&facts).unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter,
+        from: Duration::ZERO,
+        to: Duration::from_secs(2),
+    };
+    let first = store.read_history_measurements(&filter, None, 128).unwrap();
+    assert_eq!(
+        first.rows.len(),
+        1,
+        "escaped JSON text must shorten the 8-KiB page"
+    );
+    let frozen = first.watermark;
+    let mut ids = first
+        .rows
+        .iter()
+        .map(|row| row.record_sequence)
+        .collect::<Vec<_>>();
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 4,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                at,
+                Value::Text("later one".into()),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+        }])
+        .unwrap();
+    let second = store
+        .read_history_measurements(&filter, first.next_cursor.as_ref(), 128)
+        .unwrap();
+    assert_eq!(second.watermark, frozen);
+    assert_eq!(second.rows.len(), 1);
+    ids.extend(second.rows.iter().map(|row| row.record_sequence));
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 5,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                at,
+                Value::Text("later two".into()),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+        }])
+        .unwrap();
+    let final_page = store
+        .read_history_measurements(&filter, second.next_cursor.as_ref(), 128)
+        .unwrap();
+    assert_eq!(final_page.watermark, frozen);
+    assert_eq!(final_page.rows.len(), 1);
+    assert!(final_page.next_cursor.is_none());
+    ids.extend(final_page.rows.iter().map(|row| row.record_sequence));
+    assert_eq!(ids.len(), 3);
+    assert_eq!(
+        ids.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    let mut cursor = None;
+    let mut fresh_ids = Vec::new();
+    for _ in 0..6 {
+        let page = store
+            .read_history_measurements(&filter, cursor.as_ref(), 128)
+            .unwrap();
+        fresh_ids.extend(page.rows.iter().map(|row| row.record_sequence));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(fresh_ids.len(), 5);
+    assert_eq!(fresh_ids[..3], ids);
+    drop(store);
     std::fs::remove_file(path).unwrap();
 }

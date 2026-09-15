@@ -2164,14 +2164,17 @@ impl SqliteStore {
         let mut has_more = false;
         for selected_row in selected {
             let row = selected_row?;
-            let bytes = 256
-                + row.unit.len()
-                + row.failure.as_ref().map_or(0, String::len)
-                + match &row.value {
-                    Some(Value::Text(text) | Value::Enum(text)) => text.len() * 2,
+            // UTF-8 control bytes can become six JSON bytes (e.g. `\u0000`).
+            // Leave room for the page envelope and cursor before app encoding.
+            let escaped = |value: &str| value.len().saturating_mul(6);
+            let bytes = 256usize
+                .saturating_add(escaped(&row.unit))
+                .saturating_add(row.failure.as_ref().map_or(0, |value| escaped(value)))
+                .saturating_add(match &row.value {
+                    Some(Value::Text(text) | Value::Enum(text)) => escaped(text),
                     _ => 0,
-                };
-            if rows.len() == limit || page_bytes.saturating_add(bytes) > 8 * 1024 {
+                });
+            if rows.len() == limit || page_bytes.saturating_add(bytes) > 8 * 1024 - 512 {
                 if rows.is_empty() {
                     return Err(StorageError("whole history row exceeds page budget".into()));
                 }
