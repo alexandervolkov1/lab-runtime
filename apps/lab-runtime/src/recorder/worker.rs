@@ -51,6 +51,7 @@ struct BarrierState {
     held: AtomicBool,
     reached: AtomicBool,
     hold_start: bool,
+    hold_after_fact_commit: bool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -62,6 +63,7 @@ impl WriterBarrier {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
             hold_start: false,
+            hold_after_fact_commit: false,
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -70,6 +72,17 @@ impl WriterBarrier {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
             hold_start: true,
+            hold_after_fact_commit: false,
+        }))
+    }
+    /// Hold after a real fact transaction commits but before its owner receipt.
+    /// This is a trusted process-failure test seam, never Runtime owner work.
+    pub fn held_after_fact_commit() -> Self {
+        Self(Arc::new(BarrierState {
+            held: AtomicBool::new(true),
+            reached: AtomicBool::new(false),
+            hold_start: false,
+            hold_after_fact_commit: true,
         }))
     }
     /// Release any worker held at a deterministic storage stage.
@@ -1073,6 +1086,7 @@ fn worker_loop(
         if !matches!(message, Message::Finish(_, _) | Message::Activation(_, _))
             && (!matches!(message, Message::Start(_, _, _, _))
                 || barrier.is_some_and(|barrier| barrier.0.hold_start))
+            && !barrier.is_some_and(|barrier| barrier.0.hold_after_fact_commit)
             && let Some(barrier) = barrier
         {
             barrier.await_release();
@@ -1143,6 +1157,13 @@ fn worker_loop(
                     .collect();
                 let last_submission = batch.last().expect("nonempty batch").2;
                 store.append_fact_groups(&views).map(|sequence| {
+                    if let Some(barrier) =
+                        barrier.filter(|barrier| barrier.0.hold_after_fact_commit)
+                    {
+                        // The archive is already committed. A killed process
+                        // can lose this receipt without losing the WAL record.
+                        barrier.await_release();
+                    }
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
                     status.confirmed_submission = Some(last_submission);
