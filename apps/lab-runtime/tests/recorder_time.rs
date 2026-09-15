@@ -274,6 +274,25 @@ fn worker_start_and_stop_commit_actual_utc_anchors_for_the_exact_interval() {
             .collect()
     };
     assert_eq!(kinds, ["interval_start", "interval_end"]);
+    let anchors: Vec<u64> = db
+        .prepare("SELECT anchor_no FROM clock_anchors ORDER BY anchor_no")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .unwrap()
+        .map(|row| u64::from_be_bytes(row.unwrap().try_into().unwrap()))
+        .collect();
+    assert!(
+        anchors.windows(2).all(|pair| pair[1] == pair[0] + 1),
+        "boot/start/end/final anchor identities must be contiguous: {anchors:?}"
+    );
+    let boot_end: i64 = db
+        .query_row(
+            "SELECT count(*) FROM clock_anchors WHERE kind='boot_end'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(boot_end, 1);
     drop(db);
     std::fs::remove_file(path).unwrap();
 }

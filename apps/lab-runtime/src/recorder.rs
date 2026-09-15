@@ -1842,7 +1842,8 @@ impl SqliteStore {
                     .ok_or_else(|| StorageError("terminal clock identity exhausted".into()))
             })
             .transpose()?;
-        let anchor_no = anchor
+        let anchor_no = anchor.map(|_| self.next_anchor_no);
+        let next_anchor = anchor
             .map(|_| {
                 self.next_anchor_no
                     .checked_add(1)
@@ -1927,8 +1928,8 @@ impl SqliteStore {
         transaction.commit()?;
         self.next_record_sequence = next_record;
         self.commit_no = next_commit;
-        if let Some(anchor_no) = anchor_no {
-            self.next_anchor_no = anchor_no;
+        if let Some(next_anchor) = next_anchor {
+            self.next_anchor_no = next_anchor;
         }
         self.boot_sealed = true;
         Ok(())
