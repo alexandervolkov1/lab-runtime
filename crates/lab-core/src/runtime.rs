@@ -1827,6 +1827,7 @@ impl Runtime {
         at: Duration,
     ) -> Result<(), Error> {
         Self::validate_managed_result(&result, &staged.definition.manifest, InvocationPhase::Init)?;
+        let mut invalidated_dependents = Vec::new();
         if let Some(id) = staged.replaces {
             let old = self.managed.get(&id).ok_or(ComponentError::Unknown)?;
             let pending_to_cancel = old.pending;
@@ -1897,6 +1898,9 @@ impl Runtime {
                         other
                             .signal
                             .invalidate(at, crate::MeasurementFailure::ComponentFailure)?;
+                        if let Some(sample) = other.signal.latest().cloned() {
+                            invalidated_dependents.push((sample, other.generation, other.revision));
+                        }
                     }
                 }
             }
@@ -1904,6 +1908,7 @@ impl Runtime {
         let manifest = &staged.definition.manifest;
         let descriptor = Self::managed_descriptor(manifest)?;
         let signal_id = SignalId::new(manifest.instrument, manifest.parameter);
+        let mut replacement_failure = None;
         let signal = if let Some(old) = staged.replaces {
             let mut retained = self
                 .managed
@@ -1912,6 +1917,7 @@ impl Runtime {
                 .signal;
             if retained.latest().is_some() {
                 retained.invalidate(at, crate::MeasurementFailure::ComponentFailure)?;
+                replacement_failure = retained.latest().cloned();
             }
             retained
         } else {
@@ -1937,6 +1943,14 @@ impl Runtime {
                 diagnostics: result.diagnostics,
             },
         );
+        for (sample, generation, revision) in invalidated_dependents {
+            self.recording_facts
+                .measurement(sample, generation, revision);
+        }
+        if let Some(sample) = replacement_failure {
+            self.recording_facts
+                .measurement(sample, staged.correlation.generation, 0);
+        }
         Ok(())
     }
 

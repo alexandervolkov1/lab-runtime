@@ -1,5 +1,13 @@
 //! Exact loaded bytes and their SHA-256 survive source-file changes and reopen.
 
+use lab_core::{
+    Command, InstrumentId, Runtime, TEMPERATURE, Unit, Value,
+    managed::{
+        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId, ComponentKind,
+        ComponentManifest, ComponentResult, ComponentStatus, Invocation, PlainData,
+    },
+    recording::RecordingFact,
+};
 use lab_runtime::{
     host::Clock,
     recorder::{ProvenanceEntry, RecordingState, SqliteStore},
@@ -7,7 +15,9 @@ use lab_runtime::{
 };
 use sha2::{Digest, Sha256};
 use std::{
+    collections::VecDeque,
     path::PathBuf,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -174,4 +184,172 @@ fn provenance_commits_loaded_script_bytes_not_later_path_contents_and_deduplicat
     drop(connection);
     std::fs::remove_file(path).unwrap();
     std::fs::remove_file(source_path).unwrap();
+}
+
+#[derive(Default)]
+struct ComponentMailbox {
+    submitted: VecDeque<Invocation>,
+    completed: VecDeque<ComponentCompletion>,
+}
+struct ComponentFake(Arc<Mutex<ComponentMailbox>>);
+impl ComponentExecutor for ComponentFake {
+    fn try_submit(&mut self, job: Invocation) -> Result<(), lab_core::managed::ComponentError> {
+        self.0.lock().unwrap().submitted.push_back(job);
+        Ok(())
+    }
+    fn try_poll(&mut self) -> Option<ComponentCompletion> {
+        self.0.lock().unwrap().completed.pop_front()
+    }
+    fn try_cancel(&mut self, _: lab_core::managed::Correlation) {}
+}
+fn component_definition(id: u64) -> ComponentDefinition {
+    ComponentDefinition {
+        manifest: ComponentManifest {
+            schema_version: 1,
+            id: ComponentId::new(id),
+            instrument: InstrumentId::new(id),
+            name: format!("managed archive {id}"),
+            parameter: TEMPERATURE,
+            kind: ComponentKind::Source,
+            unit: Unit::CELSIUS,
+            min: -100.0,
+            max: 500.0,
+            warmup_samples: 1,
+            max_input_age: Duration::from_secs(2),
+            history_capacity: 1,
+        },
+        source: "return function(ctx) return ctx end".into(),
+        config: PlainData::default(),
+    }
+}
+fn complete_component(
+    mailbox: &Arc<Mutex<ComponentMailbox>>,
+    job: Invocation,
+    status: ComponentStatus,
+    value: Option<f64>,
+) {
+    mailbox
+        .lock()
+        .unwrap()
+        .completed
+        .push_back(ComponentCompletion {
+            correlation: job.correlation,
+            timely: true,
+            outcome: Ok(ComponentResult {
+                status,
+                value,
+                unit: Unit::CELSIUS,
+                state: PlainData::default(),
+                diagnostics: vec![],
+            }),
+        });
+}
+
+#[test]
+fn replaced_managed_generation_reopens_with_failure_and_ignores_old_late_result() {
+    let path = temporary_database();
+    let id = ComponentId::new(821);
+    let instrument = InstrumentId::new(821);
+    let mailbox = Arc::new(Mutex::new(ComponentMailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(ComponentFake(mailbox.clone())))
+        .unwrap();
+    runtime
+        .command(Command::StageComponent {
+            definition: component_definition(id.get()),
+            replaces: None,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let init = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete_component(&mailbox, init, ComponentStatus::Init, None);
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::InvokeComponent {
+            component: id,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let first = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete_component(&mailbox, first, ComponentStatus::Ready, Some(42.0));
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime
+        .command(Command::InvokeComponent {
+            component: id,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let old_pending = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    runtime
+        .command(Command::StageComponent {
+            definition: component_definition(id.get()),
+            replaces: Some(id),
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let replacement = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete_component(&mailbox, replacement, ComponentStatus::Init, None);
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let before_late = runtime.take_recording_facts();
+    complete_component(&mailbox, old_pending, ComponentStatus::Ready, Some(999.0));
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    assert!(
+        runtime
+            .take_recording_facts()
+            .iter()
+            .all(|fact| !matches!(fact, RecordingFact::Measurement { .. })),
+        "obsolete completion cannot publish any new measurement"
+    );
+    let measurements: Vec<_> = before_late
+        .iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Measurement {
+                sample,
+                generation,
+                revision,
+                ..
+            } => Some((sample.clone(), *generation, *revision)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(measurements.len(), 2);
+    assert_eq!(measurements[0].1, 1);
+    assert_eq!(measurements[1].1, 2);
+    assert_eq!(
+        measurements[1].0.failure(),
+        Some(lab_core::MeasurementFailure::ComponentFailure)
+    );
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("managed generation archive").unwrap();
+    store.append_facts(&before_late).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_secs(2)).unwrap();
+    store.close().unwrap();
+    let archive = SqliteStore::open(&path).unwrap();
+    let rows = archive
+        .read_measurements(instrument, TEMPERATURE, 8)
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].value, Some(Value::Float(42.0)));
+    assert_eq!(rows[0].generation, 1);
+    assert_eq!(rows[1].generation, 2);
+    assert_eq!(rows[1].quality, "unavailable");
+    assert_eq!(rows[1].failure.as_deref(), Some("ComponentFailure"));
+    assert_eq!(rows[1].value, None);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
 }
