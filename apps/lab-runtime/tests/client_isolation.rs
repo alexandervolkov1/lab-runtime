@@ -186,3 +186,44 @@ fn incompatible_version_receives_bounded_error_then_only_that_socket_closes() {
     stop.store(true, Ordering::SeqCst);
     join.join().unwrap();
 }
+
+#[test]
+fn duplicate_msg_id_while_first_exchange_is_pending_is_rejected_without_second_dispatch() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
+    let (addr, stop, join) = start();
+    let mut peer = connect(addr);
+    hello(&mut peer);
+    let one =
+        lab_runtime::wire::encode_frame(&json!({"v":1,"msg_id":"same","op":"discover","args":{}}))
+            .unwrap();
+    peer.get_mut()
+        .write_all(&[one.clone(), one].concat())
+        .unwrap();
+    let first = read(&mut peer);
+    let second = read(&mut peer);
+    assert_eq!(first["type"], "result");
+    assert_eq!(second["code"], "duplicate_msg_id");
+    let mut eof = String::new();
+    assert_eq!(peer.read_line(&mut eof).unwrap(), 0);
+    let mut fresh = connect(addr);
+    hello(&mut fresh);
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
+
+#[test]
+fn completed_exchange_releases_msg_id_for_later_use_on_the_same_socket() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
+    let (addr, stop, join) = start();
+    let mut peer = connect(addr);
+    hello(&mut peer);
+    for _ in 0..2 {
+        let reply = send(
+            &mut peer,
+            json!({"v":1,"msg_id":"reused","op":"discover","args":{}}),
+        );
+        assert_eq!(reply["type"], "result");
+    }
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}

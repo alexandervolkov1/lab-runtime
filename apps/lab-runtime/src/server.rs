@@ -9,7 +9,7 @@ use crate::{
     wire::{self, WireRequest},
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
@@ -33,6 +33,7 @@ enum Incoming {
     Detach(u64),
 }
 enum Outgoing {
+    StopAccept,
     Close {
         connection: u64,
     },
@@ -60,6 +61,8 @@ struct Peer {
     last_reply: bool,
     last_write: Instant,
     pending: usize,
+    pending_ids: BTreeSet<String>,
+    rejection: Option<Vec<u8>>,
     closing: bool,
 }
 impl Peer {
@@ -77,11 +80,16 @@ impl Peer {
             last_reply: false,
             last_write: now,
             pending: 0,
+            pending_ids: BTreeSet::new(),
+            rejection: None,
             closing: false,
         }
     }
     fn queued(&self) -> usize {
-        self.replies.len() + self.events.len() + usize::from(self.writing.is_some())
+        self.replies.len()
+            + self.events.len()
+            + usize::from(self.writing.is_some())
+            + usize::from(self.rejection.is_some())
     }
     fn reply_queued(&self) -> usize {
         self.replies.len() + usize::from(self.writing.as_ref().is_some_and(|(_, _, reply)| *reply))
@@ -146,17 +154,22 @@ impl Peer {
                         });
                     let rejection = serde_json::json!({"v":1,"type":"error","code":error.code,
                         "message":error.message,"accepted":false,"msg_id":correlation});
-                    if self.reply_queued() < CLIENT_OUT
-                        && let Ok(encoded) = wire::encode_frame(&rejection)
-                    {
-                        self.replies.push_back(encoded);
-                    }
+                    self.rejection = wire::encode_frame(&rejection).ok();
                     self.closing = true;
                     return true;
                 }
             };
+            if self.pending_ids.contains(&request.msg_id) {
+                let rejection = serde_json::json!({"v":1,"type":"error","code":"duplicate_msg_id",
+                    "message":"msg_id has a pending exchange","accepted":false,"msg_id":request.msg_id});
+                self.rejection = wire::encode_frame(&rejection).ok();
+                self.closing = true;
+                return true;
+            }
+            let request_msg_id = request.msg_id.clone();
             match to_owner.try_send(Incoming::Request(id, request)) {
                 Ok(()) => {
+                    self.pending_ids.insert(request_msg_id);
                     self.input.drain(..=end);
                     self.pending += 1;
                     self.partial_since = (!self.input.is_empty()).then(Instant::now);
@@ -168,6 +181,12 @@ impl Peer {
         true
     }
     fn write(&mut self) -> io::Result<bool> {
+        if self.pending_ids.is_empty()
+            && self.reply_queued() < CLIENT_OUT
+            && let Some(rejection) = self.rejection.take()
+        {
+            self.replies.push_back(rejection);
+        }
         let mut budget = SWEEP_BYTES;
         for _ in 0..4 {
             if self.writing.is_none() {
@@ -224,12 +243,25 @@ fn reactor(
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let mut peers = BTreeMap::<u64, Peer>::new();
+    // A full owner mailbox must never erase a detach. In-flight generations
+    // count against the same eight-slot budget until their detach is delivered.
+    let mut pending_detach = VecDeque::<u64>::new();
     let mut next_id = 1u64;
+    let mut accepting = true;
     while !stop.load(Ordering::Acquire) {
-        for _ in 0..8 {
+        while let Some(id) = pending_detach.front().copied() {
+            match to_owner.try_send(Incoming::Detach(id)) {
+                Ok(()) => {
+                    pending_detach.pop_front();
+                }
+                Err(TrySendError::Full(_)) => break,
+                Err(TrySendError::Disconnected(_)) => return Ok(()),
+            }
+        }
+        for _ in 0..if accepting { 8 } else { 0 } {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if peers.len() >= MAX_CLIENTS {
+                    if peers.len() + pending_detach.len() >= MAX_CLIENTS {
                         drop(stream);
                         continue;
                     }
@@ -246,6 +278,7 @@ fn reactor(
         }
         for _ in 0..QUEUE {
             match from_owner.try_recv() {
+                Ok(Outgoing::StopAccept) => accepting = false,
                 Ok(Outgoing::Reply {
                     connection: id,
                     frame,
@@ -255,8 +288,14 @@ fn reactor(
                     if let Some(peer) = peers.get_mut(&id) {
                         if peer.reply_queued() >= CLIENT_OUT {
                             peers.remove(&id);
-                            let _ = to_owner.try_send(Incoming::Detach(id));
+                            pending_detach.push_back(id);
                         } else {
+                            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&frame)
+                                && let Some(msg_id) = value["msg_id"].as_str()
+                                && !(value["type"] == "operation" && value["state"] == "accepted")
+                            {
+                                peer.pending_ids.remove(msg_id);
+                            }
                             if peer.queued() == 0 {
                                 peer.last_write = Instant::now();
                             }
@@ -275,7 +314,7 @@ fn reactor(
                     if let Some(peer) = peers.get_mut(&id) {
                         if peer.event_queued() >= CLIENT_EVENTS {
                             peers.remove(&id);
-                            let _ = to_owner.try_send(Incoming::Detach(id));
+                            pending_detach.push_back(id);
                         } else {
                             if peer.queued() == 0 {
                                 peer.last_write = Instant::now();
@@ -305,7 +344,7 @@ fn reactor(
             };
             if !alive {
                 peers.remove(&id);
-                let _ = to_owner.try_send(Incoming::Detach(id));
+                pending_detach.push_back(id);
             }
         }
         thread::sleep(Duration::from_millis(5));
@@ -337,12 +376,15 @@ pub fn run(
     let mut close_sent = std::collections::BTreeSet::<u64>::new();
     let mut rotation = 0usize;
     let mut terminal_since: Option<Instant> = None;
+    let mut accept_stop_sent = false;
     loop {
-        if stop.load(Ordering::Acquire) {
-            service.request_shutdown()?;
+        if stop.load(Ordering::Acquire) && service.request_shutdown().is_err() {
+            service.request_fatal_shutdown();
         }
         let clock = service.clock_copy();
-        service.owner_mut().service(&clock)?;
+        if service.owner_mut().service(&clock).is_err() {
+            service.request_fatal_shutdown();
+        }
         for _ in 0..16 {
             match incoming_rx.try_recv() {
                 Ok(Incoming::Request(id, req)) => {
@@ -362,7 +404,7 @@ pub fn run(
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    service.request_shutdown()?;
+                    service.request_fatal_shutdown();
                     break;
                 }
             }
@@ -429,6 +471,12 @@ pub fn run(
                 queued.remove(&id);
                 close_sent.insert(id);
             }
+        }
+        if service.is_stopping()
+            && !accept_stop_sent
+            && outgoing_tx.try_send(Outgoing::StopAccept).is_ok()
+        {
+            accept_stop_sent = true;
         }
         if let Some(status) = service.shutdown_step()? {
             if terminal_since.is_none() {
@@ -613,6 +661,47 @@ mod bounded_peer_tests {
         reader.read_line(&mut line).unwrap();
         assert!(line.contains("live"));
         assert!(!line.contains("stale"));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn full_owner_mailbox_cannot_drop_detach_or_reuse_its_connection_generation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(1);
+        let probe = to_owner.clone();
+        let (to_net, from_owner) = mpsc::sync_channel(64);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let mut peer = TcpStream::connect(addr).unwrap();
+        peer.write_all(b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n")
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        while probe.try_send(Incoming::Detach(999)).is_ok() {
+            let _ = from_net.try_recv();
+            assert!(Instant::now() < until);
+            thread::yield_now();
+        }
+        for _ in 0..=CLIENT_EVENTS {
+            to_net
+                .send(Outgoing::Event {
+                    connection: 1,
+                    frame: vec![b'x'; 1024],
+                })
+                .unwrap();
+        }
+        thread::sleep(Duration::from_millis(40));
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Request(1, _)
+        ));
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Detach(1)
+        ));
         stop.store(true, Ordering::Release);
         join.join().unwrap();
     }
