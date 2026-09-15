@@ -6,6 +6,7 @@ use lab_core::{
     managed::{ComponentCompletion, ComponentError, ComponentExecutor, Correlation, Invocation},
 };
 use lab_runtime::host::{Clock, HostCore};
+use lab_runtime::service::{ServiceHost, ServiceOptions};
 use std::{
     cell::Cell,
     sync::{
@@ -135,4 +136,39 @@ fn unfinished_workers_are_reported_without_delaying_rust_safe_work() {
         !status.exit_success,
         "unfinished cleanup is not a full success"
     );
+}
+
+#[test]
+fn service_shutdown_grace_stays_nonblocking_and_reports_stalled_cleanup() {
+    let mut service = ServiceHost::startup(
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
+    )
+    .unwrap();
+    let begun = Arc::new(AtomicBool::new(false));
+    service
+        .owner_mut()
+        .install_component_executor(Box::new(TwoStalledWorkers(begun.clone())))
+        .unwrap();
+    service.request_shutdown().unwrap();
+    assert!(begun.load(Ordering::Acquire));
+    let one_step_at = std::time::Instant::now();
+    assert!(service.shutdown_step().unwrap().is_none());
+    assert!(
+        one_step_at.elapsed() < Duration::from_millis(30),
+        "owner step cannot wait for Lua"
+    );
+    let until = std::time::Instant::now() + Duration::from_secs(1);
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "cleanup grace never became terminal"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(terminal.safe_confirmed);
+    assert_eq!(terminal.unfinished_workers, 2);
+    assert!(!terminal.exit_success);
 }

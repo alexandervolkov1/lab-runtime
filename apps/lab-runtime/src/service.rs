@@ -3,7 +3,8 @@
 //! Entropy failure, malformed CLI or failed safe profile prevents readiness.
 //! The network reactor is a separate adapter added after this host foundation.
 
-use crate::host::{HostCore, SystemClock};
+use crate::host::{HostCore, ShutdownStatus, SystemClock};
+use lab_core::Error as DomainError;
 use std::{
     error::Error,
     io,
@@ -45,6 +46,9 @@ pub struct ServiceHost {
     listener: TcpListener,
     bound: SocketAddr,
     boot_id: String,
+    stopping_since: Option<std::time::Instant>,
+    safe_since: Option<std::time::Instant>,
+    terminal: Option<ShutdownStatus>,
 }
 impl ServiceHost {
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
@@ -70,7 +74,48 @@ impl ServiceHost {
             listener,
             bound,
             boot_id,
+            stopping_since: None,
+            safe_since: None,
+            terminal: None,
         })
+    }
+
+    /// Raise the producer stop barrier before subsequent network or worker work.
+    pub fn request_shutdown(&mut self) -> Result<(), DomainError> {
+        if self.stopping_since.is_some() {
+            return Ok(());
+        }
+        self.stopping_since = Some(std::time::Instant::now());
+        let clock = self.clock;
+        self.host.begin_shutdown(&clock)
+    }
+
+    /// Progress trusted safe work once; never sleep or join on the owner lane.
+    /// The caller keeps sweeping clients/requests between these bounded turns.
+    pub fn shutdown_step(&mut self) -> Result<Option<ShutdownStatus>, DomainError> {
+        if let Some(terminal) = self.terminal {
+            return Ok(Some(terminal));
+        }
+        let Some(started) = self.stopping_since else {
+            return Ok(None);
+        };
+        let clock = self.clock;
+        self.host.service(&clock)?;
+        let status = self.host.shutdown_status();
+        let now = std::time::Instant::now();
+        if status.safe_confirmed {
+            self.safe_since.get_or_insert(now);
+            if status.unfinished_workers == 0
+                || self.safe_since.is_some_and(|safe_at| {
+                    now.duration_since(safe_at) >= std::time::Duration::from_millis(200)
+                })
+            {
+                self.terminal = Some(status);
+            }
+        } else if now.duration_since(started) >= std::time::Duration::from_secs(2) {
+            self.terminal = Some(status);
+        }
+        Ok(self.terminal)
     }
 
     /// OS-selected loopback endpoint; no wildcard or external interface is bound.
