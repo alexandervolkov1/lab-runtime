@@ -1,9 +1,18 @@
 //! Process death before a confirmed SQLite commit leaves an honest archive tail.
 
-use lab_core::{Command as DomainCommand, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_core::{
+    Command as DomainCommand, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig,
+};
 use lab_runtime::recorder::{
     HistoryFilter, RecorderLimits, RecorderWorker, RecordingState, SqliteStore, WriterBarrier,
 };
+use lab_runtime::{
+    application::Application,
+    host::{Clock, HostCore},
+    service::{ServiceHost, ServiceOptions},
+    wire::{decode_frame, encode_frame},
+};
+use serde_json::json;
 use std::{
     io::{BufRead, BufReader, Write},
     path::PathBuf,
@@ -18,6 +27,137 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-m7-process-reopen-{suffix}.sqlite"))
+}
+
+#[test]
+fn child_holds_real_retune_terminal_after_durable_acceptance() {
+    let Some(path) = std::env::var_os("LAB_M7_ACCEPTED_ONLY_DB") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let barrier = WriterBarrier::held_terminal_operation_after_acceptance();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(
+        worker,
+        lab_runtime::recorder::RecordingPolicy::BestEffort,
+        Duration::ZERO,
+    )
+    .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let now = service.clock().now();
+    service
+        .owner_mut()
+        .start_recording("accepted only", now)
+        .unwrap();
+    let ready_by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < ready_by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        thread::yield_now();
+    }
+    let start_watermark = service
+        .owner()
+        .recording_status()
+        .unwrap()
+        .persisted_through_sequence;
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let frame = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+    let hello = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"h","op":"hello","args":{"scope":null}
+        })),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let reference = service.owner().reference_id().get().to_string();
+    let outcome = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"retune","op":"reference_retune",
+            "request_id":{"scope":scope,"seq":"1"},
+            "args":{"reference":reference,"expected_revision":"1","target":53.0,"rate":1.0}
+        })),
+    );
+    assert_eq!(outcome[0]["state"], "accepted");
+    assert_eq!(outcome[1]["state"], "completed");
+    assert_eq!(outcome[1]["result"]["revision"], "2");
+    let held_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < held_by);
+        thread::yield_now();
+    }
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    assert!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .persisted_through_sequence
+            > start_watermark,
+        "acceptance must commit before terminal barrier"
+    );
+    println!("M7_ACCEPTED_ONLY_REACHED {} {}", service.boot_id(), scope);
+    std::io::stdout().flush().unwrap();
+    thread::sleep(Duration::from_secs(10));
+    panic!("parent did not kill accepted-only child");
+}
+
+#[test]
+fn killed_retune_after_durable_acceptance_has_unknown_terminal_and_is_not_replayed() {
+    let path = temporary_database();
+    let (old_boot, scope) = kill_selected_child(
+        &path,
+        "child_holds_real_retune_terminal_after_durable_acceptance",
+        "LAB_M7_ACCEPTED_ONLY_DB",
+        None,
+        "M7_ACCEPTED_ONLY_REACHED ",
+    );
+    let new_boot = "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc";
+    let reopened = SqliteStore::open_with_boot(&path, new_boot).unwrap();
+    reopened.close().unwrap();
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let rows: Vec<(String, String, String)> = archive
+        .prepare(
+            "SELECT phase,request_scope,request_seq FROM operation_events
+         WHERE command='reference_retune' ORDER BY record_seq",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(rows, [("accepted".into(), scope, "1".into())]);
+    let coverage: String = archive
+        .query_row(
+            "SELECT coverage FROM runs WHERE boot_id=?1 AND run_no=?2",
+            rusqlite::params![boot_bytes(&old_boot), 1u64.to_be_bytes().to_vec()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(coverage, "unknown_tail");
+    drop(archive);
+    // Reopen loads durable history; it never dispatches the old client mutation.
+    let fresh = HostCore::virtual_demo().unwrap();
+    let QueryResult::Reference(reference) =
+        fresh.query(Query::Reference(fresh.reference_id())).unwrap()
+    else {
+        panic!("fresh reference query returned another domain kind")
+    };
+    let revision = match reference {
+        lab_core::reference::ReferenceSnapshot::Fixed { revision, .. }
+        | lab_core::reference::ReferenceSnapshot::Ramp { revision, .. } => revision,
+    };
+    assert_eq!(revision, 1);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -208,14 +348,30 @@ fn killed_process_after_commit_reopens_committed_row_without_a_receipt() {
 }
 
 fn kill_held_child(path: &PathBuf, stage: &str, marker: &str) -> (String, String) {
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "child_holds_a_real_batch_at_selected_commit_stage",
-            "--nocapture",
-        ])
-        .env("LAB_M7_PROCESS_REOPEN_DB", path)
-        .env("LAB_M7_PROCESS_REOPEN_STAGE", stage)
+    kill_selected_child(
+        path,
+        "child_holds_a_real_batch_at_selected_commit_stage",
+        "LAB_M7_PROCESS_REOPEN_DB",
+        Some(stage),
+        marker,
+    )
+}
+
+fn kill_selected_child(
+    path: &PathBuf,
+    test_name: &str,
+    database_env: &str,
+    stage: Option<&str>,
+    marker: &str,
+) -> (String, String) {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test_name, "--nocapture"])
+        .env(database_env, path);
+    if let Some(stage) = stage {
+        command.env("LAB_M7_PROCESS_REOPEN_STAGE", stage);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

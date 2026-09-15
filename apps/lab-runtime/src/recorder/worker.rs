@@ -53,6 +53,7 @@ struct BarrierState {
     reached: AtomicBool,
     hold_start: bool,
     hold_after_fact_commit: bool,
+    hold_terminal_operation: bool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -65,6 +66,7 @@ impl WriterBarrier {
             reached: AtomicBool::new(false),
             hold_start: false,
             hold_after_fact_commit: false,
+            hold_terminal_operation: false,
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -74,6 +76,7 @@ impl WriterBarrier {
             reached: AtomicBool::new(false),
             hold_start: true,
             hold_after_fact_commit: false,
+            hold_terminal_operation: false,
         }))
     }
     /// Hold after a real fact transaction commits but before its owner receipt.
@@ -84,6 +87,18 @@ impl WriterBarrier {
             reached: AtomicBool::new(false),
             hold_start: false,
             hold_after_fact_commit: true,
+            hold_terminal_operation: false,
+        }))
+    }
+    /// Hold only a terminal operation before SQL, after earlier acceptance commits.
+    /// Used to kill a real process at the accepted-only durability boundary.
+    pub fn held_terminal_operation_after_acceptance() -> Self {
+        Self(Arc::new(BarrierState {
+            held: AtomicBool::new(true),
+            reached: AtomicBool::new(false),
+            hold_start: false,
+            hold_after_fact_commit: false,
+            hold_terminal_operation: true,
         }))
     }
     /// Release any worker held at a deterministic storage stage.
@@ -1255,6 +1270,9 @@ fn worker_loop(
         ) && (!matches!(message, Message::Start(_, _, _, _, _))
             || barrier.is_some_and(|barrier| barrier.0.hold_start))
             && !barrier.is_some_and(|barrier| barrier.0.hold_after_fact_commit)
+            && (!barrier.is_some_and(|barrier| barrier.0.hold_terminal_operation)
+                || matches!(message, Message::Operation(ref operation, _, _)
+                    if operation.phase != "accepted"))
             && let Some(barrier) = barrier
         {
             barrier.await_release();
