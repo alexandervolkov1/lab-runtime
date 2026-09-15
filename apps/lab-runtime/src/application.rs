@@ -1087,10 +1087,22 @@ impl Application {
                     from: Duration::from_nanos(*from_ns),
                     to: Duration::from_nanos(*to_ns),
                 };
-                service
-                    .owner_mut()
-                    .request_history(filter, retained_cursor, *max_records as usize)
-                    .map_err(|_| "history_busy")
+                if retained_cursor.as_ref().is_some_and(|previous| {
+                    previous.filter().boot_id != filter.boot_id
+                        || previous.filter().run_no != filter.run_no
+                }) {
+                    Err("history_archive_mismatch")
+                } else if retained_cursor
+                    .as_ref()
+                    .is_some_and(|previous| previous.filter() != &filter)
+                {
+                    Err("history_cursor_mismatch")
+                } else {
+                    service
+                        .owner_mut()
+                        .request_history(filter, retained_cursor, *max_records as usize)
+                        .map_err(|_| "history_busy")
+                }
             };
             match scheduled {
                 Ok(job) => {

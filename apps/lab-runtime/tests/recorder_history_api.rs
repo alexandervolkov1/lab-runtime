@@ -127,6 +127,196 @@ fn public_archived_gap_page_keeps_loss_metadata_within_json_budget() {
 }
 
 #[test]
+fn history_cursor_expires_on_reconnect_and_explicit_ttl_without_silent_resume() {
+    let path = temporary_database();
+    let archive_boot = "89898989898989898989898989898989";
+    let signal = SignalId::new(InstrumentId::new(1), lab_core::TEMPERATURE);
+    let mut archive = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
+    archive.start_run("cursor archive").unwrap();
+    archive
+        .append_facts(
+            &(1..=2u64)
+                .map(|sequence| RecordingFact::Measurement {
+                    sequence,
+                    sample: Sample::validated_good(
+                        signal,
+                        Unit::CELSIUS,
+                        Duration::from_secs(1),
+                        DomainValue::Text("\0".repeat(1000)),
+                    )
+                    .unwrap(),
+                    generation: 1,
+                    revision: 1,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    archive.stop_run().unwrap();
+    archive.start_run("other archive interval").unwrap();
+    archive.stop_run().unwrap();
+    archive.finish_boot(Duration::from_secs(2)).unwrap();
+    archive.close().unwrap();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"hello-1","op":"hello","args":{"scope":null}})),
+    );
+    let old_scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let status = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"status","op":"recording_status","args":{}})),
+    );
+    let database = status[0]["result"]["database_id"].clone();
+    let read = |app: &mut Application,
+                service: &mut ServiceHost,
+                connection: u64,
+                scope: &str,
+                sequence: u64,
+                cursor: Value| {
+        app.handle(
+            service,
+            connection,
+            frame(
+                json!({"v":1,"msg_id":format!("read-{connection}-{sequence}"),
+                "op":"history_read","request_id":{"scope":scope,"seq":sequence.to_string()},
+                "args":{"mode":"measurements","database_id":database,
+                    "boot_id":archive_boot,
+                    "run_id":{"boot_id":archive_boot,"run_no":"1"},
+                    "signal":{"instrument":"1","parameter":"1"},
+                    "from_ns":"0","to_ns":"2000000000",
+                    "max_records":128,"cursor":cursor}}),
+            ),
+        )
+    };
+    assert_eq!(
+        read(&mut app, &mut service, 1, &old_scope, 1, Value::Null)[0]["state"],
+        "accepted"
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let terminal = loop {
+        let result = app.poll_history(&mut service);
+        if !result.is_empty() {
+            break result;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(terminal[0].1["state"], "completed");
+    let token = terminal[0].1["result"]["page_token"].clone();
+    let old_page = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"old-page","op":"history_page",
+            "args":{"page_token":token}})),
+    );
+    let old_id = old_page[0]["result"]["rows"][0]["record_seq"].clone();
+    let old_cursor = old_page[0]["result"]["next_cursor"].clone();
+    assert!(old_cursor.is_string());
+    app.detach(&service, 1);
+    let replacement_hello = app.handle(
+        &mut service,
+        2,
+        frame(json!({"v":1,"msg_id":"hello-2","op":"hello","args":{"scope":null}})),
+    );
+    let new_scope = replacement_hello[0]["result"]["scope"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let stale_page = app.handle(
+        &mut service,
+        2,
+        frame(json!({"v":1,"msg_id":"stale-page","op":"history_page",
+            "args":{"page_token":token}})),
+    );
+    assert_eq!(stale_page[0]["code"], "history_page_expired");
+    let stale_read = read(&mut app, &mut service, 2, &new_scope, 1, old_cursor);
+    assert_eq!(stale_read[1]["code"], "history_cursor_expired");
+    assert_eq!(
+        read(&mut app, &mut service, 2, &new_scope, 2, Value::Null)[0]["state"],
+        "accepted"
+    );
+    let fresh = loop {
+        let result = app.poll_history(&mut service);
+        if !result.is_empty() {
+            break result;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(fresh[0].1["state"], "completed");
+    let new_token = fresh[0].1["result"]["page_token"].clone();
+    let new_page = app.handle(
+        &mut service,
+        2,
+        frame(json!({"v":1,"msg_id":"new-page","op":"history_page",
+            "args":{"page_token":new_token}})),
+    );
+    assert_eq!(new_page[0]["result"]["rows"][0]["record_seq"], old_id);
+    let expiring_cursor = new_page[0]["result"]["next_cursor"].clone();
+    let release = app.handle(
+        &mut service,
+        2,
+        frame(json!({"v":1,"msg_id":"release-new","op":"history_release",
+            "args":{"page_token":new_token}})),
+    );
+    assert_eq!(release[0]["type"], "result");
+    let mismatch = app.handle(
+        &mut service,
+        2,
+        frame(json!({"v":1,"msg_id":"wrong-archive","op":"history_read",
+            "request_id":{"scope":new_scope,"seq":"3"},
+            "args":{"mode":"measurements","database_id":database,
+                "boot_id":archive_boot,
+                "run_id":{"boot_id":archive_boot,"run_no":"2"},
+                "signal":{"instrument":"1","parameter":"1"},
+                "from_ns":"0","to_ns":"2000000000",
+                "max_records":128,"cursor":expiring_cursor}})),
+    );
+    assert_eq!(mismatch.len(), 2, "{mismatch:?}");
+    assert_eq!(
+        mismatch[1]["code"], "history_archive_mismatch",
+        "{mismatch:?}"
+    );
+    let range_mismatch = app.handle(
+        &mut service,
+        2,
+        frame(json!({"v":1,"msg_id":"wrong-range","op":"history_read",
+            "request_id":{"scope":new_scope,"seq":"4"},
+            "args":{"mode":"measurements","database_id":database,
+                "boot_id":archive_boot,
+                "run_id":{"boot_id":archive_boot,"run_no":"1"},
+                "signal":{"instrument":"1","parameter":"1"},
+                "from_ns":"1","to_ns":"2000000000",
+                "max_records":128,"cursor":expiring_cursor}})),
+    );
+    assert_eq!(range_mismatch[1]["code"], "history_cursor_mismatch");
+    app.expire_snapshots_at(service.clock().now() + Duration::from_secs(31));
+    let expired = read(&mut app, &mut service, 2, &new_scope, 5, expiring_cursor);
+    assert_eq!(expired[1]["code"], "history_cursor_expired");
+    drop(app);
+    drop(service);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
+}
+
+#[test]
 fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
     let path = temporary_database();
     let text = path.to_string_lossy();

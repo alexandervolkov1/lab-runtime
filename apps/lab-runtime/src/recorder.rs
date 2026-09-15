@@ -264,6 +264,12 @@ pub struct HistoryCursor {
     last: (u64, u64),
     upper: (u64, u64),
 }
+impl HistoryCursor {
+    /// Original archived signal/range bound to this process-local continuation.
+    pub fn filter(&self) -> &HistoryFilter {
+        &self.filter
+    }
+}
 
 /// At most 128 complete raw rows and one continuation token.
 #[derive(Clone, Debug, PartialEq)]
