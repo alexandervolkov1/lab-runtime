@@ -36,6 +36,14 @@ fn output(runtime: &mut Runtime, command: OutputCommand, at: Duration) -> Output
 }
 
 fn setup(reference: ReferenceConfig) -> Runtime {
+    setup_with_policy(reference, 1, Duration::from_secs(100))
+}
+
+fn setup_with_policy(
+    reference: ReferenceConfig,
+    warmup: usize,
+    lease_lifetime: Duration,
+) -> Runtime {
     let mut runtime = Runtime::new();
     runtime
         .command(Command::RegisterThermalPlant(ThermalPlantConfig {
@@ -85,7 +93,7 @@ fn setup(reference: ReferenceConfig) -> Runtime {
             reference: REFERENCE,
             ema: EmaConfig {
                 time_constant: Duration::from_secs(1),
-                warmup_samples: 1,
+                warmup_samples: warmup,
                 unit: Unit::CELSIUS,
             },
             pid: PidConfig {
@@ -97,7 +105,7 @@ fn setup(reference: ReferenceConfig) -> Runtime {
             },
             max_input_age: Duration::from_secs(2),
             max_tick_gap: Duration::from_secs(2),
-            lease_lifetime: Duration::from_secs(100),
+            lease_lifetime,
             proposal_ttl: Duration::from_secs(1),
         }))
         .unwrap();
@@ -105,6 +113,156 @@ fn setup(reference: ReferenceConfig) -> Runtime {
         .command(Command::PrepareController(CONTROLLER))
         .unwrap();
     runtime
+}
+
+#[test]
+fn three_distinct_observations_warm_without_actuator_authority_or_pid_work() {
+    let mut runtime = setup_with_policy(fixed(60.0), 3, Duration::from_secs(5));
+    for second in 0..=3 {
+        refresh(&mut runtime, second);
+        runtime
+            .command(if second == 0 {
+                Command::StartController {
+                    controller: CONTROLLER,
+                    at: Duration::ZERO,
+                }
+            } else {
+                Command::TickController {
+                    controller: CONTROLLER,
+                    at: Duration::from_secs(second),
+                }
+            })
+            .unwrap();
+        let snapshot = state(&runtime);
+        if second < 2 {
+            assert_eq!(snapshot.state, ControllerState::Warming);
+            assert!(snapshot.lease.is_none());
+            assert!(snapshot.pid.latest.is_none());
+            assert!(snapshot.latest_output.is_none());
+            assert_eq!(snapshot.ema.good_samples, second as usize + 1);
+        } else if second == 2 {
+            assert_eq!(snapshot.state, ControllerState::Running);
+            assert_eq!(snapshot.ema.good_samples, 3);
+            assert!(snapshot.lease.is_some());
+            assert!(snapshot.pid.latest.is_none());
+            assert!(snapshot.latest_output.is_none());
+        } else {
+            assert_eq!(snapshot.state, ControllerState::Running);
+            assert!(snapshot.latest_output.is_some());
+        }
+    }
+}
+
+#[test]
+fn repeated_warming_sample_does_not_count_and_exclusive_freshness_fails_closed() {
+    let mut runtime = setup_with_policy(fixed(60.0), 3, Duration::from_secs(5));
+    refresh(&mut runtime, 0);
+    runtime
+        .command(Command::StartController {
+            controller: CONTROLLER,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::TickController {
+            controller: CONTROLLER,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    assert_eq!(state(&runtime).ema.good_samples, 1);
+    assert!(
+        runtime
+            .command(Command::TickController {
+                controller: CONTROLLER,
+                at: Duration::from_secs(2),
+            })
+            .is_err()
+    );
+    assert_eq!(state(&runtime).state, ControllerState::Failed);
+    assert!(state(&runtime).lease.is_none());
+    let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator())).unwrap() else {
+        panic!()
+    };
+    assert_eq!(snapshot.state, OutputState::Disarmed);
+    assert!(snapshot.safe_confirmed);
+}
+
+#[test]
+fn warming_guard_blocks_competing_acquire_and_pause_resume_restarts_warmup() {
+    let mut runtime = setup_with_policy(fixed(60.0), 3, Duration::from_secs(5));
+    refresh(&mut runtime, 0);
+    runtime
+        .command(Command::StartController {
+            controller: CONTROLLER,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    assert!(
+        runtime
+            .command(Command::Output {
+                actuator: actuator(),
+                command: OutputCommand::Acquire {
+                    owner: lab_core::output::OutputOwner::Automatic(CONTROLLER.get()),
+                    lifetime: Duration::from_secs(1),
+                },
+                at: Duration::ZERO,
+            })
+            .is_err()
+    );
+    runtime
+        .command(Command::PauseController {
+            controller: CONTROLLER,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    assert_eq!(state(&runtime).state, ControllerState::Paused);
+    refresh(&mut runtime, 1);
+    runtime
+        .command(Command::ResumeController {
+            controller: CONTROLLER,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    assert_eq!(state(&runtime).state, ControllerState::Warming);
+    assert_eq!(state(&runtime).ema.good_samples, 1);
+    assert_eq!(state(&runtime).pid.integral, 0.0);
+}
+
+#[test]
+fn healthy_native_lease_replaces_only_its_token_and_remains_finite() {
+    let mut runtime = setup_with_policy(fixed(60.0), 1, Duration::from_secs(5));
+    refresh(&mut runtime, 0);
+    runtime
+        .command(Command::StartController {
+            controller: CONTROLLER,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let old = state(&runtime).lease.unwrap();
+    for second in 1..=30 {
+        refresh(&mut runtime, second);
+        runtime
+            .command(Command::TickController {
+                controller: CONTROLLER,
+                at: Duration::from_secs(second),
+            })
+            .unwrap();
+        let lease = state(&runtime).lease.unwrap();
+        assert_eq!(state(&runtime).state, ControllerState::Running);
+        assert_eq!(lease.epoch(), old.epoch());
+        assert_eq!(lease.owner(), old.owner());
+        assert_eq!(lease.expires(), Duration::from_secs(second + 5));
+    }
+    assert!(
+        runtime
+            .command(Command::Output {
+                actuator: actuator(),
+                command: OutputCommand::Release(old),
+                at: Duration::from_secs(30),
+            })
+            .is_err()
+    );
+    assert_eq!(state(&runtime).state, ControllerState::Running);
 }
 
 fn fixed(value: f64) -> ReferenceConfig {
