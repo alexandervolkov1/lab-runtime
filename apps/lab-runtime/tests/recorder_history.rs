@@ -185,7 +185,10 @@ fn archived_history_sql_runs_only_on_storage_worker_and_retains_one_bounded_resu
         std::thread::yield_now();
     }
     let page = result.unwrap().unwrap();
-    assert_eq!(page.watermark, 2);
+    assert_eq!(
+        page.watermark, 3,
+        "archived checkpoint includes the terminal interval seal"
+    );
     assert_eq!(page.rows.len(), 1);
     assert!(worker.try_take_history(job).is_none());
     worker.request_finish().unwrap();

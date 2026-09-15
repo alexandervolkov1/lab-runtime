@@ -145,6 +145,18 @@ fn recording_start_returns_accepted_before_durable_completion_and_duplicate_does
     let boundary: serde_json::Value = serde_json::from_slice(&boundary).unwrap();
     assert_eq!(boundary["pending_operations"][0]["scope"], scope);
     assert_eq!(boundary["pending_operations"][0]["request_seq"], "1");
+    let stop_seal: Vec<u8> = archive
+        .query_row(
+            "SELECT payload FROM records WHERE kind='interval_seal'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let stop_seal: serde_json::Value = serde_json::from_slice(&stop_seal).unwrap();
+    assert_eq!(stop_seal["pending_operations"][0]["scope"], scope);
+    assert_eq!(stop_seal["pending_operations"][0]["request_seq"], "2");
+    assert_eq!(stop_seal["coverage"], "complete");
+    assert!(stop_seal["accepted_prefix_through_seq"].as_str().is_some());
     drop(archive);
     let deadline = Instant::now() + Duration::from_secs(2);
     while std::fs::remove_file(&path).is_err() && Instant::now() < deadline {

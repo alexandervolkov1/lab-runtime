@@ -1158,7 +1158,7 @@ impl Application {
                         if boot_id != service.boot_id() || saved_run != Some(*run_no) {
                             Err(Error::InvalidConfiguration("recording run mismatch"))
                         } else {
-                            service.owner_mut().stop_recording()
+                            service.owner_mut().stop_recording_at(now)
                         }
                     }
                     _ => unreachable!(),

@@ -42,6 +42,7 @@ fn real_insert_error_rolls_back_all_new_rows_and_checkpoint_without_erasing_pref
         .append_facts(&runtime.take_recording_facts())
         .unwrap();
     prefix.stop_run().unwrap();
+    let prefix_checkpoint = prefix.current_record_sequence();
     drop(prefix);
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
@@ -89,7 +90,7 @@ fn real_insert_error_rolls_back_all_new_rows_and_checkpoint_without_erasing_pref
         .unwrap();
     assert_eq!(checkpoints.len(), 2);
     assert!(checkpoints.contains(&1u64.to_be_bytes().to_vec()));
-    assert!(checkpoints.contains(&2u64.to_be_bytes().to_vec()));
+    assert!(checkpoints.contains(&prefix_checkpoint.to_be_bytes().to_vec()));
     drop(connection);
     std::fs::remove_file(path).unwrap();
 }

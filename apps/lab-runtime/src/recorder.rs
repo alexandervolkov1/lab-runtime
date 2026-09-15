@@ -1610,19 +1610,52 @@ impl SqliteStore {
 
     /// Seal the current run in a transaction; no later facts enter that interval.
     pub fn stop_run(&mut self) -> Result<(), StorageError> {
-        self.stop_run_impl(None)
+        self.stop_run_impl(
+            None,
+            &serde_json::json!({"pending_operations":[]}),
+            Duration::ZERO,
+        )
     }
 
     /// Seal an interval with its actual UTC end bracket and final clock fact
     /// in the same transaction as the sealed coverage/checkpoint rows.
     pub fn stop_run_with_anchor(&mut self, anchor: &TimeAnchor) -> Result<(), StorageError> {
-        self.stop_run_impl(Some(anchor))
+        self.stop_run_impl(
+            Some(anchor),
+            &serde_json::json!({"pending_operations":[]}),
+            anchor.after(),
+        )
     }
 
-    fn stop_run_impl(&mut self, anchor: Option<&TimeAnchor>) -> Result<(), StorageError> {
+    /// Seal pending accepted identities and the final FIFO prefix atomically.
+    pub fn stop_run_with_anchor_summary(
+        &mut self,
+        anchor: &TimeAnchor,
+        summary: &serde_json::Value,
+        requested_at: Duration,
+    ) -> Result<(), StorageError> {
+        self.stop_run_impl(Some(anchor), summary, requested_at)
+    }
+
+    fn stop_run_impl(
+        &mut self,
+        anchor: Option<&TimeAnchor>,
+        summary: &serde_json::Value,
+        requested_at: Duration,
+    ) -> Result<(), StorageError> {
         let Some(run_no) = self.run_no else {
             return Err(StorageError("no active recording run".into()));
         };
+        let summary_bytes = serde_json::to_vec(summary)
+            .map_err(|error| StorageError(format!("stop summary: {error}")))?;
+        if summary_bytes.len() > 16 * 1024 - 512
+            || !summary.is_object()
+            || summary["pending_operations"]
+                .as_array()
+                .is_none_or(|items| items.len() > 64)
+        {
+            return Err(StorageError("invalid bounded stop summary".into()));
+        }
         let interval_no = self.interval_no.expect("run exists");
         let anchor_record = anchor
             .map(|_| {
@@ -1631,13 +1664,14 @@ impl SqliteStore {
                     .ok_or_else(|| StorageError("end anchor record identity exhausted".into()))
             })
             .transpose()?;
-        let anchor_commit = anchor
-            .map(|_| {
-                self.commit_no
-                    .checked_add(1)
-                    .ok_or_else(|| StorageError("end anchor commit identity exhausted".into()))
-            })
-            .transpose()?;
+        let seal_record = anchor_record
+            .unwrap_or(self.next_record_sequence)
+            .checked_add(1)
+            .ok_or_else(|| StorageError("interval seal identity exhausted".into()))?;
+        let seal_commit = self
+            .commit_no
+            .checked_add(1)
+            .ok_or_else(|| StorageError("interval seal commit identity exhausted".into()))?;
         let next_anchor = anchor
             .map(|_| {
                 self.next_anchor_no
@@ -1659,13 +1693,49 @@ impl SqliteStore {
                 &self.boot_anchor,
             )?;
         }
+        let mut seal = summary.as_object().expect("validated stop object").clone();
+        seal.insert(
+            "accepted_prefix_through_seq".into(),
+            serde_json::Value::String(self.next_record_sequence.to_string()),
+        );
+        seal.insert(
+            "coverage".into(),
+            serde_json::Value::String(if self.coverage_gap { "gap" } else { "complete" }.into()),
+        );
+        let seal = serde_json::Value::Object(seal).to_string();
+        let stop_at = duration_blob(requested_at)?;
+        let wall_estimate = self.boot_anchor.estimate_us(requested_at)?;
+        transaction.execute(
+            "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,
+             published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+             VALUES(?1,?2,?3,?4,'interval_seal',1,?5,?5,?6,'boot_anchor',
+             'host_lifecycle',?7)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(seal_record).as_slice(),
+                u64_blob(run_no).as_slice(),
+                u64_blob(interval_no).as_slice(),
+                stop_at.as_slice(),
+                wall_estimate,
+                seal.as_bytes()
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO runtime_events(boot_id,record_seq,category,severity,code,data)
+             VALUES(?1,?2,'recording','info','interval_sealed',?3)",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(seal_record).as_slice(),
+                seal.as_bytes()
+            ],
+        )?;
         transaction.execute(
             "UPDATE recording_intervals SET state='sealed',end_seq=?3
              WHERE boot_id=?1 AND interval_no=?2",
             params![
                 self.boot_id.as_slice(),
                 u64_blob(interval_no).as_slice(),
-                anchor_record.map(u64_blob).map(|value| value.to_vec())
+                u64_blob(seal_record).as_slice()
             ],
         )?;
         transaction.execute(
@@ -1676,24 +1746,18 @@ impl SqliteStore {
                 anchor.and_then(TimeAnchor::wall_us)
             ],
         )?;
-        if let (Some(sequence), Some(commit)) = (anchor_record, anchor_commit) {
-            transaction.execute(
-                "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3
-                 WHERE boot_id=?1",
-                params![
-                    self.boot_id.as_slice(),
-                    u64_blob(commit).as_slice(),
-                    u64_blob(sequence).as_slice()
-                ],
-            )?;
-        }
+        transaction.execute(
+            "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3
+             WHERE boot_id=?1",
+            params![
+                self.boot_id.as_slice(),
+                u64_blob(seal_commit).as_slice(),
+                u64_blob(seal_record).as_slice()
+            ],
+        )?;
         transaction.commit()?;
-        if let Some(sequence) = anchor_record {
-            self.next_record_sequence = sequence;
-        }
-        if let Some(commit) = anchor_commit {
-            self.commit_no = commit;
-        }
+        self.next_record_sequence = seal_record;
+        self.commit_no = seal_commit;
         if let Some(next_anchor) = next_anchor {
             self.next_anchor_no = next_anchor;
         }

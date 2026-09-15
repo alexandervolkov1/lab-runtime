@@ -219,7 +219,7 @@ enum Message {
         cursor: Option<RunsCursor>,
         limit: usize,
     },
-    Stop,
+    Stop(serde_json::Value, Duration),
     Finish(serde_json::Value, Duration),
 }
 
@@ -733,11 +733,29 @@ impl RecorderWorker {
 
     /// Queue a durable stop barrier after all previously admitted groups.
     pub fn request_stop(&mut self) -> Result<(), StorageError> {
+        self.request_stop_with_summary(serde_json::json!({"pending_operations":[]}), Duration::ZERO)
+    }
+
+    /// Seal the owner's bounded pending-operation barrier after prior FIFO work.
+    pub fn request_stop_with_summary(
+        &mut self,
+        summary: serde_json::Value,
+        requested_at: Duration,
+    ) -> Result<(), StorageError> {
         if self.poll().state != RecordingState::Recording {
             return Err(StorageError("recording stop requires active run".into()));
         }
+        if serde_json::to_vec(&summary)
+            .map_err(|error| StorageError(format!("stop summary: {error}")))?
+            .len()
+            > 16 * 1024 - 512
+        {
+            return Err(StorageError(
+                "stop summary exceeds reserved seal credit".into(),
+            ));
+        }
         self.change_state(RecordingState::Stopping);
-        self.send_control(Message::Stop)
+        self.send_control(Message::Stop(summary, requested_at))
     }
 
     /// Coalesce quiet-run probes at 250 ms and await their actual commit receipt.
@@ -1128,15 +1146,19 @@ fn worker_loop(
             }),
             Message::History { .. } => unreachable!("history was handled before lifecycle match"),
             Message::Runs { .. } => unreachable!("runs were handled before lifecycle match"),
-            Message::Stop => TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
-                .and_then(|anchor| store.stop_run_with_anchor(&anchor))
-                .map(|_| {
-                    let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                    status.state = RecordingState::Idle;
-                    status.persisted = store.current_record_sequence();
-                    status.run_no = None;
-                    status.interval_no = None;
-                }),
+            Message::Stop(summary, requested_at) => {
+                TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                    .and_then(|anchor| {
+                        store.stop_run_with_anchor_summary(&anchor, &summary, requested_at)
+                    })
+                    .map(|_| {
+                        let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                        status.state = RecordingState::Idle;
+                        status.persisted = store.current_record_sequence();
+                        status.run_no = None;
+                        status.interval_no = None;
+                    })
+            }
             Message::Finish(summary, at) => {
                 let anchor = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()));
                 let result = anchor

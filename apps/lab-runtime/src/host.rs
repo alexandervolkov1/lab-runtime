@@ -934,6 +934,14 @@ impl HostCore {
 
     /// Submit the stop barrier only after the tracked Required controllers pause.
     pub fn stop_recording(&mut self) -> Result<(), Error> {
+        self.stop_recording_at(self.last_now)
+    }
+
+    /// Seal at the actual owner admission time supplied by the public operation.
+    pub fn stop_recording_at(&mut self, at: Duration) -> Result<(), Error> {
+        if at < self.last_now {
+            return Err(Error::InvalidConfiguration("recording stop time regressed"));
+        }
         if self.recording_policy == Some(RecordingPolicy::Required)
             && (self.controllers_active() || !self.outputs_safe_for_required_stop())
         {
@@ -941,12 +949,13 @@ impl HostCore {
                 "required recording safety unresolved",
             ));
         }
+        let summary = self.frozen_stop_summary(at);
         let worker = self
             .recorder
             .as_mut()
             .ok_or(Error::InvalidConfiguration("recorder disabled"))?;
         worker
-            .request_stop()
+            .request_stop_with_summary(summary, at)
             .map_err(|_| Error::InvalidConfiguration("recording stop rejected"))?;
         if self.recording_policy == Some(RecordingPolicy::Required) {
             self.runtime.close_required_recording();
@@ -977,8 +986,9 @@ impl HostCore {
         };
         match status.state {
             RecordingState::Recording => {
+                let summary = self.frozen_stop_summary(now);
                 if let Some(worker) = self.recorder.as_mut()
-                    && worker.request_stop().is_ok()
+                    && worker.request_stop_with_summary(summary, now).is_ok()
                 {
                     self.runtime.close_required_recording();
                     self.runtime.disable_recording_facts();
@@ -1453,6 +1463,17 @@ impl HostCore {
             "controllers":controllers,
             "unfinished_managed_workers":self.runtime.unfinished_component_workers(),
         })
+    }
+
+    // Pending identities are already accepted facts, never predictions of
+    // their terminal domain or physical outcome.
+    fn frozen_stop_summary(&self, at: Duration) -> serde_json::Value {
+        let pending:Vec<_>=self.pending_operations.iter().map(|((scope,seq),operation)|
+            serde_json::json!({"scope":scope,"request_seq":seq.to_string(),
+                "command":operation.command,"accepted_at_ns":operation.accepted_at.as_nanos().to_string(),
+                "accepted_recorded":operation.accepted_recorded})).collect();
+        serde_json::json!({"requested_stop_at_ns":at.as_nanos().to_string(),
+            "pending_operations":pending})
     }
 
     /// Fence producers before Rust begins a new required safe procedure.
