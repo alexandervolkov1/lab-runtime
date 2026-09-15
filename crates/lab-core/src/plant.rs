@@ -140,9 +140,21 @@ impl ThermalPlantInstrument {
 
     pub(crate) fn inject_failure(&mut self, at: Duration) -> Result<Sample, Error> {
         let signal = SignalId::new(self.descriptor.id, TEMPERATURE);
-        let sample = Sample::unavailable(signal, Unit::CELSIUS, at, MeasurementFailure::Transport);
-        self.signal.push(sample.clone())?;
-        Ok(sample)
+        if self.signal.latest().is_some() {
+            // A trusted failure at the same publication time invalidates the
+            // current Core tail, while Recorder keeps both captured facts.
+            self.signal.invalidate(at, MeasurementFailure::Transport)?;
+            Ok(self
+                .signal
+                .latest()
+                .expect("invalidation installed a tail")
+                .clone())
+        } else {
+            let sample =
+                Sample::unavailable(signal, Unit::CELSIUS, at, MeasurementFailure::Transport);
+            self.signal.push(sample.clone())?;
+            Ok(sample)
+        }
     }
 
     pub(crate) fn apply_heater(&mut self, value: f64) -> Result<(), Error> {

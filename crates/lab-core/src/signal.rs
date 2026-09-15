@@ -38,6 +38,18 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// Construct a finite native observation with equal source and publication time.
+    /// Descriptor-specific type, range and text bounds must be validated before
+    /// this call; it performs the scalar finiteness check shared with derived data.
+    pub fn validated_good(
+        signal: SignalId,
+        unit: Unit,
+        at: Duration,
+        value: Value,
+    ) -> Result<Self, Error> {
+        Self::derived_good(signal, unit, at, at, value)
+    }
+
     pub(crate) fn good(signal: SignalId, unit: Unit, at: Duration, value: Value) -> Self {
         Self {
             signal,
@@ -61,8 +73,9 @@ impl Sample {
             reading: Reading::Unavailable(reason),
         }
     }
-    /// Construct a Rust-validated derived reading with the captured input lineage.
-    pub(crate) fn derived_good(
+    /// Construct a finite derived reading with its original source time.
+    /// A later publication never renews freshness or changes control time.
+    pub fn derived_good(
         signal: SignalId,
         unit: Unit,
         at: Duration,
