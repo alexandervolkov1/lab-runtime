@@ -248,6 +248,8 @@ pub struct RecorderWorker {
     runs_mailbox: Arc<Mutex<BTreeMap<u64, Result<RunsPage, StorageError>>>>,
     active_history_jobs: Arc<Mutex<BTreeSet<u64>>>,
     next_history_job: u64,
+    live_history_jobs: BTreeSet<u64>,
+    pending_cancellations: BTreeSet<u64>,
     last_accepted_fact: Option<u64>,
     gap_scheduled: bool,
     finish_requested: bool,
@@ -414,6 +416,8 @@ impl RecorderWorker {
             runs_mailbox,
             active_history_jobs,
             next_history_job: 1,
+            live_history_jobs: BTreeSet::new(),
+            pending_cancellations: BTreeSet::new(),
             last_accepted_fact: None,
             gap_scheduled: false,
             finish_requested: false,
@@ -428,6 +432,10 @@ impl RecorderWorker {
         cursor: Option<HistoryCursor>,
         limit: usize,
     ) -> Result<u64, StorageError> {
+        self.drain_history_cancellations();
+        if !self.pending_cancellations.is_empty() {
+            return Err(StorageError("history cancellation pending".into()));
+        }
         if !(1..=128).contains(&limit) || filter.from >= filter.to || filter.boot_id.len() != 32 {
             return Err(StorageError("invalid bounded history request".into()));
         }
@@ -435,16 +443,14 @@ impl RecorderWorker {
         let following = job
             .checked_add(1)
             .ok_or_else(|| StorageError("history job identity exhausted".into()))?;
-        {
-            let mut active = self
-                .active_history_jobs
-                .try_lock()
-                .map_err(|_| StorageError("history slots busy".into()))?;
-            if active.len() >= MAX_HISTORY_JOBS {
-                return Err(StorageError("history slots exhausted".into()));
-            }
-            active.insert(job);
+        let mut active = self
+            .active_history_jobs
+            .try_lock()
+            .map_err(|_| StorageError("history slots busy".into()))?;
+        if active.len() >= MAX_HISTORY_JOBS {
+            return Err(StorageError("history slots exhausted".into()));
         }
+        active.insert(job);
         match self.sender.try_send(Message::History {
             job,
             filter,
@@ -453,12 +459,11 @@ impl RecorderWorker {
         }) {
             Ok(()) => {
                 self.next_history_job = following;
+                self.live_history_jobs.insert(job);
                 Ok(job)
             }
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                if let Ok(mut active) = self.active_history_jobs.try_lock() {
-                    active.remove(&job);
-                }
+                active.remove(&job);
                 Err(StorageError("history worker busy".into()))
             }
         }
@@ -486,6 +491,10 @@ impl RecorderWorker {
         cursor: Option<RunsCursor>,
         limit: usize,
     ) -> Result<u64, StorageError> {
+        self.drain_history_cancellations();
+        if !self.pending_cancellations.is_empty() {
+            return Err(StorageError("history cancellation pending".into()));
+        }
         if !(1..=32).contains(&limit) {
             return Err(StorageError("invalid run page limit".into()));
         }
@@ -493,25 +502,22 @@ impl RecorderWorker {
         let next = job
             .checked_add(1)
             .ok_or_else(|| StorageError("history job identity exhausted".into()))?;
-        {
-            let mut active = self
-                .active_history_jobs
-                .try_lock()
-                .map_err(|_| StorageError("history slots busy".into()))?;
-            if active.len() >= MAX_HISTORY_JOBS {
-                return Err(StorageError("history slots exhausted".into()));
-            }
-            active.insert(job);
+        let mut active = self
+            .active_history_jobs
+            .try_lock()
+            .map_err(|_| StorageError("history slots busy".into()))?;
+        if active.len() >= MAX_HISTORY_JOBS {
+            return Err(StorageError("history slots exhausted".into()));
         }
+        active.insert(job);
         match self.sender.try_send(Message::Runs { job, cursor, limit }) {
             Ok(()) => {
                 self.next_history_job = next;
+                self.live_history_jobs.insert(job);
                 Ok(job)
             }
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                if let Ok(mut active) = self.active_history_jobs.try_lock() {
-                    active.remove(&job);
-                }
+                active.remove(&job);
                 Err(StorageError("history worker busy".into()))
             }
         }
@@ -519,33 +525,60 @@ impl RecorderWorker {
 
     /// Take only a completed result; a pending SQL read never blocks this call.
     pub fn try_take_history(&mut self, job: u64) -> Option<Result<HistoryPage, StorageError>> {
-        let result = self.history_mailbox.try_lock().ok()?.remove(&job)?;
-        if let Ok(mut active) = self.active_history_jobs.try_lock() {
-            active.remove(&job);
+        self.drain_history_cancellations();
+        if self.pending_cancellations.contains(&job) {
+            return None;
         }
+        let mut active = self.active_history_jobs.try_lock().ok()?;
+        let result = self.history_mailbox.try_lock().ok()?.remove(&job)?;
+        active.remove(&job);
+        self.live_history_jobs.remove(&job);
         Some(result)
     }
 
     /// Take only a completed archived-run page, releasing its bounded slot.
     pub fn try_take_runs(&mut self, job: u64) -> Option<Result<RunsPage, StorageError>> {
-        let result = self.runs_mailbox.try_lock().ok()?.remove(&job)?;
-        if let Ok(mut active) = self.active_history_jobs.try_lock() {
-            active.remove(&job);
+        self.drain_history_cancellations();
+        if self.pending_cancellations.contains(&job) {
+            return None;
         }
+        let mut active = self.active_history_jobs.try_lock().ok()?;
+        let result = self.runs_mailbox.try_lock().ok()?.remove(&job)?;
+        active.remove(&job);
+        self.live_history_jobs.remove(&job);
         Some(result)
     }
 
     /// Fence an expired/disconnected job; its late worker result is discarded.
     pub fn cancel_history(&mut self, job: u64) {
-        if let Ok(mut active) = self.active_history_jobs.try_lock() {
-            active.remove(&job);
+        // An owner must not wait for a transient worker mutex. Retain at most
+        // the eight already-admitted jobs and retry on every later owner poll.
+        if !self.live_history_jobs.remove(&job) {
+            return;
         }
-        if let Ok(mut results) = self.history_mailbox.try_lock() {
-            results.remove(&job);
+        self.pending_cancellations.insert(job);
+        self.drain_history_cancellations();
+    }
+
+    fn drain_history_cancellations(&mut self) {
+        if self.pending_cancellations.is_empty() {
+            return;
         }
-        if let Ok(mut results) = self.runs_mailbox.try_lock() {
-            results.remove(&job);
+        let Ok(mut active) = self.active_history_jobs.try_lock() else {
+            return;
+        };
+        let Ok(mut history) = self.history_mailbox.try_lock() else {
+            return;
+        };
+        let Ok(mut runs) = self.runs_mailbox.try_lock() else {
+            return;
+        };
+        for job in &self.pending_cancellations {
+            active.remove(job);
+            history.remove(job);
+            runs.remove(job);
         }
+        self.pending_cancellations.clear();
     }
 
     /// Stable archive database identity retained across process reopen.
@@ -816,6 +849,7 @@ impl RecorderWorker {
     /// Consume a cumulative receipt and release credit exactly once.
     /// This reads no SQLite state and never waits for the writer's lock.
     pub fn poll(&mut self) -> RecordingStatus {
+        self.drain_history_cancellations();
         let fresh_receipt = self.receipt.try_lock().ok().map(|receipt| receipt.clone());
         if let Some(receipt) = fresh_receipt {
             if receipt.released_records < self.seen_released_records
@@ -1013,11 +1047,10 @@ fn worker_loop(
                 limit,
             } => {
                 let result = store.read_history_measurements(&filter, cursor.as_ref(), limit);
-                if active_jobs
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .contains(&job)
-                {
+                // Hold the short active-slot check through mailbox publication.
+                // A cancellation cannot slip between the two and retain a late row.
+                let active = active_jobs.lock().unwrap_or_else(|p| p.into_inner());
+                if active.contains(&job) {
                     history
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
@@ -1027,11 +1060,8 @@ fn worker_loop(
             }
             Message::Runs { job, cursor, limit } => {
                 let result = store.read_history_runs(cursor.as_ref(), limit);
-                if active_jobs
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .contains(&job)
-                {
+                let active = active_jobs.lock().unwrap_or_else(|p| p.into_inner());
+                if active.contains(&job) {
                     runs.lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .insert(job, result);
@@ -1196,5 +1226,113 @@ fn worker_loop(
                 .get_or_insert_with(|| error.to_string().chars().take(512).collect());
             return false;
         }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn contested_history_cancel_releases_slot_and_discards_late_result() {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("lab-m7-cancel-{suffix}.sqlite"));
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        let job = worker.request_runs(None, 1).unwrap();
+        let slots = Arc::clone(&worker.active_history_jobs);
+        let guard = slots.lock().unwrap();
+        worker.cancel_history(job);
+        drop(guard);
+        worker.request_finish().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while worker.poll().state != RecordingState::Closed && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(worker.poll().state, RecordingState::Closed);
+        assert_eq!(
+            slots.lock().unwrap().len(),
+            0,
+            "cancellation cannot leak a slot"
+        );
+        assert!(
+            worker.try_take_runs(job).is_none(),
+            "canceled result cannot survive"
+        );
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn eight_deferred_cancellations_never_expand_history_job_credit() {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("lab-m7-eight-cancel-{suffix}.sqlite"));
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        let jobs: Vec<_> = (0..MAX_HISTORY_JOBS)
+            .map(|_| worker.request_runs(None, 1).unwrap())
+            .collect();
+        assert!(worker.request_runs(None, 1).is_err());
+        let slots = Arc::clone(&worker.active_history_jobs);
+        let guard = slots.lock().unwrap();
+        for job in &jobs {
+            worker.cancel_history(*job);
+        }
+        assert_eq!(worker.pending_cancellations.len(), MAX_HISTORY_JOBS);
+        assert!(worker.request_runs(None, 1).is_err());
+        drop(guard);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.pending_cancellations.is_empty() && Instant::now() < deadline {
+            worker.poll();
+            thread::yield_now();
+        }
+        assert!(worker.pending_cancellations.is_empty());
+        assert!(slots.lock().unwrap().is_empty());
+        let replacement = worker.request_runs(None, 1).unwrap();
+        worker.cancel_history(replacement);
+        worker.request_finish().unwrap();
+        while worker.poll().state != RecordingState::Closed && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(worker.poll().state, RecordingState::Closed);
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn old_completed_job_ids_cannot_displace_a_live_cancellation() {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("lab-m7-old-cancel-{suffix}.sqlite"));
+        let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut old_jobs = Vec::new();
+        for _ in 0..MAX_HISTORY_JOBS {
+            let job = worker.request_runs(None, 1).unwrap();
+            while worker.try_take_runs(job).is_none() && Instant::now() < deadline {
+                thread::yield_now();
+            }
+            old_jobs.push(job);
+        }
+        let live = worker.request_runs(None, 1).unwrap();
+        let slots = Arc::clone(&worker.active_history_jobs);
+        let guard = slots.lock().unwrap();
+        for job in old_jobs {
+            worker.cancel_history(job);
+        }
+        worker.cancel_history(live);
+        drop(guard);
+        worker.request_finish().unwrap();
+        while worker.poll().state != RecordingState::Closed && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(worker.poll().state, RecordingState::Closed);
+        assert!(slots.lock().unwrap().is_empty());
+        assert!(worker.try_take_runs(live).is_none());
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
     }
 }
