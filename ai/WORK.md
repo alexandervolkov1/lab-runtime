@@ -1,51 +1,183 @@
-# Current work — M6 external-review stop
+Current work — ASTRA_HIGH M7 Recorder/SQLite design
 
-## Gate and authority
+Read first:
 
-```text
-Current state: READY_FOR_EXTERNAL_REVIEW
-Completed model: SOL_HIGH
-Completed work: M6 implementation and H1–H28 verification
-Requested next step: external architectural/implementation review
-Authorized implementation now: none
-Do not begin: M7 design or implementation
-```
+ai/HANDOFF.md
+ai/ROADMAP.md
+ai/WORK.md
+AGENTS.md
+PROJECT_BRIEF.md
 
-The user explicitly authorized ASTRA_HIGH -> SOL_HIGH and M6 implementation.
-SOL_HIGH followed the fixed [M6 design](../docs/implementation/MILESTONE_6_DESIGN.md)
-and wrote [the M6 implementation report](../docs/implementation/MILESTONE_6_REPORT.md).
-`ai/HANDOFF.md` is the single reviewer communication file. Read it, this file,
-`ai/ROADMAP.md`, `AGENTS.md` and `PROJECT_BRIEF.md` before any later phase.
+docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 
-## Reviewable checkpoint
+docs/implementation/MILESTONE_6_DESIGN.md
+docs/implementation/MILESTONE_6_REPORT.md
 
-M1–M5 remain the externally approved baseline: corrected M4 W1–W9/R1–R10
-and M5 L1–L22 were preserved. M6 has 189 named Rust workspace tests in the
-final debug/release suites. `cargo fmt --all -- --check`, warning-free workspace
-clippy, finite `cargo run -p lab-runtime`, Babashka client checks, and the actual
-Rust-host/real-bb A/B killed-client reconnect test passed. The real-process run
-measured 6,138 ms without an ordinary client and 6,305 ms finite lease-expiry
-advance, then B paused safely and shut down cleanly. Tool versions and H1–H28
-test mapping are in the report.
+docs/architecture/HIGH_LEVEL_ARCHITECTURE.md
+docs/architecture/RUNTIME_AND_SAFETY_MODEL.md
+docs/architecture/EXTENSION_MODEL.md
 
-M6 is a bounded virtual/software proof: one Runtime owner, explicit safety-first
-monotonic scheduler, two fixed isolated real Lua workers, strict loopback-only
-version-one NDJSON, pure queries, retained operation outcomes, semantic events,
-frozen snapshot/replay/gap recovery, and a thin bounded Babashka client. The
-default M1 executable is still finite; the autonomous host requires explicit
-`--serve --profile virtual-demo --port <u16>`.
+docs/migration/V1_TO_LAB_RUNTIME_MAP.md
+docs/migration/REUSE_PLAN.md
+docs/migration/MIGRATION_RISKS.md
 
-The separate v1 donor remains read-only and never a workspace dependency. No
-Recorder/SQLite, GUI, physical production control, real COM adapter, long soak
-or M7 design/implementation is part of this checkpoint. The pre-existing
-user-staged `ai/project_snapshot.txt` was not edited or included in any M6
-commit; preserve it during review.
+You are:
 
-## Required stop
+ASTRA_HIGH
 
-SOL_HIGH has completed its authorized phase and must STOP after printing MODEL
-HANDOFF. External review should assess the design/report/source/test evidence
-and record its response in `ai/HANDOFF.md`. This file does not authorize crossing
-the review gate or starting M7. A later model/phase instruction requires an
-explicit new user authorization. If review finds a genuine architectural fork,
-record the precise issue as `WAITING_FOR_REVIEW` in `ai/HANDOFF.md` and stop.
+Authorized phase:
+
+M7 RECORDER / SQLITE DESIGN ONLY
+
+Do not implement production M7 code.
+
+Do not begin M8.
+
+Baseline verification
+
+Before design:
+
+git status
+git log --oneline -20
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+
+Expected reviewed baseline:
+
+M1–M6 complete
+189 named Rust workspace tests at supplied M6 checkpoint
+real Babashka A/B acceptance complete
+Recorder/SQLite not implemented
+
+Preserve the pre-existing user file:
+
+ai/project_snapshot.txt
+
+if it remains present/untracked/staged outside your task.
+
+M7 design obligations
+
+Create:
+
+docs/implementation/MILESTONE_7_DESIGN.md
+
+Use RELEASE_PLAN_M7_TO_V0_1.md as the product contract.
+
+Inspect the actual v1 Recorder/SQLite implementation only as a read-only donor
+for behavior/tests, not architecture.
+
+Resolve explicitly:
+
+Recorder ownership and thread/service boundary
+
+record/event vocabulary
+
+Runtime boot vs experiment run vs recording interval
+
+configuration/script provenance
+
+monotonic + wall-clock timestamps
+
+bounded ingress by count and bytes
+
+batching
+
+SQLite durability policy
+
+schema versioning
+
+measurement storage
+
+quality/unit/generation/revision
+
+controller/reference lifecycle records
+
+requested/sent/ACK/readback/failed/ambiguous evidence
+
+structured logs/annotations
+
+BestEffort vs Required recorder policy
+
+Recorder-required control failure -> revoke/safe/fault
+
+shutdown/flush outcome
+
+database reopen/recovery semantics
+
+bounded history query for future GUI
+
+paging/downsampling contract
+
+interaction with M6 semantic events without turning the event ring into the
+durable database model
+
+Do not design M8 configuration/COM yet except where a minimal M7 extension seam is
+required.
+
+Do not design GUI yet.
+
+Do not expand Lua.
+
+Required acceptance contract
+
+Give M7 tests stable IDs D1–D18 or a stricter equivalent covering all requirements
+listed in the release plan.
+
+The acceptance contract must be concrete enough that SOL_HIGH can implement M7
+without inventing persistence/safety architecture.
+
+Require tests-first implementation.
+
+M7 dependency choices
+
+Research/select the smallest practical SQLite Rust adapter only if necessary for
+the design.
+
+Keep SQLite dependencies out of lab-core.
+
+Do not introduce an ORM/framework without a concrete need.
+
+Documentation quality
+
+All proposed Rust source docs/comments remain English.
+
+Design for code that the user can later study.
+
+Explain why persistence, client events and Runtime authority remain separate.
+
+End of Astra phase
+
+Update:
+
+ai/HANDOFF.md
+ai/WORK.md
+AGENTS.md
+
+with:
+
+Current model: ASTRA_HIGH
+Next model: SOL_HIGH
+Resume from: M7 implementation against MILESTONE_7_DESIGN.md
+Do not start: M8
+
+Then print:
+
+MODEL HANDOFF
+
+STOP HERE.
+
+Completed:
+M7 Recorder/SQLite architecture and tests-first acceptance contract.
+
+Switch from:
+ASTRA_HIGH
+
+Switch to:
+SOL_HIGH
+
+Resume with:
+M7 implementation only.
+
+Do not begin M8.
+
+Then STOP.

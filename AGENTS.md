@@ -20,14 +20,27 @@ material and will be removed during the mandatory pre-release Markdown cleanup.
 
 This repository is an architecture-first greenfield project.
 
+Replace only the current-phase/review-gate paragraph with:
+
 ## Current phase
 
 The current phase is:
 
-```text
-M6 implemented and verified against H1–H28 at 189 workspace tests.
-READY_FOR_EXTERNAL_REVIEW: SOL_HIGH has stopped for reviewer response.
-Do not begin M7 design or implementation before a separate reviewed gate.
+ASTRA_HIGH — M7 Recorder/SQLite design only.
+
+M1–M6 are complete and M6 has passed the external release-planning review.
+The persistent path from M7 to v0.1.0 is defined in
+docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md.
+
+Read ai/HANDOFF.md, ai/ROADMAP.md and ai/WORK.md before acting.
+
+Do not implement M7 production code under ASTRA_HIGH.
+Do not begin M8.
+The next required gate is ASTRA_HIGH -> SOL_HIGH after the M7 design and
+tests-first acceptance contract are complete.
+
+Leave the remaining permanent architecture/safety/Git/language instructions in
+AGENTS.md unchanged.
 ```
 
 Follow NEXT_IMPLEMENTATION_PLAN.md sequentially from M2 through M6. Preserve M1 behavior; finish and verify each milestone before beginning the next.

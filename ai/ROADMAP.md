@@ -1,36 +1,90 @@
-# Product roadmap
+Product roadmap
 
-This file records the persistent milestone sequence. Read `HANDOFF.md` for the
-review checkpoint and `WORK.md` for the current model's authorized work.
+ai/HANDOFF.md contains the current review/model gate.
 
-## Current sequence
+ai/WORK.md contains only the currently authorized model task.
 
-- M1: domain foundation — completed.
-- M2: central output authority and arbitration — completed.
-- M3: bounded transport, narrow Metakon and data-driven instruments — completed.
-- M4: thermal plant, EMA, Reference and native PID — corrected and verified at the
-  92-test W1–W9/R1–R10 gate before Lua dependencies; external review approved.
-- M5: bounded Lua model observations and moving-mean transform — implemented,
-  verified at 123 workspace tests; external review approved.
-- M6: autonomous headless host, monotonic scheduler, bounded local API/events,
-  reconnect and actual Babashka slice — implemented and verified at 189 Rust
-  workspace tests plus real bb A/B process acceptance; external review pending.
+The persistent detailed path to the first stable release is:
 
-The fixed M6 contract is [the M6 design](../docs/implementation/MILESTONE_6_DESIGN.md);
-[the M6 report](../docs/implementation/MILESTONE_6_REPORT.md) is the reviewable
-implementation evidence, with [ai/WORK.md](WORK.md) as the current review-stop
-instruction. Existing M4/M5 contracts and reports remain the accepted baseline.
-`NEXT_IMPLEMENTATION_PLAN.md` and
-`IMPLEMENTATION_ROADMAP_M2_M6.md` retain historical context; they do not bypass
-current model/review gates or authorize future milestones.
+docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
+Completed
+M1  domain foundation
+M2  central OutputAuthority
+M3  bounded transport + narrow Metakon + data-driven definitions
+M4  native control pipeline + corrected Warming/renewal
+M5  bounded disposable Lua components
+M6  autonomous headless Runtime + local API + real Babashka process
 
-`READY_FOR_EXTERNAL_REVIEW` is the current HANDOFF state. SOL_HIGH has stopped;
-no M7 design or implementation is authorized at this review gate.
+M6 was verified at the supplied checkpoint with 189 named Rust tests plus real Babashka A/B acceptance and has now passed the external release-planning review.
 
-## First stable release after M6
+First stable release sequence
+M7
+    Runtime-owned Recorder
+    SQLite
+    durable provenance
+    bounded history query
 
-The first release still requires M7 durable Recorder and SQLite, runtime/release
-hardening, a real Windows serial/COM adapter, a safe read-only physical Metakon
-smoke path, repository Markdown consolidation, final documentation, an end-to-end
-tutorial and release packaging. These are later phases. The separate v1 donor
-stays read-only and never becomes a workspace dependency.
+M8
+    runtime.toml deployment configuration
+    validation/staging/reload
+    managed script reload
+    virtual model/emulator restart
+    Windows COM adapter
+    real Metakon read-only smoke
+
+M9
+    optional persistent Lua workspace/fallback scripts
+    presentation/workspace model
+    Babashka presentation operations
+
+M10
+    separate Rust egui/eframe GUI client
+    reuse/adapt successful v1 plot behavior
+    series sidebar
+    logs
+    control panels
+    minimal reload controls
+
+M11 / release candidate
+    integration/fault hardening
+    repository cleanup
+    test-file naming cleanup
+    final architecture/user/developer documentation
+    tutorials
+    Windows packaging
+    SHA256
+    release review
+
+v0.1.0
+
+Each milestone requires:
+
+ASTRA_HIGH design
+    ↓
+manual model switch
+    ↓
+SOL_HIGH tests-first implementation
+    ↓
+external review
+
+No model crosses a gate automatically.
+
+Release character
+
+v0.1.0 is a usable and extensible laboratory Runtime, not full historical
+com_port_reader feature parity.
+
+Full On/Off/Furnace/filter parity, richer recipes, Arduino and other extensions
+continue after release in an educational explain -> code -> test -> commit workflow.
+
+Babashka is an optional external client and bb.exe is not a Runtime dependency.
+
+Lua has two distinct roles:
+
+managed disposable bounded components
++
+small optional persistent local workspace for fallback experiment scripting
+
+Neither role owns physical safety.
+
+The GUI is a separate client and must work through the same public Runtime API.

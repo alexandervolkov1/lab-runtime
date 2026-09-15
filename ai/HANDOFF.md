@@ -1,102 +1,208 @@
-# AI Handoff
+File: ai/HANDOFF.md
+AI Handoff
 
-This is the single persistent external-review communication file. Read
-`ai/HANDOFF.md`, `ai/ROADMAP.md`, `ai/WORK.md`, `AGENTS.md` and `PROJECT_BRIEF.md`
-before each later phase. Detailed acceptance contracts and implementation
-evidence belong in normal project documentation.
+Read before every phase:
 
-## Current state
+ai/HANDOFF.md
+ai/ROADMAP.md
+ai/WORK.md
+AGENTS.md
+PROJECT_BRIEF.md
+docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
+Current state
+STATUS: APPROVED_FOR_ASTRA_HIGH_M7_DESIGN
 
-```text
-STATUS: READY_FOR_EXTERNAL_REVIEW
-Completed model: SOL_HIGH
-Completed work: M6 implementation and H1–H28 acceptance verification
-Requested next step: external review of M6 source, tests and report
-Authorized implementation now: none
-Do not begin: M7 Recorder design or implementation
-```
+Completed model:
+SOL_HIGH
 
-The user explicitly crossed ASTRA_HIGH -> SOL_HIGH and authorized M6 only.
-SOL_HIGH completed [the fixed M6 design/H1–H28 contract](../docs/implementation/MILESTONE_6_DESIGN.md)
-and wrote [the M6 implementation report](../docs/implementation/MILESTONE_6_REPORT.md).
-This status requests review; it does **not** claim external approval of M6 or
-authorize another milestone. No unresolved architectural contradiction was found.
+Completed work:
+M6 implementation and H1–H28 verification
 
-## Previously approved implementation baseline
+External review result:
+M6 accepted as the implementation baseline for the first-release sequence.
 
-The external reviewer approved corrected M4 and completed M5 at checkpoint
-`cb98d55`. M1 is the domain foundation and finite virtual executable; M2 central
-OutputAuthority and arbitration; M3 bounded transport, narrow Metakon and
-data-driven definitions; M4 thermal plant/native EMA/Fixed/Ramp/PID with corrected
-Warming and finite private native renewal; M5 bounded Lua model observations and
-moving-mean Transform. The M4 corrections passed 92 tests before Lua
-dependencies, and the reviewed M5 baseline passed 123 workspace tests.
+Next model:
+ASTRA_HIGH
 
-Accepted contracts and evidence remain in the
-[M4 lifecycle review](../docs/implementation/MILESTONE_4_LIFECYCLE_REVIEW.md),
-[M4 report](../docs/implementation/MILESTONE_4_REPORT.md),
-[M5 design](../docs/implementation/MILESTONE_5_DESIGN.md) and
-[M5 report](../docs/implementation/MILESTONE_5_REPORT.md). The reviewer assessed
-supplied source/snapshot and recorded verification; it did not independently run
-Cargo on this workstation. The incoming reviewer comments and full Astra mandate
-are preserved in commit `a8c68ff`.
+Authorized next work:
+M7 Recorder/SQLite design only
 
-## M6 implementation checkpoint for review
+Do not begin:
+M7 production implementation
+M8+
+M6 review conclusion
 
-M6 has one mutable Runtime owner and explicit 10-ms safety, 100-ms
-plant/Reference/native-controller, and 200-ms Lua Source opportunities. Lower
-priority work is bounded and cannot hold the owner behind Lua or network I/O.
-Two fixed real Lua workers remain isolated. The explicit service profile starts
-safe Ready on IPv4 loopback, publishes a bounded port-0 readiness line, and
-accepts strict version-one UTF-8 NDJSON. It excludes remote direct output,
-manual producer, client-supplied clock and client-supplied physical evidence.
+The supplied M6 checkpoint is accepted.
 
-Core gained continuous Ramp retune and safe Ready/Paused PID configuration with
-atomic revisions and pure snapshots. Server-issued process scopes/consecutive
-request numbers retain accepted/terminal outcomes and expose explicit unknown
-after eviction/restart. Semantic events, frozen snapshot pages, subscription
-replay/filter progress, gap and resync preserve the owner publication order.
-Peer queues, frames, sessions, histories, worker slots and shutdown grace are
-bounded. Ctrl-C only sets an atomic stop flag for the Rust owner; the stop
-barrier quiesces work, records safe/cleanup evidence before network closure,
-and reports unconfirmed output or unfinished workers as failure.
+The reviewed evidence reports:
 
-The final workspace lists **189 named Rust tests**. Debug and release
-`cargo test --workspace`, `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings`, finite
-`cargo run -p lab-runtime`, `bb --config clients/babashka/bb.edn run test-client`,
-standalone actual-process `babashka_reconnect` and `git diff --check` passed.
-The actual built Rust host launched real Babashka A/B: A configured/started and
-reached Running, Rust killed A without Pause, and the host ran 6,138 ms with no
-ordinary client (>3 complete 2-s leases). B resumed the same boot/scope,
-reconciled outcome/replay, observed plant temperature 20.0749 -> 30.6670 °C and
-a 6,305-ms finite lease-expiry advance with unchanged authority
-instance/owner/epoch, then paused with Rust-confirmed virtual safe readback and
-completed clean shutdown. `rustc`/`cargo` are 1.95.0; `bb` is 1.13.220.
+189 named Rust workspace tests
 
-The report maps every H1–H28 requirement to named passing tests, records
-tests-first red/fix evidence, hard limits, shutdown/reconnect observations and
-remaining scope. The M6 proof remains virtual/software. ACK is not readback;
-no physical output acceptance, real COM adapter, Recorder/SQLite, GUI, long soak
-or full product parity was added. Lua acceptance deadlines fence late results
-but do not physically kill a stalled foreign instruction. The separate v1 donor
-remains read-only and is not a workspace dependency.
+debug and release workspace tests passing
 
-## Review request and gate
+fmt/clippy checks passing
 
-Please review [the M6 report](../docs/implementation/MILESTONE_6_REPORT.md),
-[fixed design](../docs/implementation/MILESTONE_6_DESIGN.md), implementation
-source and named acceptance tests against H1–H28 and the previously accepted
-M1–M5 contracts. Record the response in this file. If a genuine architectural
-contradiction remains, state the precise fork and set `WAITING_FOR_REVIEW`;
-SOL_HIGH has stopped. A later user-authorized model/phase instruction is required
-before any M7 design or implementation.
+real Rust host
 
-## Workspace preservation and later release work
+real Babashka A/B process acceptance
 
-The user-staged `ai/project_snapshot.txt` pre-existed this phase and remains
-untouched. Every M6 commit used scoped paths and excluded that file. After a
-reviewed M6 gate, later release work may include M7 durable Recorder/SQLite,
-runtime/release hardening, real Windows serial/COM, safe read-only Metakon smoke,
-Markdown consolidation, final tutorial and packaging. Listing that sequence is
-not permission to begin it now.
+Babashka A killed without Pause
+
+native PID remained autonomous for more than three finite lease lifetimes
+
+Babashka B reconciled the same Runtime process
+
+safe virtual pause and shutdown completed
+
+This external review is based on the supplied repository snapshot/source/report
+and recorded verification evidence. The reviewer did not independently execute
+Cargo or hardware commands on the user's workstation.
+
+Preserve all accepted M1–M6 contracts.
+
+Release direction approved
+
+The detailed release roadmap is:
+
+docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
+
+The approved product direction includes:
+
+M7 Recorder + SQLite
+
+M8 declarative runtime configuration, safe reload, real Windows COM and
+   conservative physical Metakon read-only smoke
+
+M9 persistent optional Lua fallback workspace plus server-owned presentation model
+
+M10 separate egui GUI client using the public API
+
+M11 release hardening, cleanup, documentation, tutorials and packaging
+Product clarifications from the user
+Babashka
+
+Babashka is an optional external orchestration client.
+
+Do not bundle or require bb.exe for Runtime operation.
+
+Keep the thin client/examples in the repository/release examples.
+
+Lua
+
+The previous migration recommendation that all persistent embedded application
+REPL behavior should simply become Babashka is superseded by the user's explicit
+product requirement.
+
+The final product should retain:
+
+M5 disposable bounded Lua VMs
+    for model/filter/component execution
+
+plus
+
+a separate small persistent Lua workspace
+    for local fallback experiment scripting
+
+The fallback requirement is:
+
+With only lab-runtime, configuration/scripts and instruments, a user should be
+able to automate a useful experiment without installing Babashka or GUI.
+
+Do not recreate the entire v1 global Lua application API.
+
+The persistent workspace remains outside the Runtime owner lane and may only use
+validated Runtime application/domain operations.
+
+No raw COM, OutputLease, OutputAuthority or physical-evidence bypass.
+
+A GUI Lua REPL/editor is optional after the first release or as a later small
+addition. Preserve an easy seam for a separate Tools -> Lua Workspace window.
+
+Configuration
+
+The application must not depend on executable Lua configuration.
+
+Use a declarative deployment configuration, preferably runtime.toml.
+
+Parsing configuration must be side-effect free.
+
+Reload uses validate/stage/safe/apply semantics.
+
+Invalid candidates leave the committed configuration intact.
+
+Support explicit operations for:
+
+Reload configuration
+Reload managed scripts
+Restart virtual emulator/model
+
+reload != rearm.
+
+Presentation and GUI
+
+The GUI is a separate client.
+
+Server-owned semantic presentation state must be configurable both from GUI and
+Babashka.
+
+Support:
+
+workspaces
+plot panels
+traces
+trace labels
+colors
+visibility
+panel assignment/order
+time window
+follow/live
+axis policy
+control panels
+logs panel
+
+The user explicitly considers the old v1 plot/series UX good.
+
+Before implementing M10, inspect the donor read-only and preserve/adapt where
+appropriate:
+
+plot rendering
+egui_plot interaction
+time-axis labels
+pan/zoom
+follow/live
+Y auto/manual behavior
+legend/multiple series
+series colors/visibility
+plot sizing
+downsampling
+series sidebar
+series labels/panel assignment
+
+Do not preserve old shared-state ownership.
+
+Global GUI buttons should remain minimal.
+
+Prominent infrastructure actions:
+
+Reload configuration
+Reload scripts
+Restart emulator/model
+
+Normal controller/reference/recording actions belong in contextual control panels.
+
+Documentation and learning
+
+The first stable release is not complete without clear architecture and developer
+documentation plus reproducible tutorials.
+
+After v0.1.0 the default development mode should become a smaller educational
+workflow rather than large autonomous agent milestones.
+
+Current review authorization
+APPROVED_FOR_ASTRA_HIGH_M7_DESIGN
+
+Astra designs M7 only and then requests ASTRA_HIGH -> SOL_HIGH.
+
+Do not design M8 yet.
+
+Do not implement production M7 code under Astra.
