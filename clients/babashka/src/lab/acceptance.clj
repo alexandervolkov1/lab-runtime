@@ -66,11 +66,6 @@
             starting-sample (until! 3000 #(let [sample (client/latest! connection signal)]
                                             (when (= (:quality sample) "good") sample)))
             starting-temp (:value starting-sample)
-            _ (when recording?
-                (require-completed
-                 (client/command! connection "recording_start"
-                                  {:label "recorded Babashka A/B"})))
-            _ (when recording? (recording-credit! connection 0))
             snapshot (client/snapshot! connection)
             _ (client/subscribe! connection (:cursor snapshot))
             ramp (reference! connection reference)
@@ -78,14 +73,17 @@
                      (client/command! connection "reference_retune"
                                       {:reference reference :expected_revision (:revision ramp)
                                        :target 60.0 :rate 5.0}))
-            _ (when recording? (recording-credit! connection 0))
             _ (client/drain-buffered! connection)
             pid (require-completed
                  (client/command! connection "controller_configure_pid"
                                   {:controller controller :expected_revision (:revision initially)
                                    :pid {:kp 4.0 :ki 0.5 :kd 0.0 :output_min 0.0 :output_max 100.0}}))
-            _ (when recording? (recording-credit! connection 0))
             _ (client/drain-buffered! connection)
+            _ (when recording?
+                (require-completed
+                 (client/command! connection "recording_start"
+                                  {:label "recorded Babashka A/B"})))
+            _ (when recording? (recording-credit! connection 0))
             warming (require-completed
                      (client/command! connection "controller_start" {:controller controller}))
             _ (when recording? (recording-credit! connection 0))
