@@ -33,6 +33,7 @@ pub struct ThermalPlantConfig {
 pub(crate) struct ThermalPlantInstrument {
     pub(crate) descriptor: InstrumentDescriptor,
     pub(crate) signal: SignalBuffer,
+    pub(crate) generation: u64,
     ambient_temperature: f64,
     gain_per_percent: f64,
     time_constant: Duration,
@@ -93,6 +94,7 @@ impl ThermalPlantInstrument {
         Ok(Self {
             descriptor,
             signal: SignalBuffer::new(signal, config.history_capacity)?,
+            generation: 1,
             ambient_temperature: config.ambient_temperature,
             gain_per_percent: config.gain_per_percent,
             time_constant: config.time_constant,

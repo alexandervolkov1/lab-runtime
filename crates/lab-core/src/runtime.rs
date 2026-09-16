@@ -97,6 +97,17 @@ pub enum Command {
     RegisterVirtual(VirtualInstrumentConfig),
     /// Register a deterministic first-order virtual thermal plant.
     RegisterThermalPlant(ThermalPlantConfig),
+    /// Replace one stopped native model and fence every observation from its old generation.
+    RestartThermalPlant {
+        /// Existing stable logical instrument identity.
+        instrument: InstrumentId,
+        /// Complete validated replacement model configuration with the same identity.
+        config: ThermalPlantConfig,
+        /// Generation observed before staging the restart.
+        expected_generation: u64,
+        /// Monotonic commit time used for recording and dependency fencing.
+        at: Duration,
+    },
     /// Register an independent native target source.
     RegisterReference(ReferenceConfig),
     /// Advance one independent Reference at trusted monotonic Runtime time.
@@ -261,6 +272,13 @@ pub enum CommandResult {
     Output(OutputResult),
     /// Registration completed without starting acquisition or output authority.
     Registered(InstrumentId),
+    /// A native virtual model was reset under a checked generation fence.
+    ModelRestarted {
+        /// Stable logical instrument identity.
+        instrument: InstrumentId,
+        /// New nonzero model generation.
+        generation: u64,
+    },
     /// A native Reference was registered without evaluating it.
     ReferenceRegistered(ReferenceId),
     /// One independent Reference evaluation, not a query or a controller tick.
@@ -1012,6 +1030,56 @@ impl Runtime {
                 self.sync_recording_output_context(actuator);
                 Ok(CommandResult::Registered(id))
             }
+            Command::RestartThermalPlant {
+                instrument,
+                config,
+                expected_generation,
+                at: _,
+            } => {
+                if config.id != instrument {
+                    return Err(Error::InvalidConfiguration(
+                        "model restart must retain instrument identity",
+                    ));
+                }
+                let current = self
+                    .thermal_plants
+                    .get(&instrument)
+                    .ok_or(Error::UnknownInstrument(instrument))?;
+                if current.generation != expected_generation {
+                    return Err(Error::InvalidConfiguration("stale model generation"));
+                }
+                if self.controllers.values().any(|controller| {
+                    (controller.config.input.instrument() == instrument
+                        || controller.config.output.instrument() == instrument)
+                        && matches!(
+                            controller.state,
+                            ControllerState::Warming | ControllerState::Running
+                        )
+                }) {
+                    return Err(Error::InvalidConfiguration(
+                        "dependent controller must be stopped before model restart",
+                    ));
+                }
+                let actuator = ActuatorId::new(instrument, crate::HEATER_POWER);
+                if self.outputs.get(&actuator).is_some_and(|output| {
+                    let snapshot = output.snapshot();
+                    snapshot.lease.is_some() || snapshot.pending || snapshot.in_flight.is_some()
+                }) {
+                    return Err(Error::InvalidConfiguration(
+                        "model restart requires revoked output authority",
+                    ));
+                }
+                let generation = expected_generation
+                    .checked_add(1)
+                    .ok_or(Error::InvalidConfiguration("model generation exhausted"))?;
+                let mut replacement = ThermalPlantInstrument::new(config)?;
+                replacement.generation = generation;
+                self.thermal_plants.insert(instrument, replacement);
+                Ok(CommandResult::ModelRestarted {
+                    instrument,
+                    generation,
+                })
+            }
             Command::RegisterReference(config) => {
                 let id = config.id();
                 if self.references.contains_key(&id) {
@@ -1149,7 +1217,8 @@ impl Runtime {
                 if result.is_ok()
                     && let Some(sample) = plant.signal.latest().cloned()
                 {
-                    self.recording_facts.measurement(sample, 1, 1);
+                    self.recording_facts
+                        .measurement(sample, plant.generation, 1);
                 }
                 result.map(CommandResult::MeasurementFailed)
             }
@@ -1423,7 +1492,8 @@ impl Runtime {
                     if let Some(sample) = instance.signal.latest().cloned()
                         && sample.at() == at
                     {
-                        self.recording_facts.measurement(sample, 1, 1);
+                        self.recording_facts
+                            .measurement(sample, instance.generation, 1);
                     }
                     result.map(CommandResult::MeasurementRefreshed)
                 } else if self.metakon_instruments.contains_key(&instrument) {

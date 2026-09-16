@@ -13,7 +13,7 @@ are not reported as passing evidence.
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
 | C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Initial lifecycle slice green; Runtime/Recorder integration remains |
-| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Pending |
+| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | C11 Core restart primitive green; C9-C10 and public operation remain |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter slice green; Host process integration remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
 | C18 | Public API/Babashka process independence under configured acquisition | Pending |
@@ -67,6 +67,13 @@ are not reported as passing evidence.
    provenance, and bound the listener only after a safe/disarmed owner existed.
    Both targeted tests pass. This slice intentionally does not yet claim managed
    component, controller, or physical-resource startup composition.
+7. C11 native-model restart acceptance was red because Core had no restart
+   command or generation result. Added a checked thermal-model replacement that
+   preserves the logical instrument ID, rejects stale generation and active
+   dependent control/output work, advances generation exactly once, clears old
+   signal currency and records later samples with the new generation. Two
+   targeted Core tests and warning-free targeted clippy pass. Public operation
+   composition and managed-model restart remain separate work.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
