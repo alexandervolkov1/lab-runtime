@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `WAITING_FOR_REVIEW` after the corrected real disconnect exposed a
-Windows COM recovery/shutdown contradiction, 2026-09-16.
+Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed recovery correction is
+complete and COM5 has not been reopened, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -25,12 +25,12 @@ are not reported as passing evidence.
 | C11 | `model_restart`, `managed_script_reload`, `runtime_lifecycle_operations` | Software pass |
 | C12 | `windows_com_transport`, `configured_physical` | Software pass; actual COM5 open/settings/close observed |
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
-| C14 | `windows_com_transport`, `configured_physical` | Software pass; **blocked by actual COM5 disconnect recovery** |
+| C14 | `windows_com_transport`, `configured_physical` | Corrected software pass; post-fix actual disconnect/reconnect pending |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | Corrected acquisition pass; **blocked before reconnect by missing Offline/Unavailable transition** |
-| C17 | Actual observations, public history and SQLite reopen | Corrected durable Good evidence pass; **no durable Unavailable fact after disconnect** |
+| C16 | Actual Windows COM + Metakon read-only bench | Corrected acquisition pass; post-fix disconnect/reconnect rerun pending |
+| C17 | Actual observations, public history and SQLite reopen | Pre-fix durable evidence retained; post-fix Unavailable/reconnect archive pending |
 | C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected live Babashka observation pass, physical reconnect not attempted |
-| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Recorder flushed, but actual disconnected COM worker did not close within the finite shutdown bound |
+| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Corrected software pass; post-fix actual COM/Recorder shutdown pending |
 | C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
 ## Actual sequence
@@ -626,16 +626,103 @@ disconnect/recovery and close-boundary contradiction against C14/C16/C17/C19.
 M8 stops at `WAITING_FOR_REVIEW`; physical reconnect must not be attempted until
 the recovery behavior is reviewed.
 
+## Reviewed recovery correction — 2026-09-16
+
+External review authorized one narrow SOL_HIGH correction without changing the
+accepted M3/M8 architecture. Source inspection confirmed the reported causal
+chain. `ResourceExecutor::Recovery` carried no deadline; transaction and protocol
+`RecoveryStatus::Pending` could therefore remain Recovering forever. The validated
+deployment `recovery_timeout_ms` was used only by explicit replacement/reconnect
+loops, ordinary admission remained open during recovery, read invalidation waited
+for a terminal event, and `try_shutdown` did not call the adapter unless the
+executor was already Idle or Offline.
+
+Commit `71d4e56` routes each validated deployment timeout into Core as a monotonic
+`Duration`; no TOML, OS or serial dependency enters `lab-core`. Both transaction
+and protocol recovery now receive checked exclusive deadlines. Pending remains
+Recovering before the deadline. At the deadline, the active correlation becomes
+honestly Failed, the resource becomes Offline, and resource generation does not
+advance. Only an adapter-proved `RecoveryStatus::Complete` advances generation
+and permits the existing at-most-one retry.
+
+The resource owner now rejects ordinary admission while Recovering, Offline,
+closing or closed. Work queued behind the failed boundary is fenced and cannot
+execute after recovery/rebind; the fixed queue limit remains 32. A bounded owner
+event queue drains the active failure and at most the fixed queued set before a
+new state transition, so the correction adds no unbounded accumulation. The first
+active read failure publishes one `Unavailable` sample immediately through the
+normal Signal and Recorder fact path. The prior real Good row remains history,
+no numeric replacement is invented, and a clean retry or later explicit rebind
+may publish a new Good sample normally.
+
+Shutdown now fences active and queued correlations and starts nonblocking adapter
+retirement from Active, Recovering and ProtocolRecovering. Runtime consumes those
+terminal/fence events before replacement, preserving started/ambiguity and Signal
+facts. No worker is joined unless the adapter already reports its thread finished.
+A cooperative COM worker closes normally; a deliberately held worker remains
+Pending without blocking, preserving the existing finite
+`cleanup_incomplete`/nonzero contract.
+
+The initial owner-boundary acceptance compile was red because
+`ResourceExecutor::with_recovery_timeout` and
+`TransportError::ResourceUnavailable` did not exist. The protocol and Recorder
+acceptance compiles were separately red because Runtime did not expose the
+bounded-time registration seam. Production then made those tests green. The
+configured periodic-host regression was added after the minimal Core fix; its
+first run failed because the assertion incorrectly prohibited the legitimate
+pre-failure one-entry queue. The oracle was narrowed to Recovering/Offline and
+then proved zero queue growth plus the exact configured 500-ms test deadline.
+This production-before-host-coverage ordering is recorded honestly.
+
+New or materially strengthened named regression evidence is:
+
+```text
+pending_recovery_deadline_fences_queue_and_enters_offline_without_generation_advance
+shutdown_from_recovering_starts_adapter_retirement_without_waiting_for_recovery
+shutdown_from_active_fences_started_correlation_and_retires_adapter
+timeout_after_a_prefix_fences_old_queue_before_fresh_post_recovery_work
+protocol_recovery_pending_is_finite_and_does_not_advance_generation
+shutdown_from_protocol_recovery_initiates_adapter_retirement
+clean_transaction_recovery_retry_can_publish_new_good_after_unavailable
+c14_periodic_reads_do_not_fill_queue_while_finite_recovery_reaches_offline
+c14_explicit_rebind_after_offline_fences_old_session_and_resumes_new_generation
+physical_read_failure_records_one_unavailable_without_fabricated_good
+c19_disconnected_com_worker_retires_cooperatively_without_owner_join
+c19_stuck_com_worker_shutdown_attempt_is_finite_and_never_block_joins
+```
+
+All 136 `lab-core` tests passed. The focused Windows COM/configured physical/
+Recorder quality/COM+Recorder shutdown/Runtime shutdown suites passed 26 tests;
+the existing M3 output ambiguity suite also passed. Formatting, targeted
+all-target warning-denied Clippy and `git diff --check` passed. The complete debug
+workspace gate passed 402 named tests, including actual Babashka A/B process
+acceptance. Per the review instruction, full release and warning-denied rustdoc
+are deferred until the corrected M8 hardware gate rather than repeated in this
+slice. COM5 was not opened.
+
+Both existing bench archives retain their pre-correction hashes. Commit `2672a0a`
+changes only the next bench Recorder pathname to
+`examples/metakon-513-com5-recovery-corrected-history.sqlite`; that file does not
+yet exist. The new exact TOML SHA-256 is
+`5fec1c546f81b8a29f7a21360deb33575fe98a87c987fbbd1a28094bd8e01def`.
+The definition remains unchanged at
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+The next explicitly authorized bench launch remains:
+
+```powershell
+cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
+```
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
-corrected run establishes plausible real temperature and durable history. Its
-physical disconnect did not produce the required Offline/Unavailable transition,
-and the COM worker did not confirm close during finite shutdown. Reconnect and
-resumed-measurement acceptance are deliberately untested. Firmware remains
-unknown and no independent wire capture exists.
+corrected run establishes plausible real temperature and durable history. The
+pre-fix disconnect contradiction is preserved as evidence; the reviewed software
+correction now requires a fresh actual disconnect/reconnect, public/Babashka,
+Required Recorder and clean-shutdown rerun. Firmware remains unknown and no
+independent wire capture exists.
 
-M8 stops at `WAITING_FOR_REVIEW`; it is not ready for external review and does
-not authorize M9. M8 performed no physical actuator write and makes no
+M8 remains `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for external review
+and does not authorize M9. M8 performed no physical actuator write and makes no
 physical-output-safety, power-loss, remote-security, GUI or long-soak
 certification claim.

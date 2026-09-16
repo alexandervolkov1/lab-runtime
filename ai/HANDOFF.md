@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: WAITING_FOR_REVIEW
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 actual Windows COM disconnect/recovery contradiction review.
+M8 corrected Windows COM recovery; post-fix physical acceptance pending.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,9 +38,10 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-No further physical COM operation or reconnect until review of the actual
-disconnect/recovery contradiction. Preserve both SQLite evidence sets. Do not
-add registers, issue writes/resets, or start M9.
+Await explicit user approval before reopening COM5. Then repeat only the accepted
+read-only M8 disconnect/reconnect/Required Recorder checklist with the new archive.
+Preserve both earlier SQLite evidence sets. Do not add registers, issue writes/
+resets, or start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -202,6 +203,37 @@ the original archive hash remains unchanged.
 This is a genuine C14/C16/C17/C19 Windows COM recovery/shutdown contradiction,
 not a scaling or protocol-frame discrepancy. STATUS is `WAITING_FOR_REVIEW`.
 Do not reconnect, reopen COM5 or begin M9.
+
+M8 reviewed recovery correction checkpoint — 2026-09-16
+
+External review authorized a narrow SOL_HIGH implementation correction. Commit
+`71d4e56` routes the validated per-resource recovery timeout into the existing
+Core executor, gives transaction and protocol recovery finite monotonic deadlines,
+fences failed-generation queued work, rejects ordinary admission while unavailable,
+publishes one immediate `Unavailable` read fact, and initiates nonblocking adapter
+retirement from Active/Recovering/ProtocolRecovering. Failed recovery does not
+advance generation or become Complete. Existing output ambiguity and no-join
+semantics remain intact.
+
+The new causal regressions cover deadline-to-Offline, unchanged generation,
+terminal active correlation, owner-boundary admission rejection, zero periodic
+queue growth, durable Good-to-Unavailable recording, finite protocol recovery,
+all shutdown entry states, cooperative/stuck COM retirement and explicit rebind
+with stale-session fencing. Targeted suites, all 136 Core tests, focused 26 host
+tests, warning-denied targeted Clippy, formatting and diff checks pass. The full
+debug workspace gate passes 402 named tests including actual Babashka A/B process
+acceptance. Full release/rustdoc are deferred to the corrected hardware gate as
+authorized. Exact red/green sequence is in `MILESTONE_8_REPORT.md`.
+
+Commit `2672a0a` changes only the next bench database pathname to
+`examples/metakon-513-com5-recovery-corrected-history.sqlite`; it does not exist
+yet. New TOML SHA-256 is
+`5fec1c546f81b8a29f7a21360deb33575fe98a87c987fbbd1a28094bd8e01def`;
+the unchanged definition hash is
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+Both prior SQLite archives retain their recorded hashes and remain untracked.
+COM5 has not been reopened. STATUS returns to `M8_HARDWARE_ACCEPTANCE_PENDING`;
+await explicit operator continuation and do not begin M9.
 
 Design validation passed: exactly 20 distinct C1-C20 matrix rows, resolving local
 design links, balanced Markdown fences, no trailing whitespace in all five

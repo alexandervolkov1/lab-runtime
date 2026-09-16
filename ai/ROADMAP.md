@@ -26,9 +26,9 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: WAITING_FOR_REVIEW
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 Current model: SOL_HIGH
-Current phase: actual Windows COM disconnect/recovery contradiction review.
+Current phase: corrected recovery implementation; post-fix hardware rerun pending.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
@@ -41,8 +41,12 @@ and the first SQLite archive is preserved. Corrected real 27/28 °C readings agr
 with the contemporaneous 28 °C front panel and are durably recorded with Good
 quality and zero output events. Actual disconnect then left one transaction and
 COM worker recovering beyond the configured timeout, without an Unavailable
-Signal; finite shutdown could not confirm transport close. Review is required
-before reconnect. M8 is incomplete and M9 is not authorized.
+Signal; finite shutdown could not confirm transport close. The reviewed narrow
+correction is complete at `71d4e56`: recovery is finite, admission/fencing and
+Unavailable publication are owner-enforced, and shutdown starts retirement from
+every executor state. A 402-test debug workspace gate passes. The post-fix actual
+disconnect/reconnect and clean close remain pending; M8 is incomplete and M9 is
+not authorized.
 
 First stable release sequence
 M7
