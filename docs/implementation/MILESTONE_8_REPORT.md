@@ -841,16 +841,86 @@ The definition remains unchanged at
 `b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
 COM5 has not been reopened after this correction.
 
+## Corrected reconnect hardware review stop — 2026-09-16
+
+The next read-only run started from HEAD `bb62808` with boot
+`0f392f7a6928adac89f458f0a9b71188`. Before COM5 was opened, the new archive was
+confirmed absent and the exact runtime TOML and definition hashes were confirmed
+as, respectively,
+`200acfe4a2cd36b4375213db9369518d751e0ad43c8401f0b456cb0a03ef6b7c` and
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+The service opened only the approved COM5/9600/8N1/no-flow, address-5, channel-0
+deployment and reached ready after its trusted read-only channel-type probe
+returned 3. No output, configuration-register, alternate-register, reset,
+enumeration or implicit control-line operation was requested.
+
+Required recording started as database `9ca1316c11d71c50f4c1f944f3227b75`, run 1,
+interval 1. Consecutive strict register-1 results decoded as raw I16 28 and,
+through the explicit deployment scale 1.0, published as `Good` 28.0 degrees
+Celsius. The operator contemporaneously reported 28 degrees Celsius on the
+front panel. Resource generation was 1, the queue stayed at zero apart from a
+snapshot taken during one active read, Recorder coverage was complete and the
+durable watermark advanced normally.
+
+After the operator physically removed the USB-RS485 adapter, public state and
+durable history showed the corrected causal boundary. Records 223 and 225 are
+the last `Good` 28.0-degree observations; record 227 is exactly one
+`Unavailable`, `failure=Transport`, with no numeric value. Resource generation
+remained 1, transaction 171 became terminal Failed, the resource reached Offline,
+the queue stayed zero through repeated polling and no later Good observation was
+published. Required recording remained healthy and complete through this
+disconnect boundary.
+
+After operator-reported physical reconnection, the client issued exactly one
+`reconnect_resource(resource=1, expected_binding_generation=1)`, request scope
+`0f392f7a6928adac89f458f0a9b71188:1`, sequence 7. The Babashka client did not
+receive an initial reply within its fixed two-second frame timeout, so it did not
+retry. Reconciliation through `operation_status` returned terminal
+`failed`, code `invalid_configuration`. Public state remained acquisition-safe:
+temperature and channel type were Unavailable, resource state was Offline,
+resource generation was 1, the ordinary queue was zero and no post-reconnect
+Good temperature was published. Thus the new resource-scoped gate prevented the
+previous escaped-acquisition defect, but the real reconnect still did not pass
+compatibility/lifecycle activation.
+
+The same reconnect exposed a second failure. Required Recorder became `failed`
+with first error `fact record reservation mismatch`, coverage `unknown_tail`,
+worker closed, durable prefix through record 472, three outstanding groups and
+four outstanding records. Offline SQLite contains the reconnect `accepted`
+event at record 472 but no durable terminal reconnect event. The application
+reported terminal failure to the reconciled public client, so this is an
+explicit durability gap rather than a claim that the failed outcome was recorded.
+Required fail-closed behavior kept acquisition disabled.
+
+Normal `runtime_shutdown`, request sequence 8, was accepted. Its terminal reply
+did not arrive within the client timeout and the process exited finitely with
+code 1 and `safe shutdown incomplete`; success was not fabricated. The archive
+has no remaining WAL or SHM sidecar after process exit, but it is intentionally
+unsealed: the boot and run remain active/recording, with a complete committed
+prefix rather than a terminal complete-run claim. Independent read-only SQLite
+inspection found 54 generation-1 Good 28.0-degree rows, the single generation-1
+Unavailable disconnect row, zero output events, no declared gaps, the accepted
+reconnect prefix, and exact runtime-TOML/definition provenance hashes above.
+
+The evidence is preserved at
+`examples/metakon-513-com5-reconnect-corrected-history.sqlite`, SHA-256
+`ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
+It must not be reused or rewritten. Babashka-independence, live-safe reload,
+successful generation-2 acquisition, clean terminal shutdown and the final M8
+software gate were not attempted after the failed reconnect. No production code
+or tests changed during this bench run. This observed contract failure requires
+external review before another COM5 run or correction phase.
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
 corrected run establishes plausible real temperature and durable history. The
-pre-fix disconnect contradiction is preserved as evidence; the reviewed software
-correction now requires a fresh actual disconnect/reconnect, public/Babashka,
-Required Recorder and clean-shutdown rerun. Firmware remains unknown and no
-independent wire capture exists.
+pre-fix disconnect and failed-reconnect contradictions are preserved as evidence.
+The latest run proves corrected finite disconnect and acquisition quiescing, but
+actual reconnect still failed and exposed a Recorder reservation failure plus an
+unsealed shutdown. Firmware remains unknown and no independent wire capture
+exists.
 
-M8 remains `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for external review
-and does not authorize M9. M8 performed no physical actuator write and makes no
-physical-output-safety, power-loss, remote-security, GUI or long-soak
-certification claim.
+M8 is `WAITING_FOR_REVIEW`; it is not ready for acceptance and does not authorize
+M9. M8 performed no physical actuator write and makes no physical-output-safety,
+power-loss, remote-security, GUI or long-soak certification claim.

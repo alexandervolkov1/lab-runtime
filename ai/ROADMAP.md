@@ -26,9 +26,9 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 Current model: SOL_HIGH
-Current phase: corrected reconnect implementation; post-fix hardware rerun pending.
+Current phase: corrected reconnect hardware run stopped for external review.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
@@ -49,9 +49,13 @@ failed reconnect whose installed replacement incorrectly resumed acquisition.
 The reviewed resource-scoped reconnect gate is complete at `0ae7b3c`; target
 ordinary reads now remain quiesced until compatibility and lifecycle success,
 while failed replacements retain their advanced generation and are retired. A
-407-entry debug workspace gate passes. The final corrected physical reconnect,
-client/provenance check and clean close remain pending; M8 is incomplete and M9
-is not authorized.
+407-entry debug workspace gate passes. The corrected rerun proved finite
+disconnect and stopped ordinary acquisition after a failed reconnect, but the
+reconnect still returned `invalid_configuration` and Required Recorder failed
+with `fact record reservation mismatch`. The resulting unsealed evidence archive
+is preserved at the hash recorded in `MILESTONE_8_REPORT.md`. External review is
+required before any further correction or COM5 run; M8 is incomplete and M9 is
+not authorized.
 
 First stable release sequence
 M7

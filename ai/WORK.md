@@ -1,9 +1,9 @@
 # Current work — M8 corrected real-hardware acceptance
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model: SOL_HIGH.
-Current phase: post-reconnect-fix real-hardware acceptance pending.
+Current phase: post-reconnect-fix real-hardware review stop.
 M7: externally accepted at `f3ff456`.
 M8 software implementation: complete at `0a42d73`; reviewed corrections complete
 through reconnect gate commit `0ae7b3c` on 2026-09-16.
@@ -30,7 +30,7 @@ deployment paths, finite recovery, resource-scoped reconnect fencing and every
 prior SQLite bench archive. Exact red/green history, hashes and gates are in
 `MILESTONE_8_REPORT.md`.
 
-## Corrected checkpoint and next authorized action
+## Corrected checkpoint and review stop
 
 The post-recovery physical run passed real 23--25 °C acquisition against the
 operator's 25 °C display. Physical USB removal produced exactly one durable
@@ -53,24 +53,23 @@ the cadence without catch-up. The debug workspace gate passes 407 named entries;
 workspace Clippy, fmt and diff checks pass. Release/rustdoc remain deferred until
 the corrected M8 hardware gate.
 
-Do not reopen COM5 until the user explicitly continues. The next run uses the
-new, absent archive
-`examples/metakon-513-com5-reconnect-corrected-history.sqlite`, TOML SHA-256
-`200acfe4a2cd36b4375213db9369518d751e0ad43c8401f0b456cb0a03ef6b7c`,
-and unchanged definition SHA-256
-`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
-Preserve all three older SQLite evidence sets. On explicit continuation, use
-this approved read-only launch command:
+The corrected real run used the previously absent
+`examples/metakon-513-com5-reconnect-corrected-history.sqlite`. Normal acquisition
+matched the operator's 28-degree front panel. Physical disconnect produced one
+durable value-less Unavailable row, finite Offline, unchanged generation, zero
+queue growth and no fabricated Good.
 
-```powershell
-cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
-```
+After physical reconnection, exactly one explicit reconnect request was issued.
+It reconciled as terminal `failed/invalid_configuration`; ordinary acquisition
+remained quiesced, Offline and Unavailable, so the escaped-acquisition defect did
+not recur. During the same operation Required Recorder failed with
+`fact record reservation mismatch`, leaving an unknown tail after durable record
+472. Accepted normal shutdown exited finitely and honestly with code 1 and
+`safe shutdown incomplete`.
 
-Repeat the approved read-only acquisition/disconnect/explicit-reconnect sequence.
-No ordinary post-rebind temperature may appear before successful channel type 3
-and reconnect completion. Do not start M9.
-
-If actual behavior contradicts the trusted protocol/recovery contract, preserve
-the observations, set `STATUS: WAITING_FOR_REVIEW` and stop. A fake transport
-cannot satisfy the hardware gate. Only after all remaining physical C14/C16/C17/
-C19 evidence passes may M8 become ready for external review. Do not begin M9.
+The archive is preserved unchanged at SHA-256
+`ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
+Exact public and SQLite evidence is recorded in `MILESTONE_8_REPORT.md`. Do not
+reopen COM5, retry reconnect, reuse this archive, implement another correction,
+run the final M8 gate or start M9 until external review supplies a new explicit
+authorization.

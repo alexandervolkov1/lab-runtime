@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 corrected Windows COM reconnect; post-fix physical acceptance pending.
+M8 corrected Windows COM reconnect; real reconnect/Recorder failure review stop.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,10 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-Await explicit user approval before reopening COM5. Then repeat only the accepted
-read-only M8 disconnect/reconnect/Required Recorder checklist with the new archive.
-Preserve all earlier SQLite evidence sets. Do not add registers, issue writes/
-resets, or start M9.
+Await external review of the latest real reconnect and Recorder failure. Do not
+reopen COM5, retry reconnect, begin another correction phase or start M9. Preserve
+all SQLite evidence sets unchanged.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -49,6 +48,34 @@ The M8 ASTRA_HIGH -> SOL_HIGH implementation gate was crossed explicitly.
 
 Do not start:
 M9 or later work.
+
+M8 corrected reconnect hardware review stop — 2026-09-16
+
+The read-only run from HEAD `bb62808` passed startup channel type 3 and recorded
+54 real generation-1 Good 28.0-degree temperature rows matching the operator's
+28-degree front panel. Physical USB-RS485 removal produced exactly one durable
+value-less `Unavailable/Transport` row, finite Offline, unchanged generation,
+zero queue growth and no fabricated Good.
+
+After operator reconnection, one public
+`reconnect_resource(resource=1, expected_binding_generation=1)` was issued. The
+client timed out before its first reply and did not retry; reconciliation of the
+same request ID returned terminal `failed/invalid_configuration`. Ordinary
+acquisition remained quiesced, Offline and Unavailable, so the prior escaped-Good
+defect did not recur. However, Required Recorder simultaneously failed with
+`fact record reservation mismatch`, `unknown_tail`, worker closed and a durable
+prefix through record 472. SQLite contains reconnect Accepted but not its
+terminal failure.
+
+Normal shutdown was accepted, finished finitely and exited nonzero with
+`safe shutdown incomplete`; no successful close was fabricated. The unsealed
+archive is preserved unchanged at
+`examples/metakon-513-com5-reconnect-corrected-history.sqlite`, SHA-256
+`ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
+It contains 54 Good rows, one Unavailable row, exact approved TOML/definition
+provenance and zero output events. Full evidence and uncompleted acceptance steps
+are in `MILESTONE_8_REPORT.md`. No production code or tests changed, the final M8
+gate was not run, and COM5 must not be reopened before external review.
 
 M8 design completion — 2026-09-16
 
