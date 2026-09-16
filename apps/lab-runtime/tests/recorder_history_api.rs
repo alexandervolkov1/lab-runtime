@@ -2,7 +2,7 @@
 
 use lab_core::{
     Command, InstrumentId, ParameterId, Sample, SignalId, Unit, Value as DomainValue,
-    recording::RecordingFact,
+    managed::CapturedInput, recording::RecordingFact,
 };
 use lab_runtime::{
     application::Application,
@@ -156,8 +156,17 @@ fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empt
             .unwrap(),
             generation: 1,
             revision: 1,
-            state_revision: None,
-            lineage: None,
+            state_revision: (sequence == 2).then_some(1),
+            lineage: (sequence == 2).then_some(CapturedInput {
+                signal: SignalId::new(InstrumentId::new(212), lab_core::TEMPERATURE),
+                value: 42.0,
+                unit: Unit::CELSIUS,
+                at: Duration::from_secs(1),
+                freshness_at: Duration::from_secs(1),
+                source_generation: 2,
+                source_revision: 1,
+                source_state_revision: Some(3),
+            }),
         })
         .collect::<Vec<_>>();
     archive.append_facts(&facts).unwrap();
@@ -323,6 +332,16 @@ fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empt
             .map(|row| row["record_seq"].as_str().unwrap().parse::<u64>().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(ids, expected);
+        if mode == "measurements" && from == "0" {
+            let rows = page[0]["result"]["rows"].as_array().unwrap();
+            assert_eq!(rows[1]["state_revision"], "1");
+            assert_eq!(rows[1]["lineage"]["source_generation"], "2");
+            assert_eq!(rows[1]["lineage"]["source_revision"], "1");
+            assert_eq!(rows[1]["lineage"]["source_state_revision"], "3");
+            assert_eq!(rows[1]["lineage"]["value"], 42.0);
+            assert_eq!(rows[1]["lineage"]["unit"], Unit::CELSIUS.id());
+            assert_eq!(rows[0]["lineage"], Value::Null);
+        }
         let release = app_b.handle(
             &mut b,
             2,
