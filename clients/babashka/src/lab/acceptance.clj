@@ -34,6 +34,20 @@
 (defn- controller! [connection controller]
   (client/query! connection "controller" {:controller controller}))
 
+(defn- recording-pause-window! [connection controller]
+  ;; Pause emits accepted/domain/terminal groups. Align it immediately after a
+  ;; native tick so the next 100-ms producer slot cannot race for the fourth
+  ;; fixed Recorder group between the credit query and the command.
+  (let [initial (:last_tick (controller! connection controller))]
+    (until! 3000
+            #(let [tick (:last_tick (controller! connection controller))]
+               (when (not= tick initial)
+                 (recording-credit! connection 0)
+                 (let [checked (:last_tick (controller! connection controller))]
+                   (if (= checked tick)
+                     true
+                     (do (Thread/yield) nil))))))))
+
 (defn- reference! [connection reference]
   (client/query! connection "reference" {:reference reference}))
 
@@ -194,7 +208,7 @@
               _ (when (not= (:instance output-before) (:instance checkpoint))
                   (throw (ex-info "authority_instance_changed" {})))
               before-ref (reference! connection reference)
-              _ (when recording? (recording-credit! connection 0))
+              _ (when recording? (recording-pause-window! connection controller))
               paused (require-completed
                       (client/command! connection "controller_pause" {:controller controller}))
               _ (when (not= (:state paused) "paused")
