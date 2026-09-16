@@ -111,6 +111,13 @@ are not reported as passing evidence.
     preservation pass, as do targeted lifecycle regression and clippy. The
     current sequential path does not yet satisfy C9's atomic multi-component
     commit and is not reported as full C9 completion.
+12. The first full debug workspace regression reached the new managed tests after
+    all earlier suites passed, then failed because the two independent tests ran
+    concurrently while each correctly requested the process-wide fixed two Lua
+    worker slots. The test module now serializes only its ownership of that shared
+    production capacity (no test ordering or shared domain state); startup still
+    uses its finite Busy retry. The full regression must be rerun before a gate is
+    claimed.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

@@ -5,7 +5,16 @@ use lab_core::{
     managed::{ComponentId, ComponentState},
 };
 use lab_runtime::service::{ServiceHost, ServiceOptions};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Mutex, MutexGuard, OnceLock},
+};
+
+fn lua_slots() -> MutexGuard<'static, ()> {
+    static SLOTS: OnceLock<Mutex<()>> = OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
 
 fn temporary_path(label: &str, extension: &str) -> PathBuf {
     let mut entropy = [0u8; 12];
@@ -27,6 +36,7 @@ end
 
 #[test]
 fn c9_script_reload_changes_only_source_generation_and_resets_warmup() {
+    let _slots = lua_slots();
     let config = temporary_path("managed", "toml");
     let script = temporary_path("managed", "lua");
     fs::write(&script, source("generation one")).unwrap();
@@ -90,6 +100,7 @@ period_ms=100
 
 #[test]
 fn c10_invalid_script_preserves_committed_source_generation() {
+    let _slots = lua_slots();
     let config = temporary_path("managed-invalid", "toml");
     let script = temporary_path("managed-invalid", "lua");
     fs::write(&script, source("valid")).unwrap();
