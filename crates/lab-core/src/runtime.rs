@@ -1976,11 +1976,15 @@ impl Runtime {
         );
         for (sample, generation, revision) in invalidated_dependents {
             self.recording_facts
-                .measurement(sample, generation, revision);
+                .managed_measurement(sample, generation, revision, None);
         }
         if let Some(sample) = replacement_failure {
-            self.recording_facts
-                .measurement(sample, staged.correlation.generation, 0);
+            self.recording_facts.managed_measurement(
+                sample,
+                staged.correlation.generation,
+                0,
+                None,
+            );
         }
         Ok(())
     }
@@ -2012,12 +2016,39 @@ impl Runtime {
         if !value.is_finite() {
             return Err(ComponentError::InputUnavailable);
         }
+        // Freeze the producer identity with the input value before the worker
+        // starts. A later managed replacement or M3 rebind cannot relabel it.
+        let (source_generation, source_revision, source_state_revision) = self
+            .managed
+            .values()
+            .find(|component| {
+                SignalId::new(
+                    component.definition.manifest.instrument,
+                    component.definition.manifest.parameter,
+                ) == input
+            })
+            .map(|component| (component.generation, 1, Some(component.revision)))
+            .or_else(|| {
+                self.metakon_instruments
+                    .get(&input.instrument())
+                    .map(|instrument| {
+                        (
+                            instrument.binding.binding_generation,
+                            instrument.binding.mapping_revision,
+                            None,
+                        )
+                    })
+            })
+            .unwrap_or((1, 1, None));
         Ok(Some(CapturedInput {
             signal: input,
             value: *value,
             unit: sample.unit(),
             at: sample.at(),
             freshness_at: sample.freshness_at(),
+            source_generation,
+            source_revision,
+            source_state_revision,
         }))
     }
 
@@ -2117,8 +2148,12 @@ impl Runtime {
         if let Some(sample) = component.signal.latest().cloned()
             && sample.at() == at
         {
-            self.recording_facts
-                .measurement(sample, component.generation, component.revision);
+            self.recording_facts.managed_measurement(
+                sample,
+                component.generation,
+                component.revision,
+                None,
+            );
         }
         let dependents: Vec<_> = self
             .managed
@@ -2160,8 +2195,12 @@ impl Runtime {
                 if let Some(sample) = other.signal.latest().cloned()
                     && sample.at() == at
                 {
-                    self.recording_facts
-                        .measurement(sample, other.generation, other.revision);
+                    self.recording_facts.managed_measurement(
+                        sample,
+                        other.generation,
+                        other.revision,
+                        None,
+                    );
                 }
             }
         }
@@ -2293,8 +2332,12 @@ impl Runtime {
         component.diagnostics = result.diagnostics;
         component.last_service = Some(at);
         component.last_observation = Some(source_at);
-        self.recording_facts
-            .measurement(sample, component.generation, component.revision);
+        self.recording_facts.managed_measurement(
+            sample,
+            component.generation,
+            component.revision,
+            captured,
+        );
     }
 
     fn poll_components(&mut self, at: Duration) -> Result<(), Error> {

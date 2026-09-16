@@ -6,6 +6,7 @@
 use crate::{
     Sample, Unit, Value,
     control::{ControllerId, ControllerState, PidConfig},
+    managed::CapturedInput,
     output::{ActuatorId, DispatchId, OutputIntent},
     reference::ReferenceId,
     transport::ResourceId,
@@ -115,8 +116,12 @@ pub enum RecordingFact {
         sample: Sample,
         /// Instrument or managed-component generation at commit.
         generation: u64,
-        /// Active definition or state revision at commit.
+        /// Active definition/configuration or binding mapping revision at commit.
         revision: u64,
+        /// Managed component state revision, separate from definition revision.
+        state_revision: Option<u64>,
+        /// Frozen transform input identity and original observation time.
+        lineage: Option<CapturedInput>,
     },
     /// Output transition captured before later transitions can overwrite snapshots.
     Output {
@@ -266,6 +271,29 @@ impl FactOutbox {
     }
 
     pub(crate) fn measurement(&mut self, sample: Sample, generation: u64, revision: u64) {
+        self.measurement_with_provenance(sample, generation, revision, None, None);
+    }
+
+    /// Capture one committed managed publication before state or generation moves.
+    /// Definitions are immutable inside one generation; state progress is separate.
+    pub(crate) fn managed_measurement(
+        &mut self,
+        sample: Sample,
+        generation: u64,
+        state_revision: u64,
+        lineage: Option<CapturedInput>,
+    ) {
+        self.measurement_with_provenance(sample, generation, 1, Some(state_revision), lineage);
+    }
+
+    fn measurement_with_provenance(
+        &mut self,
+        sample: Sample,
+        generation: u64,
+        revision: u64,
+        state_revision: Option<u64>,
+        lineage: Option<CapturedInput>,
+    ) {
         let bytes = 256
             + match sample.value() {
                 Some(Value::Text(value) | Value::Enum(value)) => value.capacity(),
@@ -276,6 +304,8 @@ impl FactOutbox {
             sample,
             generation,
             revision,
+            state_revision,
+            lineage,
         });
     }
 

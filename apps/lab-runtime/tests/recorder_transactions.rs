@@ -2,6 +2,7 @@
 
 use lab_core::{
     Command, InstrumentId, Runtime, Sample, SignalId, Unit, Value, VirtualInstrumentConfig,
+    managed::CapturedInput,
     output::ActuatorId,
     recording::{OutputEvidenceSource, OutputStage, RecordingFact},
     reference::ReferenceId,
@@ -20,6 +21,57 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-transaction-{suffix}.sqlite"))
+}
+
+#[test]
+fn malformed_transform_lineage_rejects_a_whole_fact_before_checkpoint_then_valid_reopens() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("lineage validation").unwrap();
+    let watermark = store.current_record_sequence();
+    let source = SignalId::new(InstrumentId::new(901), lab_core::TEMPERATURE);
+    let derived = SignalId::new(InstrumentId::new(902), lab_core::TEMPERATURE);
+    let make = |source_generation| RecordingFact::Measurement {
+        sequence: 1,
+        sample: Sample::derived_good(
+            derived,
+            Unit::CELSIUS,
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+            Value::Float(10.0),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+        state_revision: Some(1),
+        lineage: Some(CapturedInput {
+            signal: source,
+            value: 5.0,
+            unit: Unit::CELSIUS,
+            at: Duration::from_secs(1),
+            freshness_at: Duration::from_secs(1),
+            source_generation,
+            source_revision: 1,
+            source_state_revision: Some(1),
+        }),
+    };
+    assert!(store.append_facts(&[make(0)]).is_err());
+    assert_eq!(store.current_record_sequence(), watermark);
+    store.append_facts(&[make(1)]).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_secs(3)).unwrap();
+    store.close().unwrap();
+    let archive = SqliteStore::open(&path).unwrap();
+    let rows = archive
+        .read_measurements(derived.instrument(), derived.parameter(), 8)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state_revision, Some(1));
+    let lineage = rows[0].lineage.as_ref().unwrap();
+    assert_eq!(lineage.signal, source);
+    assert_eq!(lineage.source_generation, 1);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -91,6 +143,8 @@ fn duplicate_source_fact_identity_with_changed_value_rolls_back_its_whole_batch(
         .unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     };
     let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
     store.start_run("source identity").unwrap();
@@ -221,6 +275,8 @@ fn checkpoint_update_failure_rolls_back_fact_and_preserves_prior_boot_prefix() {
         sample: Sample::validated_good(signal, Unit::CELSIUS, at, Value::Float(27.5)).unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     };
     let old_boot = "48484848484848484848484848484848";
     let mut old = SqliteStore::open_with_boot(&path, old_boot).unwrap();
@@ -277,6 +333,8 @@ fn deferred_foreign_key_rejects_actual_commit_without_advancing_checkpoint() {
         sample: Sample::validated_good(signal, Unit::CELSIUS, at, Value::Float(28.5)).unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     };
     let mut old = SqliteStore::open_with_boot(&path, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
     old.start_run("commit prefix").unwrap();

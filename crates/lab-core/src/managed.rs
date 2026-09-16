@@ -219,6 +219,12 @@ pub struct CapturedInput {
     pub at: Duration,
     /// Original observation time used to bound freshness after worker latency.
     pub freshness_at: Duration,
+    /// Upstream replacement generation captured before asynchronous execution.
+    pub source_generation: u64,
+    /// Upstream definition/configuration or binding mapping revision.
+    pub source_revision: u64,
+    /// Upstream managed state revision, when the input is managed.
+    pub source_state_revision: Option<u64>,
 }
 
 /// Fully owned job, never a mutable Runtime reference or an output capability.

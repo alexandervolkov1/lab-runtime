@@ -259,6 +259,8 @@ fn escaped_equal_time_rows_shorten_pages_without_shifting_frozen_identities() {
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         })
         .collect();
     store.append_facts(&facts).unwrap();
@@ -294,6 +296,8 @@ fn escaped_equal_time_rows_shorten_pages_without_shifting_frozen_identities() {
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         }])
         .unwrap();
     let second = store
@@ -314,6 +318,8 @@ fn escaped_equal_time_rows_shorten_pages_without_shifting_frozen_identities() {
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         }])
         .unwrap();
     let final_page = store
@@ -374,6 +380,8 @@ fn archived_gap_page_exposes_known_loss_identity_without_hiding_good_rows() {
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         }])
         .unwrap();
     store
@@ -478,6 +486,8 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
         .unwrap(),
         generation: 1,
         revision: 2,
+        state_revision: None,
+        lineage: None,
     });
     store.append_facts(&initial).unwrap();
     let filter = HistoryFilter {
@@ -499,6 +509,8 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
                 .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         }])
         .unwrap();
     let second = store
@@ -517,6 +529,8 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
                 .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         }])
         .unwrap();
     let third = store
@@ -585,6 +599,8 @@ fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
                     .unwrap(),
                     generation: 1,
                     revision: 1,
+                    state_revision: None,
+                    lineage: None,
                 }
             })
             .collect::<Vec<_>>();

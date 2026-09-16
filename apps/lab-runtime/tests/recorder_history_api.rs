@@ -156,6 +156,8 @@ fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empt
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         })
         .collect::<Vec<_>>();
     archive.append_facts(&facts).unwrap();
@@ -389,6 +391,8 @@ fn public_archived_gap_page_keeps_loss_metadata_within_json_budget() {
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         }])
         .unwrap();
     archive
@@ -490,6 +494,8 @@ fn history_cursor_expires_on_reconnect_and_explicit_ttl_without_silent_resume() 
                     .unwrap(),
                     generation: 1,
                     revision: 1,
+                    state_revision: None,
+                    lineage: None,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -901,6 +907,8 @@ fn escaped_archived_values_page_through_public_api_with_bounded_complete_frames(
                     .unwrap(),
                     generation: 1,
                     revision: 1,
+                    state_revision: None,
+                    lineage: None,
                 })
                 .collect::<Vec<_>>(),
         )

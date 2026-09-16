@@ -38,6 +38,8 @@ fn exhausted_group_and_history_credits_still_deliver_one_reserved_gap_and_termin
         .unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     };
     worker.try_admit(vec![fact(1)]).unwrap();
     let held_by = Instant::now() + Duration::from_secs(2);
@@ -127,6 +129,8 @@ fn escaped_measurement_charges_owned_and_encoded_bytes_before_group_admission() 
         .unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     };
     assert!(worker.try_admit(vec![fact]).is_err());
     let status = worker.poll();
@@ -176,6 +180,8 @@ fn overallocated_fact_vector_is_charged_even_when_it_contains_one_small_fact() {
         .unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     });
     assert!(worker.try_admit(facts).is_err());
     assert_eq!(worker.poll().outstanding_records, 0);
@@ -212,6 +218,8 @@ fn owner_assigns_contiguous_record_ids_to_a_whole_group_before_sqlite_commit() {
             .unwrap(),
             generation: 1,
             revision: 1,
+            state_revision: None,
+            lineage: None,
         })
         .collect::<Vec<_>>();
     let assigned = worker.try_admit_at(facts, Duration::from_secs(1)).unwrap();
@@ -262,6 +270,8 @@ fn owner_clock_reservation_preserves_group_order_during_a_real_writer_hold() {
             .unwrap(),
         generation: 1,
         revision: 1,
+        state_revision: None,
+        lineage: None,
     };
     let first = worker
         .try_admit_at(
@@ -505,6 +515,8 @@ fn four_full_causal_groups_commit_exactly_the_256_record_batch_limit() {
                     .unwrap(),
                     generation: 1,
                     revision: 1,
+                    state_revision: None,
+                    lineage: None,
                 }
             })
             .collect();

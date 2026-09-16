@@ -209,6 +209,8 @@ fn all_scalar_kinds_and_delayed_publication_reopen_without_coercion() {
                 sample: Sample::validated_good(signal, Unit::CELSIUS, at, value.clone()).unwrap(),
                 generation: 1,
                 revision: 1,
+                state_revision: None,
+                lineage: None,
             }
         })
         .chain(std::iter::once(RecordingFact::Measurement {
@@ -223,6 +225,8 @@ fn all_scalar_kinds_and_delayed_publication_reopen_without_coercion() {
             .unwrap(),
             generation: 1,
             revision: 2,
+            state_revision: None,
+            lineage: None,
         }))
         .collect();
     for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {

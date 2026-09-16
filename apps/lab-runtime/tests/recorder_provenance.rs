@@ -11,8 +11,8 @@ use lab_core::{
 use lab_runtime::{
     host::{Clock, HostCore},
     recorder::{
-        ProvenanceEntry, RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState,
-        SqliteStore,
+        HistoryFilter, ProvenanceEntry, RecorderLimits, RecorderWorker, RecordingPolicy,
+        RecordingState, SqliteStore,
     },
     service::{ServiceHost, ServiceOptions},
 };
@@ -624,10 +624,229 @@ fn replaced_managed_generation_reopens_with_failure_and_ignores_old_late_result(
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].value, Some(Value::Float(42.0)));
     assert_eq!(rows[0].generation, 1);
+    assert_eq!(
+        rows[0].revision, 1,
+        "definition is immutable within generation"
+    );
+    assert_eq!(rows[0].state_revision, Some(1));
     assert_eq!(rows[1].generation, 2);
+    assert_eq!(rows[1].revision, 1);
+    assert_eq!(rows[1].state_revision, Some(0));
     assert_eq!(rows[1].quality, "unavailable");
     assert_eq!(rows[1].failure.as_deref(), Some("ComponentFailure"));
     assert_eq!(rows[1].value, None);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn delayed_managed_transform_reopens_original_upstream_identity_and_state_revision() {
+    let path = temporary_database();
+    let source_id = ComponentId::new(822);
+    let transform_id = ComponentId::new(823);
+    let source_signal = lab_core::SignalId::new(InstrumentId::new(822), TEMPERATURE);
+    let mut transform = component_definition(transform_id.get());
+    transform.manifest.kind = ComponentKind::Transform {
+        input: source_signal,
+    };
+    let mailbox = Arc::new(Mutex::new(ComponentMailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(ComponentFake(mailbox.clone())))
+        .unwrap();
+    for definition in [component_definition(source_id.get()), transform] {
+        runtime
+            .command(Command::StageComponent {
+                definition,
+                replaces: None,
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        let init = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+        complete_component(&mailbox, init, ComponentStatus::Init, None);
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+    }
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::InvokeComponent {
+            component: source_id,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let first = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete_component(&mailbox, first, ComponentStatus::Ready, Some(42.0));
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime
+        .command(Command::InvokeComponent {
+            component: transform_id,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let held_transform = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    let captured = held_transform
+        .input
+        .expect("transform input was not captured");
+    assert_eq!(captured.signal, source_signal);
+    assert_eq!(captured.value, 42.0);
+    assert_eq!(captured.freshness_at, Duration::ZERO);
+    runtime
+        .command(Command::InvokeComponent {
+            component: source_id,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let later_source = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete_component(&mailbox, later_source, ComponentStatus::Ready, Some(43.0));
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    complete_component(&mailbox, held_transform, ComponentStatus::Ready, Some(84.0));
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    let facts = runtime.take_recording_facts();
+    let mut store = SqliteStore::open(&path).unwrap();
+    let recorded_boot = store.boot_id().to_owned();
+    store.start_run("managed transform lineage").unwrap();
+    store.append_facts(&facts).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_secs(2)).unwrap();
+    store.close().unwrap();
+    let archive = SqliteStore::open(&path).unwrap();
+    let upstream = archive
+        .read_measurements(InstrumentId::new(822), TEMPERATURE, 8)
+        .unwrap();
+    let derived = archive
+        .read_measurements(InstrumentId::new(823), TEMPERATURE, 8)
+        .unwrap();
+    assert_eq!(upstream.len(), 2);
+    assert_eq!(upstream[1].state_revision, Some(2));
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0].value, Some(Value::Float(84.0)));
+    assert_eq!(derived[0].revision, 1);
+    assert_eq!(derived[0].state_revision, Some(1));
+    assert_eq!(derived[0].published_at, Duration::from_secs(1));
+    assert_eq!(derived[0].observed_at, Duration::ZERO);
+    let lineage = derived[0]
+        .lineage
+        .as_ref()
+        .expect("lost captured input lineage");
+    assert_eq!(lineage.signal, source_signal);
+    assert_eq!(lineage.value, 42.0);
+    assert_eq!(lineage.unit, Unit::CELSIUS.id());
+    assert_eq!(lineage.source_generation, 1);
+    assert_eq!(lineage.source_revision, 1);
+    assert_eq!(lineage.source_state_revision, Some(1));
+    assert_eq!(lineage.published_at, Duration::ZERO);
+    assert_eq!(lineage.observed_at, Duration::ZERO);
+    let page = archive
+        .read_history_measurements(
+            &HistoryFilter {
+                boot_id: recorded_boot,
+                run_no: 1,
+                instrument: InstrumentId::new(823),
+                parameter: TEMPERATURE,
+                from: Duration::ZERO,
+                to: Duration::from_secs(2),
+            },
+            None,
+            8,
+        )
+        .unwrap();
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].state_revision, Some(1));
+    assert_eq!(page.rows[0].lineage, derived[0].lineage);
+    assert!(page.next_cursor.is_none());
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn warming_transform_attempt_reopens_captured_input_without_claiming_a_good_observation() {
+    let path = temporary_database();
+    let source_id = ComponentId::new(824);
+    let transform_id = ComponentId::new(825);
+    let source_signal = lab_core::SignalId::new(InstrumentId::new(824), TEMPERATURE);
+    let mut transform = component_definition(transform_id.get());
+    transform.manifest.kind = ComponentKind::Transform {
+        input: source_signal,
+    };
+    let mailbox = Arc::new(Mutex::new(ComponentMailbox::default()));
+    let mut runtime = Runtime::new();
+    runtime
+        .install_component_executor(Box::new(ComponentFake(mailbox.clone())))
+        .unwrap();
+    for definition in [component_definition(source_id.get()), transform] {
+        runtime
+            .command(Command::StageComponent {
+                definition,
+                replaces: None,
+                at: Duration::ZERO,
+            })
+            .unwrap();
+        let init = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+        complete_component(&mailbox, init, ComponentStatus::Init, None);
+        runtime
+            .command(Command::PollComponents { at: Duration::ZERO })
+            .unwrap();
+    }
+    runtime.enable_recording_facts();
+    runtime
+        .command(Command::InvokeComponent {
+            component: source_id,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    let source = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    complete_component(&mailbox, source, ComponentStatus::Ready, Some(42.0));
+    runtime
+        .command(Command::PollComponents { at: Duration::ZERO })
+        .unwrap();
+    runtime
+        .command(Command::InvokeComponent {
+            component: transform_id,
+            at: Duration::from_millis(100),
+        })
+        .unwrap();
+    let warming = mailbox.lock().unwrap().submitted.pop_front().unwrap();
+    let captured = warming
+        .input
+        .expect("warming invocation still captured its input");
+    assert_eq!(captured.value, 42.0);
+    complete_component(&mailbox, warming, ComponentStatus::Warming, None);
+    runtime
+        .command(Command::PollComponents {
+            at: Duration::from_millis(100),
+        })
+        .unwrap();
+    let facts = runtime.take_recording_facts();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("warming transform lineage").unwrap();
+    store.append_facts(&facts).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_secs(1)).unwrap();
+    store.close().unwrap();
+    let archive = SqliteStore::open(&path).unwrap();
+    let rows = archive
+        .read_measurements(InstrumentId::new(825), TEMPERATURE, 8)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].quality, "unavailable");
+    assert_eq!(rows[0].failure.as_deref(), Some("ProcessingWarmup"));
+    assert_eq!(rows[0].observed_at, Duration::from_millis(100));
+    assert_eq!(rows[0].lineage.as_ref().unwrap().value, 42.0);
+    assert_eq!(
+        rows[0].lineage.as_ref().unwrap().observed_at,
+        Duration::ZERO
+    );
     drop(archive);
     std::fs::remove_file(path).unwrap();
 }

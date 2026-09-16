@@ -1868,11 +1868,22 @@ fn history_page_json(page: &HistoryPage, cursor_token: Option<&str>) -> Value {
                 Some(lab_core::Value::Enum(value)) => json!({"kind":"enum","value":value}),
                 None => Value::Null,
             };
+            let lineage = row.lineage.as_ref().map(|input| json!({
+                "signal":{"instrument":input.signal.instrument().get().to_string(),
+                          "parameter":input.signal.parameter().get().to_string()},
+                "value":input.value,"unit":input.unit,
+                "published_at_ns":nanos(input.published_at),
+                "observed_at_ns":nanos(input.observed_at),
+                "source_generation":input.source_generation.to_string(),
+                "source_revision":input.source_revision.to_string(),
+                "source_state_revision":input.source_state_revision.map(|revision|revision.to_string())}));
             json!({"record_seq":row.record_sequence.to_string(),
             "published_at_ns":nanos(row.published_at),
             "observed_at_ns":nanos(row.observed_at),"unit":row.unit,
             "quality":row.quality,"failure":row.failure,"value":value,
-            "generation":row.generation.to_string(),"revision":row.revision.to_string()})
+            "generation":row.generation.to_string(),"revision":row.revision.to_string(),
+            "state_revision":row.state_revision.map(|revision|revision.to_string()),
+            "lineage":lineage})
         })
         .collect();
     json!({"rows":rows,"watermark":page.watermark.to_string(),

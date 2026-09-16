@@ -125,6 +125,9 @@ fn virtual_temperature_model_feeds_three_sample_mean_through_plain_state() {
             unit: Unit::CELSIUS,
             at: Duration::from_secs(at),
             freshness_at: Duration::from_secs(at),
+            source_generation: 1,
+            source_revision: 1,
+            source_state_revision: Some(step as u64 + 1),
         };
         let mean = run(&invocation(
             MOVING_MEAN_SOURCE,

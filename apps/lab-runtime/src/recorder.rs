@@ -5,7 +5,8 @@
 //! nonblocking ingress rather than call these methods on its safety lane.
 
 use lab_core::{
-    InstrumentId, ParameterId, SampleQuality, Value,
+    InstrumentId, ParameterId, SampleQuality, SignalId, Value,
+    managed::CapturedInput,
     recording::{OutputStage, RecordingFact},
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, limits::Limit, params};
@@ -331,6 +332,31 @@ pub struct MeasurementRow {
     pub generation: u64,
     /// Source revision at commit.
     pub revision: u64,
+    /// Managed state revision, separate from the immutable definition revision.
+    pub state_revision: Option<u64>,
+    /// Captured transform input; absent for a native or managed source reading.
+    pub lineage: Option<MeasurementLineage>,
+}
+
+/// Immutable upstream identity/time frozen before an asynchronous transform ran.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasurementLineage {
+    /// Input signal selected at invocation admission.
+    pub signal: SignalId,
+    /// Exact finite input scalar passed to the worker.
+    pub value: f64,
+    /// Stable engineering-unit identity.
+    pub unit: String,
+    /// Upstream publication time in the same archived boot.
+    pub published_at: Duration,
+    /// Original upstream observation time.
+    pub observed_at: Duration,
+    /// Replacement generation at input capture.
+    pub source_generation: u64,
+    /// Upstream configuration/definition or mapping revision.
+    pub source_revision: u64,
+    /// Upstream managed state revision when applicable.
+    pub source_state_revision: Option<u64>,
 }
 
 /// Actual connection durability settings, inspected only on the storage worker.
@@ -603,6 +629,19 @@ impl SqliteStore {
             {
                 return Err(StorageError(
                     "version-one history index is incompatible".into(),
+                ));
+            }
+            let measurement_columns: Vec<String> = connection
+                .prepare("PRAGMA table_info('measurements')")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<_, _>>()?;
+            if !measurement_columns
+                .iter()
+                .any(|column| column == "state_revision")
+                || !measurement_columns.iter().any(|column| column == "lineage")
+            {
+                return Err(StorageError(
+                    "version-one measurement provenance columns are incomplete".into(),
                 ));
             }
             let loss_index: Vec<String> = connection
@@ -1569,6 +1608,8 @@ impl SqliteStore {
                         sample,
                         generation,
                         revision,
+                        state_revision,
+                        lineage,
                         ..
                     } => {
                         let (value_kind, float_value, integer_value, bool_value, text_value) =
@@ -1598,18 +1639,23 @@ impl SqliteStore {
                             SampleQuality::Unavailable => "unavailable",
                         };
                         let failure = sample.failure().map(|reason| format!("{reason:?}"));
+                        let state_revision_blob = state_revision.map(u64_blob);
+                        let lineage_blob = lineage.map(encode_lineage).transpose()?;
                         transaction.execute(
                         "INSERT INTO measurements(boot_id,record_seq,run_no,instrument_id,\
                          parameter_id,generation,revision,observed_at,published_at,unit_key,\
-                         quality,failure,value_kind,float_value,integer_value,bool_value,text_value) \
-                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                         quality,failure,value_kind,float_value,integer_value,bool_value,text_value,\
+                         state_revision,lineage) \
+                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                         params![self.boot_id.as_slice(), record_id.as_slice(), run_no.as_slice(),
                             u64_blob(sample.signal().instrument().get()).as_slice(),
                             u64_blob(sample.signal().parameter().get()).as_slice(),
                             u64_blob(*generation).as_slice(), u64_blob(*revision).as_slice(),
                             duration_blob(sample.freshness_at())?.as_slice(), at.as_slice(),
                             sample.unit().id(), quality, failure, value_kind,
-                            float_value, integer_value, bool_value, text_value],
+                            float_value, integer_value, bool_value, text_value,
+                            state_revision_blob.as_ref().map(|blob|blob.as_slice()),
+                            lineage_blob.as_deref()],
                     )?;
                     }
                     RecordingFact::Output {
@@ -2600,7 +2646,8 @@ impl SqliteStore {
         let last_seq = u64_blob(last.map_or(0, |key| key.1));
         let mut statement = self.connection.prepare(
             "SELECT record_seq,published_at,observed_at,unit_key,quality,failure,
-                    value_kind,float_value,integer_value,bool_value,text_value,generation,revision
+                    value_kind,float_value,integer_value,bool_value,text_value,generation,revision,
+                    state_revision,lineage
              FROM measurements
              WHERE boot_id=?1 AND run_no=?2 AND instrument_id=?3 AND parameter_id=?4
                AND published_at>=?5 AND published_at<?6 AND record_seq<=?7
@@ -2642,7 +2689,9 @@ impl SqliteStore {
                 .saturating_add(match &row.value {
                     Some(Value::Text(text) | Value::Enum(text)) => escaped(text),
                     _ => 0,
-                });
+                })
+                .saturating_add(usize::from(row.state_revision.is_some()) * 32)
+                .saturating_add(usize::from(row.lineage.is_some()) * 512);
             if rows.len() == limit
                 || page_bytes.saturating_add(bytes).saturating_add(loss_charge) > 8 * 1024 - 512
             {
@@ -2693,7 +2742,8 @@ impl SqliteStore {
         }
         let mut statement = self.connection.prepare(
             "SELECT record_seq,published_at,observed_at,unit_key,quality,failure,\
-             value_kind,float_value,integer_value,bool_value,text_value,generation,revision \
+             value_kind,float_value,integer_value,bool_value,text_value,generation,revision,\
+             state_revision,lineage \
              FROM measurements WHERE instrument_id=?1 AND parameter_id=?2 \
              ORDER BY published_at,record_seq LIMIT ?3",
         )?;
@@ -2717,12 +2767,34 @@ fn u64_blob(value: u64) -> [u8; 8] {
 // checkpoint advances; SQLite may otherwise coerce NaN to NULL silently.
 fn validate_storage_fact(fact: &RecordingFact) -> Result<(), StorageError> {
     match fact {
-        RecordingFact::Measurement { sample, .. } => {
+        RecordingFact::Measurement {
+            sample,
+            revision,
+            state_revision,
+            lineage,
+            ..
+        } => {
             if sample.value().is_some_and(|value| {
                 matches!(value,
                 Value::Float(number) if !number.is_finite())
             }) {
                 return Err(StorageError("nonfinite measurement fact".into()));
+            }
+            if state_revision.is_some() && *revision != 1 {
+                return Err(StorageError(
+                    "managed measurement definition revision is not immutable".into(),
+                ));
+            }
+            if let Some(input) = lineage {
+                if state_revision.is_none()
+                    || (sample.quality() == SampleQuality::Good
+                        && sample.freshness_at() != input.freshness_at)
+                    || input.at > sample.at()
+                    || input.unit != sample.unit()
+                {
+                    return Err(StorageError("inconsistent transform input lineage".into()));
+                }
+                encode_lineage(*input)?;
             }
         }
         RecordingFact::Output {
@@ -2894,6 +2966,100 @@ fn hex_hash(value: &[u8; 32]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// The fixed typed lineage envelope is bounded and never reads a current
+// managed generation while decoding historical data.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLineage {
+    version: u8,
+    instrument: String,
+    parameter: String,
+    value: f64,
+    unit: String,
+    published_at_ns: String,
+    observed_at_ns: String,
+    source_generation: String,
+    source_revision: String,
+    source_state_revision: Option<String>,
+}
+
+fn encode_lineage(input: CapturedInput) -> Result<Vec<u8>, StorageError> {
+    if !input.value.is_finite()
+        || input.source_generation == 0
+        || input.source_revision == 0
+        || input.freshness_at > input.at
+    {
+        return Err(StorageError("invalid captured input lineage".into()));
+    }
+    let payload = StoredLineage {
+        version: 1,
+        instrument: input.signal.instrument().get().to_string(),
+        parameter: input.signal.parameter().get().to_string(),
+        value: input.value,
+        unit: input.unit.id().into(),
+        published_at_ns: input.at.as_nanos().to_string(),
+        observed_at_ns: input.freshness_at.as_nanos().to_string(),
+        source_generation: input.source_generation.to_string(),
+        source_revision: input.source_revision.to_string(),
+        source_state_revision: input
+            .source_state_revision
+            .map(|revision| revision.to_string()),
+    };
+    let encoded = serde_json::to_vec(&payload)
+        .map_err(|_| StorageError("cannot encode captured input lineage".into()))?;
+    if encoded.len() > 512 {
+        return Err(StorageError(
+            "captured input lineage exceeds record bound".into(),
+        ));
+    }
+    Ok(encoded)
+}
+
+fn decode_lineage(bytes: Vec<u8>) -> Result<MeasurementLineage, rusqlite::Error> {
+    if bytes.len() > 512 {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let stored: StoredLineage =
+        serde_json::from_slice(&bytes).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let parse = |value: &str| {
+        value
+            .parse::<u64>()
+            .map_err(|_| rusqlite::Error::InvalidQuery)
+    };
+    let published = parse(&stored.published_at_ns)?;
+    let observed = parse(&stored.observed_at_ns)?;
+    let source_generation = parse(&stored.source_generation)?;
+    let source_revision = parse(&stored.source_revision)?;
+    let source_state_revision = stored
+        .source_state_revision
+        .as_deref()
+        .map(parse)
+        .transpose()?;
+    if stored.version != 1
+        || !stored.value.is_finite()
+        || source_generation == 0
+        || source_revision == 0
+        || observed > published
+        || stored.unit.is_empty()
+        || stored.unit.len() > 32
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(MeasurementLineage {
+        signal: SignalId::new(
+            InstrumentId::new(parse(&stored.instrument)?),
+            ParameterId::new(parse(&stored.parameter)?),
+        ),
+        value: stored.value,
+        unit: stored.unit,
+        published_at: Duration::from_nanos(published),
+        observed_at: Duration::from_nanos(observed),
+        source_generation,
+        source_revision,
+        source_state_revision,
+    })
+}
+
 fn decode_measurement_row(row: &rusqlite::Row<'_>) -> Result<MeasurementRow, rusqlite::Error> {
     let kind: String = row.get(6)?;
     let value = match kind.as_str() {
@@ -2915,6 +3081,14 @@ fn decode_measurement_row(row: &rusqlite::Row<'_>) -> Result<MeasurementRow, rus
         value,
         generation: read_u64_blob(row.get(11)?)?,
         revision: read_u64_blob(row.get(12)?)?,
+        state_revision: row
+            .get::<_, Option<Vec<u8>>>(13)?
+            .map(read_u64_blob)
+            .transpose()?,
+        lineage: row
+            .get::<_, Option<Vec<u8>>>(14)?
+            .map(decode_lineage)
+            .transpose()?,
     })
 }
 
@@ -3103,7 +3277,8 @@ fn create_schema(connection: &mut Connection) -> Result<(), StorageError> {
              WHERE fact_seq IS NOT NULL;
          CREATE TABLE measurements(boot_id BLOB NOT NULL, record_seq BLOB NOT NULL,
              run_no BLOB NOT NULL, instrument_id BLOB NOT NULL, parameter_id BLOB NOT NULL,
-             generation BLOB NOT NULL, revision BLOB NOT NULL, observed_at BLOB NOT NULL,
+             generation BLOB NOT NULL, revision BLOB NOT NULL, state_revision BLOB,
+             observed_at BLOB NOT NULL,
              published_at BLOB NOT NULL, unit_key TEXT NOT NULL CHECK(length(unit_key) BETWEEN 1 AND 64),
              quality TEXT NOT NULL CHECK(quality IN ('good','unavailable')),
              failure TEXT, value_kind TEXT NOT NULL, float_value REAL,
