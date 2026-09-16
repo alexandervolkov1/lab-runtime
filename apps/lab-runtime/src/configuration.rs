@@ -269,6 +269,47 @@ impl FrozenDeployment {
         Ok(next)
     }
 
+    /// Reuse active source bytes for unchanged managed declarations during a
+    /// configuration reload. Only the distinct script-reload operation rereads
+    /// those mutable pathnames.
+    pub(crate) fn reuse_unchanged_managed_sources(
+        mut self,
+        active: &Self,
+    ) -> Result<Self, ConfigurationError> {
+        for component in &self.effective.dto.managed_components {
+            if !active
+                .effective
+                .dto
+                .managed_components
+                .iter()
+                .any(|old| old == component)
+            {
+                continue;
+            }
+            let candidate_path = self.resolved_path(&component.source)?;
+            let active_path = active.resolved_path(&component.source)?;
+            let active_artifact = active
+                .artifacts
+                .iter()
+                .find(|artifact| {
+                    artifact.kind == ArtifactKind::ManagedLuaSource
+                        && artifact.declared_path == active_path
+                })
+                .ok_or_else(|| ConfigurationError::artifact("active managed source missing"))?;
+            let candidate_artifact = self
+                .artifacts
+                .iter_mut()
+                .find(|artifact| {
+                    artifact.kind == ArtifactKind::ManagedLuaSource
+                        && artifact.declared_path == candidate_path
+                })
+                .ok_or_else(|| ConfigurationError::artifact("candidate managed source missing"))?;
+            candidate_artifact.bytes = active_artifact.bytes.clone();
+            candidate_artifact.sha256 = active_artifact.sha256;
+        }
+        Ok(self)
+    }
+
     pub(crate) fn changes_from(&self, active: &Self) -> DeploymentChanges {
         let old = &active.effective.dto;
         let new = &self.effective.dto;

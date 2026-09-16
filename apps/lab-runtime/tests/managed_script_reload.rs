@@ -77,6 +77,33 @@ period_ms=100
     assert_eq!(first.generation, 1);
 
     fs::write(&script, source("generation two")).unwrap();
+    fs::write(
+        &config,
+        toml.replace(
+            "display_name=\"Managed\"",
+            "display_name=\"Managed renamed\"",
+        ),
+    )
+    .unwrap();
+    service.reload_configuration().unwrap();
+    let active = service.loaded_configuration().unwrap().active();
+    assert_ne!(active.toml_hash(), original_hash);
+    assert!(
+        active
+            .artifacts()
+            .iter()
+            .any(|artifact| artifact.bytes() == source("generation one").as_bytes())
+    );
+    let QueryResult::Component(before_explicit_reload) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(201)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(before_explicit_reload.generation, 1);
+    let configuration_hash = active.toml_hash();
+
     service.reload_managed_scripts().unwrap();
     let QueryResult::Component(second) = service
         .owner()
@@ -92,7 +119,7 @@ period_ms=100
     ));
     assert_eq!(
         service.loaded_configuration().unwrap().active().toml_hash(),
-        original_hash
+        configuration_hash
     );
     fs::remove_file(config).unwrap();
     fs::remove_file(script).unwrap();

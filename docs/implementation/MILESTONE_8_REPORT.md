@@ -159,6 +159,14 @@ are not reported as passing evidence.
     leaves the new active identity and faults Required recording. The extended
     process/reopen test observes activation generation 2 and both exact TOML byte
     versions in SQLite. Targeted provenance, Required and clippy suites pass.
+17. C5 managed-source separation was red: a label-only configuration reload had
+    frozen the newly modified Lua pathname even though it did not advance the
+    active component generation. Configuration loading still validates the whole
+    candidate, then replaces artifacts for byte-for-byte unchanged managed
+    declarations with the prior active frozen bytes before staging. The extended
+    C9 test proves label/TOML revision changes retain source bytes and generation
+    until the distinct script reload, which then advances the generation while
+    preserving that TOML hash. All managed reload tests and clippy pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

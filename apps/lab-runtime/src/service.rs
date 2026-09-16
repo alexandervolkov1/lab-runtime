@@ -522,8 +522,15 @@ impl ServiceHost {
             .configuration_path
             .as_deref()
             .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
-        let candidate =
-            load_runtime_toml(path).map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let candidate = load_runtime_toml(path)
+            .map_err(|_| LifecycleOperationError::InvalidCandidate)?
+            .reuse_unchanged_managed_sources(
+                self.deployment
+                    .as_ref()
+                    .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+                    .active(),
+            )
+            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
         let lifecycle = self
             .deployment
             .as_mut()
