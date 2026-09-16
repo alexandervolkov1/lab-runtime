@@ -26,9 +26,9 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: WAITING_FOR_REVIEW
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 Current model: SOL_HIGH
-Current phase: corrected reconnect hardware run stopped for external review.
+Current phase: Recorder-ordering-corrected physical reconnect gate pending.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
@@ -53,9 +53,15 @@ while failed replacements retain their advanced generation and are retired. A
 disconnect and stopped ordinary acquisition after a failed reconnect, but the
 reconnect still returned `invalid_configuration` and Required Recorder failed
 with `fact record reservation mismatch`. The resulting unsealed evidence archive
-is preserved at the hash recorded in `MILESTONE_8_REPORT.md`. External review is
-required before any further correction or COM5 run; M8 is incomplete and M9 is
-not authorized.
+is preserved at the hash recorded in `MILESTONE_8_REPORT.md`. The reviewed
+Recorder correction is complete at `fdf8a73`: lifecycle work reserves capacity
+without assigning a future FIFO identity, compatibility facts remain contiguous,
+and activation takes the current tail identity only when immediately enqueued.
+Cancellation creates no rewind or gap; Required failure remains fail-closed. The
+debug workspace now passes 414 named tests plus actual Babashka A/B, fmt, Clippy
+and diff gates. A new absent archive is selected at `2ec104b`. Await explicit
+continuation of the read-only hardware gate; M8 is incomplete and M9 is not
+authorized.
 
 First stable release sequence
 M7

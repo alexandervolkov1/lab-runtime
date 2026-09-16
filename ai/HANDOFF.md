@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: WAITING_FOR_REVIEW
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 corrected Windows COM reconnect; real reconnect/Recorder failure review stop.
+M8 Recorder-ordering-corrected physical reconnect gate pending.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,9 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-Await external review of the latest real reconnect and Recorder failure. Do not
-reopen COM5, retry reconnect, begin another correction phase or start M9. Preserve
-all SQLite evidence sets unchanged.
+Await explicit operator continuation for the remaining read-only M8 hardware
+gate. Do not reopen COM5 before that instruction, reuse prior evidence archives,
+issue physical writes, probe other registers, begin M9 or perform post-M8 cleanup.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -76,6 +76,43 @@ It contains 54 Good rows, one Unavailable row, exact approved TOML/definition
 provenance and zero output events. Full evidence and uncompleted acceptance steps
 are in `MILESTONE_8_REPORT.md`. No production code or tests changed, the final M8
 gate was not run, and COM5 must not be reopened before external review.
+
+M8 reviewed Recorder ordering correction — 2026-09-16
+
+External review authorized a narrow SOL_HIGH correction and COM5 remained
+closed. Source and the preserved archive confirmed that live lifecycle capacity
+reservation assigned record N and advanced `reserved_through` before Activation
+N entered the FIFO. The resource-scoped channel-type probe then entered first as
+N+1, so the SQLite worker correctly rejected the hole with
+`fact record reservation mismatch`. Required Recorder failure caused the public
+reconnect failure and was masked as `invalid_configuration`; the compatibility
+value itself was not the cause.
+
+Commit `fdf8a73` reserves only the unchanged record/byte/group capacity and
+activation generation. Intervening facts receive contiguous identities. Commit
+assigns the Activation its current FIFO-tail identity only when immediately
+enqueuing it, then advances `reserved_through`; cancellation releases capacity
+without rewinding IDs. Exact SQLite sequence validation, one writer, 1,024-record
+/ 4-MiB / four-group limits, resource-scoped reconnect quiescing and Required
+fail-closed behavior remain unchanged. Recorder lifecycle failure now surfaces
+through the existing `recording_unavailable` wire code.
+
+Seven new named regressions cover worker interleaving/cancellation, successful
+and failed compatibility probes, post-install Required failure and public error
+mapping. Targeted suites and all 136 Core tests pass. The complete debug workspace
+passes 414 named tests, actual Babashka A/B passes three tests under Babashka
+1.13.220, and fmt, warning-denied workspace all-target Clippy and diff checks
+pass. Full release and warning-denied rustdoc remain deferred to the successful
+final hardware gate as authorized. Exact red/green history is in the report.
+
+Commit `2ec104b` selects the confirmed-absent next archive
+`examples/metakon-513-com5-recorder-corrected-history.sqlite`. Runtime TOML hash
+is `405d99056fd4ba265bb8776f18360a33cd4be81e65c7e03976196acbf374056b`;
+the unchanged definition hash is
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+The defect archive remains unchanged at its recorded SHA-256. STATUS returns to
+`M8_HARDWARE_ACCEPTANCE_PENDING`; await explicit continuation and do not begin
+M9.
 
 M8 design completion — 2026-09-16
 

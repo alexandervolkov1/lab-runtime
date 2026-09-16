@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed reconnect correction is
-complete and COM5 has not been reopened after it, 2026-09-16.
+Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed Recorder ordering
+correction is complete and COM5 has not been reopened after it, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -911,6 +911,103 @@ software gate were not attempted after the failed reconnect. No production code
 or tests changed during this bench run. This observed contract failure requires
 external review before another COM5 run or correction phase.
 
+## Reviewed Recorder ordering correction — 2026-09-16
+
+External review authorized a narrow SOL_HIGH correction without reopening COM5.
+Current-source inspection confirmed the proposed causal chain exactly. The old
+`try_reserve_live_activation()` implementation reserved bounded capacity and a
+generation, but also called `planned_range(1)`, advanced `reserved_through` and
+stored that future record identity before sending an Activation message. During
+resource-scoped reconnect, the trusted channel-type compatibility probe could
+then emit a normal fact while that reservation remained open. The owner assigned
+the probe the following identity and sent it first. The single SQLite worker
+still expected the unsent lifecycle identity and correctly rejected the probe
+group with `fact record reservation mismatch`.
+
+The preserved physical archive is consistent with this chain: its committed
+prefix ends at record 472 with the reconnect Accepted event, while the reserved
+lifecycle identity and later probe/lifecycle facts are absent. Required Recorder
+therefore failed with an unknown tail before lifecycle durability. Source tracing
+also confirmed that the public `failed/invalid_configuration` result masked this
+Recorder/owner failure; it was not evidence that the returned channel type was
+wrong. A deterministic reconnect test proves that the same Good integer value 3
+passes compatibility when Recorder ordering remains healthy. The existing wire
+category `recording_unavailable` is now used for this lifecycle storage failure;
+other lifecycle validation failures retain `invalid_configuration`.
+
+Commit `fdf8a73` changes the reservation to charge only its existing one record,
+serialized byte size, one group and activation generation. It does not assign a
+record identity or advance `reserved_through`. Ordinary facts, including the
+compatibility probe, can therefore continue through the one owner FIFO while the
+credit remains unavailable to competing work. At commit, the owner revalidates
+the matching generation, assigns the current FIFO-tail identity and immediately
+`try_send`s that Activation on the same sender. Only successful enqueue advances
+`reserved_through`; the reserved capacity is not charged twice. Cancellation
+releases capacity and the pending generation without rewinding any identity.
+The SQLite worker's exact contiguous-ID checks remain unchanged.
+
+The worker receipt also preserves the maximum already-confirmed monotonic
+submission time when a later FIFO Activation carries an earlier lifecycle start
+time. Periodic Recorder clock facts are no longer globally suppressed by an open
+resource lifecycle reservation. No queue, thread, schema or retention bound was
+added: the limits remain 1,024 records, 4 MiB and four groups with one pending
+activation. Resource-scoped reconnect quiescing, Required fail-closed behavior,
+generation fencing and finite shutdown are unchanged. If activation enqueue or
+durability fails after replacement installation, Recorder fails, lifecycle
+fails, the advanced generation remains authoritative, and ordinary acquisition
+stays quiesced/offline.
+
+Tests-first evidence was recorded honestly. The three new worker-level cases
+initially failed with the exact reservation mismatch or cancellation mismatch
+before production changed. After the correction they passed. The Host causal
+tests were then added; their first fixture used timing shorter than the accepted
+C14 profile and its bad-probe oracle expected an integer 2 although the normal
+fact path publishes Unavailable for that failure. Those fixture/oracle defects
+were corrected without changing production. The public error-mapping test was
+compile-red until the internal `RecordingUnavailable` lifecycle category and
+mapping existed. Named new evidence is:
+
+```text
+live_activation_capacity_allows_fifo_fact_before_commit_without_identity_hole
+cancellation_after_intervening_fact_groups_releases_credit_without_sequence_rewind
+unavailable_fact_before_lifecycle_cancellation_remains_contiguous_and_recorded
+reconnect_probe_fact_precedes_durable_activation_and_later_good_temperature
+failed_probe_cancels_after_recorded_fact_without_gap_or_good_temperature
+required_recorder_failure_after_rebind_stays_quiesced_and_never_rolls_generation_back
+recorder_lifecycle_failure_uses_existing_recording_unavailable_wire_code
+```
+
+The successful Host chain proves Good/Unavailable generation-1 history, explicit
+replacement generation 2, durable Good channel-type 3 before lifecycle
+Activation, durable lifecycle completion before release, and only then a Good
+temperature. Record IDs remain contiguous with no mismatch or unknown tail. The
+failed-probe variant records its Unavailable probe fact, cancels without a gap,
+keeps generation 2 quiesced/offline and emits no temperature Good. The injected
+Required-storage failure variant remains fail-closed with an honest unknown tail
+and never rolls generation back.
+
+Targeted Recorder/Required/backpressure/reopen/history, configured physical,
+Windows COM, shutdown, lifecycle and Core transport/Metakon suites passed. All
+136 `lab-core` tests passed. The complete debug workspace rerun passed and
+`cargo test --workspace -- --list` reports 414 named tests. Actual Babashka A/B
+process acceptance passed all three `babashka_reconnect` tests with Babashka
+1.13.220. The first full workspace attempt transiently observed two new Host
+tests enter Recorder Failed during setup; isolated reruns, 20/20 parallel
+repetitions and the subsequent complete workspace run all passed without code
+change. Formatting, workspace all-target Clippy with warnings denied and
+`git diff --check` pass. Clippy first required moving the new application test
+module after production helpers. Full release and warning-denied rustdoc remain
+deferred until successful final hardware acceptance as authorized.
+
+Commit `2ec104b` changes only the next bench archive pathname to
+`examples/metakon-513-com5-recorder-corrected-history.sqlite`. The archive was
+confirmed absent and was not created or opened. Its exact runtime TOML SHA-256 is
+`405d99056fd4ba265bb8776f18360a33cd4be81e65c7e03976196acbf374056b`.
+The definition remains
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+The prior defect archive retains SHA-256
+`ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
@@ -921,6 +1018,9 @@ actual reconnect still failed and exposed a Recorder reservation failure plus an
 unsealed shutdown. Firmware remains unknown and no independent wire capture
 exists.
 
-M8 is `WAITING_FOR_REVIEW`; it is not ready for acceptance and does not authorize
-M9. M8 performed no physical actuator write and makes no physical-output-safety,
-power-loss, remote-security, GUI or long-soak certification claim.
+M8 is `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for acceptance and does
+not authorize M9. The corrected ordering still requires a new physical reconnect
+run, Babashka independence, harmless live-safe reload, clean final shutdown and
+the final release/rustdoc gates. M8 performed no physical actuator write and
+makes no physical-output-safety, power-loss, remote-security, GUI or long-soak
+certification claim.
