@@ -274,3 +274,139 @@ fn real_socket_queries_and_native_pid_progress_across_three_leases_with_writer_h
     join.join().unwrap();
     remove_after_worker_close(path);
 }
+
+#[test]
+fn nonreading_history_client_cannot_block_native_service_while_sqlite_is_held() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let worker_path = path.clone();
+    let worker_barrier = barrier.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let join = thread::spawn(move || {
+        let worker = RecorderWorker::open_with_barrier(
+            &worker_path,
+            RecorderLimits::default(),
+            worker_barrier,
+        )
+        .unwrap();
+        let database = worker.database_id().to_owned();
+        let mut host = HostCore::virtual_demo().unwrap();
+        host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+            .unwrap();
+        let options =
+            ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"])
+                .unwrap();
+        let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        service
+            .owner_mut()
+            .start_recording("slow history peer", clock.now())
+            .unwrap();
+        let by = Instant::now() + Duration::from_secs(2);
+        while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+            assert!(Instant::now() < by);
+            service.owner_mut().service(&clock).unwrap();
+            thread::yield_now();
+        }
+        let controller = service.owner().controller_id();
+        service
+            .owner_mut()
+            .command(Command::StartController {
+                controller,
+                at: clock.now(),
+            })
+            .unwrap();
+        ready_tx.send((service.bound_address(), database)).unwrap();
+        assert!(run(service, stop_thread).is_err());
+    });
+    let (address, database) = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let reached_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < reached_by);
+        thread::yield_now();
+    }
+    let slow = TcpStream::connect(address).unwrap();
+    slow.set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    slow.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    let mut slow = BufReader::new(slow);
+    slow.get_mut()
+        .write_all(
+            &lab_runtime::wire::encode_frame(&json!({"v":1,"msg_id":"slow-hello",
+            "op":"hello","args":{"scope":null}}))
+            .unwrap(),
+        )
+        .unwrap();
+    let mut line = String::new();
+    slow.read_line(&mut line).unwrap();
+    let hello: JsonValue = serde_json::from_str(&line).unwrap();
+    let scope = hello["result"]["scope"].as_str().unwrap();
+    let mut requests = Vec::new();
+    for sequence in 1..=32 {
+        requests.extend(
+            lab_runtime::wire::encode_frame(&json!({
+                "v":1,"msg_id":format!("slow-{sequence}"),"op":"history_read",
+                "request_id":{"scope":scope,"seq":sequence.to_string()},
+                "args":{"mode":"runs","database_id":database,"max_records":8,"cursor":null}
+            }))
+            .unwrap(),
+        );
+    }
+    slow.get_mut().write_all(&requests).unwrap();
+    // From here this socket never reads its history replies.
+    let probe = TcpStream::connect(address).unwrap();
+    probe
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut probe = BufReader::new(probe);
+    let mut query = |value: JsonValue| -> JsonValue {
+        probe
+            .get_mut()
+            .write_all(&lab_runtime::wire::encode_frame(&value).unwrap())
+            .unwrap();
+        let mut line = String::new();
+        probe.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    assert_eq!(
+        query(json!({"v":1,"msg_id":"probe-hello","op":"hello",
+            "args":{"scope":null}}))["type"],
+        "result"
+    );
+    let before = query(json!({"v":1,"msg_id":"probe-before","op":"controller",
+        "args":{"controller":"1"}}));
+    assert_eq!(before["type"], "result");
+    thread::sleep(Duration::from_millis(6_300));
+    let started = Instant::now();
+    let after = query(json!({"v":1,"msg_id":"probe-after","op":"controller",
+        "args":{"controller":"1"}}));
+    assert!(started.elapsed() < Duration::from_secs(1), "{after:?}");
+    assert_eq!(after["result"]["state"], "running", "{after:?}");
+    assert!(
+        after["result"]["last_tick"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > before["result"]["last_tick"]
+                .as_str()
+                .unwrap_or("0")
+                .parse::<u64>()
+                .unwrap()
+    );
+    let health = query(
+        json!({"v":1,"msg_id":"probe-health","op":"recording_status",
+        "args":{}}),
+    );
+    assert_eq!(health["type"], "result");
+    assert_eq!(health["result"]["state"], "failed");
+    drop(probe);
+    drop(slow);
+    barrier.release();
+    stop.store(true, Ordering::Release);
+    join.join().unwrap();
+    remove_after_worker_close(path);
+}
