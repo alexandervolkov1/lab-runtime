@@ -1,7 +1,8 @@
 //! C1-C4 acceptance for bounded, side-effect-free deployment validation.
 
 use lab_runtime::configuration::{
-    ArtifactReader, ConfigurationError, MAX_RUNTIME_TOML_BYTES, parse_runtime_toml,
+    ArtifactReader, ConfigurationError, MAX_RUNTIME_TOML_BYTES, load_runtime_toml,
+    parse_runtime_toml,
 };
 use std::{
     collections::BTreeMap,
@@ -241,6 +242,17 @@ policy="best_effort"
     let second = parse_runtime_toml(&config([10, 20]), base, &mut second_reader).unwrap();
     assert_eq!(first.effective(), second.effective());
     assert_ne!(first.toml_hash(), second.toml_hash());
+}
+
+#[test]
+fn c1_repository_example_deployments_parse_with_the_production_loader() {
+    let examples =
+        std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples"))
+            .unwrap();
+    for name in ["runtime.virtual.toml", "runtime.metakon-read-only.toml"] {
+        let deployment = load_runtime_toml(&examples.join(name)).unwrap();
+        assert!(!deployment.toml_bytes().is_empty());
+    }
 }
 
 #[test]

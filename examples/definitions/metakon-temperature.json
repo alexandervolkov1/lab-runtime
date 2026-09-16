@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "profile": "metakon-5x3-v1",
+  "id": 1,
+  "name": "Metakon read-only temperature",
+  "parameters": [
+    {
+      "id": 1,
+      "name": "channel_type",
+      "value_type": "integer",
+      "unit": { "id": "1", "symbol": "1" },
+      "min": 0,
+      "max": 255,
+      "role": "diagnostic",
+      "access": "read_only",
+      "operation": "channel_type",
+      "scale": 1,
+      "write_effect": "none"
+    },
+    {
+      "id": 2,
+      "name": "temperature",
+      "value_type": "float",
+      "unit": { "id": "degC", "symbol": "°C" },
+      "min": -99.9,
+      "max": 999.9,
+      "role": "measurement",
+      "access": "read_only",
+      "operation": "temperature",
+      "scale": 0.1,
+      "write_effect": "none"
+    }
+  ]
+}

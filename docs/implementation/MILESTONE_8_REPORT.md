@@ -237,6 +237,11 @@ are not reported as passing evidence.
     than assuming configuration implies an active experiment run. The targeted
     real-process test passes. This is configured virtual acquisition software
     evidence; it is not the C16/C17 real Metakon bench.
+24. C1 repository-example coverage was red because no deployable TOML examples
+    existed. Added a complete Required-recording virtual PID deployment and a
+    conservative read-only Metakon/COM deployment with a strict trusted-operation
+    JSON definition. Both parse through the production loader; the physical
+    example is documentation/configuration evidence only and was not opened.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

@@ -1,0 +1,40 @@
+schema_version = 1
+
+[runtime]
+key = "metakon-read-only"
+display_name = "Metakon read-only temperature bench"
+
+[server]
+host = "127.0.0.1"
+port = 7420
+
+[recording]
+enabled = true
+path = "metakon-history.sqlite"
+policy = "required"
+
+[[resources]]
+id = 1
+key = "temperature-bus"
+kind = "windows_com_read_only"
+port = "COM3"
+baud_rate = 9600
+data_bits = 8
+parity = "none"
+stop_bits = 1
+flow_control = "none"
+read_timeout_ms = 50
+write_timeout_ms = 50
+open_timeout_ms = 2000
+recovery_timeout_ms = 2000
+
+[[instruments]]
+id = 1
+key = "metakon-temperature"
+kind = "metakon"
+definition = "definitions/metakon-temperature.json"
+resource_id = 1
+address = 1
+poll_period_ms = 1000
+queue_timeout_ms = 1000
+transaction_timeout_ms = 1000

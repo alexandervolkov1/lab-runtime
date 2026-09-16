@@ -1,0 +1,67 @@
+schema_version = 1
+
+[runtime]
+key = "virtual-control"
+display_name = "Virtual temperature control"
+
+[server]
+host = "127.0.0.1"
+port = 7420
+
+[recording]
+enabled = true
+path = "history.sqlite"
+policy = "required"
+
+[[instruments]]
+id = 1
+key = "plant"
+kind = "thermal_plant"
+display_name = "Virtual thermal plant"
+history_capacity = 64
+ambient_temperature = 20.0
+initial_temperature = 20.0
+gain_per_percent = 0.8
+time_constant_ms = 8000
+poll_period_ms = 100
+
+[[references]]
+id = 1
+key = "temperature-setpoint"
+kind = "ramp"
+value = 20.0
+target = 50.0
+rate = 2.0
+unit_id = "degC"
+unit_symbol = "°C"
+
+[[safe_profiles]]
+instrument_id = 1
+parameter_id = 2
+min = 0.0
+max = 100.0
+safe_value = 0.0
+max_lease_ms = 2000
+max_proposal_ttl_ms = 200
+required_evidence = "readback"
+
+[[controllers]]
+id = 1
+key = "temperature-pid"
+input_instrument_id = 1
+input_parameter_id = 1
+output_instrument_id = 1
+output_parameter_id = 2
+reference_id = 1
+period_ms = 100
+ema_time_constant_ms = 200
+ema_warmup_samples = 3
+kp = 3.0
+ki = 0.4
+kd = 0.2
+output_min = 0.0
+output_max = 100.0
+max_input_age_ms = 500
+max_tick_gap_ms = 500
+lease_lifetime_ms = 2000
+proposal_ttl_ms = 200
