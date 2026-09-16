@@ -1,6 +1,9 @@
 //! Safe shutdown and durable flush have separate, honest terminal evidence.
 
-use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_core::{
+    Command, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig,
+    control::ControllerState,
+};
 use lab_runtime::{
     host::{Clock, HostCore},
     recorder::{
@@ -320,6 +323,129 @@ fn blocked_writer_expires_finite_flush_without_falsifying_safe_output_evidence()
         std::thread::yield_now();
     }
     assert!(!path.exists());
+}
+
+#[test]
+fn running_controller_shutdown_drains_held_measurement_before_final_safe_seal() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    let controller = service.owner().controller_id();
+    service
+        .owner_mut()
+        .command(Command::StartController {
+            controller,
+            at: clock.now(),
+        })
+        .unwrap();
+    let ready_by = Instant::now() + Duration::from_secs(2);
+    loop {
+        service.owner_mut().service(&clock).unwrap();
+        let QueryResult::Controller(snapshot) = service
+            .owner()
+            .query(Query::Controller(controller))
+            .unwrap()
+        else {
+            panic!()
+        };
+        if snapshot.state == ControllerState::Running {
+            break;
+        }
+        assert!(
+            Instant::now() < ready_by,
+            "native controller never reached Running"
+        );
+        std::thread::yield_now();
+    }
+    service
+        .owner_mut()
+        .start_recording("Running held fact shutdown", clock.now())
+        .unwrap();
+    let started_by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < started_by);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let plant = service.owner().plant_id();
+    service
+        .owner_mut()
+        .command(Command::RefreshMeasurement {
+            instrument: plant,
+            parameter: lab_core::TEMPERATURE,
+            at: clock.now(),
+        })
+        .unwrap();
+    let held_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < held_by);
+        std::thread::yield_now();
+    }
+    assert!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .outstanding_records
+            > 0
+    );
+    service.request_shutdown().unwrap();
+    assert!(service.shutdown_step().unwrap().is_none());
+    barrier.release();
+    let finished_by = Instant::now() + Duration::from_secs(4);
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < finished_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.safe_confirmed, "{terminal:?}");
+    assert!(terminal.recorder_flushed, "{terminal:?}");
+    assert!(!terminal.recorder_unfinished);
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (measurements, safe, seals): (i64, i64, i64) = db
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM measurements),
+                    (SELECT COUNT(*) FROM output_events WHERE stage='safe_readback_verified'),
+                    (SELECT COUNT(*) FROM runtime_boots WHERE state='sealed')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        measurements >= 1,
+        "held accepted measurement must survive shutdown"
+    );
+    assert!(safe >= 1, "trusted virtual safe evidence must be archived");
+    assert_eq!(seals, 1);
+    let (measurement_record, safe_record, interval_seal, shutdown_record):
+        (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT (SELECT MAX(record_seq) FROM measurements),
+                    (SELECT MAX(record_seq) FROM output_events WHERE stage='safe_readback_verified'),
+                    (SELECT MAX(record_seq) FROM records WHERE kind='interval_seal'),
+                    (SELECT MAX(record_seq) FROM records WHERE kind='shutdown')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert!(measurement_record < safe_record);
+    assert!(safe_record < interval_seal);
+    assert!(interval_seal < shutdown_record);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
