@@ -3,7 +3,7 @@
 use lab_core::{Command, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig};
 use lab_runtime::{
     host::{Clock, HostCore, SystemClock},
-    recorder::{RecorderLimits, RecorderWorker, RecordingState, SqliteStore, TimeAnchor},
+    recorder::{RecorderLimits, RecorderWorker, RecordingState, SqliteStore, TimeAnchor, WriterBarrier},
 };
 use std::{cell::Cell, path::PathBuf, time::Duration};
 
@@ -360,6 +360,46 @@ fn idle_storage_worker_samples_periodic_utc_without_a_runtime_control_tick() {
         )
         .unwrap();
     assert!(count >= 1);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn live_worker_preserves_failed_later_wall_read_as_nullable_periodic_anchor() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::fail_next_periodic_wall_read();
+    let mut worker = RecorderWorker::open_with_barrier(
+        &path,
+        RecorderLimits::default(),
+        barrier,
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while worker.poll().persisted_through_sequence == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(worker.poll().persisted_through_sequence > 0);
+    assert_eq!(worker.poll().state, RecordingState::Idle);
+    worker.request_finish().unwrap();
+    while worker.poll().state != RecordingState::Closed && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().state, RecordingState::Closed);
+    drop(worker);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let actual: (Option<i64>, Option<String>, i64) = db
+        .query_row(
+            "SELECT c.wall_us,c.unavailable_reason,r.wall_estimate_us
+             FROM clock_anchors c JOIN records r
+             ON r.boot_id=c.boot_id AND r.record_seq=c.record_seq
+             WHERE c.kind='periodic' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(actual.0, None);
+    assert_eq!(actual.1.as_deref(), Some("wall_read_failed"));
+    assert!(actual.2 > 0, "boot-mapped wall estimate remains available");
     drop(db);
     std::fs::remove_file(path).unwrap();
 }

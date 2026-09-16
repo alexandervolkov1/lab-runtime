@@ -56,6 +56,7 @@ struct BarrierState {
     hold_terminal_operation: bool,
     panic_before_fact_sql: bool,
     hold_finish: bool,
+    fail_periodic_wall_read: AtomicBool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -71,6 +72,7 @@ impl WriterBarrier {
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
             hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(false),
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -83,6 +85,7 @@ impl WriterBarrier {
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
             hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(false),
         }))
     }
     /// Hold after a real fact transaction commits but before its owner receipt.
@@ -96,6 +99,7 @@ impl WriterBarrier {
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
             hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(false),
         }))
     }
     /// Hold only a terminal operation before SQL, after earlier acceptance commits.
@@ -109,6 +113,7 @@ impl WriterBarrier {
             hold_terminal_operation: true,
             panic_before_fact_sql: false,
             hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(false),
         }))
     }
     /// Terminate the storage thread before one fact transaction for fault tests.
@@ -121,6 +126,7 @@ impl WriterBarrier {
             hold_terminal_operation: false,
             panic_before_fact_sql: true,
             hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(false),
         }))
     }
     /// Hold only Finish before SQL, after its owner FIFO admission.
@@ -133,6 +139,21 @@ impl WriterBarrier {
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
             hold_finish: true,
+            fail_periodic_wall_read: AtomicBool::new(false),
+        }))
+    }
+    /// Inject one failed later UTC read on the SQLite worker's periodic path.
+    /// This trusted test seam does not supply or alter Runtime control time.
+    pub fn fail_next_periodic_wall_read() -> Self {
+        Self(Arc::new(BarrierState {
+            held: AtomicBool::new(false),
+            reached: AtomicBool::new(false),
+            hold_start: false,
+            hold_after_fact_commit: false,
+            hold_terminal_operation: false,
+            panic_before_fact_sql: false,
+            hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(true),
         }))
     }
     /// Release any worker held at a deterministic storage stage.
@@ -1528,7 +1549,15 @@ fn worker_loop(
                     .confirmed_submission = Some(submitted_at);
             }),
             Message::ClockAnchor(assigned) => {
-                TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
+                TimeAnchor::capture(|| source.now(), || {
+                    if barrier.is_some_and(|held| {
+                        held.0.fail_periodic_wall_read.swap(false, Ordering::AcqRel)
+                    }) {
+                        Err("wall_read_failed")
+                    } else {
+                        Ok(SystemTime::now())
+                    }
+                })
                     .and_then(|anchor| {
                         store.append_clock_anchor_assigned("periodic", &anchor, assigned)
                     })
