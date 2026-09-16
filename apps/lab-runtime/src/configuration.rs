@@ -200,6 +200,89 @@ impl FrozenDeployment {
     pub fn artifacts(&self) -> &[FrozenArtifact] {
         &self.artifacts
     }
+
+    pub(crate) fn changes_from(&self, active: &Self) -> DeploymentChanges {
+        let old = &active.effective.dto;
+        let new = &self.effective.dto;
+        let old_topology: Vec<_> = old
+            .instruments
+            .iter()
+            .map(|item| (item.id(), item.key(), item.kind_name()))
+            .collect();
+        let new_topology: Vec<_> = new
+            .instruments
+            .iter()
+            .map(|item| (item.id(), item.key(), item.kind_name()))
+            .collect();
+        let restart_required = old.runtime.key != new.runtime.key
+            || old.server != new.server
+            || old.recording != new.recording
+            || old_topology != new_topology
+            || old.managed_components.len() != new.managed_components.len()
+            || old.references.len() != new.references.len()
+            || old.controllers.len() != new.controllers.len()
+            || old.safe_profiles.len() != new.safe_profiles.len();
+        let live_safe = self.toml_hash != active.toml_hash
+            || old.runtime.display_name != new.runtime.display_name;
+        let ordinary_live = old
+            .instruments
+            .iter()
+            .zip(&new.instruments)
+            .any(|(old, new)| old.poll_period_ms() != new.poll_period_ms());
+        let rebind = old.resources != new.resources
+            || old
+                .instruments
+                .iter()
+                .zip(&new.instruments)
+                .any(|(old, new)| {
+                    matches!(
+                        (old, new),
+                        (InstrumentDto::Metakon { .. }, InstrumentDto::Metakon { .. })
+                    ) && old != new
+                });
+        let reinitialize = old
+            .instruments
+            .iter()
+            .zip(&new.instruments)
+            .any(|(old, new)| {
+                matches!(
+                    (old, new),
+                    (
+                        InstrumentDto::ThermalPlant { .. },
+                        InstrumentDto::ThermalPlant { .. }
+                    ) | (
+                        InstrumentDto::VirtualMeasurement { .. },
+                        InstrumentDto::VirtualMeasurement { .. }
+                    )
+                ) && old.without_live_fields() != new.without_live_fields()
+            })
+            || old.managed_components != new.managed_components;
+        let controller_rewarm = reinitialize
+            || rebind
+            || old.references != new.references
+            || old.controllers != new.controllers;
+        let safe_barrier = controller_rewarm || old.safe_profiles != new.safe_profiles;
+        DeploymentChanges {
+            restart_required,
+            live_safe,
+            ordinary_live,
+            reinitialize,
+            rebind,
+            controller_rewarm,
+            safe_barrier,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DeploymentChanges {
+    pub(crate) restart_required: bool,
+    pub(crate) live_safe: bool,
+    pub(crate) ordinary_live: bool,
+    pub(crate) reinitialize: bool,
+    pub(crate) rebind: bool,
+    pub(crate) controller_rewarm: bool,
+    pub(crate) safe_barrier: bool,
 }
 
 /// Read and validate one main file with its parent as the immutable path base.
@@ -828,6 +911,63 @@ impl InstrumentDto {
             Self::VirtualMeasurement { key, .. }
             | Self::ThermalPlant { key, .. }
             | Self::Metakon { key, .. } => key,
+        }
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::VirtualMeasurement { .. } => "virtual_measurement",
+            Self::ThermalPlant { .. } => "thermal_plant",
+            Self::Metakon { .. } => "metakon",
+        }
+    }
+
+    fn poll_period_ms(&self) -> u64 {
+        match self {
+            Self::VirtualMeasurement { poll_period_ms, .. }
+            | Self::ThermalPlant { poll_period_ms, .. }
+            | Self::Metakon { poll_period_ms, .. } => *poll_period_ms,
+        }
+    }
+
+    // Exclude display and cadence fields that have explicitly live semantics.
+    fn without_live_fields(&self) -> String {
+        match self {
+            Self::VirtualMeasurement {
+                id,
+                key,
+                history_capacity,
+                base_temperature,
+                measurement_enabled,
+                ..
+            } => format!(
+                "virtual:{id}:{key}:{history_capacity}:{base_temperature}:{measurement_enabled}"
+            ),
+            Self::ThermalPlant {
+                id,
+                key,
+                history_capacity,
+                ambient_temperature,
+                initial_temperature,
+                gain_per_percent,
+                time_constant_ms,
+                ..
+            } => format!(
+                "plant:{id}:{key}:{history_capacity}:{ambient_temperature}:{initial_temperature}:{gain_per_percent}:{time_constant_ms}"
+            ),
+            Self::Metakon {
+                id,
+                key,
+                definition,
+                resource_id,
+                address,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                ..
+            } => format!(
+                "metakon:{id}:{key}:{}:{resource_id}:{address}:{queue_timeout_ms}:{transaction_timeout_ms}",
+                definition.display()
+            ),
         }
     }
 }

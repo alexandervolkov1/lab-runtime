@@ -6,6 +6,8 @@ pub mod application;
 /// Strict bounded declarative deployment loading and validation.
 pub mod configuration;
 pub mod definition;
+/// Staged configuration diff and explicit apply lifecycle.
+pub mod deployment;
 pub mod events;
 /// Explicit monotonic scheduling and trusted virtual host composition.
 pub mod host;

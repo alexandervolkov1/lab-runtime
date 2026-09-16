@@ -12,7 +12,7 @@ are not reported as passing evidence.
 | IDs | Tests-first implementation slice | Evidence status |
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
-| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Pending |
+| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Initial lifecycle slice green; Runtime/Recorder integration remains |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Pending |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Pending |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
@@ -41,6 +41,14 @@ are not reported as passing evidence.
    after which the intended read-only rejection and duplicate COM tests passed.
    Targeted clippy passed. The initial fmt check reported formatting diffs only;
    formatting was then applied before commit.
+4. C5-C8 acceptance compile was red because the deployment lifecycle module did
+   not exist. Added one active/one-candidate bounded lifecycle, checked revision
+   and candidate counters, a 30-second monotonic expiry, explicit union diff and
+   restart-required rejection before side effects. Targeted tests prove a
+   live-safe commit, barrier-before-commit ordering, and that barrier failure
+   retains old configuration without rearming the deliberately revoked probe
+   authority. Three targeted tests pass. This slice is not yet claimed as the
+   final asynchronous Host/Recorder integration.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
