@@ -13,6 +13,8 @@ pub mod events;
 pub mod host;
 /// Bounded durable-history storage adapter and host-owned recording ingress.
 pub mod recorder;
+/// Bounded worker-backed read-only Windows COM byte adapter.
+pub mod serial;
 pub mod server;
 /// Startup ownership, loopback binding and process-local boot identity.
 pub mod service;

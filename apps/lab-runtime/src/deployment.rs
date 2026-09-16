@@ -1,7 +1,7 @@
 //! One bounded staged deployment and its explicit safe apply protocol.
 //!
 //! The lifecycle owns immutable candidates but delegates authoritative domain
-//! mutation to one serialized owner through [`ApplyPort`]. The port intentionally
+//! mutation to one serialized owner through [`crate::deployment::ApplyPort`]. The port intentionally
 //! exposes no rearm operation: a failed safe barrier can retain the old committed
 //! configuration, but cannot recreate an old lease or armed epoch.
 

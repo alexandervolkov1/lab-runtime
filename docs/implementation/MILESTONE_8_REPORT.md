@@ -14,7 +14,7 @@ are not reported as passing evidence.
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
 | C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Initial lifecycle slice green; Runtime/Recorder integration remains |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Pending |
-| C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Pending |
+| C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter slice green; Host process integration remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
 | C18 | Public API/Babashka process independence under configured acquisition | Pending |
 | C19 | Finite COM + Recorder shutdown in software fault cases and actual hardware | Software pending; hardware pending |
@@ -49,6 +49,16 @@ are not reported as passing evidence.
    retains old configuration without rearming the deliberately revoked probe
    authority. Three targeted tests pass. This slice is not yet claimed as the
    final asynchronous Host/Recorder integration.
+5. C12-C15 acceptance compile was red because no host serial module existed.
+   Added pinned `serialport` 4.10.1 with default features disabled and a fixed
+   one-request/one-completion worker outside Core. The first green attempt exposed
+   an acceptance-fixture assumption that an asynchronous open was immediately
+   Online: three tests expected positive admission rather than allowed `Ok(0)`.
+   The tests were corrected to poll boundedly, preserving the nonblocking owner
+   contract. Four tests then passed for settings, partial same-frame continuation,
+   no timeout write retry, disconnect recovery proof, oversize rejection and
+   binding-generation replacement. Concrete open reads settings back and rejects
+   driver substitution. This is software evidence only, not C16/C17/C19 hardware.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
