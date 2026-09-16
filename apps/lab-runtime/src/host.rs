@@ -322,8 +322,7 @@ impl HostCore {
         mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>>,
     ) -> Result<Self, Error> {
         let dto = &deployment.effective().dto;
-        if !dto.managed_components.is_empty()
-            || !dto.references.is_empty()
+        if !dto.references.is_empty()
             || !dto.controllers.is_empty()
             || !dto.safe_profiles.is_empty()
         {
@@ -727,6 +726,122 @@ impl HostCore {
         }
         self.observe(at, None)?;
         Ok((count, latest_generation))
+    }
+
+    /// Stage one configured managed component. Startup and source reload call
+    /// this serially so Core's accepted one-stage/two-worker bound is unchanged.
+    pub(crate) fn stage_configured_component(
+        &mut self,
+        deployment: &FrozenDeployment,
+        index: usize,
+        replaces: bool,
+        at: Duration,
+    ) -> Result<ComponentId, Error> {
+        let component = deployment
+            .effective()
+            .dto
+            .managed_components
+            .get(index)
+            .ok_or(Error::InvalidConfiguration("managed component index"))?;
+        let source = deployment
+            .artifact_bytes(&component.source)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .ok_or(Error::InvalidConfiguration("frozen managed source missing"))?;
+        let id = ComponentId::new(component.id);
+        let kind = component
+            .input_instrument_id
+            .map_or(ComponentKind::Source, |input| ComponentKind::Transform {
+                input: SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
+            });
+        self.runtime.command(Command::StageComponent {
+            definition: ComponentDefinition {
+                manifest: ComponentManifest {
+                    schema_version: 1,
+                    id,
+                    instrument: InstrumentId::new(component.instrument_id),
+                    name: component.display_name.clone(),
+                    parameter: lab_core::TEMPERATURE,
+                    kind,
+                    unit: Unit::CELSIUS,
+                    min: -100.0,
+                    max: 500.0,
+                    warmup_samples: if component.input_instrument_id.is_some() {
+                        3
+                    } else {
+                        1
+                    },
+                    max_input_age: Duration::from_secs(2),
+                    history_capacity: 32,
+                },
+                source: source.into(),
+                config: PlainData::default(),
+            },
+            replaces: replaces.then_some(id),
+            at,
+        })?;
+        if !replaces {
+            self.events.track_component(id);
+            self.components.push((
+                id,
+                if component.input_instrument_id.is_some() {
+                    "transform"
+                } else {
+                    "source"
+                },
+            ));
+        }
+        Ok(id)
+    }
+
+    /// Whether one configured init result committed and no callback remains.
+    pub(crate) fn component_initialized(&self, id: ComponentId) -> bool {
+        matches!(self.runtime.query(Query::Component(id)),Ok(QueryResult::Component(snapshot))
+            if matches!(snapshot.state,ComponentState::Warming|ComponentState::Ready)
+                && snapshot.pending.is_none())
+    }
+
+    /// Current committed component generation, excluding a staged candidate.
+    pub(crate) fn component_generation(&self, id: ComponentId) -> Option<u64> {
+        match self.runtime.query(Query::Component(id)) {
+            Ok(QueryResult::Component(snapshot)) => Some(snapshot.generation),
+            _ => None,
+        }
+    }
+
+    /// Start configured component cadences only after every init committed.
+    pub(crate) fn activate_configured_components(
+        &mut self,
+        deployment: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.plan.sources.clear();
+        self.plan.transforms.clear();
+        for component in &deployment.effective().dto.managed_components {
+            let id = ComponentId::new(component.id);
+            if !self.component_initialized(id) {
+                return Err(Error::InvalidConfiguration("managed init incomplete"));
+            }
+            if let Some(input) = component.input_instrument_id {
+                self.plan.transforms.push((
+                    id,
+                    SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
+                ));
+            } else {
+                let mut slot = Periodic::new(Duration::from_millis(component.period_ms));
+                slot.next_due = at;
+                self.plan.sources.push((id, slot));
+            }
+        }
+        self.deployment_provenance = deployment
+            .provenance_entries()
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        Ok(())
     }
 
     /// Attach one already-open worker under trusted host composition.

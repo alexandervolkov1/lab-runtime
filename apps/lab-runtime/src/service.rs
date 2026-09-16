@@ -10,7 +10,7 @@ use crate::{
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
     serial::{ComSettings, ComTransport, SerialFlowControl, SerialParity},
 };
-use lab_core::managed::ComponentError;
+use lab_core::managed::{ComponentError, ComponentId};
 use lab_core::{
     Error as DomainError,
     transport::{ByteTransport, ResourceId},
@@ -304,7 +304,33 @@ impl ServiceHost {
         if !host.shutdown_status().safe_confirmed {
             return Err(io::Error::other("startup safe evidence unavailable").into());
         }
-        if loaded.is_none() {
+        if let Some(deployment) = loaded.as_ref()
+            && !deployment.effective().dto.managed_components.is_empty()
+        {
+            let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let supervisor = loop {
+                match lab_lua::LuaSupervisor::new() {
+                    Ok(supervisor) => break supervisor,
+                    Err(ComponentError::Busy) if std::time::Instant::now() < init_deadline => {
+                        std::thread::yield_now()
+                    }
+                    Err(error) => return Err(DomainError::from(error).into()),
+                }
+            };
+            host.install_component_executor(Box::new(supervisor))?;
+            for index in 0..deployment.effective().dto.managed_components.len() {
+                let id = host.stage_configured_component(deployment, index, false, clock.now())?;
+                while !host.component_initialized(id) {
+                    if std::time::Instant::now() >= init_deadline {
+                        let _ = host.begin_shutdown(&clock);
+                        return Err(io::Error::other("configured managed init deadline").into());
+                    }
+                    host.service(&clock)?;
+                    std::thread::yield_now();
+                }
+            }
+            host.activate_configured_components(deployment, clock.now())?;
+        } else if loaded.is_none() {
             let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             let supervisor = loop {
                 match lab_lua::LuaSupervisor::new() {
@@ -508,20 +534,48 @@ impl ServiceHost {
 
     /// Reload managed sources independently of deployment and model restart.
     pub fn reload_managed_scripts(&mut self) -> Result<(), LifecycleOperationError> {
-        let lifecycle = self
+        let candidate = self
             .deployment
             .as_ref()
-            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
-        if lifecycle
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
             .active()
-            .effective()
-            .dto
-            .managed_components
-            .is_empty()
-        {
+            .reload_managed_sources()
+            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let count = candidate.effective().dto.managed_components.len();
+        if count == 0 {
             return Err(LifecycleOperationError::NoManagedComponents);
         }
-        Err(LifecycleOperationError::OwnerFailure)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        for index in 0..count {
+            let component_id =
+                ComponentId::new(candidate.effective().dto.managed_components[index].id);
+            let previous_generation = self
+                .host
+                .component_generation(component_id)
+                .ok_or(LifecycleOperationError::OwnerFailure)?;
+            let id = self
+                .host
+                .stage_configured_component(&candidate, index, true, self.clock.now())
+                .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+            while self.host.component_generation(id) == Some(previous_generation) {
+                if std::time::Instant::now() >= deadline {
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+                self.host
+                    .service(&self.clock)
+                    .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+                std::thread::yield_now();
+            }
+        }
+        self.host
+            .activate_configured_components(&candidate, self.clock.now())
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        self.deployment
+            .as_mut()
+            .expect("checked above")
+            .commit_managed_sources(candidate)
+            .map_err(|_| LifecycleOperationError::Conflict)?;
+        Ok(())
     }
 
     /// Restart configured native models without rereading TOML or managed sources.

@@ -235,6 +235,40 @@ impl FrozenDeployment {
         entries
     }
 
+    /// Reread only declared managed sources into a new immutable bundle. TOML,
+    /// definitions and effective deployment identity remain unchanged.
+    pub(crate) fn reload_managed_sources(&self) -> Result<Self, ConfigurationError> {
+        let mut next = self.clone();
+        let mut reader = FileArtifactReader;
+        for component in &self.effective.dto.managed_components {
+            let path = self.resolved_path(&component.source)?;
+            let bytes = reader.read(&path, 32 * 1024)?;
+            std::str::from_utf8(&bytes)
+                .map_err(|_| ConfigurationError::artifact("managed source must be UTF-8"))?;
+            let artifact = next
+                .artifacts
+                .iter_mut()
+                .find(|artifact| {
+                    artifact.kind == ArtifactKind::ManagedLuaSource
+                        && artifact.declared_path == path
+                })
+                .ok_or_else(|| ConfigurationError::artifact("managed source not frozen"))?;
+            artifact.sha256 = Sha256::digest(&bytes).into();
+            artifact.bytes = Arc::from(bytes);
+        }
+        let total = next
+            .artifacts
+            .iter()
+            .try_fold(next.toml_bytes.len(), |total, artifact| {
+                total.checked_add(artifact.bytes.len() + 128)
+            })
+            .ok_or(ConfigurationError::TooLarge)?;
+        if total > MAX_DEPLOYMENT_BYTES {
+            return Err(ConfigurationError::TooLarge);
+        }
+        Ok(next)
+    }
+
     pub(crate) fn changes_from(&self, active: &Self) -> DeploymentChanges {
         let old = &active.effective.dto;
         let new = &self.effective.dto;

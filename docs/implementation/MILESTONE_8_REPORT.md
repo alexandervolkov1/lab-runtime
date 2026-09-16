@@ -13,7 +13,7 @@ are not reported as passing evidence.
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
 | C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence Host apply and public operation green; safe/Required integration remains |
-| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | C11 Core restart primitive green; C9-C10 and public operation remain |
+| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Single-component C9/C10 and native C11 green; atomic multi-component reload remains |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
 | C18 | Public API/Babashka process independence under configured acquisition | Pending |
@@ -101,6 +101,16 @@ are not reported as passing evidence.
     TOML pathname after readiness, shuts down cleanly, reopens the database and
     verifies the `runtime_toml` provenance content is byte-for-byte the originally
     loaded candidate. The targeted test passed.
+11. C9 configured managed-source acceptance was red at startup because the graph
+    builder rejected managed components. Added startup composition from frozen Lua
+    bytes, using the existing two-worker supervisor and one Core staging slot,
+    plus a distinct source-only reload that leaves TOML hash/revision unchanged.
+    The first green attempt exposed that an old committed generation made the
+    wait predicate immediately true; it was corrected to wait for a checked
+    generation advance. C9 single-component reload and C10 invalid-source
+    preservation pass, as do targeted lifecycle regression and clippy. The
+    current sequential path does not yet satisfy C9's atomic multi-component
+    commit and is not reported as full C9 completion.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

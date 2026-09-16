@@ -174,6 +174,21 @@ impl DeploymentLifecycle {
         &self.active
     }
 
+    /// Replace only the frozen managed-source bundle without changing TOML
+    /// identity or configuration revision.
+    pub(crate) fn commit_managed_sources(
+        &mut self,
+        candidate: FrozenDeployment,
+    ) -> Result<(), ApplyError> {
+        if candidate.toml_hash() != self.active.toml_hash()
+            || candidate.effective() != self.active.effective()
+        {
+            return Err(ApplyError::Conflict);
+        }
+        self.active = candidate;
+        Ok(())
+    }
+
     /// Validate and retain one candidate without touching the Runtime owner.
     pub fn stage(
         &mut self,
