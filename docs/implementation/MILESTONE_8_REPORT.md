@@ -12,7 +12,7 @@ are not reported as passing evidence.
 | IDs | Tests-first implementation slice | Evidence status |
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
-| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence Host apply and public operation green; safe/Required integration remains |
+| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence durable activation and Required fence green; full safe/rebind apply remains |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Atomic bounded managed batch and native restart software tests green |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
@@ -149,6 +149,16 @@ are not reported as passing evidence.
     read and cannot substitute for compatibility. The first test response used
     the I16 flag for a U8 value and correctly failed; the oracle was fixed to the
     protocol's U8 flag. Physical composition/startup regressions and clippy pass.
+16. Live reload provenance coverage initially existed only for startup activation.
+    Recorder now accepts the same bounded activation message after startup and
+    receipts it with a checked per-boot activation generation while preserving
+    run/interval identity and all M7 ingress limits. Configuration reload closes
+    an already-open Required gate before domain commit, queues the exact committed
+    frozen bundle, and reopens only after the matching durable receipt; a gate
+    that was already closed is never spuriously opened. Postcommit storage failure
+    leaves the new active identity and faults Required recording. The extended
+    process/reopen test observes activation generation 2 and both exact TOML byte
+    versions in SQLite. Targeted provenance, Required and clippy suites pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

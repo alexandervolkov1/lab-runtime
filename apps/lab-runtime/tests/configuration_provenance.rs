@@ -47,6 +47,17 @@ poll_period_ms=50
     let mut service =
         ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
             .unwrap();
+    let reloaded = original.replace("Frozen provenance", "Reloaded provenance");
+    fs::write(&config, &reloaded).unwrap();
+    assert_eq!(service.reload_configuration().unwrap().revision, 2);
+    assert_eq!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .activation_generation,
+        2
+    );
     fs::write(&config, "not the loaded deployment").unwrap();
 
     service.request_shutdown().unwrap();
@@ -61,14 +72,20 @@ poll_period_ms=50
     drop(service);
 
     let connection = rusqlite::Connection::open(&database).unwrap();
-    let stored: Vec<u8> = connection
-        .query_row(
-            "SELECT content FROM provenance_content WHERE kind='runtime_toml'",
-            [],
-            |row| row.get(0),
+    let mut statement = connection
+        .prepare(
+            "SELECT content FROM provenance_content WHERE kind='runtime_toml' ORDER BY content",
         )
         .unwrap();
-    assert_eq!(stored, original.as_bytes());
+    let stored: Vec<Vec<u8>> = statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(stored.len(), 2);
+    assert!(stored.iter().any(|bytes| bytes == original.as_bytes()));
+    assert!(stored.iter().any(|bytes| bytes == reloaded.as_bytes()));
+    drop(statement);
     drop(connection);
     fs::remove_file(config).unwrap();
     fs::remove_file(database).unwrap();

@@ -650,6 +650,11 @@ impl Runtime {
         }
     }
 
+    /// Whether Required ordinary admission currently has durable progress credit.
+    pub fn required_recording_open(&self) -> bool {
+        self.required_recording.enabled && self.required_recording.open
+    }
+
     fn service_required_recording_deadline(&mut self, at: Duration) {
         if self.required_recording.enabled && self.recording_facts.overflowed() {
             self.recording_failure(at);

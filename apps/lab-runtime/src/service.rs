@@ -535,14 +535,45 @@ impl ServiceHost {
                     LifecycleOperationError::Conflict
                 }
             })?;
+        let submitted_at = self.clock.now();
+        let reopen_required = self.host.begin_configuration_recording_fence(submitted_at);
         let mut port = LiveApplyPort(&mut self.host);
-        match lifecycle.apply(
+        let applied = lifecycle.apply(
             staged.id(),
             staged.base_revision(),
             self.clock.now(),
             &mut port,
-        ) {
-            Ok(ApplyResult::Applied { revision }) => Ok(ReloadConfigurationResult { revision }),
+        );
+        match applied {
+            Ok(ApplyResult::Applied { revision }) => {
+                let generation = match self.host.request_live_activation() {
+                    Ok(generation) => generation,
+                    Err(_) => {
+                        self.host.configuration_recording_failed(self.clock.now());
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    match self.host.live_activation_committed(
+                        generation,
+                        reopen_required,
+                        submitted_at,
+                        self.clock.now(),
+                    ) {
+                        Ok(true) => break,
+                        Ok(false) if std::time::Instant::now() < deadline => {
+                            let _ = self.host.service(&self.clock);
+                            std::thread::yield_now();
+                        }
+                        _ => {
+                            self.host.configuration_recording_failed(self.clock.now());
+                            return Err(LifecycleOperationError::OwnerFailure);
+                        }
+                    }
+                }
+                Ok(ReloadConfigurationResult { revision })
+            }
             Ok(ApplyResult::FailedBeforeCommit) => {
                 Err(LifecycleOperationError::RequiresSafeBarrier)
             }

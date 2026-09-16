@@ -294,6 +294,8 @@ pub struct RecordingStatus {
     pub terminal_seal_committed: bool,
     /// Root of the committed frozen active composition before listener readiness.
     pub activation_root: Option<[u8; 32]>,
+    /// Checked count of durable activation baselines committed in this boot.
+    pub activation_generation: u64,
     /// Owned coverage is `complete` or `gap`; failed storage may leave it unsealed.
     pub coverage: &'static str,
     /// First source fact known to have been lost, if the source identity is known.
@@ -321,6 +323,7 @@ struct Receipt {
     interval_no: Option<u64>,
     terminal_seal_committed: bool,
     activation_root: Option<[u8; 32]>,
+    activation_generation: u64,
     failure_persisted: bool,
     storage: Option<StorageHealth>,
 }
@@ -338,6 +341,7 @@ impl Default for Receipt {
             interval_no: None,
             terminal_seal_committed: false,
             activation_root: None,
+            activation_generation: 0,
             failure_persisted: false,
             storage: None,
         }
@@ -399,6 +403,7 @@ pub struct RecorderWorker {
     source: MonotonicSource,
     last_periodic: Duration,
     periodic_pending: Option<u64>,
+    pending_activation_generation: Option<u64>,
     last_owner_submission: Option<Duration>,
     last_accepted_fact: Option<u64>,
     gap_scheduled: bool,
@@ -567,6 +572,7 @@ impl RecorderWorker {
                 interval_no: None,
                 terminal_seal_committed: false,
                 activation_root: None,
+                activation_generation: 0,
                 coverage: "complete",
                 first_missing_fact: None,
                 failure_persisted: false,
@@ -588,6 +594,7 @@ impl RecorderWorker {
             source,
             last_periodic,
             periodic_pending: None,
+            pending_activation_generation: None,
             last_owner_submission: None,
             last_accepted_fact: None,
             gap_scheduled: false,
@@ -653,7 +660,33 @@ impl RecorderWorker {
                 "activation requires idle unactivated worker".into(),
             ));
         }
-        self.send_control(Message::Activation(entries, objects))
+        self.send_control(Message::Activation(entries, objects))?;
+        self.pending_activation_generation = Some(1);
+        Ok(())
+    }
+
+    /// Queue a bounded live activation while preserving the current run/interval.
+    pub fn request_live_activation(
+        &mut self,
+        entries: Vec<ProvenanceEntry>,
+        objects: Vec<ProvenanceObject>,
+    ) -> Result<u64, StorageError> {
+        let status = self.poll();
+        if !matches!(
+            status.state,
+            RecordingState::Idle | RecordingState::Recording
+        ) || status.activation_generation == 0
+            || self.pending_activation_generation.is_some()
+        {
+            return Err(StorageError("live activation worker busy".into()));
+        }
+        let generation = status
+            .activation_generation
+            .checked_add(1)
+            .ok_or_else(|| StorageError("activation generation exhausted".into()))?;
+        self.send_control(Message::Activation(entries, objects))?;
+        self.pending_activation_generation = Some(generation);
+        Ok(generation)
     }
 
     /// Schedule one indexed archived-run discovery page on the storage worker.
@@ -1220,6 +1253,13 @@ impl RecorderWorker {
                 self.cached.interval_no = receipt.interval_no;
                 self.cached.terminal_seal_committed = receipt.terminal_seal_committed;
                 self.cached.activation_root = receipt.activation_root;
+                self.cached.activation_generation = receipt.activation_generation;
+                if self
+                    .pending_activation_generation
+                    .is_some_and(|generation| receipt.activation_generation >= generation)
+                {
+                    self.pending_activation_generation = None;
+                }
                 self.cached.failure_persisted = receipt.failure_persisted;
                 self.cached.storage = receipt.storage;
                 if self
@@ -1464,14 +1504,18 @@ fn worker_loop(
             store.fail_next_checkpoint_for_testing();
         }
         let result = match message {
-            Message::Activation(entries, objects) => {
-                store.commit_activation(&entries, &objects).map(|root| {
-                    receipt
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .activation_root = Some(root);
-                })
-            }
+            Message::Activation(entries, objects) => store
+                .commit_activation(&entries, &objects)
+                .and_then(|root| {
+                    let mut receipt = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                    let generation = receipt
+                        .activation_generation
+                        .checked_add(1)
+                        .ok_or_else(|| StorageError("activation generation exhausted".into()))?;
+                    receipt.activation_root = Some(root);
+                    receipt.activation_generation = generation;
+                    Ok(())
+                }),
             Message::Start(label, policy, submitted_at, boundary, first_record) => {
                 TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
                     .and_then(|anchor| {

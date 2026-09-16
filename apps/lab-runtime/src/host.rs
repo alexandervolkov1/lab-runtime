@@ -992,6 +992,66 @@ impl HostCore {
         Ok(committed)
     }
 
+    /// Close Required ordinary admission before a configuration commit whose
+    /// durable activation receipt has not yet arrived.
+    pub(crate) fn begin_configuration_recording_fence(&mut self, at: Duration) -> bool {
+        let was_open = self.recording_policy == Some(RecordingPolicy::Required)
+            && self.runtime.required_recording_open();
+        if was_open {
+            self.runtime.require_recording(at);
+        }
+        was_open
+    }
+
+    pub(crate) fn configuration_recording_failed(&mut self, at: Duration) {
+        if self.recording_policy == Some(RecordingPolicy::Required) {
+            self.runtime.recording_failure(at);
+        }
+    }
+
+    /// Queue the already committed frozen activation on the existing bounded
+    /// Recorder control path; no hashing or SQL occurs on the owner lane.
+    pub(crate) fn request_live_activation(&mut self) -> Result<Option<u64>, Error> {
+        let (entries, objects) = self.frozen_activation_entries()?;
+        let Some(worker) = self.recorder.as_mut() else {
+            return Ok(None);
+        };
+        worker
+            .request_live_activation(entries, objects)
+            .map(Some)
+            .map_err(|_| Error::InvalidConfiguration("live activation rejected"))
+    }
+
+    /// Poll a specific live activation receipt and reopen Required admission only
+    /// from that durable generation.
+    pub(crate) fn live_activation_committed(
+        &mut self,
+        generation: Option<u64>,
+        reopen_required: bool,
+        submitted_at: Duration,
+        now: Duration,
+    ) -> Result<bool, Error> {
+        let Some(generation) = generation else {
+            return Ok(true);
+        };
+        self.poll_recorder(now);
+        let status = self
+            .recording_status
+            .as_ref()
+            .ok_or(Error::InvalidConfiguration("recorder status missing"))?;
+        if status.state == RecordingState::Failed {
+            self.runtime.recording_failure(now);
+            return Err(Error::RecordingUnavailable);
+        }
+        if status.activation_generation < generation {
+            return Ok(false);
+        }
+        if reopen_required {
+            self.runtime.confirm_recording_start(submitted_at, now)?;
+        }
+        Ok(true)
+    }
+
     // Capture the actual currently committed scalar composition before any
     // worker hashing. All source bytes come from the fixed loaded component
     // definitions, never from a pathname reread at recording time.
