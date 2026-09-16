@@ -2,8 +2,8 @@
 
 use lab_runtime::{
     application::Application,
-    host::Clock,
-    recorder::{RecordingPolicy, RecordingState},
+    host::{Clock, HostCore},
+    recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, WriterBarrier},
     service::{ServiceHost, ServiceOptions},
     wire::{decode_frame, encode_frame},
 };
@@ -175,4 +175,61 @@ fn public_recording_status_reports_cached_limits_quota_and_actual_wal_health() {
     drop(app);
     drop(service);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_failure() {
+    let path = temporary_database();
+    let fault = WriterBarrier::low_wal_threshold_for_testing(1);
+    let worker = RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), fault.clone()).unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options = ServiceOptions::parse(&[
+        "--serve", "--profile", "virtual-demo", "--port", "0",
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    service.owner_mut().start_recording("checkpoint status", clock.now()).unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let prefix = service.owner().recording_status().unwrap().persisted_through_sequence;
+    let baseline = service.owner().recording_status().unwrap().storage.as_ref().unwrap().wal_checkpoints;
+    assert!(baseline > 0, "tiny real-WAL threshold must produce a checkpoint");
+    fault.fail_next_checkpoint();
+    let plant = service.owner().plant_id();
+    service.owner_mut().command(lab_core::Command::RefreshMeasurement {
+        instrument: plant,
+        parameter: lab_core::TEMPERATURE,
+        at: clock.now(),
+    }).unwrap();
+    while service.owner().recording_status().unwrap().state != RecordingState::Failed {
+        assert!(Instant::now() < by, "injected WAL checkpoint failure did not fail closed");
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let status = service.owner().recording_status().unwrap();
+    assert_eq!(status.persisted_through_sequence, prefix);
+    assert_eq!(status.storage.as_ref().unwrap().wal_checkpoints, baseline);
+    assert!(status.first_error.as_deref().unwrap().contains("WAL threshold checkpoint failed"));
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = decode_frame(&encode_frame(&json!({"v":1,"msg_id":"h","op":"hello","args":{"scope":null}})).unwrap()).unwrap();
+    assert_eq!(app.handle(&mut service, 1, hello)[0]["type"], "result");
+    let frame = decode_frame(&encode_frame(&json!({"v":1,"msg_id":"s","op":"recording_status","args":{}})).unwrap()).unwrap();
+    let response = app.handle(&mut service, 1, frame);
+    assert_eq!(response[0]["result"]["wal_checkpoints"], baseline.to_string());
+    assert_eq!(response[0]["result"]["persisted_through_seq"], prefix.to_string());
+    drop(app);
+    drop(service);
+    let remove_by = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && Instant::now() < remove_by {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
 }

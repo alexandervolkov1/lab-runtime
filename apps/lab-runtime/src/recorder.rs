@@ -505,6 +505,7 @@ pub struct SqliteStore {
     wal_path: PathBuf,
     wal_threshold_bytes: u64,
     wal_checkpoints: u64,
+    checkpoint_fault_once: bool,
 }
 
 impl SqliteStore {
@@ -781,6 +782,7 @@ impl SqliteStore {
             wal_path: PathBuf::from(sidecar),
             wal_threshold_bytes: WAL_THRESHOLD_BYTES,
             wal_checkpoints: 0,
+            checkpoint_fault_once: false,
         })
     }
 
@@ -862,10 +864,20 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Fail the next required threshold checkpoint at its worker-only gate.
+    /// Trusted fault harnesses use this to verify the durable-prefix response.
+    pub fn fail_next_checkpoint_for_testing(&mut self) {
+        self.checkpoint_fault_once = true;
+    }
+
     fn require_wal_budget(&mut self) -> Result<(), StorageError> {
         let (bytes, _) = self.wal_health()?;
         if bytes < self.wal_threshold_bytes {
             return Ok(());
+        }
+        if self.checkpoint_fault_once {
+            self.checkpoint_fault_once = false;
+            return Err(StorageError("WAL threshold checkpoint failed".into()));
         }
         let (busy, _log, _checkpointed): (i64, i64, i64) =
             self.connection

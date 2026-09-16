@@ -57,6 +57,8 @@ struct BarrierState {
     panic_before_fact_sql: bool,
     hold_finish: bool,
     fail_periodic_wall_read: AtomicBool,
+    low_wal_threshold: Option<u64>,
+    fail_checkpoint_once: AtomicBool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -73,6 +75,8 @@ impl WriterBarrier {
             panic_before_fact_sql: false,
             hold_finish: false,
             fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -86,6 +90,8 @@ impl WriterBarrier {
             panic_before_fact_sql: false,
             hold_finish: false,
             fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
     }
     /// Hold after a real fact transaction commits but before its owner receipt.
@@ -100,6 +106,8 @@ impl WriterBarrier {
             panic_before_fact_sql: false,
             hold_finish: false,
             fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
     }
     /// Hold only a terminal operation before SQL, after earlier acceptance commits.
@@ -114,6 +122,8 @@ impl WriterBarrier {
             panic_before_fact_sql: false,
             hold_finish: false,
             fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
     }
     /// Terminate the storage thread before one fact transaction for fault tests.
@@ -127,6 +137,8 @@ impl WriterBarrier {
             panic_before_fact_sql: true,
             hold_finish: false,
             fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
     }
     /// Hold only Finish before SQL, after its owner FIFO admission.
@@ -140,6 +152,8 @@ impl WriterBarrier {
             panic_before_fact_sql: false,
             hold_finish: true,
             fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
     }
     /// Inject one failed later UTC read on the SQLite worker's periodic path.
@@ -154,7 +168,28 @@ impl WriterBarrier {
             panic_before_fact_sql: false,
             hold_finish: false,
             fail_periodic_wall_read: AtomicBool::new(true),
+            low_wal_threshold: None,
+            fail_checkpoint_once: AtomicBool::new(false),
         }))
+    }
+    /// Use a smaller real WAL checkpoint threshold in the storage fault harness.
+    pub fn low_wal_threshold_for_testing(bytes: u64) -> Self {
+        Self(Arc::new(BarrierState {
+            held: AtomicBool::new(false),
+            reached: AtomicBool::new(false),
+            hold_start: false,
+            hold_after_fact_commit: false,
+            hold_terminal_operation: false,
+            panic_before_fact_sql: false,
+            hold_finish: false,
+            fail_periodic_wall_read: AtomicBool::new(false),
+            low_wal_threshold: Some(bytes),
+            fail_checkpoint_once: AtomicBool::new(false),
+        }))
+    }
+    /// Arm exactly one fault at the next fact's worker-only WAL threshold gate.
+    pub fn fail_next_checkpoint(&self) {
+        self.0.fail_checkpoint_once.store(true, Ordering::Release);
     }
     /// Release any worker held at a deterministic storage stage.
     pub fn release(&self) {
@@ -438,7 +473,10 @@ impl RecorderWorker {
                     .and_then(|anchor| {
                         SqliteStore::open_with_boot_anchor(&worker_path, &worker_boot, anchor)
                     })
-                    .and_then(|store| {
+                    .and_then(|mut store| {
+                        if let Some(threshold) = barrier.as_ref().and_then(|fault| fault.0.low_wal_threshold) {
+                            store.lower_wal_threshold_for_testing(threshold)?;
+                        }
                         let health = store.storage_health()?;
                         thread_receipt
                             .lock()
@@ -1393,6 +1431,13 @@ fn worker_loop(
             && let Some(barrier) = barrier
         {
             barrier.await_release();
+        }
+        if matches!(message, Message::Facts(..))
+            && barrier.is_some_and(|fault| {
+                fault.0.fail_checkpoint_once.swap(false, Ordering::AcqRel)
+            })
+        {
+            store.fail_next_checkpoint_for_testing();
         }
         let result = match message {
             Message::Activation(entries, objects) => {
