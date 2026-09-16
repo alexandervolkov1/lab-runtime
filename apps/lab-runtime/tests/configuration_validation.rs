@@ -1,9 +1,11 @@
 //! C1-C4 acceptance for bounded, side-effect-free deployment validation.
 
+use lab_core::{Query, QueryResult};
 use lab_runtime::configuration::{
-    ArtifactReader, ConfigurationError, MAX_RUNTIME_TOML_BYTES, load_runtime_toml,
-    parse_runtime_toml,
+    ArtifactReader, ConfigurationError, MAX_RUNTIME_TOML_BYTES, MAX_RUNTIME_TOML_DEPTH,
+    MAX_RUNTIME_TOML_VALUES, load_runtime_toml, parse_runtime_toml,
 };
+use lab_runtime::host::HostCore;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -286,6 +288,91 @@ fn c3_unknown_duplicate_bom_and_oversize_inputs_are_rejected_boundedly() {
         assert!(parse_runtime_toml(&bytes, base, &mut reader).is_err());
         assert_eq!(reader.reads, 0);
     }
+}
+
+#[test]
+fn c3_nesting_value_count_and_numeric_overflow_are_rejected_before_artifact_reads() {
+    let base = Path::new("C:/lab/config");
+    let nested = format!(
+        "schema_version=1\nunknown={}0{}\n",
+        "[".repeat(MAX_RUNTIME_TOML_DEPTH + 1),
+        "]".repeat(MAX_RUNTIME_TOML_DEPTH + 1)
+    );
+    let assignments = (0..=MAX_RUNTIME_TOML_VALUES)
+        .map(|index| format!("v{index}=0\n"))
+        .collect::<String>();
+    let numeric_overflow = physical_config("metakon.json")
+        .windows(b"port = 7420".len())
+        .position(|window| window == b"port = 7420")
+        .map(|at| {
+            let mut bytes = physical_config("metakon.json");
+            bytes.splice(
+                at..at + b"port = 7420".len(),
+                b"port = 999999999999999999999999999999999999"
+                    .iter()
+                    .copied(),
+            );
+            bytes
+        })
+        .unwrap();
+
+    for bytes in [
+        nested.into_bytes(),
+        assignments.into_bytes(),
+        numeric_overflow,
+    ] {
+        let mut reader = MemoryReader::default();
+        assert!(parse_runtime_toml(&bytes, base, &mut reader).is_err());
+        assert_eq!(reader.reads, 0);
+    }
+}
+
+fn virtual_graph(instrument_count: u64) -> Vec<u8> {
+    let mut document = String::from(
+        r#"schema_version=1
+[runtime]
+key="maximum-graph"
+display_name="Maximum graph"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+"#,
+    );
+    for id in 1..=instrument_count {
+        document.push_str(&format!(
+            r#"[[instruments]]
+id={id}
+key="sensor-{id}"
+kind="virtual_measurement"
+display_name="Sensor {id}"
+history_capacity=8
+base_temperature=20.0
+measurement_enabled=true
+poll_period_ms=100
+"#,
+        ));
+    }
+    document.into_bytes()
+}
+
+#[test]
+fn c4_largest_admitted_instrument_graph_composes_and_the_next_object_is_rejected() {
+    let base = Path::new("C:/lab/config");
+    let mut reader = MemoryReader::default();
+    let deployment = parse_runtime_toml(&virtual_graph(64), base, &mut reader).unwrap();
+    let host = HostCore::configured_native(&deployment).unwrap();
+    let QueryResult::Instruments(instruments) = host.query(Query::Discover).unwrap() else {
+        panic!("discovery result missing")
+    };
+    assert_eq!(instruments.len(), 64);
+
+    let mut reader = MemoryReader::default();
+    let error = parse_runtime_toml(&virtual_graph(65), base, &mut reader).unwrap_err();
+    assert!(error.to_string().contains("object limit"));
+    assert_eq!(reader.reads, 0);
 }
 
 #[test]

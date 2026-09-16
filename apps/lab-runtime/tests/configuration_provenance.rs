@@ -49,7 +49,15 @@ poll_period_ms=50
             .unwrap();
     let reloaded = original.replace("Frozen provenance", "Reloaded provenance");
     fs::write(&config, &reloaded).unwrap();
-    assert_eq!(service.reload_configuration().unwrap().revision, 2);
+    let staged = service.stage_configuration().unwrap();
+    fs::write(&config, "not the loaded deployment").unwrap();
+    assert_eq!(
+        service
+            .apply_staged_configuration(staged.id(), staged.base_revision())
+            .unwrap()
+            .revision,
+        2
+    );
     assert_eq!(
         service
             .owner()
@@ -58,8 +66,6 @@ poll_period_ms=50
             .activation_generation,
         2
     );
-    fs::write(&config, "not the loaded deployment").unwrap();
-
     service.request_shutdown().unwrap();
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
@@ -94,7 +100,7 @@ poll_period_ms=50
         )
         .unwrap();
     let lifecycle: serde_json::Value = serde_json::from_slice(&lifecycle).unwrap();
-    assert_eq!(lifecycle["operation_kind"], "reload_configuration");
+    assert_eq!(lifecycle["operation_kind"], "apply_configuration");
     assert_eq!(lifecycle["base_revision"], "1");
     assert_eq!(lifecycle["committed_revision"], "2");
     assert_eq!(lifecycle["activation_generation"], "2");

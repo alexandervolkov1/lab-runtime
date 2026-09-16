@@ -312,6 +312,14 @@ are not reported as passing evidence.
     and releases Required only after the compatibility probe and matching
     activation receipt. Four managed tests, lifecycle regressions, Recorder
     budget coverage and warning-denied workspace clippy pass.
+29. Additional C3/C4 boundary coverage was added after the bounded parser and
+    configured graph builder already existed, so no production-red sequence is
+    claimed. The tests reject nesting depth nine, assignment 4,097, integer
+    overflow and instrument 65 before artifact reads; the exact 64-instrument
+    maximum parses and composes into the authoritative Host graph. C5 provenance
+    coverage now explicitly stages a candidate, mutates the pathname to invalid
+    content, and applies the retained candidate while SQLite records the staged
+    exact bytes. Both targeted suites pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
