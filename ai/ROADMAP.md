@@ -26,9 +26,9 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 Current model: SOL_HIGH
-Current phase: Recorder-ordering-corrected physical reconnect gate pending.
+Current phase: Recorder-corrected physical reconnect failed before rebind.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
@@ -60,8 +60,13 @@ and activation takes the current tail identity only when immediately enqueued.
 Cancellation creates no rewind or gap; Required failure remains fail-closed. The
 debug workspace now passes 414 named tests plus actual Babashka A/B, fmt, Clippy
 and diff gates. A new absent archive is selected at `2ec104b`. Await explicit
-continuation of the read-only hardware gate; M8 is incomplete and M9 is not
-authorized.
+continuation of the read-only hardware gate. That run reconfirmed real Good
+acquisition, one durable Unavailable, finite Offline and healthy contiguous
+Recorder operation. Its single explicit reconnect nevertheless failed before a
+generation-2 binding or probe was installed. Clean shutdown sealed complete
+evidence with zero outputs. The archive hash and exact facts are in
+`MILESTONE_8_REPORT.md`. External review is required before another COM5 open or
+software correction; M8 is incomplete and M9 is not authorized.
 
 First stable release sequence
 M7

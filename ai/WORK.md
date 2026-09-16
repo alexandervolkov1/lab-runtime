@@ -1,12 +1,12 @@
-# Current work — M8 corrected real-hardware acceptance
+# Current work — M8 physical reconnect review stop
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model: SOL_HIGH.
-Current phase: Recorder-ordering-corrected physical reconnect gate pending.
+Current phase: Recorder-corrected physical reconnect failed before generation-2 install.
 M7: externally accepted at `f3ff456`.
 M8 software implementation: complete at `0a42d73`; reviewed corrections complete
-through Recorder FIFO correction commits `fdf8a73` and `2ec104b` on 2026-09-16.
+through Recorder FIFO correction commits `fdf8a73` and `2ec104b`.
 M9: not authorized.
 
 ## Authoritative contract
@@ -24,57 +24,45 @@ docs/implementation/MILESTONE_8_DESIGN.md
 docs/implementation/MILESTONE_8_REPORT.md
 ```
 
-The C1-C20 software implementation remains complete. The corrections preserve
-the strict decoder/raw I16 contract, explicit device scale, deterministic
-deployment paths, finite recovery, resource-scoped reconnect fencing, Required
-Recorder fail-closed semantics and every prior SQLite bench archive. Exact
-red/green history, hashes and gates are in `MILESTONE_8_REPORT.md`.
+## Review checkpoint
 
-## Current checkpoint
+The accepted physical run started at HEAD
+`5355963d9e4bb3efa5f5214223a1510cc25619e9` with exact expected TOML and
+definition hashes. Normal COM5 acquisition passed channel type 3 and produced
+165 durable generation-1 Good temperature rows at raw/engineering 29--30 with
+scale 1.0, matching the operator's 29-degree display.
 
-The latest physical run proved corrected finite disconnect and that a failed
-generation-2 reconnect did not release ordinary acquisition. It then exposed a
-Recorder FIFO identity hole: lifecycle capacity reservation assigned an unsent
-record ID before the resource-scoped compatibility probe emitted a normal fact.
-The SQLite worker correctly rejected the later ID with
-`fact record reservation mismatch`; Required recording failed with an unknown
-tail and the reconnect surfaced as `invalid_configuration`. The archive is
-preserved unchanged at
-`examples/metakon-513-com5-reconnect-corrected-history.sqlite`, SHA-256
-`ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
+The operator-reported device power-off produced exactly one value-less
+Unavailable/Transport row, finite Offline, generation 1, queue zero and no later
+Good. Required Recorder remained healthy and complete. After the
+operator-reported device power-cycle/reset boundary, exactly one public
+`reconnect_resource(resource=1, expected_binding_generation=1)` was issued. Its
+Accepted and Failed/`invalid_configuration` phases are durable at records 677
+and 678.
 
-External review authorized and SOL_HIGH completed the narrow correction. Live
-activation now reserves only fixed capacity and generation before side effects.
-It assigns the current FIFO-tail record identity only when the Activation is
-immediately enqueued. Intervening probe facts remain contiguous; cancellation
-does not rewind or skip IDs. Existing bounds, one writer, exact worker validation,
-resource-scoped quiescing and Required failure behavior remain unchanged.
-Recorder lifecycle failures now use the existing public
-`recording_unavailable` category rather than being masked as configuration
-validation failures.
+The Recorder FIFO correction passed this physical causal chain: there is no
+`fact record reservation mismatch`, `recording_unavailable`, gap or unknown
+tail. However, no generation-2 binding, compatibility measurement or lifecycle
+activation was installed. Resource state remained Offline at generation 1.
+Current evidence therefore places the failure before the replacement crossed
+the rebind fence, without distinguishing old-adapter retirement failure from
+configured COM5 reopen failure. Do not guess between those branches.
 
-Commit `fdf8a73` contains production and tests. The debug workspace passes 414
-named tests; all 136 Core tests, targeted Recorder/reconnect/COM suites, actual
-Babashka A/B, fmt, workspace all-target warning-denied Clippy and diff checks
-pass. Full release and warning-denied rustdoc remain deferred to the successful
-final hardware gate under the accepted review instruction.
+No reconnect retry, alternative COM open, register/address probe, configuration
+operation or physical write was attempted. Normal shutdown completed with
+transports closed, Recorder flushed, no unfinished transports/workers and success.
+Final M8 Babashka-independence, live-safe reload and release/rustdoc gates were
+not run after the reconnect failure.
 
-The next archive is
-`examples/metakon-513-com5-recorder-corrected-history.sqlite`; it was confirmed
-absent and has not been opened. Commit `2ec104b` selects it. Exact hashes are:
+Preserve the sealed evidence archive unchanged:
 
 ```text
-runtime.toml  405d99056fd4ba265bb8776f18360a33cd4be81e65c7e03976196acbf374056b
-definition    b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb
+examples/metakon-513-com5-recorder-corrected-history.sqlite
+SHA-256 49c21ab48a22b4c2d0100357686f1b367d0432ce641dd9c8e21eee3184e4c6de
 ```
 
-Do not reopen COM5 until the user explicitly continues from this checkpoint.
-The next authorized launch command is:
+It has complete coverage, no gaps, zero output events and terminal checkpoint
+through record 849. Preserve every earlier hardware archive as well.
 
-```powershell
-cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
-```
-
-Continue only the remaining read-only M8 hardware acceptance. Do not reuse or
-modify prior SQLite evidence, issue actuator/configuration writes, probe another
-register, enumerate COM ports, start M9 or perform post-M8 cleanup.
+Await external review. Do not reopen COM5, retry reconnect, change production
+code, start M9 or perform post-M8 cleanup without explicit authorization.

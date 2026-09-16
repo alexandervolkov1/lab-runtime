@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 Recorder-ordering-corrected physical reconnect gate pending.
+M8 Recorder-corrected physical reconnect failed before generation-2 install.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,9 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-Await explicit operator continuation for the remaining read-only M8 hardware
-gate. Do not reopen COM5 before that instruction, reuse prior evidence archives,
-issue physical writes, probe other registers, begin M9 or perform post-M8 cleanup.
+Await external review of the pre-rebind reconnect failure. Do not reopen COM5,
+retry reconnect, change production code, reuse prior evidence archives, issue
+physical writes, probe other registers, begin M9 or perform post-M8 cleanup.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -113,6 +113,37 @@ the unchanged definition hash is
 The defect archive remains unchanged at its recorded SHA-256. STATUS returns to
 `M8_HARDWARE_ACCEPTANCE_PENDING`; await explicit continuation and do not begin
 M9.
+
+M8 Recorder-corrected physical reconnect review stop — 2026-09-16
+
+The accepted HEAD `5355963d9e4bb3efa5f5214223a1510cc25619e9` run used exact
+approved configuration hashes and a previously absent archive. COM5 startup and
+channel type 3 succeeded. Strict raw I16 29/30 with explicit scale 1.0 produced
+165 durable generation-1 Good rows matching the operator's 29-degree display.
+
+The operator-reported device power-off produced exactly one durable value-less
+Unavailable/Transport row, finite Offline, unchanged generation 1, zero queue
+growth and no later Good. Required Recorder stayed healthy and complete. After
+the operator-reported device power-cycle/reset boundary, exactly one explicit
+reconnect request was accepted at record 677 and failed at record 678 with
+`invalid_configuration`.
+
+The Recorder FIFO correction held: there was no reservation mismatch,
+recording_unavailable, gap or unknown tail. No generation-2 binding, measurement
+or lifecycle activation was installed; resource state remained Offline at
+generation 1. Evidence therefore localizes the failure before the replacement
+crossed its rebind fence, but existing diagnostics cannot distinguish incomplete
+old-adapter retirement from configured COM5 reopen failure. No alternative open,
+probe, address, register, reset or reconnect retry was attempted.
+
+Normal shutdown through a resumed bounded client scope was completely clean:
+transports and Recorder closed, unfinished transport/worker counts were zero and
+exit succeeded. The sealed complete SQLite archive is preserved at
+`examples/metakon-513-com5-recorder-corrected-history.sqlite`, SHA-256
+`49c21ab48a22b4c2d0100357686f1b367d0432ce641dd9c8e21eee3184e4c6de`,
+with zero output events. Full evidence is in `MILESTONE_8_REPORT.md`. No
+production/test code changed and final M8 gates were not run. STATUS is
+`WAITING_FOR_REVIEW`; do not reopen COM5 or begin M9.
 
 M8 design completion — 2026-09-16
 

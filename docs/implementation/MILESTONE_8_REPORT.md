@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed Recorder ordering
-correction is complete and COM5 has not been reopened after it, 2026-09-16.
+Status: `WAITING_FOR_REVIEW`; the Recorder-corrected physical run stopped at a
+new pre-rebind reconnect failure, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -1008,6 +1008,75 @@ The definition remains
 The prior defect archive retains SHA-256
 `ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
 
+## Recorder-corrected physical reconnect review stop — 2026-09-16
+
+The accepted run started at HEAD `5355963d9e4bb3efa5f5214223a1510cc25619e9`
+after confirming that the new archive did not exist. Runtime TOML and definition
+SHA-256 values matched, respectively,
+`405d99056fd4ba265bb8776f18360a33cd4be81e65c7e03976196acbf374056b` and
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+The prior Recorder-defect archive retained SHA-256
+`ef16177a913216ad4e39a9c101e7ab749994f337ece6db2525c6bc396a45d377`.
+
+The process boot was `4827bf27ac961d59e482dd2837ee21bb`; Required database
+identity was `f68d0f82bdf1559ebc36ba63183a7503`. Only the approved
+COM5/9600/8N1/no-flow, address-5, channel-0 read-only deployment was used.
+Startup compatibility committed channel type integer 3. Strict register-1 reads
+decoded raw signed I16 values 29/30 and the explicit scale 1.0 published 29/30
+degrees Celsius with Good quality. The operator contemporaneously reported 29
+degrees Celsius. SQLite contains 165 generation-1 Good temperature rows, records
+61 through 389, with range 29--30 degrees Celsius. Required recording was
+healthy, complete and bounded; public history independently exposed durable rows.
+
+The operator then powered the device off. This is recorded only as
+`operator-reported device power-off`, not as a Rust-observed power state. The
+last Good row is record 389. Record 391 is exactly one generation-1
+`Unavailable`, `failure=Transport`, with no numeric value. Resource transaction
+224 became terminal Failed after starting, the resource reached Offline,
+generation remained 1, the queue stayed zero and no later Good was published.
+Repeated public snapshots retained the same Unavailable timestamp. Required
+Recorder remained Recording with complete coverage, no error and no outstanding
+credit. No automatic reopen or rebind occurred.
+
+The operator then powered the same device on; this is recorded as
+`operator-reported device power-cycle/reset boundary`. Exactly one public
+`reconnect_resource(resource=1, expected_binding_generation=1)` was issued under
+request ID `4827bf27ac961d59e482dd2837ee21bb:13/1`. SQLite records its Accepted
+phase at record 677 and its terminal Failed phase at record 678 with public code
+`invalid_configuration`. No retry was attempted.
+
+This failure is not the corrected Recorder ordering defect. Recorder remained
+healthy and complete with no `fact record reservation mismatch`, no
+`recording_unavailable`, no gap and no unknown tail. The resource remained
+Offline at generation 1; channel type retained its old generation-1 observation,
+temperature retained the disconnect Unavailable, and SQLite contains no
+generation-2 measurement or configuration-lifecycle activation. These facts
+localize the failure before a replacement binding crossed the generation fence.
+The current public and durable diagnostics do not distinguish whether the old
+adapter retirement boundary failed to complete or the configured COM5 reopen
+failed before `rebind_configured_transport()`. The report does not guess between
+those source branches and no alternate open, probe, port, register or reset was
+attempted.
+
+After the stop decision, newly allocated diagnostic client scopes reached the
+bounded session admission limit and `hello` returned `busy`. Resuming the known
+original scope `4827bf27ac961d59e482dd2837ee21bb:2` worked and issued the sole
+normal shutdown. Shutdown completed successfully with
+`transports_closed=true`, `recorder_flushed=true`, zero unfinished transports
+and workers, `cleanup_complete=true`, `exit_success=true` and no outputs. The
+boot, run and interval are sealed with complete coverage. SQLite has no gaps,
+zero output events, Accepted/Failed reconnect evidence and a terminal durable
+checkpoint through record 849.
+
+The new evidence archive is preserved at
+`examples/metakon-513-com5-recorder-corrected-history.sqlite`, final main-file
+SHA-256
+`49c21ab48a22b4c2d0100357686f1b367d0432ce641dd9c8e21eee3184e4c6de`.
+Its WAL is empty after clean exit; the SQLite sidecars and main file are retained
+unchanged. Babashka client-independence, live-safe configuration revision and the
+final release/rustdoc gates were not attempted after reconnect failure. No
+production source or test changed during this run.
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
@@ -1018,9 +1087,12 @@ actual reconnect still failed and exposed a Recorder reservation failure plus an
 unsealed shutdown. Firmware remains unknown and no independent wire capture
 exists.
 
-M8 is `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for acceptance and does
-not authorize M9. The corrected ordering still requires a new physical reconnect
-run, Babashka independence, harmless live-safe reload, clean final shutdown and
-the final release/rustdoc gates. M8 performed no physical actuator write and
+M8 is `WAITING_FOR_REVIEW`; it is not ready for acceptance and does not authorize
+M9. Recorder FIFO ordering is corrected, and the latest run reconfirmed normal
+acquisition, finite Offline, durable failure evidence and clean shutdown. The
+explicit physical reconnect nevertheless failed before generation-2 installation
+for a cause not distinguished by current durable diagnostics. Successful
+reconnect, Babashka independence, harmless live-safe reload and final
+release/rustdoc gates remain open. M8 performed no physical actuator write and
 makes no physical-output-safety, power-loss, remote-security, GUI or long-soak
 certification claim.
