@@ -81,6 +81,131 @@ fn wait_exit(child: &mut ChildGuard, deadline: Duration) -> std::process::ExitSt
     }
 }
 
+fn configured_toml(database: &std::path::Path, label: &str) -> String {
+    let database = database.to_string_lossy().replace('\\', "\\\\");
+    format!(
+        r#"schema_version=1
+[runtime]
+key="configured-bb"
+display_name="{label}"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=true
+path="{database}"
+policy="required"
+[[instruments]]
+id=41
+key="temperature"
+kind="virtual_measurement"
+display_name="Configured sensor"
+history_capacity=32
+base_temperature=23.5
+measurement_enabled=true
+poll_period_ms=50
+"#
+    )
+}
+
+#[test]
+fn c18_actual_babashka_a_b_keeps_configured_recording_and_applies_reload() {
+    let _guard = BABASHKA_PROCESS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use lab_core::{InstrumentId, ParameterId};
+    use lab_runtime::recorder::{HistoryFilter, SqliteStore};
+    let bb = std::env::var("LAB_BB_EXE").unwrap_or_else(|_| "bb".into());
+    assert!(
+        Command::new(&bb)
+            .arg("--version")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut entropy = [0u8; 16];
+    getrandom::fill(&mut entropy).unwrap();
+    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+    let database = std::env::temp_dir().join(format!("lab-runtime-m8-bb-{suffix}.sqlite"));
+    let configuration = std::env::temp_dir().join(format!("lab-runtime-m8-bb-{suffix}.toml"));
+    std::fs::write(&configuration, configured_toml(&database, "Configured A")).unwrap();
+    let mut host = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_lab-runtime"))
+            .args([
+                "--serve",
+                "--config",
+                configuration.to_string_lossy().as_ref(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let ready: Value =
+        serde_json::from_str(&stdout_line(&mut host, Duration::from_secs(4))).unwrap();
+    let port = ready["port"].as_u64().unwrap() as u16;
+    let mut a = spawn_bb(&bb, "config-a", port, None);
+    let checkpoint_text = stdout_line(&mut a, Duration::from_secs(10));
+    let checkpoint: Value = serde_json::from_str(&checkpoint_text).unwrap();
+    assert_eq!(checkpoint["checkpoint"], "config-a");
+    let first_prefix = checkpoint["recording_prefix"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    a.0.kill().unwrap();
+    assert!(!wait_exit(&mut a, Duration::from_secs(3)).success());
+    thread::sleep(Duration::from_millis(350));
+    assert!(host.0.try_wait().unwrap().is_none());
+    std::fs::write(&configuration, configured_toml(&database, "Configured B")).unwrap();
+
+    let mut b = spawn_bb(&bb, "config-b", port, Some(checkpoint_text.trim_end()));
+    let final_text = stdout_line(&mut b, Duration::from_secs(12));
+    let final_state: Value = serde_json::from_str(&final_text).unwrap();
+    assert_eq!(final_state["checkpoint"], "config-b");
+    assert_eq!(final_state["scope"], checkpoint["scope"]);
+    assert_eq!(final_state["revision"], "2");
+    assert_eq!(final_state["shutdown_safe"], true);
+    assert!(
+        final_state["recording_prefix"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > first_prefix
+    );
+    assert!(wait_exit(&mut b, Duration::from_secs(3)).success());
+    assert!(wait_exit(&mut host, Duration::from_secs(4)).success());
+
+    let archive_boot = checkpoint["boot_id"].as_str().unwrap().to_owned();
+    let run_no = checkpoint["run_id"]["run_no"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let mut store =
+        SqliteStore::open_with_boot(&database, "abababababababababababababababab").unwrap();
+    let page = store
+        .read_history_measurements(
+            &HistoryFilter {
+                boot_id: archive_boot,
+                run_no,
+                instrument: InstrumentId::new(41),
+                parameter: ParameterId::new(1),
+                from: Duration::ZERO,
+                to: Duration::from_secs(60),
+            },
+            None,
+            128,
+        )
+        .unwrap();
+    assert!(page.rows.len() >= 3);
+    store.finish_boot(Duration::ZERO).unwrap();
+    store.close().unwrap();
+    std::fs::remove_file(configuration).unwrap();
+    std::fs::remove_file(database).unwrap();
+}
+
 #[test]
 fn actual_recorded_babashka_a_b_reopens_autonomous_prefix_after_stop_and_shutdown() {
     let _guard = BABASHKA_PROCESS_LOCK

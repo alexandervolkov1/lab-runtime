@@ -255,6 +255,58 @@
           (println (json/generate-string final)) (flush)))
       (finally (client/close! connection)))))
 
+(defn- run-config-a [port]
+  (let [connection (client/connect! port)]
+    (try
+      (let [discovery (client/discover! connection)
+            instrument (get-in discovery [:instruments 0 :id])
+            descriptor (client/describe! connection instrument)
+            parameter (->> (:parameters descriptor)
+                           (some #(when (= (:role %) "measurement") (:id %))))
+            signal {:instrument instrument :parameter parameter}
+            sample (until! 3000 #(let [value (client/latest! connection signal)]
+                                   (when (= (:quality value) "good") value)))
+            initial-recording (client/query! connection "recording_status" {})
+            _ (when (not= (:state initial-recording) "recording")
+                (require-completed
+                 (client/command! connection "recording_start"
+                                  {:label "configured Babashka A/B"})))
+            recording (recording-credit! connection 0)]
+        (println (json/generate-string
+                  {:checkpoint "config-a" :boot_id @(:boot-id connection)
+                   :scope @(:scope connection) :signal signal :value (:value sample)
+                   :recording_prefix (:persisted_through_seq recording)
+                   :run_id (:run_id recording) :database_id (:database_id recording)}))
+        (flush)
+        (loop [] (Thread/sleep 100) (recur)))
+      (finally (client/close! connection)))))
+
+(defn- run-config-b [port checkpoint-text]
+  (let [checkpoint (json/parse-string checkpoint-text true)
+        connection (client/connect! port (:scope checkpoint))]
+    (try
+      (let [sample (until! 3000 #(let [value (client/latest! connection (:signal checkpoint))]
+                                   (when (= (:quality value) "good") value)))
+            recording-before (until! 3000
+                                     #(let [status (client/query! connection "recording_status" {})]
+                                        (when (> (Long/parseLong (:persisted_through_seq status))
+                                                 (Long/parseLong (:recording_prefix checkpoint)))
+                                          status)))
+            reload (require-completed
+                    (client/command! connection "reload_configuration" {}))
+            recording (client/query! connection "recording_status" {})
+            shutdown (require-completed
+                      (client/command! connection "runtime_shutdown" {}))]
+        (println (json/generate-string
+                  {:checkpoint "config-b" :boot_id @(:boot-id connection)
+                   :scope @(:scope connection) :value (:value sample)
+                   :revision (:revision reload)
+                   :recording_prefix_before_reload (:persisted_through_seq recording-before)
+                   :recording_prefix (:persisted_through_seq recording)
+                   :shutdown_safe (:safe_confirmed shutdown)}))
+        (flush))
+      (finally (client/close! connection)))))
+
 (defn -main [mode port & [checkpoint]]
   (let [port (Integer/parseInt port)]
     (case mode
@@ -262,4 +314,6 @@
       "b" (run-b port checkpoint false)
       "record-a" (run-a port true)
       "record-b" (run-b port checkpoint true)
+      "config-a" (run-config-a port)
+      "config-b" (run-config-b port checkpoint)
       (throw (ex-info "unknown_acceptance_mode" {:mode mode})))))

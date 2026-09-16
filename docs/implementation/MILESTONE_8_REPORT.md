@@ -225,6 +225,18 @@ are not reported as passing evidence.
     rejects dependency cycles explicitly. The reordered fixture has equal
     effective graphs and distinct exact-content hashes; all six configuration
     validation tests pass.
+23. C18 configured-process coverage was added after the public reload and
+    configured-recorder paths existed. The actual Babashka 1.13.220 A process
+    connects to a `--config` Runtime, starts Required recording and is killed;
+    acquisition/SQLite progress continues without that client. Babashka B resumes
+    the same scope, proves a later durable prefix, invokes the explicit
+    configuration reload, and requests clean shutdown. Rust then reopens SQLite
+    under a new boot and reads at least three archived normal Signal rows. The
+    first run exposed that A had not explicitly opened a run, so its `run_id` was
+    null; the scenario now uses the public `recording_start` operation rather
+    than assuming configuration implies an active experiment run. The targeted
+    real-process test passes. This is configured virtual acquisition software
+    evidence; it is not the C16/C17 real Metakon bench.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
