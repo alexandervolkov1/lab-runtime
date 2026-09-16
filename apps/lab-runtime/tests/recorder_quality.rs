@@ -225,15 +225,12 @@ fn all_scalar_kinds_and_delayed_publication_reopen_without_coercion() {
             revision: 2,
         }))
         .collect();
-    assert!(
-        Sample::validated_good(
-            signal,
-            Unit::CELSIUS,
-            Duration::ZERO,
-            Value::Float(f64::NAN)
-        )
-        .is_err()
-    );
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(
+            Sample::validated_good(signal, Unit::CELSIUS, Duration::ZERO, Value::Float(invalid))
+                .is_err()
+        );
+    }
     let mut store = SqliteStore::open(&path).unwrap();
     store.start_run("all kinds").unwrap();
     store.append_facts(&facts).unwrap();
