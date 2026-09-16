@@ -660,6 +660,17 @@ impl Runtime {
         Ok(())
     }
 
+    /// Copy the committed physical binding used by one Metakon instrument.
+    ///
+    /// This is provenance-only metadata: it carries no transport handle, does
+    /// not poll hardware, and cannot authorize an output. The host freezes the
+    /// returned generation and mapping revision before storage work begins.
+    pub fn metakon_binding(&self, instrument: InstrumentId) -> Option<MetakonBinding> {
+        self.metakon_instruments
+            .get(&instrument)
+            .map(|instance| instance.binding)
+    }
+
     /// Inspect unfinished worker count without waiting for interpreter execution.
     pub fn unfinished_component_workers(&self) -> usize {
         self.executor

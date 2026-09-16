@@ -1,12 +1,23 @@
 //! Exact loaded bytes and their SHA-256 survive source-file changes and reopen.
 
 use lab_core::{
-    Command, InstrumentId, Runtime, TEMPERATURE, Unit, Value,
+    AccessMode, Command, CommandResult, InstrumentId, ParameterId, ParameterRole, Runtime,
+    TEMPERATURE, Unit, Value, ValueSpec, WriteEffect,
+    instrument::{
+        DataInstrumentDefinition, DataParameterDefinition, KnownOperation, MetakonBinding,
+        MetakonInstrumentConfig,
+    },
     managed::{
         ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId, ComponentKind,
         ComponentManifest, ComponentResult, ComponentStatus, Invocation, PlainData,
     },
+    metakon::crc,
+    output::{
+        ActuatorId, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal, OutputResult,
+        SafeProfile,
+    },
     recording::RecordingFact,
+    transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::{
     host::{Clock, HostCore},
@@ -205,6 +216,328 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+#[derive(Default)]
+struct BindingAckWire {
+    readable: VecDeque<u8>,
+    device: u8,
+    channel: u8,
+}
+impl ByteTransport for BindingAckWire {
+    fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+        if bytes.len() == 7 {
+            let body = [self.device, self.channel, 6, 1];
+            self.readable.extend(body);
+            self.readable.push_back(crc(&body));
+        }
+        Ok(bytes.len())
+    }
+
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+        let count = bytes.len().min(self.readable.len());
+        for byte in &mut bytes[..count] {
+            *byte = self.readable.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        self.readable.clear();
+        Ok(RecoveryStatus::Complete)
+    }
+}
+
+struct TestClock(Duration);
+impl Clock for TestClock {
+    fn now(&self) -> Duration {
+        self.0
+    }
+}
+
+fn m3_profile() -> SafeProfile {
+    SafeProfile {
+        min: 0.0,
+        max: 100.0,
+        safe_value: 0.0,
+        max_lease: Duration::from_secs(1),
+        max_proposal_ttl: Duration::from_millis(200),
+        required_evidence: EvidenceLevel::Acknowledgement,
+    }
+}
+
+fn dispatch_m3(host: &mut HostCore, actuator: ActuatorId, at: Duration, value: f64) {
+    let acquired = host.command(Command::Output {
+        actuator,
+        at,
+        command: OutputCommand::Acquire {
+            owner: OutputOwner::Manual(91),
+            lifetime: Duration::from_millis(100),
+        },
+    });
+    let CommandResult::Output(OutputResult::Lease(lease)) = acquired.unwrap_or_else(|error| {
+        panic!(
+            "M3 acquire for {value} failed: {error}; snapshot={:?}",
+            host.query(lab_core::Query::Output(actuator))
+        )
+    }) else {
+        panic!("manual M3 lease absent")
+    };
+    host.command(Command::Output {
+        actuator,
+        at,
+        command: OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(value),
+            unit: Unit::PERCENT,
+            ttl: Duration::from_millis(50),
+        }),
+    })
+    .unwrap();
+    host.command(Command::QueueMetakonOutput {
+        actuator,
+        at,
+        queue_ttl: Duration::from_millis(100),
+        timeout: Duration::from_millis(20),
+    })
+    .unwrap();
+    host.command(Command::PollTransports { at }).unwrap();
+}
+
+#[test]
+fn activation_binding_and_rebound_output_rows_reconstruct_exact_m3_provenance() {
+    let path = temporary_database();
+    let mut host = HostCore::virtual_demo().unwrap();
+    let resource_one = ResourceId::new(41);
+    let resource_two = ResourceId::new(42);
+    host.register_transport(
+        resource_one,
+        Box::new(BindingAckWire {
+            device: 15,
+            channel: 2,
+            ..BindingAckWire::default()
+        }),
+    )
+    .unwrap();
+    host.register_transport(
+        resource_two,
+        Box::new(BindingAckWire {
+            device: 16,
+            channel: 3,
+            ..BindingAckWire::default()
+        }),
+    )
+    .unwrap();
+    let instrument = InstrumentId::new(741);
+    let parameter = ParameterId::new(6);
+    let actuator = ActuatorId::new(instrument, parameter);
+    host.command(Command::RegisterMetakon(MetakonInstrumentConfig {
+        definition: DataInstrumentDefinition {
+            schema_version: 1,
+            id: instrument,
+            name: "binding provenance output".into(),
+            parameters: vec![DataParameterDefinition {
+                id: parameter,
+                name: "power".into(),
+                value_spec: ValueSpec::Float {
+                    min: 0.0,
+                    max: 100.0,
+                },
+                unit: Unit::PERCENT,
+                access: AccessMode::ReadWrite,
+                role: ParameterRole::Actuator,
+                write_effect: WriteEffect::OutputAffecting,
+                operation: KnownOperation::Output,
+                scale: 1.0,
+            }],
+        },
+        binding: MetakonBinding {
+            resource: resource_one,
+            device: 15,
+            channel: 2,
+            binding_generation: 1,
+            mapping_revision: 1,
+            expected_output_unit: Some(Unit::PERCENT),
+        },
+        history_capacity: 2,
+    }))
+    .unwrap();
+    host.command(Command::Output {
+        actuator,
+        at: Duration::ZERO,
+        command: OutputCommand::BindProfile(m3_profile()),
+    })
+    .unwrap();
+    host.command(Command::Output {
+        actuator,
+        at: Duration::ZERO,
+        command: OutputCommand::RequestSafe,
+    })
+    .unwrap();
+    host.command(Command::QueueMetakonOutput {
+        actuator,
+        at: Duration::ZERO,
+        queue_ttl: Duration::from_millis(100),
+        timeout: Duration::from_millis(20),
+    })
+    .unwrap();
+    host.command(Command::PollTransports { at: Duration::ZERO })
+        .unwrap();
+    let lab_core::QueryResult::Output(initial_output) =
+        host.query(lab_core::Query::Output(actuator)).unwrap()
+    else {
+        panic!("M3 output query changed kind")
+    };
+    assert!(
+        initial_output.safe_confirmed,
+        "initial M3 safe ACK absent: {initial_output:?}"
+    );
+
+    let worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    host.service(&TestClock(Duration::ZERO)).unwrap();
+    host.start_recording("binding provenance", Duration::ZERO)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while host.recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        host.service(&TestClock(Duration::ZERO)).unwrap();
+        std::thread::yield_now();
+    }
+    let lab_core::QueryResult::Output(before_first) =
+        host.query(lab_core::Query::Output(actuator)).unwrap()
+    else {
+        panic!("M3 output query changed kind")
+    };
+    assert!(
+        before_first.safe_confirmed
+            && !before_first.fault_latched
+            && before_first.lease.is_none()
+            && !before_first.pending
+            && before_first.in_flight.is_none()
+            && before_first.state == lab_core::output::OutputState::Disarmed,
+        "M3 output changed before first dispatch: {before_first:?}"
+    );
+    dispatch_m3(&mut host, actuator, Duration::from_millis(1), 25.0);
+    while host.recording_status().unwrap().outstanding_groups != 0 {
+        assert!(Instant::now() < deadline);
+        host.service(&TestClock(Duration::from_millis(1))).unwrap();
+        std::thread::yield_now();
+    }
+
+    host.command(Command::RebindMetakon {
+        instrument,
+        binding: MetakonBinding {
+            resource: resource_two,
+            device: 16,
+            channel: 3,
+            binding_generation: 2,
+            mapping_revision: 2,
+            expected_output_unit: Some(Unit::PERCENT),
+        },
+        at: Duration::from_millis(2),
+    })
+    .unwrap();
+    host.command(Command::Output {
+        actuator,
+        at: Duration::from_millis(2),
+        command: OutputCommand::BindProfile(m3_profile()),
+    })
+    .unwrap();
+    host.command(Command::Output {
+        actuator,
+        at: Duration::from_millis(2),
+        command: OutputCommand::RequestSafe,
+    })
+    .unwrap();
+    host.command(Command::QueueMetakonOutput {
+        actuator,
+        at: Duration::from_millis(2),
+        queue_ttl: Duration::from_millis(100),
+        timeout: Duration::from_millis(20),
+    })
+    .unwrap();
+    for _ in 0..3 {
+        host.command(Command::PollTransports {
+            at: Duration::from_millis(2),
+        })
+        .unwrap();
+    }
+    while host.recording_status().unwrap().outstanding_groups != 0 {
+        assert!(Instant::now() < deadline);
+        host.service(&TestClock(Duration::from_millis(2))).unwrap();
+        std::thread::yield_now();
+    }
+    dispatch_m3(&mut host, actuator, Duration::from_millis(3), 35.0);
+    while host.recording_status().unwrap().outstanding_groups != 0 {
+        assert!(Instant::now() < deadline);
+        host.service(&TestClock(Duration::from_millis(3))).unwrap();
+        std::thread::yield_now();
+    }
+    host.stop_recording().unwrap();
+    while host.recording_status().unwrap().state != RecordingState::Idle {
+        assert!(Instant::now() < deadline);
+        host.service(&TestClock(Duration::from_millis(3))).unwrap();
+        std::thread::yield_now();
+    }
+    host.finish_recorder().unwrap();
+    while host.recording_status().unwrap().state != RecordingState::Closed {
+        assert!(Instant::now() < deadline);
+        host.service(&TestClock(Duration::from_millis(3))).unwrap();
+        std::thread::yield_now();
+    }
+    drop(host);
+
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let binding: Option<String> = db
+        .query_row(
+            "SELECT instance_binding FROM object_snapshots
+             WHERE object_kind='instrument' AND logical_key='instrument:741'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let binding: serde_json::Value =
+        serde_json::from_str(binding.as_deref().expect("baseline M3 binding absent")).unwrap();
+    assert_eq!(binding["resource"], "41");
+    assert_eq!(binding["device"], 15);
+    assert_eq!(binding["channel"], 2);
+    assert_eq!(binding["binding_generation"], "1");
+    assert_eq!(binding["mapping_revision"], "1");
+    assert_eq!(binding["expected_output_unit"], Unit::PERCENT.id());
+
+    type OutputBinding = (Vec<u8>, Vec<u8>, Vec<u8>);
+    let rows: Vec<OutputBinding> = db
+        .prepare(
+            "SELECT resource_id,generation,revision FROM output_events
+             WHERE instrument_id=?1 AND stage='acknowledged'
+             ORDER BY record_seq",
+        )
+        .unwrap()
+        .query_map([instrument.get().to_be_bytes().as_slice()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                resource_one.get().to_be_bytes().to_vec(),
+                1u64.to_be_bytes().to_vec(),
+                1u64.to_be_bytes().to_vec(),
+            ),
+            (
+                resource_two.get().to_be_bytes().to_vec(),
+                2u64.to_be_bytes().to_vec(),
+                2u64.to_be_bytes().to_vec(),
+            ),
+        ]
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
 
 fn temporary_database() -> PathBuf {
     let mut entropy = [0u8; 16];

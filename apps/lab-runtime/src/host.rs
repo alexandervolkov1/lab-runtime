@@ -614,6 +614,17 @@ impl HostCore {
                 .iter()
                 .map(parameter_activation_json)
                 .collect();
+            let binding = self.runtime.metakon_binding(instrument.id).map(|binding| {
+                serde_json::json!({
+                    "resource":binding.resource.get().to_string(),
+                    "device":binding.device,
+                    "channel":binding.channel,
+                    "binding_generation":binding.binding_generation.to_string(),
+                    "mapping_revision":binding.mapping_revision.to_string(),
+                    "expected_output_unit":binding.expected_output_unit.map(|unit|unit.id().to_owned()),
+                })
+                .to_string()
+            });
             objects.push(ProvenanceObject {
                 kind: "instrument",
                 id: instrument.id.get().to_be_bytes().to_vec(),
@@ -622,7 +633,7 @@ impl HostCore {
                 descriptor: serde_json::json!({"parameters":parameters}).to_string(),
                 unit_key: None,
                 generation: Some(generation),
-                binding: None,
+                binding,
                 source_entry_index: source_index,
             });
         }
