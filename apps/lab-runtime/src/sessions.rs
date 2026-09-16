@@ -129,6 +129,13 @@ pub enum Mutation {
     ReloadManagedScripts,
     /// Restart only configured virtual models; sources and TOML are not reread.
     RestartVirtualModels,
+    /// Explicitly replace one configured read-only resource session.
+    ReconnectResource {
+        /// Stable logical resource identity.
+        resource: u64,
+        /// Binding generation observed before the reconnect.
+        expected_binding_generation: u64,
+    },
     /// Initiate host process shutdown; safe evidence is the later terminal result.
     Shutdown,
 }

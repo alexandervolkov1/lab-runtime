@@ -104,6 +104,8 @@ pub enum TransportError {
     UnknownResource,
     /// Runtime already owns the maximum eight resources.
     ResourceLimit,
+    /// Existing executor or adapter has not reached a replaceable closed boundary.
+    ResourceBusy,
 }
 
 impl From<TransportError> for crate::Error {

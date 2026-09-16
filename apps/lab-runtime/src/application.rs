@@ -487,7 +487,7 @@ impl Application {
                                 "controller_configure_pid","controller_start","controller_pause",
                                 "controller_resume","stage_configuration","apply_configuration",
                                 "reload_configuration","reload_managed_scripts",
-                                "restart_virtual_models","runtime_shutdown"];
+                                "restart_virtual_models","reconnect_resource","runtime_shutdown"];
                             if service.owner().recording_status().is_some() {
                                 capabilities.push("recorder_sqlite_v1");
                                 capabilities.push("history_raw_paged_v1");
@@ -1357,6 +1357,14 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
         ),
         Mutation::ReloadManagedScripts => ("reload_managed_scripts", json!({})),
         Mutation::RestartVirtualModels => ("restart_virtual_models", json!({})),
+        Mutation::ReconnectResource {
+            resource,
+            expected_binding_generation,
+        } => (
+            "reconnect_resource",
+            json!({"resource":resource.to_string(),
+                "expected_binding_generation":expected_binding_generation.to_string()}),
+        ),
         Mutation::Shutdown => ("shutdown", json!({})),
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }
@@ -1549,6 +1557,10 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
         },
         "reload_managed_scripts" => Mutation::ReloadManagedScripts,
         "restart_virtual_models" => Mutation::RestartVirtualModels,
+        "reconnect_resource" => Mutation::ReconnectResource {
+            resource: id_field(args, "resource")?,
+            expected_binding_generation: id_field(args, "expected_binding_generation")?,
+        },
         _ => return Err("unsupported_operation"),
     })
 }
@@ -1656,6 +1668,18 @@ fn dispatch(
                     "generation":result.generation.to_string()})
                 })
                 .map_err(|_| Error::InvalidConfiguration("virtual model restart failed"));
+        }
+        Mutation::ReconnectResource {
+            resource,
+            expected_binding_generation,
+        } => {
+            return service
+                .reconnect_resource(resource, expected_binding_generation)
+                .map(|result| {
+                    json!({"resource":result.resource_id.to_string(),
+                        "binding_generation":result.binding_generation.to_string()})
+                })
+                .map_err(|_| Error::InvalidConfiguration("resource reconnect failed"));
         }
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }

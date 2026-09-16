@@ -202,6 +202,21 @@ are not reported as passing evidence.
     recording admission. The public API test observes revision one after stage
     and revision two only after the matching apply. Protocol, deduplication,
     lifecycle and warning-denied clippy suites pass.
+21. C14/C15 Host rebind acceptance was red because the stable M3 resource owner
+    could only be shut down, not replaced. Core now replaces an adapter only
+    after the old executor reports `TransportShutdown::Complete`; Pending keeps
+    the old slot quarantined and creates no second owner. Host advances the
+    Metakon binding/mapping generations, publishes explicit Unavailable samples
+    at the fence, resets the compatibility probe, and retains the logical
+    resource ID. The first green attempt exposed that RebindMetakon had not
+    invalidated prior Good samples; Core now records Transport-unavailable facts
+    under the new generation before reacquisition. Deterministic software tests
+    then recovered a different real decoded value through the replacement
+    adapter. Added a public deduplicated `reconnect_resource` operation which
+    requires resource ID plus expected binding generation and opens only the
+    configured port—never an enumerated substitute. COM/physical/Core targeted
+    tests and warning-denied workspace clippy pass. No real port was opened, so
+    C16/C17 and the hardware part of C14/C19 remain pending.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

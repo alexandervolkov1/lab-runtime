@@ -161,6 +161,15 @@ pub struct RestartModelsResult {
     pub generation: u64,
 }
 
+/// Successful explicit read-only resource reconnect summary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReconnectResourceResult {
+    /// Stable logical resource identity retained across the new handle session.
+    pub resource_id: u64,
+    /// New physical binding generation fencing all old bytes/results.
+    pub binding_generation: u64,
+}
+
 struct LiveApplyPort<'a> {
     host: &'a mut HostCore,
     active: &'a crate::configuration::FrozenDeployment,
@@ -703,6 +712,98 @@ impl ServiceHost {
             .map_err(|_| LifecycleOperationError::OwnerFailure)?;
         Ok(RestartModelsResult { models, generation })
     }
+
+    /// Explicitly retire and reopen one configured read-only COM resource.
+    /// Port enumeration never calls this operation and no write retry is implied.
+    pub fn reconnect_resource(
+        &mut self,
+        resource_id: u64,
+        expected_binding_generation: u64,
+    ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
+        let active = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .active();
+        let resource = active
+            .effective()
+            .dto
+            .resources
+            .iter()
+            .find(|resource| resource.id == resource_id)
+            .ok_or(LifecycleOperationError::InvalidCandidate)?
+            .clone();
+        let instrument = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .find_map(|instrument| match instrument {
+                crate::configuration::InstrumentDto::Metakon {
+                    id,
+                    resource_id: bound,
+                    ..
+                } if *bound == resource_id => Some(*id),
+                _ => None,
+            })
+            .ok_or(LifecycleOperationError::InvalidCandidate)?;
+        let current = self
+            .host
+            .configured_binding_generation(instrument)
+            .ok_or(LifecycleOperationError::Conflict)?;
+        if current != expected_binding_generation {
+            return Err(LifecycleOperationError::Conflict);
+        }
+        let generation = current
+            .checked_add(1)
+            .ok_or(LifecycleOperationError::Conflict)?;
+        let at = self.clock.now();
+        if !self
+            .host
+            .enter_configuration_safe_barrier(at)
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?
+        {
+            return Err(LifecycleOperationError::RequiresSafeBarrier);
+        }
+        if !self
+            .host
+            .prepare_configured_transport_replacement(ResourceId::new(resource_id))
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?
+        {
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        let adapter = ComTransport::open_windows(com_settings(&resource, generation)?)
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        self.host
+            .rebind_configured_transport(
+                ResourceId::new(resource_id),
+                Box::new(adapter),
+                self.clock.now(),
+            )
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        self.host
+            .begin_configured_probes(self.clock.now())
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(resource.recovery_timeout_ms);
+        while !self
+            .host
+            .configured_probes_ready()
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?
+        {
+            if std::time::Instant::now() >= deadline {
+                return Err(LifecycleOperationError::OwnerFailure);
+            }
+            self.host
+                .service(&self.clock)
+                .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+            std::thread::yield_now();
+        }
+        Ok(ReconnectResourceResult {
+            resource_id,
+            binding_generation: generation,
+        })
+    }
     /// Return the one monotonic process clock used by the owner.
     pub const fn clock(&self) -> &SystemClock {
         &self.clock
@@ -715,6 +816,33 @@ impl ServiceHost {
     pub const fn listener(&self) -> &TcpListener {
         &self.listener
     }
+}
+
+fn com_settings(
+    resource: &crate::configuration::ResourceDto,
+    binding_generation: u64,
+) -> Result<ComSettings, LifecycleOperationError> {
+    ComSettings::new(
+        resource.id,
+        &resource.port,
+        resource.baud_rate,
+        resource.data_bits,
+        match resource.parity {
+            ParityDto::None => SerialParity::None,
+            ParityDto::Odd => SerialParity::Odd,
+            ParityDto::Even => SerialParity::Even,
+        },
+        resource.stop_bits,
+        match resource.flow_control {
+            FlowControlDto::None => SerialFlowControl::None,
+            FlowControlDto::Software => SerialFlowControl::Software,
+            FlowControlDto::Hardware => SerialFlowControl::Hardware,
+        },
+        std::time::Duration::from_millis(resource.read_timeout_ms),
+        std::time::Duration::from_millis(resource.write_timeout_ms),
+        binding_generation,
+    )
+    .map_err(|_| LifecycleOperationError::InvalidCandidate)
 }
 
 // Listener readiness waits for the active frozen composition to commit. This

@@ -736,6 +736,28 @@ impl Runtime {
         Ok(())
     }
 
+    /// Replace a closed adapter while retaining the stable logical resource ID.
+    ///
+    /// The old executor first clears queued work and must report finite shutdown
+    /// completion. Pending/in-flight ownership returns `ResourceBusy`; the new
+    /// adapter is not installed and no second owner is created.
+    pub fn replace_transport(
+        &mut self,
+        id: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+    ) -> Result<(), Error> {
+        let current = self
+            .resources
+            .get_mut(&id)
+            .ok_or(TransportError::UnknownResource)?;
+        if current.try_shutdown() != TransportShutdown::Complete {
+            return Err(TransportError::ResourceBusy.into());
+        }
+        self.resources
+            .insert(id, ResourceExecutor::new(id, adapter));
+        Ok(())
+    }
+
     /// Copy the committed physical binding used by one Metakon instrument.
     ///
     /// This is provenance-only metadata: it carries no transport handle, does
@@ -1545,6 +1567,43 @@ impl Runtime {
                     .get_mut(&instrument)
                     .expect("validated above")
                     .binding = binding;
+                let invalidated = {
+                    let instance = self
+                        .metakon_instruments
+                        .get_mut(&instrument)
+                        .expect("validated above");
+                    let descriptors: Vec<_> = instance
+                        .descriptor
+                        .parameters
+                        .iter()
+                        .filter_map(|parameter| {
+                            parameter.signal.map(|signal| (signal, parameter.unit))
+                        })
+                        .collect();
+                    let mut samples = Vec::with_capacity(descriptors.len());
+                    for (signal, unit) in descriptors {
+                        let sample = Sample::unavailable(
+                            signal,
+                            unit,
+                            at,
+                            crate::MeasurementFailure::Transport,
+                        );
+                        instance
+                            .signals
+                            .get_mut(&signal)
+                            .expect("validated signal")
+                            .push(sample.clone())?;
+                        samples.push(sample);
+                    }
+                    samples
+                };
+                for sample in invalidated {
+                    self.recording_facts.measurement(
+                        sample,
+                        binding.binding_generation,
+                        binding.mapping_revision,
+                    );
+                }
                 self.outputs.extend(replacements);
                 Ok(CommandResult::Registered(instrument))
             }

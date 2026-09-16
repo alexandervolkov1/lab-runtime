@@ -808,6 +808,91 @@ impl HostCore {
         Ok(())
     }
 
+    /// Replace one read-only adapter at an explicit closed boundary and advance
+    /// every dependent physical binding generation. No port enumeration or
+    /// automatic selection occurs here.
+    pub fn rebind_configured_transport(
+        &mut self,
+        resource: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration("configured resource missing"));
+        }
+        let instruments: Vec<_> = self
+            .plan
+            .metakon_reads
+            .iter()
+            .filter_map(|read| {
+                self.runtime
+                    .metakon_binding(read.instrument)
+                    .filter(|binding| binding.resource == resource)
+                    .map(|binding| (read.instrument, binding))
+            })
+            .collect();
+        if instruments.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "configured resource has no instrument",
+            ));
+        }
+        let replacements: Vec<_> = instruments
+            .iter()
+            .map(|(instrument, binding)| {
+                Ok((
+                    *instrument,
+                    MetakonBinding {
+                        binding_generation: binding
+                            .binding_generation
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("binding generation exhausted"))?,
+                        mapping_revision: binding
+                            .mapping_revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
+                        ..*binding
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        self.runtime.replace_transport(resource, adapter)?;
+        for (instrument, binding) in replacements {
+            self.runtime.command(Command::RebindMetakon {
+                instrument,
+                binding,
+                at,
+            })?;
+        }
+        for probe in &mut self.configured_probes {
+            if self
+                .runtime
+                .metakon_binding(probe.instrument)
+                .is_some_and(|binding| binding.resource == resource)
+            {
+                probe.queued = false;
+            }
+        }
+        self.closed_resources.remove(&resource);
+        self.observe(at, None)
+    }
+
+    /// Retire the current adapter without waiting; true means a replacement can
+    /// be installed without creating a second handle owner.
+    pub fn prepare_configured_transport_replacement(
+        &mut self,
+        resource: ResourceId,
+    ) -> Result<bool, Error> {
+        Ok(self.runtime.shutdown_transport(resource)?
+            == lab_core::transport::TransportShutdown::Complete)
+    }
+
+    /// Copy the current physical binding generation for diagnostics/tests.
+    pub fn configured_binding_generation(&self, instrument: u64) -> Option<u64> {
+        self.runtime
+            .metakon_binding(InstrumentId::new(instrument))
+            .map(|binding| binding.binding_generation)
+    }
+
     /// Check frozen channel-type observations without polling or hidden I/O.
     pub fn configured_probes_ready(&self) -> Result<bool, Error> {
         for probe in &self.configured_probes {

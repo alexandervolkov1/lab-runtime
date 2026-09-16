@@ -153,3 +153,67 @@ fn c2_missing_configured_transport_rejects_atomically() {
     let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut reader).unwrap();
     assert!(HostCore::configured_with_transports(&deployment, BTreeMap::new()).is_err());
 }
+
+#[test]
+fn c14_c15_explicit_rebind_keeps_logical_id_and_fences_old_measurement() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(7),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([channel_type_response(), temperature_response(200)]),
+            ..ScriptedTransport::default()
+        }),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    host.begin_configured_probes(clock.now()).unwrap();
+    for milliseconds in [0, 10, 20, 30] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(host.configured_probes_ready().unwrap());
+
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([channel_type_response(), temperature_response(251)]),
+            ..ScriptedTransport::default()
+        }),
+        Duration::from_millis(40),
+    )
+    .unwrap();
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    let QueryResult::Latest(Some(fenced)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_ne!(fenced.quality(), lab_core::SampleQuality::Good);
+
+    host.begin_configured_probes(Duration::from_millis(40))
+        .unwrap();
+    for milliseconds in [41, 50, 60, 100, 110, 120] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(host.configured_probes_ready().unwrap());
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let Some(lab_core::Value::Float(value)) = sample.value() else {
+        panic!()
+    };
+    assert!((value - 25.1).abs() < 1.0e-9);
+    assert_eq!(host.resource_records()[0]["target"]["id"], "7");
+}
