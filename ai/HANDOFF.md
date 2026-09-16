@@ -10,32 +10,84 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: READY_FOR_EXTERNAL_REVIEW
+STATUS: APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
 
 Current model:
-SOL_HIGH
+ASTRA_HIGH
+
+Current phase:
+M8 design only; design complete, stopped at the explicit implementation handoff.
 
 Completed work:
-M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract.
+M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
+externally accepted by the user. M8 design/lifecycle/C1-C20 contract is frozen.
 
 Implementation contract:
-docs/implementation/MILESTONE_7_DESIGN.md
+docs/implementation/MILESTONE_8_DESIGN.md (after explicit implementation handoff)
 
 M7 production implementation is complete and audited against D1-D18. The exact
 acceptance mapping, red/green history, versions, bounds, limitations and final
 latest-head verification are recorded in MILESTONE_7_REPORT.md.
 
 External review result:
-M6 accepted as the implementation baseline for the first-release sequence.
+M7 accepted as the implementation baseline at f3ff456. The external review found
+no architectural contradiction or blocking D1-D18 defect. Accepted evidence
+includes the complete M7 report and 345-test debug/release gates. The reported
+hardware, physical-output, power-loss, remote-security and long-soak limitations
+remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-External review of the completed M7 checkpoint only.
+M8 design only under ASTRA_HIGH, now complete. M8 implementation is not yet
+authorized. Await the user's explicit ASTRA_HIGH -> SOL_HIGH switch; do not
+implement production code or tests during this design phase.
 
 Model gate:
-ASTRA_HIGH -> SOL_HIGH crossed by the user's explicit instruction.
+The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
+The new M8 ASTRA_HIGH -> SOL_HIGH implementation gate is not yet crossed.
 
 Do not start:
-M8 or later milestones.
+M8 implementation before the explicit handoff authorization; M9 or later work.
+
+M8 design completion — 2026-09-16
+
+Recovered clean HEAD f3ff456, containing 53880ca and all later accepted M7 work.
+Read the permanent coordination files, project brief, release plan and relevant
+accepted M3-M7 contracts/source. The design preserves Runtime ownership, Core's
+OS/storage independence and accepted safety/evidence/Required semantics.
+
+The new MILESTONE_8_DESIGN.md fixes strict declarative loading, exact loaded TOML
+identity, staged diff/atomic commit, irreversible safe-barrier failure semantics,
+distinct configuration/script/model operations, fencing, fixed Recorder ingress
+budgets, read-only worker-backed Windows COM, conservative recovery and C1-C20.
+Recorder bounds are not increased. Fixed-topology live reload rejects topology,
+listener and Recorder policy/path changes as restart-required.
+
+Actual Windows/Metakon read-only C16/C17/C19 evidence remains mandatory during
+implementation acceptance. Fake transport cannot replace it. Without hardware or
+a justified clean-response boundary, report M8_HARDWARE_ACCEPTANCE_PENDING and
+stop; software completion alone does not complete M8 or authorize M9.
+
+Documentation only: no production code, tests or dependencies changed; no COM
+opened; no accepted M7 test gate rerun or new hardware evidence claimed. The
+donor path was unavailable on this computer and was not modified. No unrelated
+cleanup or ai/project_snapshot.txt changes were made.
+
+Design validation passed: exactly 20 distinct C1-C20 matrix rows, resolving local
+design links, balanced Markdown fences, no trailing whitespace in all five
+changed documents, and git diff --check. Changes are documentation-only and left
+uncommitted; the accepted implementation HEAD remains f3ff456.
+
+MODEL HANDOFF
+
+STOP HERE.
+
+Switch:
+ASTRA_HIGH -> SOL_HIGH
+
+Resume with:
+M8 tests-first implementation against MILESTONE_8_DESIGN.md.
+
+M8 implementation: not yet authorized. Do not start M9.
 
 M7 design checkpoint — 2026-09-15
 
@@ -248,10 +300,10 @@ After v0.1.0 the default development mode should become a smaller educational
 workflow rather than large autonomous agent milestones.
 
 Current model gate
-READY_FOR_EXTERNAL_REVIEW
+APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
 
-Current model: SOL_HIGH. M7 implementation and the D1-D18 completion gate pass
-on the final source HEAD. External review is requested. M8 is not authorized.
+Current model: ASTRA_HIGH. M7 is externally accepted. M8 design is complete;
+implementation is not yet authorized. Await the explicit handoff above.
 
 Historical M7 implementation pause checkpoint — 2026-09-16
 
@@ -289,4 +341,5 @@ Final verification on the latest source HEAD passed:
 Resolved versions include Rust/Cargo 1.95.0, Babashka 1.13.220, rusqlite 0.40.2,
 libsqlite3-sys 0.38.2, bundled SQLite 3.53.2 and sha2 0.11.0. No donor files,
 M8 work or unrelated cleanup were performed. No architectural contradiction was
-found. External review must accept M7 before any later milestone begins.
+found. At that checkpoint external review was required before later work; the
+M7 acceptance and M8 design authorization above now supersede that old gate.

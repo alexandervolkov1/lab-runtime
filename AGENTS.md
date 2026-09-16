@@ -28,10 +28,10 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-SOL_HIGH — M7 Recorder/SQLite implementation only.
+ASTRA_HIGH — M8 design only; complete and stopped at implementation handoff.
 ```
 
-M1–M6 are complete and M6 has passed the external release-planning review.
+M1–M7 are complete and M7 has passed external implementation review.
 
 The persistent path from M7 to v0.1.0 is defined in:
 
@@ -52,32 +52,24 @@ docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 
 `ai/WORK.md` is the authoritative instruction for the currently authorized phase.
 
-Current model: SOL_HIGH.
+Current model: ASTRA_HIGH.
 
-Authorized work: audit and complete M7 tests-first implementation against
-`docs/implementation/MILESTONE_7_DESIGN.md`.
+Authorized work: M8 design only, now complete in
+`docs/implementation/MILESTONE_8_DESIGN.md`. M7 at `f3ff456` is externally
+accepted; do not restart its implementation or request its old model switch.
 
-The M7 design and D1-D18 acceptance contract are complete. The earlier
-uncommitted production changes have been audited; keep verifying them with
-the corresponding acceptance coverage and record their actual test sequence
-honestly in the M7 report.
-
-The incoming uncommitted production audit is complete. At the user-requested
-2026-09-16 pause, the latest logical Recorder test commit is `53880ca`; M7 is
-still incomplete. Completed coverage and the remaining D1-D18 work are recorded
-in `ai/WORK.md` and `docs/implementation/MILESTONE_7_REPORT.md`. Keep STATUS:
-M7_IMPLEMENTATION_IN_PROGRESS and resume only when the user asks. This pause
-does not request external review or cross a model or milestone gate.
-
-Do not begin M8.
-
-The crossed model gate is:
+STATUS: APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
+M8 implementation: not yet authorized. Await the user's explicit switch.
+The next (not yet crossed) M8 model gate is:
 
 ```text
 ASTRA_HIGH -> SOL_HIGH
 ```
 
-SOL_HIGH must finish M7 and request external review before any M8 work.
+After explicit authorization, SOL_HIGH implements M8 tests-first against its
+design and C1-C20. Real Windows COM/Metakon read-only C16/C17/C19 acceptance is
+mandatory; fake transport cannot replace missing hardware. Software completion
+alone leaves M8 incomplete at that hardware gate. Do not begin M9.
 
 If a genuine architectural contradiction is discovered, record the precise issue in
 `ai/HANDOFF.md`, set:

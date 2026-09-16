@@ -14,6 +14,7 @@ M3  bounded transport + narrow Metakon + data-driven definitions
 M4  native control pipeline + corrected Warming/renewal
 M5  bounded disposable Lua components
 M6  autonomous headless Runtime + local API + real Babashka process
+M7  Runtime-owned Recorder/SQLite + durable provenance + bounded raw history
 
 M6 was verified at the supplied checkpoint with 189 named Rust tests plus real Babashka A/B acceptance and has now passed the external release-planning review.
 
@@ -22,14 +23,19 @@ Current gate
 M7 Recorder/SQLite design and the tests-first D1–D18 acceptance contract are
 complete in docs/implementation/MILESTONE_7_DESIGN.md.
 
-Current model: SOL_HIGH
-Gate: ASTRA_HIGH -> SOL_HIGH crossed by explicit user instruction.
-Current work: external review of completed M7 implementation against
-MILESTONE_7_DESIGN.md and MILESTONE_7_REPORT.md.
-Do not start: M8.
+M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
+debug/release gates. Its reported limitations remain accepted limitations.
 
-M7 implementation has passed the D1-D18 completion gate and is ready for
-external review. It has not yet passed the external-review gate.
+STATUS: APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
+Current model: ASTRA_HIGH
+Current phase: M8 design only, complete in
+docs/implementation/MILESTONE_8_DESIGN.md.
+M8 implementation: not yet authorized.
+Next gate: explicit user switch ASTRA_HIGH -> SOL_HIGH for M8 tests-first work.
+Do not start: M8 implementation before that switch, or M9.
+
+M8 C1-C20 preserves an actual Windows COM/Metakon read-only hardware gate.
+Software completion without C16/C17/C19 hardware evidence leaves M8 incomplete.
 
 First stable release sequence
 M7
