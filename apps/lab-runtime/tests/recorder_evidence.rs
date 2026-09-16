@@ -24,6 +24,7 @@ struct Wire {
     readable: VecDeque<u8>,
     limits: VecDeque<usize>,
     recoveries: usize,
+    reply_on_write: bool,
 }
 struct Fake(Rc<RefCell<Wire>>);
 impl ByteTransport for Fake {
@@ -32,7 +33,7 @@ impl ByteTransport for Fake {
         let limit = wire.limits.pop_front().unwrap_or(bytes.len());
         let count = bytes.len().min(limit);
         wire.bytes.extend_from_slice(&bytes[..count]);
-        if count == 7 && count == bytes.len() {
+        if wire.reply_on_write && count == 7 && count == bytes.len() {
             let body = [15, 0, 6, 1];
             wire.readable.extend(body);
             wire.readable.push_back(crc(&body));
@@ -65,6 +66,7 @@ fn temporary_database() -> PathBuf {
 fn setup() -> (Runtime, ActuatorId, Rc<RefCell<Wire>>) {
     let wire = Rc::new(RefCell::new(Wire {
         limits: [7, 2, 0].into_iter().collect(),
+        reply_on_write: true,
         ..Wire::default()
     }));
     let mut runtime = Runtime::new();
@@ -410,6 +412,117 @@ fn late_virtual_ack_reopens_under_its_old_epoch_without_safe_evidence() {
         )
         .unwrap();
     assert_eq!(safe_evidence, 0);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn late_m3_ack_after_safe_epoch_reopens_only_as_old_ordinary_evidence() {
+    let path = temporary_database();
+    let (mut runtime, actuator, wire) = setup();
+    runtime.enable_recording_facts();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(2),
+                lifetime: Duration::from_secs(1),
+            },
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(75.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(200),
+            }),
+        })
+        .unwrap();
+    wire.borrow_mut().limits.clear();
+    wire.borrow_mut().reply_on_write = false;
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(100),
+        })
+        .unwrap();
+    runtime.command(Command::PollTransports { at }).unwrap();
+    assert_eq!(wire.borrow().bytes.len(), 7);
+    runtime
+        .command(Command::Output {
+            actuator,
+            at: Duration::from_millis(2),
+            command: OutputCommand::RequestSafe,
+        })
+        .unwrap();
+    let body = [15, 0, 6, 1];
+    wire.borrow_mut().readable.extend(body);
+    wire.borrow_mut().readable.push_back(crc(&body));
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(3),
+        })
+        .unwrap();
+    let lab_core::QueryResult::Output(after_old) =
+        runtime.query(lab_core::Query::Output(actuator)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(after_old.state, lab_core::output::OutputState::SafePending);
+    assert!(!after_old.safe_confirmed);
+    assert!(after_old.epoch > lease.epoch());
+    wire.borrow_mut().reply_on_write = true;
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at: Duration::from_millis(4),
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(100),
+        })
+        .unwrap();
+    for ms in [4, 5] {
+        runtime
+            .command(Command::PollTransports {
+                at: Duration::from_millis(ms),
+            })
+            .unwrap();
+    }
+    let facts = runtime.take_recording_facts();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("late M3 ACK archive").unwrap();
+    store.append_facts(&facts).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_millis(6)).unwrap();
+    store.close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let ordinary: Vec<Vec<u8>> = db
+        .prepare("SELECT authority_epoch FROM output_events WHERE stage='acknowledged'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ordinary, vec![lease.epoch().to_be_bytes().to_vec()]);
+    let safe: Vec<Vec<u8>> = db
+        .prepare("SELECT authority_epoch FROM output_events WHERE stage='safe_acknowledged'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(safe.len(), 1);
+    assert_ne!(safe[0], ordinary[0]);
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
