@@ -27,9 +27,9 @@ are not reported as passing evidence.
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
 | C14 | `windows_com_transport`, `configured_physical` | Software pass; real disconnect pending |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | Correction software pass; corrected physical rerun pending |
-| C17 | Actual observations, public history and SQLite reopen | First durable evidence retained separately; corrected physical evidence pending |
-| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected hardware continuation pending |
+| C16 | Actual Windows COM + Metakon read-only bench | Corrected real acquisition pass; physical disconnect/reconnect pending |
+| C17 | Actual observations, public history and SQLite reopen | Corrected live durable evidence pass; final close/reopen pending |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected live Babashka observation pass, physical recovery pending |
 | C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Actual clean COM/Recorder close passed; physical disconnect/reconnect subcase not run |
 | C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
@@ -538,15 +538,59 @@ its exact isolated rerun, complete test binary and a second full debug workspace
 run all passed. No default test was skipped and COM5 was not opened during these
 corrections.
 
+## Corrected real acquisition checkpoint — 2026-09-16
+
+After explicit operator approval, the exact relative command in `ai/WORK.md`
+loaded corrected TOML hash
+`fd47daf2cac9f8200a6b1ce5d212b9d872572bb006b16c045816577e712bd815`
+and definition hash
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+Only COM5 at 9600/8N1/no-flow, address 5/channel 0 was opened. Readiness under
+boot `dd5ac8d6362a2322046e4ad20b23932c` proves that the strict register-0
+compatibility response decoded as U8 channel type 3.
+
+Six consecutive public observations were 28.0 °C/`Good`; later observations
+alternated between 27.0 and 28.0 °C. With the verified explicit scale 1.0, the
+corresponding strict register-1 signed-I16 raw values are 28 for the six-sample
+sequence and 27/28 later. The adapter intentionally retains no separate raw-frame
+log, so these raw values are uniquely recovered from the strict decoded integer
+and scale rather than claimed as an independent wire capture. The operator then
+reported the contemporaneous front-panel value as 28 °C, a plausible exact
+agreement with the current public 28.0 °C observation.
+
+The public snapshot reported logical resource 1 idle with an empty queue,
+resource generation 1 and latest completed transaction generation 1. Durable
+`object_snapshots` recorded device 5/channel 0, binding generation 1 and mapping
+revision 1. Durable measurement rows and public history both reported generation
+1/revision 1 and `Good` quality.
+
+Required recording started durably as database
+`769be53d8fb9cd4dcbb49bf70880cdbe`, run 1/interval 1, label
+`M8 corrected Metakon 513 COM5 read-only`. Its live status remained `recording`
+with complete coverage, no first error or missing fact, and zero outstanding
+groups/records/bytes at the contemporaneous checkpoint; the committed prefix had
+advanced to record sequence 647. Public `history_read` returned a frozen complete
+raw page of real 27/28 °C observations. A read-only immutable SQLite checkpoint
+contained 106 temperature rows at the earlier inspection point, all 106 `Good`,
+with range 27–28 °C, and zero `output_events`. Its durable provenance rows contain
+the exact TOML and definition hashes above.
+
+The corrected evidence is separate at
+`examples/metakon-513-com5-corrected-history.sqlite`. The original erroneous
+archive remains unchanged at SHA-256
+`91b1da3f76222389ab77d0f4355f5da6ed8b2f0dbb2271ada2a3532b54fb1eec`.
+No actuator/output write, configuration operation, alternative register/address,
+reset or COM enumeration was performed. The corrected Runtime and Required run
+remain active for the next explicitly operator-cued physical disconnect step;
+the run is not yet sealed and final SQLite reopen evidence is therefore pending.
+
 ## Current limitations
 
-The first COM5 open/settings/compatibility probe, repeated syntactically valid
-reads, Required durability, client independence and clean COM/Recorder close are
-retained real hardware evidence, but the values remain evidence of the old
-incorrect profile. The corrected profile has not yet opened COM5. Corrected
-temperature, physical disconnect/reconnect and final public-history/provenance
-evidence for C14/C16/C17/C19 remain pending. Firmware remains unknown and no
-independent wire capture exists.
+The first archive remains evidence of the old incorrect profile; the separate
+corrected live run now establishes plausible real temperature and durable
+history. Physical disconnect/reconnect, explicit `reconnect_resource`, final
+clean shutdown and offline SQLite reopen evidence for C14/C16/C17/C19 remain
+pending. Firmware remains unknown and no independent wire capture exists.
 
 M8 stops at `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for external
 review and does not authorize M9. M8 performed no physical actuator write and

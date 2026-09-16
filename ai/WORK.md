@@ -3,7 +3,7 @@
 STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 
 Current model: SOL_HIGH.
-Current phase: corrected Metakon 513 read-only hardware acceptance.
+Current phase: corrected acquisition passed; physical disconnect/reconnect pending.
 M7: externally accepted at `f3ff456`.
 M8 software implementation: complete at `0a42d73`; reviewed corrections complete
 through `867f985` on 2026-09-16.
@@ -30,29 +30,23 @@ scale explicit, resolved deployment-owned relative paths from runtime.toml, and
 preserved the first SQLite bench archive. Exact red/green history, hashes and
 391-test gates are in `MILESTONE_8_REPORT.md`.
 
-## Next authorized action
+## Current live checkpoint and next authorized action
 
-Do not open COM5 until the user explicitly continues from this checkpoint. Then
-launch exactly:
+The corrected Runtime is active on boot
+`dd5ac8d6362a2322046e4ad20b23932c`, with Required database
+`769be53d8fb9cd4dcbb49bf70880cdbe`, run 1/interval 1. Channel type 3 passed;
+raw/engineering 27/28 agree with the operator's contemporaneous 28 °C display;
+Signal quality is Good; logical resource/resource generation/binding generation/
+mapping revision are 1/1/1/1; durable provenance matches the corrected hashes;
+and `output_events` is zero. Exact evidence is in `MILESTONE_8_REPORT.md`.
 
-```powershell
-cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
-```
-
-The frozen configuration opens only COM5 at 9600 8N1/no flow, address 5; exposes
-only the trusted `channel_type` and `temperature` reads; uses Required recording;
-and writes to the new
-`examples/metakon-513-com5-corrected-history.sqlite`. Do not issue actuator,
-output, configuration-register, reset or speculative protocol operations.
-
-First obtain consecutive plausible real readings, confirm resource status,
-Good Signal quality, binding generation and Required SQLite progress, then stop
-before the operator's physical disconnect. After a separate explicit user cue,
-observe Offline/Unavailable without fabricated Good values, wait for reconnect,
-use only `reconnect_resource`, verify a new binding generation and resumed real
-measurements, perform the public Babashka/history/provenance checks and shut down
-COM plus Recorder cleanly. Reopen SQLite and record durable evidence in the M8
-report.
+Do not disconnect the device or mutate the Runtime until the user explicitly
+signals that the physical cable/device has been disconnected. Then observe
+Offline/Unavailable without fabricated Good values and stop for the reconnect
+cue. After the user reconnects, use only `reconnect_resource`, verify the same
+logical resource with a new binding generation and resumed real measurements,
+perform the public Babashka/history/provenance checks and shut down COM plus
+Recorder cleanly. Reopen SQLite and record durable evidence in the M8 report.
 
 If actual behavior contradicts the trusted protocol/recovery contract, preserve
 the observations, set `STATUS: WAITING_FOR_REVIEW` and stop. A fake transport

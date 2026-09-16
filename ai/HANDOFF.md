@@ -16,7 +16,7 @@ Current model:
 SOL_HIGH
 
 Current phase:
-M8 corrected read-only Metakon hardware acceptance; awaiting explicit rerun.
+M8 corrected Metakon acquisition passed; awaiting physical disconnect cue.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,9 +38,10 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-After explicit user continuation, rerun only the frozen read-only Metakon 513
-checklist on COM5 with the corrected definition and separate Required SQLite
-archive. Do not add registers, issue writes/resets, or start M9.
+Keep the corrected read-only Runtime/Required run active. After an explicit user
+cue that the cable/device has been physically disconnected, observe the accepted
+Offline/Unavailable behavior. Do not add registers, issue writes/resets, or
+start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -160,6 +161,26 @@ the actual profile hash is
 STATUS is `M8_HARDWARE_ACCEPTANCE_PENDING`. Await explicit user continuation,
 then use the existing read-only command and stop again after corrected readings
 before physical disconnect. Do not begin M9.
+
+M8 corrected physical acquisition checkpoint — 2026-09-16
+
+The explicitly authorized corrected launch opened only COM5 with the frozen
+9600/8N1/no-flow, address 5/channel 0 read-only deployment. Strict channel type 3
+readiness passed. Consecutive register-1 results decoded to raw 28 and engineering
+28.0 °C, followed by raw/engineering 27/28; all public Signal observations were
+`Good`. The operator contemporaneously reported 28 °C on the front panel.
+
+Required database `769be53d8fb9cd4dcbb49bf70880cdbe`, run 1/interval 1, has
+complete coverage and a committed prefix through at least record 647. Public
+history and an immutable SQLite checkpoint contain real `Good` rows; durable
+provenance matches both corrected hashes and `output_events` is zero. Logical
+resource 1, resource/binding/mapping generations 1/1/1 remain stable. The old
+SQLite archive retains its original hash. No write, reset, alternative register,
+configuration operation or COM enumeration occurred.
+
+The corrected Runtime is intentionally still running and its separate SQLite run
+is unsealed. Await the user's explicit physical-disconnect cue before continuing
+C14/C16/C17/C19. Do not begin M9.
 
 Design validation passed: exactly 20 distinct C1-C20 matrix rows, resolving local
 design links, balanced Markdown fences, no trailing whitespace in all five
