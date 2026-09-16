@@ -1,7 +1,8 @@
 //! Process death before a confirmed SQLite commit leaves an honest archive tail.
 
 use lab_core::{
-    Command as DomainCommand, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig,
+    Command as DomainCommand, InstrumentId, Query, QueryResult, Runtime, Sample, SignalId, Unit,
+    Value, VirtualInstrumentConfig, recording::RecordingFact,
 };
 use lab_runtime::recorder::{
     HistoryFilter, RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, SqliteStore,
@@ -223,6 +224,126 @@ fn child_holds_a_real_batch_at_selected_commit_stage() {
     // The parent kills this real process while its single writer remains held.
     thread::sleep(Duration::from_secs(10));
     panic!("parent did not kill the held child process");
+}
+
+#[test]
+fn child_commits_three_equal_time_history_rows_before_parent_kills_its_receipt() {
+    let Some(path) = std::env::var_os("LAB_M7_PROCESS_PAGE_DB") else {
+        return;
+    };
+    let barrier = WriterBarrier::held_after_fact_commit();
+    let mut worker = RecorderWorker::open_with_barrier(
+        &PathBuf::from(path),
+        RecorderLimits::default(),
+        barrier.clone(),
+    )
+    .unwrap();
+    worker.request_start("killed page A").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != RecordingState::Recording && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(worker.poll().state, RecordingState::Recording);
+    let signal = SignalId::new(InstrumentId::new(704), lab_core::TEMPERATURE);
+    let facts = (1..=3u64)
+        .map(|sequence| RecordingFact::Measurement {
+            sequence,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                Duration::from_secs(1),
+                Value::Float(20.0 + sequence as f64),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        })
+        .collect();
+    worker.try_admit(facts).unwrap();
+    while !barrier.reached() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert!(
+        barrier.reached(),
+        "three-row SQL commit never reached receipt barrier"
+    );
+    println!(
+        "M7_KILLED_PAGE_COMMIT {} {}",
+        worker.boot_id(),
+        worker.database_id()
+    );
+    std::io::stdout().flush().unwrap();
+    thread::sleep(Duration::from_secs(10));
+    panic!("parent did not kill the paged-history child");
+}
+
+#[test]
+fn killed_equal_time_archive_pages_exactly_the_committed_prefix_under_a_new_boot() {
+    let path = temporary_database();
+    let (old_boot, database_id) = kill_selected_child(
+        &path,
+        "child_commits_three_equal_time_history_rows_before_parent_kills_its_receipt",
+        "LAB_M7_PROCESS_PAGE_DB",
+        None,
+        "M7_KILLED_PAGE_COMMIT ",
+    );
+    let new_boot = "dddddddddddddddddddddddddddddddd";
+    let reopened = SqliteStore::open_with_boot(&path, new_boot).unwrap();
+    assert_eq!(reopened.database_id(), database_id);
+    assert_ne!(new_boot, old_boot);
+    let filter = HistoryFilter {
+        boot_id: old_boot.clone(),
+        run_no: 1,
+        instrument: InstrumentId::new(704),
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::ZERO,
+        to: Duration::from_secs(2),
+    };
+    let mut cursor = None;
+    let mut ids = Vec::new();
+    let mut values = Vec::new();
+    let mut watermark = None;
+    loop {
+        let page = reopened
+            .read_history_measurements(&filter, cursor.as_ref(), 1)
+            .unwrap();
+        assert_eq!(page.coverage, "unknown_tail");
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.watermark, *watermark.get_or_insert(page.watermark));
+        ids.push(page.rows[0].record_sequence);
+        values.push(page.rows[0].value.clone());
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(ids.len() < 4, "keyset cursor did not finish");
+    }
+    assert_eq!(ids, [3, 4, 5]);
+    assert_eq!(
+        values,
+        [
+            Some(Value::Float(21.0)),
+            Some(Value::Float(22.0)),
+            Some(Value::Float(23.0))
+        ]
+    );
+    reopened.close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let sql_ids: Vec<u64> = db
+        .prepare("SELECT record_seq FROM measurements WHERE boot_id=?1 ORDER BY record_seq")
+        .unwrap()
+        .query_map([boot_bytes(&old_boot)], |row| {
+            let bytes: Vec<u8> = row.get(0)?;
+            Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ids, sql_ids);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
