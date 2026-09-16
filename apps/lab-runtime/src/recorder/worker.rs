@@ -474,7 +474,9 @@ impl RecorderWorker {
                         SqliteStore::open_with_boot_anchor(&worker_path, &worker_boot, anchor)
                     })
                     .and_then(|mut store| {
-                        if let Some(threshold) = barrier.as_ref().and_then(|fault| fault.0.low_wal_threshold) {
+                        if let Some(threshold) =
+                            barrier.as_ref().and_then(|fault| fault.0.low_wal_threshold)
+                        {
                             store.lower_wal_threshold_for_testing(threshold)?;
                         }
                         let health = store.storage_health()?;
@@ -1433,9 +1435,8 @@ fn worker_loop(
             barrier.await_release();
         }
         if matches!(message, Message::Facts(..))
-            && barrier.is_some_and(|fault| {
-                fault.0.fail_checkpoint_once.swap(false, Ordering::AcqRel)
-            })
+            && barrier
+                .is_some_and(|fault| fault.0.fail_checkpoint_once.swap(false, Ordering::AcqRel))
         {
             store.fail_next_checkpoint_for_testing();
         }
@@ -1593,8 +1594,9 @@ fn worker_loop(
                     .unwrap_or_else(|p| p.into_inner())
                     .confirmed_submission = Some(submitted_at);
             }),
-            Message::ClockAnchor(assigned) => {
-                TimeAnchor::capture(|| source.now(), || {
+            Message::ClockAnchor(assigned) => TimeAnchor::capture(
+                || source.now(),
+                || {
                     if barrier.is_some_and(|held| {
                         held.0.fail_periodic_wall_read.swap(false, Ordering::AcqRel)
                     }) {
@@ -1602,15 +1604,13 @@ fn worker_loop(
                     } else {
                         Ok(SystemTime::now())
                     }
-                })
-                    .and_then(|anchor| {
-                        store.append_clock_anchor_assigned("periodic", &anchor, assigned)
-                    })
-                    .map(|_| {
-                        receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
-                            store.current_record_sequence();
-                    })
-            }
+                },
+            )
+            .and_then(|anchor| store.append_clock_anchor_assigned("periodic", &anchor, assigned))
+            .map(|_| {
+                receipt.lock().unwrap_or_else(|p| p.into_inner()).persisted =
+                    store.current_record_sequence();
+            }),
             Message::History { .. } => unreachable!("history was handled before lifecycle match"),
             Message::Runs { .. } => unreachable!("runs were handled before lifecycle match"),
             Message::Stop(summary, requested_at, assigned) => {

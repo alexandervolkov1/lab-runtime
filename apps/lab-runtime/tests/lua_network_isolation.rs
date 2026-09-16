@@ -13,11 +13,17 @@ use lab_core::{Command, InstrumentId, Query, QueryResult, SignalId, TEMPERATURE}
 use lab_lua::{LuaSupervisor, WorkerBarrier};
 use lab_runtime::{
     application::Application,
-    recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, WriterBarrier as SqliteBarrier},
+    recorder::{
+        RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState,
+        WriterBarrier as SqliteBarrier,
+    },
     service::{ServiceHost, ServiceOptions},
     wire::{decode_frame, encode_frame},
 };
-use lab_runtime::{host::{Clock, HostCore}, server};
+use lab_runtime::{
+    host::{Clock, HostCore},
+    server,
+};
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicUsize;
 static PROFILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -299,7 +305,10 @@ fn two_real_lua_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recover
             .unwrap();
         let started = Instant::now();
         while service.owner().recording_status().unwrap().state != RecordingState::Recording {
-            assert!(started.elapsed() < Duration::from_secs(2), "Start SQL did not commit");
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "Start SQL did not commit"
+            );
             service.owner_mut().service(&clock).unwrap();
             thread::yield_now();
         }
@@ -330,7 +339,10 @@ fn two_real_lua_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recover
     let started = Instant::now();
     let sqlite_deadline = Instant::now() + Duration::from_secs(2);
     while !sqlite_barrier.reached() {
-        assert!(Instant::now() < sqlite_deadline, "SQLite worker never reached held fact SQL");
+        assert!(
+            Instant::now() < sqlite_deadline,
+            "SQLite worker never reached held fact SQL"
+        );
         thread::yield_now();
     }
     let mut observed = false;
