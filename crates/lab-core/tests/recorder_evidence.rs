@@ -209,4 +209,21 @@ fn actual_metakon_ack_is_trusted_protocol_ack_without_readback_fact() {
             .iter()
             .all(|pair| pair.1 == correlations[1].1)
     );
+    for fact in &facts {
+        if let RecordingFact::Output {
+            unit,
+            authority_epoch,
+            resource,
+            binding_generation,
+            mapping_revision,
+            ..
+        } = fact
+        {
+            assert_eq!(*unit, Some(Unit::PERCENT));
+            assert_eq!(*authority_epoch, Some(lease.epoch()));
+            assert_eq!(*resource, Some(ResourceId::new(1)));
+            assert_eq!(*binding_generation, Some(1));
+            assert_eq!(*mapping_revision, Some(1));
+        }
+    }
 }

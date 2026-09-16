@@ -454,6 +454,10 @@ impl Runtime {
     /// This does not assert that any fact has reached durable storage.
     pub fn enable_recording_facts(&mut self) {
         self.recording_facts.enable();
+        let actuators: Vec<_> = self.outputs.keys().copied().collect();
+        for actuator in actuators {
+            self.sync_recording_output_context(actuator);
+        }
     }
 
     /// Stop fact capture at a durable interval boundary; discarded idle facts
@@ -768,23 +772,23 @@ impl Runtime {
                     .get_mut(&actuator)
                     .ok_or(OutputError::UnknownActuator)?
                     .command(command, at);
+                self.sync_recording_output_context(actuator);
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => {
                         if let (Some(attempt_id), OutputCommand::Propose(proposal)) =
                             (proposed_attempt, &issued)
                         {
-                            self.recording_facts.output_correlated(
+                            self.recording_facts.output_proposal(
                                 actuator,
                                 crate::recording::OutputStage::RejectedBeforeSend,
                                 match &proposal.value {
                                     Value::Float(value) if value.is_finite() => Some(*value),
                                     _ => None,
                                 },
+                                proposal.unit,
                                 at,
-                                crate::recording::OutputEvidenceSource::None,
                                 Some(attempt_id),
-                                None,
                             );
                         }
                         if matches!(issued, OutputCommand::BeginDispatch)
@@ -833,17 +837,16 @@ impl Runtime {
                             at,
                         );
                     }
-                    (OutputCommand::Propose(_), OutputResult::Queued) => {
-                        self.recording_facts.output_correlated(
+                    (OutputCommand::Propose(proposal), OutputResult::Queued) => {
+                        self.recording_facts.output_proposal(
                             actuator,
                             crate::recording::OutputStage::Requested,
                             self.outputs
                                 .get(&actuator)
                                 .and_then(|authority| authority.snapshot().requested),
+                            proposal.unit,
                             at,
-                            crate::recording::OutputEvidenceSource::None,
                             attempt_id,
-                            None,
                         );
                     }
                     (OutputCommand::BeginDispatch, OutputResult::Dispatched(dispatch))
@@ -953,6 +956,7 @@ impl Runtime {
                     OutputAuthority::new(actuator, parameter.value_spec.clone(), parameter.unit)?;
                 self.instruments.insert(id, instrument);
                 self.outputs.insert(actuator, authority);
+                self.sync_recording_output_context(actuator);
                 Ok(CommandResult::Registered(id))
             }
             Command::RegisterThermalPlant(config) => {
@@ -973,6 +977,7 @@ impl Runtime {
                     OutputAuthority::new(actuator, parameter.value_spec.clone(), parameter.unit)?;
                 self.thermal_plants.insert(id, instrument);
                 self.outputs.insert(actuator, authority);
+                self.sync_recording_output_context(actuator);
                 Ok(CommandResult::Registered(id))
             }
             Command::RegisterReference(config) => {
@@ -1140,7 +1145,11 @@ impl Runtime {
                     }
                 }
                 self.metakon_instruments.insert(id, instrument);
+                let actuators: Vec<_> = authorities.iter().map(|(actuator, _)| *actuator).collect();
                 self.outputs.extend(authorities);
+                for actuator in actuators {
+                    self.sync_recording_output_context(actuator);
+                }
                 Ok(CommandResult::Registered(id))
             }
             Command::QueueMetakonRead {
@@ -2746,6 +2755,25 @@ impl Runtime {
             .ok_or(ControllerError::InvalidConfiguration)
     }
 
+    // Freeze the current accepted binding and authority identity at Core fact
+    // capture. A later rebind or revoke cannot rewrite an earlier output row.
+    fn sync_recording_output_context(&mut self, actuator: ActuatorId) {
+        let Some(authority) = self.outputs.get(&actuator) else {
+            return;
+        };
+        let binding = self.metakon_instruments.get(&actuator.instrument());
+        self.recording_facts.output_context(
+            actuator,
+            crate::recording::OutputContext {
+                unit: self.output_unit(actuator).ok(),
+                authority_epoch: Some(authority.snapshot().epoch),
+                resource: binding.map(|instrument| instrument.binding.resource),
+                binding_generation: binding.map(|instrument| instrument.binding.binding_generation),
+                mapping_revision: binding.map(|instrument| instrument.binding.mapping_revision),
+            },
+        );
+    }
+
     fn capture_reference_fact(&mut self, id: ReferenceId, at: Duration) {
         let Some(snapshot) = self.references.get(&id).map(RuntimeReference::snapshot) else {
             return;
@@ -3077,6 +3105,18 @@ impl Runtime {
         self.service_required_recording_deadline(at);
         self.check_transport_time(at)?;
         self.check_output_time(at)?;
+        let bound_outputs: Vec<_> = self
+            .outputs
+            .keys()
+            .filter(|actuator| {
+                self.metakon_instruments
+                    .contains_key(&actuator.instrument())
+            })
+            .copied()
+            .collect();
+        for actuator in bound_outputs {
+            self.sync_recording_output_context(actuator);
+        }
         let resources: Vec<_> = self.resources.keys().copied().collect();
         for resource in resources {
             self.service_required_recording_deadline(at);

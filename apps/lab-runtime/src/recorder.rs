@@ -1616,6 +1616,11 @@ impl SqliteStore {
                         actuator,
                         attempt_id,
                         dispatch_id,
+                        unit,
+                        authority_epoch,
+                        resource,
+                        binding_generation,
+                        mapping_revision,
                         stage,
                         value,
                         source,
@@ -1648,6 +1653,10 @@ impl SqliteStore {
                             }
                         };
                         let attempt_blob = attempt_id.map(u64_blob);
+                        let epoch_blob = authority_epoch.map(u64_blob);
+                        let resource_blob = resource.map(|id| u64_blob(id.get()));
+                        let generation_blob = binding_generation.map(u64_blob);
+                        let revision_blob = mapping_revision.map(u64_blob);
                         let dispatch_blob = dispatch_id.map(|id| {
                             let (instance, sequence) = id.diagnostic_parts();
                             let mut bytes = [0u8; 16];
@@ -1657,17 +1666,23 @@ impl SqliteStore {
                         });
                         transaction.execute(
                             "INSERT INTO output_events(boot_id,record_seq,attempt_id,dispatch_id,\
-                         instrument_id,parameter_id,stage,value,evidence_source,evidence_basis) \
-                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'runtime')",
+                         resource_id,instrument_id,parameter_id,authority_epoch,generation,revision,\
+                         stage,value,unit_key,evidence_source,evidence_basis) \
+                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'runtime')",
                             params![
                                 self.boot_id.as_slice(),
                                 record_id.as_slice(),
                                 attempt_blob.as_ref().map(|blob| blob.as_slice()),
                                 dispatch_blob.as_ref().map(|blob| blob.as_slice()),
+                                resource_blob.as_ref().map(|blob| blob.as_slice()),
                                 u64_blob(actuator.instrument().get()).as_slice(),
                                 u64_blob(actuator.parameter().get()).as_slice(),
+                                epoch_blob.as_ref().map(|blob| blob.as_slice()),
+                                generation_blob.as_ref().map(|blob| blob.as_slice()),
+                                revision_blob.as_ref().map(|blob| blob.as_slice()),
                                 stage,
                                 value,
+                                unit.as_ref().map(lab_core::Unit::id),
                                 evidence_source
                             ],
                         )?;
@@ -2709,9 +2724,30 @@ fn validate_storage_fact(fact: &RecordingFact) -> Result<(), StorageError> {
                 return Err(StorageError("nonfinite measurement fact".into()));
             }
         }
-        RecordingFact::Output { value, .. } => {
+        RecordingFact::Output {
+            value,
+            unit,
+            authority_epoch,
+            resource,
+            binding_generation,
+            mapping_revision,
+            ..
+        } => {
             if value.is_some_and(|value| !value.is_finite()) {
                 return Err(StorageError("nonfinite output fact".into()));
+            }
+            if unit.is_none() || authority_epoch.is_none() {
+                return Err(StorageError(
+                    "output fact missing trusted unit or epoch".into(),
+                ));
+            }
+            let binding_fields = usize::from(resource.is_some())
+                + usize::from(binding_generation.is_some())
+                + usize::from(mapping_revision.is_some());
+            if binding_fields != 0 && binding_fields != 3 {
+                return Err(StorageError(
+                    "output fact has partial binding identity".into(),
+                ));
             }
         }
         RecordingFact::Controller { pid, .. } => {

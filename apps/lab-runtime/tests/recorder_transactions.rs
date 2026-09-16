@@ -2,7 +2,10 @@
 
 use lab_core::{
     Command, InstrumentId, Runtime, Sample, SignalId, Unit, Value, VirtualInstrumentConfig,
-    recording::RecordingFact, reference::ReferenceId,
+    output::ActuatorId,
+    recording::{OutputEvidenceSource, OutputStage, RecordingFact},
+    reference::ReferenceId,
+    transport::ResourceId,
 };
 use lab_runtime::recorder::{
     HistoryFilter, RecorderLimits, RecorderWorker, RecordingState, SqliteStore,
@@ -17,6 +20,58 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-transaction-{suffix}.sqlite"))
+}
+
+#[test]
+fn output_fact_missing_unit_or_partial_binding_rolls_back_without_checkpoint() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("output metadata validation").unwrap();
+    let prefix = store.current_record_sequence();
+    let fact = |unit, resource, binding_generation, mapping_revision| RecordingFact::Output {
+        sequence: 1,
+        actuator: ActuatorId::new(InstrumentId::new(91), lab_core::HEATER_POWER),
+        attempt_id: Some(1),
+        dispatch_id: None,
+        unit,
+        authority_epoch: Some(1),
+        resource,
+        binding_generation,
+        mapping_revision,
+        stage: OutputStage::Requested,
+        value: Some(33.0),
+        source: OutputEvidenceSource::None,
+        at: Duration::from_millis(1),
+    };
+    assert!(store.append_facts(&[fact(None, None, None, None)]).is_err());
+    assert!(
+        store
+            .append_facts(&[fact(
+                Some(Unit::PERCENT),
+                Some(ResourceId::new(1)),
+                None,
+                Some(1)
+            )])
+            .is_err()
+    );
+    assert_eq!(store.current_record_sequence(), prefix);
+    store
+        .append_facts(&[fact(Some(Unit::PERCENT), None, None, None)])
+        .unwrap();
+    assert_eq!(store.current_record_sequence(), prefix + 1);
+    store.stop_run().unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM output_events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+    let unit: String = db
+        .query_row("SELECT unit_key FROM output_events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(unit, Unit::PERCENT.id());
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

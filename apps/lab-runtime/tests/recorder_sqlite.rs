@@ -1,12 +1,18 @@
 //! Real-file acceptance for the storage adapter, including reopen from WAL.
 
 use lab_core::{
-    Command, CommandResult, InstrumentId, Query, QueryResult, Runtime, Unit, Value,
-    VirtualInstrumentConfig,
+    AccessMode, Command, CommandResult, InstrumentId, ParameterId, ParameterRole, Query,
+    QueryResult, Runtime, Unit, Value, ValueSpec, VirtualInstrumentConfig, WriteEffect,
+    instrument::{
+        DataInstrumentDefinition, DataParameterDefinition, KnownOperation, MetakonBinding,
+        MetakonInstrumentConfig,
+    },
+    metakon::crc,
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal,
         OutputResult, SafeProfile,
     },
+    transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::{
     application::Application,
@@ -19,7 +25,7 @@ use lab_runtime::{
 };
 use serde_json::{Value as JsonValue, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -585,6 +591,189 @@ fn temporary_database() -> PathBuf {
     std::env::temp_dir().join(format!("lab-runtime-m7-{suffix}.sqlite"))
 }
 
+#[derive(Default)]
+struct AckWire {
+    readable: VecDeque<u8>,
+}
+impl ByteTransport for AckWire {
+    fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+        let body = [15, 0, 6, 1];
+        self.readable.extend(body);
+        self.readable.push_back(crc(&body));
+        Ok(bytes.len())
+    }
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+        let count = bytes.len().min(self.readable.len());
+        for byte in &mut bytes[..count] {
+            *byte = self.readable.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        self.readable.clear();
+        Ok(RecoveryStatus::Complete)
+    }
+}
+
+#[test]
+fn real_m3_ack_reopens_with_original_unit_epoch_resource_and_binding_revision() {
+    let path = temporary_database();
+    let mut runtime = Runtime::new();
+    let resource = ResourceId::new(1);
+    let instrument = InstrumentId::new(711);
+    let parameter = ParameterId::new(6);
+    let actuator = ActuatorId::new(instrument, parameter);
+    runtime
+        .register_transport(resource, Box::new(AckWire::default()))
+        .unwrap();
+    runtime
+        .command(Command::RegisterMetakon(MetakonInstrumentConfig {
+            definition: DataInstrumentDefinition {
+                schema_version: 1,
+                id: instrument,
+                name: "M3 archive identity".into(),
+                parameters: vec![DataParameterDefinition {
+                    id: parameter,
+                    name: "power".into(),
+                    value_spec: ValueSpec::Float {
+                        min: 0.0,
+                        max: 100.0,
+                    },
+                    unit: Unit::PERCENT,
+                    access: AccessMode::ReadWrite,
+                    role: ParameterRole::Actuator,
+                    write_effect: WriteEffect::OutputAffecting,
+                    operation: KnownOperation::Output,
+                    scale: 1.0,
+                }],
+            },
+            binding: MetakonBinding {
+                resource,
+                device: 15,
+                channel: 0,
+                binding_generation: 1,
+                mapping_revision: 1,
+                expected_output_unit: Some(Unit::PERCENT),
+            },
+            history_capacity: 2,
+        }))
+        .unwrap();
+    let output = |runtime: &mut Runtime, at, command| {
+        runtime.command(Command::Output {
+            actuator,
+            at,
+            command,
+        })
+    };
+    output(
+        &mut runtime,
+        Duration::ZERO,
+        OutputCommand::BindProfile(SafeProfile {
+            min: 0.0,
+            max: 100.0,
+            safe_value: 0.0,
+            max_lease: Duration::from_secs(5),
+            max_proposal_ttl: Duration::from_secs(1),
+            required_evidence: EvidenceLevel::Acknowledgement,
+        }),
+    )
+    .unwrap();
+    output(&mut runtime, Duration::ZERO, OutputCommand::RequestSafe).unwrap();
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at: Duration::ZERO,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(100),
+        })
+        .unwrap();
+    runtime
+        .command(Command::PollTransports { at: Duration::ZERO })
+        .unwrap();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("M3 identity").unwrap();
+    runtime.enable_recording_facts();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = output(
+        &mut runtime,
+        at,
+        OutputCommand::Acquire {
+            owner: OutputOwner::Manual(1),
+            lifetime: Duration::from_secs(1),
+        },
+    )
+    .unwrap() else {
+        panic!("safe ACK did not permit lease")
+    };
+    output(
+        &mut runtime,
+        at,
+        OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(40.0),
+            unit: Unit::PERCENT,
+            ttl: Duration::from_millis(200),
+        }),
+    )
+    .unwrap();
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(100),
+        })
+        .unwrap();
+    runtime.command(Command::PollTransports { at }).unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    store.stop_run().unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+    );
+    let rows: Vec<Row> = db
+        .prepare(
+            "SELECT stage,evidence_source,unit_key,authority_epoch,resource_id,generation,revision
+         FROM output_events ORDER BY record_seq",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        ["requested", "authorized", "send_started", "acknowledged"]
+    );
+    assert_eq!(rows[3].1, "transport_protocol");
+    for row in rows {
+        assert_eq!(row.2.as_deref(), Some(Unit::PERCENT.id()));
+        assert_eq!(row.3, Some(lease.epoch().to_be_bytes().to_vec()));
+        assert_eq!(row.4, Some(resource.get().to_be_bytes().to_vec()));
+        assert_eq!(row.5, Some(1u64.to_be_bytes().to_vec()));
+        assert_eq!(row.6, Some(1u64.to_be_bytes().to_vec()));
+    }
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn one_virtual_attempt_reopens_with_one_boot_scoped_attempt_and_dispatch_correlation() {
     let path = temporary_database();
@@ -715,6 +904,23 @@ fn one_virtual_attempt_reopens_with_one_boot_scoped_attempt_and_dispatch_correla
     assert!(rows[4].1.is_some());
     assert_ne!(rows[4].1, rows[0].1);
     assert_eq!(rows[4].2, None);
+    let identity: (Option<String>, Option<Vec<u8>>) = db
+        .query_row(
+            "SELECT unit_key,authority_epoch FROM output_events WHERE stage='requested'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(identity.0.as_deref(), Some(Unit::PERCENT.id()));
+    assert_eq!(identity.1, Some(lease.epoch().to_be_bytes().to_vec()));
+    let rejected_unit: Option<String> = db
+        .query_row(
+            "SELECT unit_key FROM output_events WHERE stage='rejected_before_send'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rejected_unit.as_deref(), Some(Unit::CELSIUS.id()));
     drop(db);
     std::fs::remove_file(path).unwrap();
 }

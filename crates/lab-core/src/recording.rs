@@ -8,8 +8,23 @@ use crate::{
     control::{ControllerId, ControllerState, PidConfig},
     output::{ActuatorId, DispatchId},
     reference::ReferenceId,
+    transport::ResourceId,
 };
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Duration,
+};
+
+/// Authoritative output binding captured before a fact enters the outbox.
+/// Runtime refreshes this cache; storage never reconstructs it from later state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OutputContext {
+    pub(crate) unit: Option<Unit>,
+    pub(crate) authority_epoch: Option<u64>,
+    pub(crate) resource: Option<ResourceId>,
+    pub(crate) binding_generation: Option<u64>,
+    pub(crate) mapping_revision: Option<u64>,
+}
 
 /// Maximum facts awaiting host admission after one or more owner units.
 pub const MAX_RECORDING_FACTS: usize = 256;
@@ -111,6 +126,16 @@ pub enum RecordingFact {
         attempt_id: Option<u64>,
         /// Trusted dispatch correlation, assigned only after admission.
         dispatch_id: Option<DispatchId>,
+        /// Engineering unit at this transition.
+        unit: Option<Unit>,
+        /// Rust authority epoch, not a client-provided permit.
+        authority_epoch: Option<u64>,
+        /// Physical resource when this actuator has a Metakon binding.
+        resource: Option<ResourceId>,
+        /// Instrument binding generation, independent of transport generation.
+        binding_generation: Option<u64>,
+        /// Instrument mapping revision.
+        mapping_revision: Option<u64>,
         /// Delivery/evidence stage.
         stage: OutputStage,
         /// Authorized scalar for this attempt when known.
@@ -174,6 +199,7 @@ pub(crate) struct FactOutbox {
     enabled: bool,
     next_sequence: u64,
     facts: VecDeque<RecordingFact>,
+    output_contexts: BTreeMap<ActuatorId, OutputContext>,
     bytes: usize,
     overflowed: bool,
     first_lost_sequence: Option<u64>,
@@ -194,6 +220,14 @@ impl FactOutbox {
         self.enabled = false;
         self.bytes = 0;
         self.facts.clear();
+        self.output_contexts.clear();
+    }
+
+    /// Replace only the current trusted capture context for an accepted actuator.
+    pub(crate) fn output_context(&mut self, actuator: ActuatorId, context: OutputContext) {
+        if self.enabled {
+            self.output_contexts.insert(actuator, context);
+        }
     }
 
     pub(crate) fn take(&mut self) -> Vec<RecordingFact> {
@@ -264,11 +298,70 @@ impl FactOutbox {
         attempt_id: Option<u64>,
         dispatch_id: Option<DispatchId>,
     ) {
+        self.output_with_unit(
+            actuator,
+            stage,
+            value,
+            at,
+            source,
+            attempt_id,
+            dispatch_id,
+            None,
+        );
+    }
+
+    /// Preserve the exact proposed unit even when validation rejects a candidate.
+    pub(crate) fn output_proposal(
+        &mut self,
+        actuator: ActuatorId,
+        stage: OutputStage,
+        value: Option<f64>,
+        proposed_unit: Unit,
+        at: Duration,
+        attempt_id: Option<u64>,
+    ) {
+        self.output_with_unit(
+            actuator,
+            stage,
+            value,
+            at,
+            OutputEvidenceSource::None,
+            attempt_id,
+            None,
+            Some(proposed_unit),
+        );
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit output proposal identity"
+    )]
+    fn output_with_unit(
+        &mut self,
+        actuator: ActuatorId,
+        stage: OutputStage,
+        value: Option<f64>,
+        at: Duration,
+        source: OutputEvidenceSource,
+        attempt_id: Option<u64>,
+        dispatch_id: Option<DispatchId>,
+        proposed_unit: Option<Unit>,
+    ) {
+        let context = self
+            .output_contexts
+            .get(&actuator)
+            .copied()
+            .unwrap_or_default();
         self.push(128, |sequence| RecordingFact::Output {
             sequence,
             actuator,
             attempt_id,
             dispatch_id,
+            unit: proposed_unit.or(context.unit),
+            authority_epoch: context.authority_epoch,
+            resource: context.resource,
+            binding_generation: context.binding_generation,
+            mapping_revision: context.mapping_revision,
             stage,
             value,
             source,
