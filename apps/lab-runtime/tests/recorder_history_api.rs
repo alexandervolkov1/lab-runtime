@@ -6,8 +6,11 @@ use lab_core::{
 };
 use lab_runtime::{
     application::Application,
-    host::Clock,
-    recorder::{RecorderGap, SqliteStore},
+    host::{Clock, HostCore},
+    recorder::{
+        RecorderGap, RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, SqliteStore,
+        WriterBarrier,
+    },
     service::{ServiceHost, ServiceOptions},
     wire::{WireRequest, decode_frame, encode_frame},
 };
@@ -826,6 +829,144 @@ fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
     drop(service);
     let deadline = Instant::now() + Duration::from_secs(2);
     while std::fs::remove_file(&path).is_err() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
+}
+
+#[test]
+fn disconnected_held_history_job_cannot_publish_into_reused_client_capacity() {
+    let path = temporary_database();
+    let archive_boot = "91919191919191919191919191919191";
+    let mut archive = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
+    archive.start_run("generation archive").unwrap();
+    archive.stop_run().unwrap();
+    archive.finish_boot(Duration::from_millis(1)).unwrap();
+    archive.close().unwrap();
+
+    let barrier = WriterBarrier::held();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let database_id = worker.database_id().to_owned();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    service
+        .owner_mut()
+        .start_recording("held writer generation", clock.now())
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let plant = service.owner().plant_id();
+    service
+        .owner_mut()
+        .command(Command::RefreshMeasurement {
+            instrument: plant,
+            parameter: lab_core::TEMPERATURE,
+            at: clock.now() + Duration::from_millis(1),
+        })
+        .unwrap();
+    while !barrier.reached() {
+        assert!(Instant::now() < deadline, "SQLite fact stage was not held");
+        std::thread::yield_now();
+    }
+
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let old_hello = app.handle(
+        &mut service,
+        101,
+        frame(json!({"v":1,"msg_id":"old-hello","op":"hello","args":{"scope":null}})),
+    );
+    let old_scope = old_hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let old_read = app.handle(
+        &mut service,
+        101,
+        frame(json!({
+            "v":1,"msg_id":"old-read","op":"history_read",
+            "request_id":{"scope":old_scope,"seq":"1"},
+            "args":{"mode":"runs","database_id":database_id,
+                "max_records":32,"cursor":null}
+        })),
+    );
+    assert_eq!(old_read.len(), 1);
+    assert_eq!(old_read[0]["state"], "accepted");
+    app.detach(&service, 101);
+    assert!(app.poll_history(&mut service).is_empty());
+
+    let new_hello = app.handle(
+        &mut service,
+        202,
+        frame(json!({"v":1,"msg_id":"new-hello","op":"hello","args":{"scope":null}})),
+    );
+    let new_scope = new_hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let new_read = app.handle(
+        &mut service,
+        202,
+        frame(json!({
+            "v":1,"msg_id":"new-read","op":"history_read",
+            "request_id":{"scope":new_scope,"seq":"1"},
+            "args":{"mode":"runs","database_id":database_id,
+                "max_records":32,"cursor":null}
+        })),
+    );
+    assert_eq!(new_read.len(), 1);
+    assert_eq!(new_read[0]["state"], "accepted");
+
+    barrier.release();
+    let terminal = loop {
+        let replies = app.poll_history(&mut service);
+        if !replies.is_empty() {
+            break replies;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replacement history job did not complete"
+        );
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    };
+    assert_eq!(terminal.len(), 1, "orphan result leaked: {terminal:?}");
+    assert_eq!(terminal[0].0, 202);
+    assert_eq!(terminal[0].1["state"], "completed");
+    let page_token = terminal[0].1["result"]["page_token"].clone();
+    let page = app.handle(
+        &mut service,
+        202,
+        frame(json!({"v":1,"msg_id":"new-page","op":"history_page",
+            "args":{"page_token":page_token}})),
+    );
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0]["type"], "result");
+    assert!(
+        page[0]["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["run_id"]["boot_id"] == archive_boot),
+        "unexpected runs page: {page:?}"
+    );
+    let stale = app.handle(
+        &mut service,
+        101,
+        frame(json!({"v":1,"msg_id":"stale-page","op":"history_page",
+            "args":{"page_token":page_token}})),
+    );
+    assert_eq!(stale[0]["code"], "hello_required");
+
+    drop(app);
+    drop(service);
+    let remove_by = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && Instant::now() < remove_by {
         std::thread::yield_now();
     }
     assert!(!path.exists());
