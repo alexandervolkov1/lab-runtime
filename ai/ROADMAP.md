@@ -24,11 +24,12 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 
 Current model: SOL_HIGH
 Gate: ASTRA_HIGH -> SOL_HIGH crossed by explicit user instruction.
-Current work: audit and complete M7 implementation against MILESTONE_7_DESIGN.md.
+Current work: external review of completed M7 implementation against
+MILESTONE_7_DESIGN.md and MILESTONE_7_REPORT.md.
 Do not start: M8.
 
-M7 implementation is in progress; it has not passed the D1-D18 or external
-review gates.
+M7 implementation has passed the D1-D18 completion gate and is ready for
+external review. It has not yet passed the external-review gate.
 
 First stable release sequence
 M7

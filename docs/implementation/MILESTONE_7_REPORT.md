@@ -1,9 +1,8 @@
-# Milestone 7 implementation report (in progress)
+# Milestone 7 implementation report
 
-Status: SOL_HIGH implementation audit and acceptance work in progress, paused
-at the user's request on 2026-09-16. This is
-not an M7 completion claim or an external-review request. The accepted contract
-is [MILESTONE_7_DESIGN.md](MILESTONE_7_DESIGN.md).
+Status: M7 D1-D18 implementation and latest-head verification complete on
+2026-09-16. Ready for external review. The accepted contract is
+[MILESTONE_7_DESIGN.md](MILESTONE_7_DESIGN.md). M8 has not begun.
 
 ## Incoming working-tree audit
 
@@ -19,7 +18,7 @@ rusqlite and sha2. No M8 TOML, COM or reload, GUI, persistent Lua workspace,
 donor mutation, or unrelated user file change was found. The original Core,
 transport, output-authority and managed-worker boundaries remain in their
 accepted crates. No architectural contradiction requiring WAITING_FOR_REVIEW was
-found. Incomplete or incorrect M7 behavior is being fixed against the design.
+found. Incomplete or incorrect M7 behavior was fixed against the design.
 
 The preexisting test files were named recorder_facts, recorder_evidence,
 recorder_sqlite, recorder_transactions, recorder_reopen, recorder_provenance,
@@ -30,34 +29,38 @@ proof that each D row is complete. Some production code preceded these tests;
 the exact earlier red/green sequence cannot be reconstructed and will not be
 invented.
 
-## D1-D18 audit and remaining acceptance
+## Final D1-D18 acceptance mapping
 
-This matrix is the initial audit, not a final D1-D18 signoff. Later acceptance
-notes below supersede specific remaining entries. Before external review,
-rewrite every row against the final named tests and latest-head checks.
+The following matrix is the final signoff mapping. Detailed red/green history,
+including fixture-only corrections and production code that preceded later
+acceptance coverage, remains below; no retroactive tests-first claim is made.
 
-| ID | Existing or newly observed evidence | Remaining contract work |
+| ID | Final named evidence | Result |
 | --- | --- | --- |
-| D1 | Real-file measurement/reopen and successive-run tests pass. SOL audit fixed a fast-start owner-status race and added red/green confirmed-held-Start admission plus a run-boundary snapshot of a preexisting latest sample without a fabricated new measurement. The API Start request now appears as pending with its original ID in the accepted boundary. A later public A/B integration test records three native and two real managed Good values through several confirmed SQL batches; B reopens the same file under a new boot, and bounded indexed history pages match independent SQL IDs, values, quality and checkpoint. Another held-writer test requests Stop while a fact is pending, proves a nonempty WAL before close, then reopens that exact fact before seal with checkpoint equal to the committed maximum. | Remaining spanning pending-operation cases. |
-| D2 | Core Good/Unavailable facts and reopened float rows pass. SOL audit added a real same-publication-time Good/Unavailable invalidation/reopen oracle, exact reopened Float/Integer/Boolean/Text/Enum values including i64 extremes, a delayed derived observation-time check, and a NaN construction rejection. Actual M3 sensor-sentinel and M5 component-replacement failures now reopen with explicit distinct reasons and NULL values. | More nonfinite/storage-negative and delayed managed-publication pressure cases. |
-| D3 | Core PID/Reference revision facts and measurement generation/revision storage pass. SOL audit added a red/green test proving storage uses the stable Celsius unit ID instead of its display symbol. A new red M5 archive test found that replacement invalidation was not emitted to Recorder; it now reopens Good generation 1 and Unavailable generation 2, and an obsolete generation 1 completion publishes no new fact. | Exact output binding/unit/lineage and full managed-state revision provenance. |
-| D4 | One-call virtual stages and real fake-transport ACK-only Core tests pass. SOL audit added red/green attempt/dispatch correlation for one-call PID, a real M3 ACK-only completion, and reopened typed virtual rows; rejected candidates and exclusive-deadline expiry now have distinct pre-send facts with an attempt ID and no dispatch ID. | Correlated safe/revocation/supersession, M3 transaction/resource and binding/unit projections, partial/late/recovery evidence and complete reopened identity oracle. |
-| D5 | Recording-start accepted/terminal dedup passes. SOL audit added red/green durable accepted/completed retune after client disconnect and SQLite reopen, with a confirmed held writer, truthful domain result before durability, and duplicate-once assertion. A later red API archive test found zero lifecycle rows; it now reopens Start/Stop accepted+completed in original request order and checks the Start boundary's pending request ID. The Stop seal also reopens with the accepted-but-pending Stop identity and exact prefix, without predicting its terminal result. A red public annotation test found the operation unknown; it now returns the owner-reserved `record_seq` and `durability:pending` while SQL is held, then reopens with that identity and Runtime-assigned `local_client` origin. Negative annotation bounds and strict evidence-injection fields are green. A real child retunes Reference, commits acceptance, then dies before terminal SQL; B sees accepted-only/unknown-tail and a fresh Reference revision, with no replay. A later green public run-history selection during recording reopens with no `history_read` operation audit row. | Other spanning-interval cases and other lifecycle terminal records. |
-| D6 | Worker count/byte/group credit and nonblocking admission beginnings pass. SOL audit added red/green Core overflow-first-loss/Required-fence and a real held-writer two-group/one-commit oracle; one bounded batch now has at most four groups, 256 facts and 512 KiB, with original per-group capture time and a 100 ms oldest-group deadline. A red 512-byte escaped Text fact under a 2,500-byte profile now fails before admission because its owned capacity and worst-case sixfold encoded/scratch charge are counted; an additional green test counts excess Vec capacity with one small fact. Owner now reserves a whole group's `record_seq` range before FIFO transfer, and a held-writer test checks that a reserved periodic clock identity cannot overtake either group. A later held-writer test fills all four group credits and eight history slots, yet one rejected group still leads to a durable gap and terminal seal. Red/green cumulative receipt tests now fence future reserved IDs and future submission times, while a later green stale-probe test preserves confirmed progress. | Full nested/peak scratch accounting and batch-limit/cadence fault tests. |
-| D7 | Writer-held BestEffort PID and Required deadline tests pass. A later green real loopback socket oracle holds SQLite while BestEffort PID progresses for 6.3 s, across three 2-s finite leases; Controller/Output/Reference Queries each respond under 1 s before release, native ticks advance and automatic lease remains finite/renewed even after Recorder coverage visibly fails. | Actual M3 first-byte/recovery and two stalled Lua slots with writer held. |
-| D8 | BestEffort ingress failure remains visible and native output continues in a writer-held test. SOL audit added a red/green real-file accepted-prefix/first-lost-fact/known-count/reserved writable gap and failed-interval seal test. A red real worker-panic seam exposed an owner status stuck at Recording; it now reports Failed/unknown_tail, worker_closed and a stable error without advancing the confirmed watermark or releasing unconfirmed credit. Reopen marks the old run interrupted and contains no fabricated fact. A later green real SQLite insert-trigger fault keeps only the Start receipt, closes worker with a stable SQL error and reopens the unknown old tail without measurement rows. | Core-outbox host oracle, encoding/physical-disk/stall cases, unwritable honest status and bounded repeated-error counters. |
-| D9 | Core Warming trip, exact two-second deadline, manual revoke and start barrier pass. SOL audit added red/green Required-stop safety checks for one manual lease and a second tracked actuator with its own confirmed safe evidence. Recorder owner now fences a future `record_seq` receipt and confirmed time beyond any owner submission; stale watermark/probe clones cannot roll back progress. A later green HostCore integration injects a worker panic after confirmed Start and observes the native controller Failed, output lease revoked/fault-latched, and unknown-tail coverage without owner SQL wait. | Failed safe recovery, all-controller enumeration, held-writer Required integration for receipt faults/stalls and queued-byte fencing. |
-| D10 | Real insert rollback, WAL/FULL/FK, unknown file and second owner pass. SOL audit added red/green record-encoding, missing-index and typed-column rejection. A second nonfinite Reference group was observed to commit as SQLite NULL; new validation rolls back the entire mixed batch and its checkpoint. The real SQLite connection now applies the checked 1-GiB max-page count and rejects ordinary work at a 5% reserve; a small fault profile proves rejection before run mutation. A real WAL test forces two successful threshold checkpoints between ordinary commits and reports actual sidecar bytes. A red duplicate source-fact ID with changed value now rolls back the whole second batch under a version-one unique index, preserving the first committed row/checkpoint through reopen. A later green real trigger at the final checkpoint update rolls back the fact and preserves both boots' prior checkpoint values. A red public status oracle now reports owner-cached limits, actual worker-observed WAL bytes, logical main bytes, quota and threshold after Start. A later green deferred-FK oracle rejects the actual COMMIT after inserts; direct Store and worker owner retain only the confirmed prefix/checkpoint through reopen. A later green fixture rejects future-version, corrupt-header and foreign-application SQLite files with exact byte preservation. | Public checkpoint counter/failure, large-file startup and corrupt-process cases; committed-before-receipt process evidence is in D13. |
-| D11 | SOL audit added a red/green committed boot-seal check to the existing finite shutdown test. A subsequent red reopened test found the seal lacked per-output safety/lease evidence and actual boot-end UTC; the host now freezes bounded output/resource/controller/worker observations and the worker atomically commits them with an actual boot-end anchor and shutdown record. A held real writer with all four normal group-credit slots filled still accepts Stop/Finish and reopens with four rows and the boot seal. A separate red archive test found no canonical interval seal; Stop now commits one interval_seal record and checkpoint after all prior FIFO work. A full-suite red exposed a stale receipt/closed-worker race that falsely reported unexpected exit after a real committed seal; deterministic stale-clone coverage and final receipt reconciliation now pass. A later green full-host test creates two Run in one boot and shuts down while the second is active; reopened SQL has distinct complete Run IDs, FIFO Start/Seal order and checkpoint equal to final Shutdown record. | Full accepted-prefix/barrier oracle, proof across history/control pressure and API shutdown archive oracle. |
-| D12 | Held writer finite flush and safe/output distinction pass. A real SQLite terminal-insert trigger now confirms transaction rollback, safe outcome independent of failed flush, nonzero exit status and interrupted serving boot after reopen. A red missing Finish-barrier seam followed by a green precise race proves a process flush timeout stays unsuccessful while a late released worker commits a sealed boot and shutdown record visible on reopen. | Close failure, receipt race beyond the late commit, actual process watchdog with fatal/M3/Lua cases. |
-| D13 | In-process new-boot/interrupted-tail and second-owner checks pass. SOL audit added red/green at-most-one unfinished chain and checkpoint consistency. Real child process A is killed at a confirmed pre-commit writer barrier; process B reopens the same database ID under a new boot, finds no old measurement and an `unknown_tail`, then records and reads its own distinct run. A second child is killed after its real fact transaction commits but before the owner receipt; B reopens the committed row and exact old checkpoint despite the unconfirmed A owner status, with the old run still interrupted. A clean A/B API restart test rejects old scope, event and history cursors while still reading the archived run under the same database ID. A later green real killed-A/public-Service-B oracle reads the old committed row through history_read/page with unknown_tail, rejects an old event cursor and starts fresh Ready/no-lease control. | Killed process with active output authority, old scope/history cursor from killed A, further close cases. |
-| D14 | Bounded row/page/job beginnings and cached history query pass. SOL audit added red/green SQLite VM/time interruption and exact boot ID fields. A real archive's escaped Text rows now each produce a complete public 8-KiB result inside a 16,384-byte frame. A contested owner/worker slot cancellation, all eight deferred cancellations, and stale completed IDs were tested red/green; live jobs and retry state remain bounded by eight and late results are discarded. A public archive page/cursor reconnect and 30-second TTL test passes with explicit expired errors and a new first-page restart. A 20,000-row real SQLite archive returns an 11-row narrow tail range in two complete pages within a smaller 10,000-VM-op budget; a later green external `EXPLAIN QUERY PLAN` confirms the narrow keyset selection uses `measurements_history`. A later green public invalid-field matrix rejects SQL/path/downsampling, unknown nested fields, bad ranges/IDs/limits/cursor and malformed/overlarge frames before accepted worker work. | Exact selected-row instrumentation, pending-job generation fencing under a held writer and slow-peer safety oracle. |
-| D15 | Frozen-W keyset and archived run discovery pass. A new red real-SQLite test showed three NUL-heavy equal-time Text rows in one 8-KiB page because the old estimate used two encoded bytes per source byte; pages now shorten to one complete row, preserve original W and return exactly the three old IDs after appending rows between pages. Public API coverage traverses all three rows through `history_read`/`history_page`/`history_release`, within the 8-KiB result and 16,384-byte frame bounds. A red gap-page contract now returns the known first missing fact, count, last accepted fact, cutoff and reason alongside raw Good rows; a 512-byte NUL reason was red under an incorrect 1-KiB archive-summary bound and passes through the public API with an 8-KiB result. A green fixture keeps a Disabled Unavailable row and exactly the frozen three IDs while same-time rows are appended between pages. Another green fixture includes a delayed observation alongside Unavailable/equal-time appends and verifies exact four-ID union at frozen W. A clean server restart rejects old scope/event/history cursors, while B returns both an empty end range and a complete archived page/run list. | Killed-process/restart paging and further gap/byte-shortened union combinations. |
-| D16 | Exact loaded-byte SHA and content dedup pass. SOL audit added red/green canonical stored activation-root content/dedup and a real serving-startup oracle: exact two Lua sources, active native/safety/build entries, object baseline and run activation link before readiness. A red start-boundary test found only revision IDs after PID/Reference retunes between attach and Start; the boundary now freezes their full authoritative configuration values, bindings, timing, units and revisions before the Start FIFO transfer. A later green SQL oracle verifies ordered revisions 2→3, rejected PID candidate absent, and a subsequent unavailable measurement ordered after both committed changes. A red same-byte/different-role oracle now reopens all typed references under a composite hash/kind/encoding key. A red 32-KiB managed-source bound and green count/total-pressure rejections leave no activation rows. | Complete object/binding lineage, output-at-revision reconstruction and activation/object pressure integration. |
-| D17 | SOL audit added red/green signed pre-epoch/overflow mapping, stored boot bracket and UTC failure reason, separate observed/published/captured record times, stable boot-mapped estimates for measurement/boundary/operation/gap facts, an idle worker's actual once-per-second UTC read, and atomic start/end interval anchors with typed clock projection and checkpoint. Service startup now brackets UTC against its authoritative M6 monotonic origin. The final boot-end anchor now reopens with actual UTC and contiguous boot/start/end/final anchor IDs. A later deterministic host scenario verifies identical PID/EMA, Reference, lease deadlines, samples and virtual output decisions across forward/backward/unavailable UTC anchors, with a fixed boot-mapped SQL estimate. | Actual live worker wall-read fault injection and M3 send-decision coverage. |
-| D18 | Full debug and optimized release workspace runs, formatting and warning-free clippy pass. The unchanged M6 and recorded M7 process fixtures pass together in repeated focused debug/release runs; M7 reopens actual autonomous Good history after A kill, B pause/stop/shutdown. `bb test-client` passes eight tests. | Final doc/diff/demo checks, full D1-D17 acceptance completion, final regression rerun and version/limit inventory. |
+| D1 | `native_and_managed_batches_reopen_through_public_indexed_history_with_exact_sql_ids`; `explicit_stop_waits_for_held_pending_fact_and_reopens_its_wal_prefix_and_seal` | Real SQLite batches, WAL prefix, interval seals, checkpoints and public reopen/history match exact independent identities. |
+| D2 | `same_publication_time_failure_preserves_both_original_facts_after_reopen`; `native_sensor_sentinel_reopens_as_unavailable_without_reusing_previous_good`; `all_scalar_kinds_and_delayed_publication_reopen_without_coercion` | Good/Unavailable, delayed observation/publication, every scalar kind, i64 extremes and nonfinite rejection remain exact. |
+| D3 | `delayed_managed_transform_reopens_original_upstream_identity_and_state_revision`; `replaced_managed_generation_reopens_with_failure_and_ignores_old_late_result`; `activation_binding_and_rebound_output_rows_reconstruct_exact_m3_provenance` | Units, generations, definition/state revisions, lineage and M3 binding revisions are immutable at capture. |
+| D4 | `partial_m3_attempt_reopens_as_old_epoch_ambiguous_before_distinct_safe_ack`; `late_m3_ack_after_safe_epoch_reopens_only_as_old_ordinary_evidence`; `unconfirmed_m3_recovery_keeps_safe_evidence_unknown_and_never_sends_queued_safe_bytes`; Core `recorder_evidence`/`recorder_facts` suites | Requested/authorized/send/ACK/readback/uncertain/ambiguous/safe/revoke facts retain original correlation and never promote ACK to readback or physical proof. |
+| D5 | all four `recorder_operations` tests; `killed_retune_after_durable_acceptance_has_unknown_terminal_and_is_not_replayed`; public history API tests | Accepted and terminal facts span held writers, disconnect/reconnect and crashes without duplicate execution, invented outcomes, evidence injection or history-read recursion. |
+| D6 | all eleven `recorder_backpressure` tests, especially `four_full_causal_groups_commit_exactly_the_256_record_batch_limit` and `four_delayed_managed_lineage_groups_charge_nested_scratch_at_batch_peak`; receipt-fence unit tests | Count, bytes, Vec capacity, escaping, nested lineage scratch, groups, FIFO IDs, cadence, history pressure and cumulative receipts remain bounded and atomic. |
+| D7 | all six `recorder_isolation` tests; `two_real_lua_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recovery_alive` | Held SQLite cannot block native PID, three finite lease renewals, M3 first byte/recovery, loopback Queries, safety work, or two independent Lua slots. |
+| D8 | all four `recorder_failure` tests; `core_outbox_overflow_marks_best_effort_gap_without_stopping_native_control`; startup checkpoint/unopenable-storage tests | First failure, loss boundary/count, watermark, stable repeated status and persisted/not-persisted distinction survive overflow, panic, SQL/encoding/checkpoint and unavailable storage; event-ring eviction is separate. |
+| D9 | all four `recorder_required` tests; `required_deadline_safes_virtual_output_but_keeps_partial_m3_recovery_unknown`; Core exact-deadline/direct-dispatch tests | Required opens only after durable start, trips at two seconds, enumerates multiple outputs, revokes manual/native authority, fences queued bytes, keeps unknown physical recovery unknown and never auto-rearms. |
+| D10 | all eighteen `recorder_transactions` tests; all five `recorder_startup` tests; commit-before-receipt process cases | Real WAL/FULL/FK transactions, constraint/commit/checkpoint failure, collision, schema/index/encoding validation, one-GiB quota, corrupt/foreign/oversized startup and exclusive ownership preserve the exact committed prefix. |
+| D11 | `shutdown_seals_active_interval_and_closes_worker_before_reporting_flush_success`; `running_controller_shutdown_drains_held_measurement_before_final_safe_seal`; `public_shutdown_operation_waits_for_held_recorder_prefix_then_reports_durable_flush`; multi-run/full-credit shutdown tests | Producer barrier, safe evidence, accepted prefix, interval/run/boot seal, worker close and public terminal result are FIFO, finite and nonduplicating. |
+| D12 | shutdown insert/close/late-receipt/blocked-writer tests; `blocked_writer_child_exits_nonzero_after_the_public_flush_watchdog`; `fatal_owner_time_fault_still_seals_healthy_recorder_before_nonzero_terminal`; `failed_m3_recovery_and_two_stalled_workers_still_flush_honest_recorder_evidence` | Safety, Recorder durability, fatal owner state, M3 ambiguity and Lua cleanup remain separate; timeout/failure exits nonzero without joining a blocked worker or falsifying a seal. |
+| D13 | all ten `recorder_process_reopen` tests and four `recorder_reopen` tests | Kills before commit and after commit-before-receipt preserve only actual rows, create new identities, reject stale scope/event/history state, restore no lease/output/control work and retain unknown tails. |
+| D14 | all eight `recorder_history` and eight `recorder_history_api` tests; `nonreading_history_client_cannot_block_native_service_while_sqlite_is_held`; history cancellation unit tests | Invalid work is rejected before SQL, selection visits returned rows plus at most one lookahead, VM/time/row/byte/frame/job/TTL bounds hold, and stale/nonreading clients cannot retain work or block safety. |
+| D15 | frozen-keyset/equal-time/escaped/Unavailable/gap tests in `recorder_history`; restart/public paging tests; `killed_equal_time_archive_pages_exactly_the_committed_prefix_under_a_new_boot` | Frozen-W keyset pages have exact independent identity unions across append, byte shortening, gap metadata, empty/end ranges, expiry and process restart. |
+| D16 | all nine `recorder_provenance` tests, especially loaded-byte SHA/dedup, serving activation, configuration reconstruction and M3 rebind reconstruction | Loaded bytes, typed content roles, activation root, limits, full PID/Reference baseline/revisions, binding descriptors and output-at-revision facts reconstruct the active composition. |
+| D17 | all nine `recorder_time` tests, especially `m3_first_byte_recovery_and_safe_send_decisions_ignore_wall_clock_jumps` and live worker wall-read failure | PID/EMA/Reference/leases/M3 bytes and fact order use monotonic time only; signed/pre-epoch/failed wall reads remain metadata with stable boot mappings and actual anchors. |
+| D18 | 345 named Rust tests; full debug/release workspace; fmt; clippy; rustdoc; finite demo; actual M6 and recorded M7 Babashka process tests; `bb test-client`; diff/status checks | Complete on latest HEAD. The first final debug attempt exposed a real pause/tick credit race; after test-client tick alignment, three focused debug runs, focused release, and the complete latest-head debug/release gates passed. |
 
 ## Observed red/green in this SOL_HIGH audit
+
+This section is a chronological audit log. Statements that a case “remained
+open” describe that intermediate checkpoint and are superseded by the final
+D1-D18 matrix and latest-head verification above.
 
 Real observed red cases included: a BestEffort run reopened as required; Required
 stop accepted a manual lease; worker close was reported as flush without a boot
@@ -1115,7 +1118,7 @@ This covers a collision acceptance case added after the index existed; it is
 not retroactively tests-first. Large-file startup and physical storage faults
 remain open.
 
-## User-requested pause checkpoint — 2026-09-16
+## Historical user-requested pause checkpoint — 2026-09-16
 
 The current logical code commit is `53880ca` (`test(recorder): exit blocked
 writer process after flush watchdog`). It adds a real server child process with
@@ -1137,13 +1140,88 @@ later-green tests of existing production; observed red tests and fixture
 corrections are described above and in the commit history. No architectural
 contradiction with the accepted M7 design has been found.
 
-M7 remains incomplete. Open D1-D17 edge acceptance includes managed-publication
-pressure, complete binding/provenance reconstruction, held-writer M3 first-byte
-and Required multi-output recovery, nested batch/fault accounting, physical
-storage/startup cases, fatal/Lua shutdown combinations, selected-row/history
-generation, and M3 wall-jump send-decision comparison. The final D18 debug and
-release workspace, fmt, clippy, doc, diff, demo and Babashka verification has
-not been run on the latest head; final version/limit inventory is also open.
-Earlier full-suite passes in this report are historical checkpoints, not a
-latest-head acceptance claim. STATUS remains M7_IMPLEMENTATION_IN_PROGRESS;
-there is no READY_FOR_EXTERNAL_REVIEW request, model handoff or M8 authorization.
+Those pause-time items were subsequently closed by the named tests in the final
+matrix. The continuation added actual held-writer M3 first-byte and Required
+multi-output recovery, delayed managed-lineage peak accounting, physical startup
+and one-GiB archive rejection, fatal/M3/two-worker shutdown, stale connection
+generation fencing, exact M3 wall-jump decisions, and complete M3 activation and
+rebind provenance. The provenance acceptance first found a real missing M3
+activation binding; Core gained only a read-only binding snapshot and the host
+now freezes it before storage. No transport handle, authority or I/O crossed
+into provenance.
+
+The first final debug workspace run found another real acceptance failure rather
+than a production safety violation: recorded Babashka B could issue Pause while
+a 100-ms native tick raced for the fourth fixed Recorder group. Required correctly
+failed closed. The acceptance client now aligns the pause immediately after a
+new public `last_tick`, waits for zero outstanding groups, and verifies the tick
+did not change before issuing Pause. Limits and production fail-closed behavior
+were not enlarged or weakened. Three consecutive focused debug runs, one focused
+release run, and the later complete debug/release gates passed.
+
+## Final versions and fixed limits
+
+Verified tool and dependency versions:
+
+- rustc 1.95.0 (59807616e 2026-04-14)
+- cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+- Babashka 1.13.220
+- rusqlite 0.40.2
+- libsqlite3-sys 0.38.2 with bundled SQLite 3.53.2
+- sha2 0.11.0
+
+Implemented M7 bounds match the design: Core outbox 256 facts/256 KiB; Recorder
+ingress 1,024 records/4 MiB/four groups; one group and worker batch 256 records/
+512 KiB; 100-ms oldest-group cadence; 250-ms committed progress probe; two-second
+Required progress and shutdown flush deadlines; eight history jobs; 128 rows,
+8 KiB page data, 100,000 VM instructions and 50-ms history execution; two-second
+job submission, five-second completed result and 30-second cursor TTL; 16,384-byte
+wire frame; 16-MiB WAL checkpoint threshold; checked one-GiB main database quota
+with five-percent reserve. Nested lineage scratch, owned Vec capacity and escaped
+text are included before admission. These are application-owned bounds, not a
+whole-process RSS or SQLite page-cache promise.
+
+## Final latest-head verification
+
+The completion gate was run on 2026-09-16. After the documentation-only rustdoc
+link correction, the full debug and optimized release suites were rerun on the
+final source HEAD. Results:
+
+```text
+cargo fmt --all -- --check                                      PASS
+cargo test --workspace                                         PASS (345 named tests)
+cargo test --workspace --release                               PASS (345 named tests)
+cargo clippy --workspace --all-targets -- -D warnings           PASS
+RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps        PASS
+cargo run -p lab-runtime                                       PASS (finite demo)
+bb --version                                                    PASS (1.13.220)
+cargo test -p lab-runtime --test babashka_reconnect -- --nocapture
+                                                                PASS (2 real process tests)
+bb test-client  (clients/babashka)                              PASS (8 tests, 13 assertions)
+recording-enabled A kill / B reconnect / Pause / Stop / Shutdown /
+SQLite reopen and bounded history inspection                   PASS
+git diff --check                                                PASS
+git status --short                                              clean before report edits
+```
+
+The recording-enabled process oracle starts Required recording, kills actual
+Babashka A while the native controller remains Running, leaves the Runtime and
+finite lease renewal autonomous for more than six seconds, reconnects actual
+Babashka B, pauses to Rust-confirmed safe evidence, stops/seals/shuts down, opens
+the same SQLite archive under a new boot and reads Good rows committed after A's
+checkpoint. `bb.exe` remains optional and is not required by normal Runtime
+startup.
+
+## Remaining limitations
+
+M7 does not certify physical actuator effects, power-loss atomicity, arbitrary
+remote security, downsampling, configuration reload, real Windows COM, GUI or a
+persistent Lua workspace. M3 fake-byte fixtures distinguish ACK, readback and
+unknown physical evidence; they are not hardware qualification. Injected panic,
+checkpoint, close and SQL-trigger faults exercise exact software boundaries but
+are not claims about every OS/filesystem failure. Raw history is bounded keyset
+paging only. Required deliberately fails closed when fixed recording credit or
+durable-progress deadlines are exceeded; it does not auto-recover or auto-rearm.
+
+No architectural contradiction was found. M7 is ready for external review, and
+M8 remains unauthorized until that review and the next explicit gate.

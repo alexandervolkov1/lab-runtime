@@ -10,26 +10,26 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: M7_IMPLEMENTATION_IN_PROGRESS
+STATUS: READY_FOR_EXTERNAL_REVIEW
 
 Current model:
 SOL_HIGH
 
 Completed work:
-M7 Recorder/SQLite architecture and tests-first D1–D18 acceptance contract.
+M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract.
 
 Implementation contract:
 docs/implementation/MILESTONE_7_DESIGN.md
 
-M7 production implementation is in progress. The incoming uncommitted M7
-changes preceded the explicit SOL_HIGH switch and have been audited against
-D1-D18; remaining acceptance work is recorded in the M7 report.
+M7 production implementation is complete and audited against D1-D18. The exact
+acceptance mapping, red/green history, versions, bounds, limitations and final
+latest-head verification are recorded in MILESTONE_7_REPORT.md.
 
 External review result:
 M6 accepted as the implementation baseline for the first-release sequence.
 
 Authorized work:
-M7 tests-first implementation against MILESTONE_7_DESIGN.md only.
+External review of the completed M7 checkpoint only.
 
 Model gate:
 ASTRA_HIGH -> SOL_HIGH crossed by the user's explicit instruction.
@@ -248,14 +248,12 @@ After v0.1.0 the default development mode should become a smaller educational
 workflow rather than large autonomous agent milestones.
 
 Current model gate
-M7_IMPLEMENTATION_IN_PROGRESS
+READY_FOR_EXTERNAL_REVIEW
 
-Current model: SOL_HIGH. M7 design is complete and accepted as the implementation
-contract. Continue M7 work against D1-D18, recording any
-acceptance tests added after their production code honestly in the M7 report.
-M8 is not authorized. Set READY_FOR_EXTERNAL_REVIEW only after all M7 checks pass.
+Current model: SOL_HIGH. M7 implementation and the D1-D18 completion gate pass
+on the final source HEAD. External review is requested. M8 is not authorized.
 
-M7 implementation pause checkpoint — 2026-09-16
+Historical M7 implementation pause checkpoint — 2026-09-16
 
 The user requested an interruption after finishing the current logical commit
 and recording completed and unfinished work. The latest Recorder acceptance
@@ -267,6 +265,28 @@ The design, incoming production audit and substantial Runtime-owned Recorder,
 Required/BestEffort, SQLite and bounded-history coverage are complete or in
 place. D1-D17 still have edge acceptance cases listed in ai/WORK.md and the
 in-progress MILESTONE_7_REPORT.md. The final D18 latest-head verification and
-version/limit inventory are not complete. This pause remains inside SOL_HIGH
-with STATUS: M7_IMPLEMENTATION_IN_PROGRESS. It is not an external-review request
-or a model handoff. Resume M7 only when the user asks; M8 is not authorized.
+version/limit inventory were not complete. At that pause the status remained
+M7_IMPLEMENTATION_IN_PROGRESS; it was not an external-review request or a model
+handoff. The completion record below supersedes that historical state.
+
+M7 implementation completion — 2026-09-16
+
+The pause checkpoint was recovered exactly, including 53880ca, and all recorded
+remaining D1-D17 cases were closed. The final report maps D1-D18 to named tests
+and records the honest sequence where production preceded coverage or a fixture
+expectation was corrected.
+
+Final verification on the latest source HEAD passed:
+
+- 345 named Rust tests in debug and optimized release;
+- formatting, warning-free clippy and rustdoc with warnings denied;
+- finite demo;
+- actual M6 and recording-enabled M7 Babashka process tests;
+- `bb test-client`: 8 tests, 13 assertions;
+- real recording A-kill/B-reconnect/Pause/Stop/Shutdown/SQLite-reopen history;
+- `git diff --check` and a clean tree before these handoff documentation edits.
+
+Resolved versions include Rust/Cargo 1.95.0, Babashka 1.13.220, rusqlite 0.40.2,
+libsqlite3-sys 0.38.2, bundled SQLite 3.53.2 and sha2 0.11.0. No donor files,
+M8 work or unrelated cleanup were performed. No architectural contradiction was
+found. External review must accept M7 before any later milestone begins.
