@@ -75,6 +75,53 @@ fn malformed_transform_lineage_rejects_a_whole_fact_before_checkpoint_then_valid
 }
 
 #[test]
+fn same_source_fact_id_with_different_payload_rejects_entire_later_group() {
+    let path = temporary_database();
+    let signal = SignalId::new(InstrumentId::new(903), lab_core::TEMPERATURE);
+    let fact = |sequence, value| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(
+            signal,
+            Unit::CELSIUS,
+            Duration::from_secs(sequence),
+            Value::Float(value),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+        state_revision: None,
+        lineage: None,
+    };
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("source identity collision").unwrap();
+    store.append_facts(&[fact(1, 21.0)]).unwrap();
+    let prefix = store.current_record_sequence();
+    assert!(store.append_facts(&[fact(1, 99.0), fact(2, 22.0)]).is_err());
+    assert_eq!(store.current_record_sequence(), prefix);
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_secs(3)).unwrap();
+    store.close().unwrap();
+    let archive = SqliteStore::open(&path).unwrap();
+    let rows = archive
+        .read_measurements(signal.instrument(), signal.parameter(), 8)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].value, Some(Value::Float(21.0)));
+    drop(archive);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let distinct: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE fact_seq IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(distinct, 1);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn output_fact_missing_unit_or_partial_binding_rolls_back_without_checkpoint() {
     let path = temporary_database();
     let mut store = SqliteStore::open(&path).unwrap();
