@@ -10,17 +10,18 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: M8_IMPLEMENTATION_IN_PROGRESS
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 tests-first implementation against MILESTONE_8_DESIGN.md.
+M8 actual Windows COM/Metakon read-only hardware acceptance only.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
-externally accepted by the user. M8 design/lifecycle/C1-C20 contract is frozen.
+externally accepted by the user. M8 design is frozen and its software
+implementation/completion gate is complete at `0a42d73`.
 
 Implementation contract:
 docs/implementation/MILESTONE_8_DESIGN.md (after explicit implementation handoff)
@@ -37,8 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-M8 tests-first implementation only. The user explicitly crossed the
-ASTRA_HIGH -> SOL_HIGH gate on 2026-09-16. Do not start M9.
+Only the remaining M8 real Metakon read-only hardware checklist. The user
+explicitly crossed the ASTRA_HIGH -> SOL_HIGH implementation gate on 2026-09-16.
+Do not start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -61,10 +63,35 @@ budgets, read-only worker-backed Windows COM, conservative recovery and C1-C20.
 Recorder bounds are not increased. Fixed-topology live reload rejects topology,
 listener and Recorder policy/path changes as restart-required.
 
-Actual Windows/Metakon read-only C16/C17/C19 evidence remains mandatory during
-implementation acceptance. Fake transport cannot replace it. Without hardware or
-a justified clean-response boundary, report M8_HARDWARE_ACCEPTANCE_PENDING and
-stop; software completion alone does not complete M8 or authorize M9.
+Actual Windows/Metakon read-only C16/C17/C19 evidence remains mandatory. Fake
+transport cannot replace it. Hardware, port/wiring/firmware identity and a
+justified clean-response boundary were unavailable, so M8 remains
+`M8_HARDWARE_ACCEPTANCE_PENDING`; software completion does not authorize M9.
+
+M8 software implementation completion — 2026-09-16
+
+Recovered the accepted M7 baseline and Astra design checkpoint, then implemented
+the C1-C20 software contract in small logical commits. The implementation adds a
+strict bounded `runtime.toml` loader and immutable source bundle, staged classified
+diffs, safe/fenced activation, distinct configuration/script/model/reconnect
+operations, atomic managed generation changes, exact durable lifecycle provenance,
+and a worker-owned read-only Windows COM adapter over the existing M3 transport
+model. No M7 Recorder bound was enlarged and no COM/SQLite/TOML/OS dependency was
+added to `lab-core`.
+
+The completed report is `docs/implementation/MILESTONE_8_REPORT.md`. Final
+software verification on implementation HEAD `0a42d73` passed 388 named Rust
+tests in both debug and release, including the actual M6/M7/M8 Babashka process
+scenarios and SQLite reopen/crash coverage. Formatting, warning-denied all-target
+clippy, warning-denied rustdoc, finite demo, `bb test-client` (8 tests, 13
+assertions) and `git diff --check` also passed. No default test was skipped.
+
+No real Metakon was connected, no operator-confirmed COM port or recovery boundary
+was provided, and no real port or physical operation was attempted. C16, C17 and
+the hardware subgate of C19 therefore remain open, along with the bench portions
+of C12/C14/C18. Deterministic transports are only software evidence. No actuator
+write or physical-output safety claim was made. The donor path was unavailable
+and was not modified.
 
 Documentation only: no production code, tests or dependencies changed; no COM
 opened; no accepted M7 test gate rerun or new hardware evidence claimed. The
@@ -86,7 +113,8 @@ ASTRA_HIGH -> SOL_HIGH
 Resume with:
 M8 tests-first implementation against MILESTONE_8_DESIGN.md.
 
-M8 implementation: not yet authorized. Do not start M9.
+Historical design handoff only; the implementation gate was subsequently crossed
+and the software work above completed. Do not start M9.
 
 M7 design checkpoint — 2026-09-15
 

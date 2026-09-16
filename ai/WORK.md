@@ -1,28 +1,16 @@
-# Current work — M8 tests-first implementation
+# Current work — M8 real-hardware acceptance pending
 
-STATUS: M8_IMPLEMENTATION_IN_PROGRESS
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 
-Current model: SOL_HIGH
-Current phase: M8 tests-first implementation only.
+Current model: SOL_HIGH.
+Current phase: M8 read-only Windows COM/Metakon hardware acceptance only.
 M7: externally accepted at `f3ff456`.
-M8 implementation: explicitly authorized on 2026-09-16.
+M8 software implementation: complete at `0a42d73` on 2026-09-16.
 M9: not authorized.
 
-## Completed design
+## Authoritative contract
 
-The authoritative M8 design, lifecycle and tests-first C1-C20 contract is:
-
-```text
-docs/implementation/MILESTONE_8_DESIGN.md
-```
-
-This phase changed documentation only. No implementation tests, dependencies,
-production code, hardware actions or new M7 acceptance claims were added.
-External reviewer communication belongs only in `ai/HANDOFF.md`.
-
-## Implementation instruction
-
-Read in full before acting:
+Read before acting:
 
 ```text
 ai/HANDOFF.md
@@ -32,55 +20,39 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 docs/implementation/MILESTONE_8_DESIGN.md
-docs/implementation/MILESTONE_7_DESIGN.md
-docs/implementation/MILESTONE_7_REPORT.md
+docs/implementation/MILESTONE_8_REPORT.md
 ```
 
-Recover `git status`, `git log --oneline -20`, unstaged/staged diffs and verify
-the accepted M7 checkpoint plus this M8 design. Do not recreate missing commits
-from memory. Preserve unrelated user changes and the read-only donor.
+The M8 software implementation and completion gate are finished. The report
+maps C1-C20, records the actual tests-first sequence, resolved versions, fixed
+bounds and the 388-test debug/release gates. Do not reopen software design or
+add unrelated features unless the remaining bench exposes a real defect.
 
-SOL_HIGH implements M8 only, tests-first in small logical
-increments following design section 12. Preserve M1-M7, Core boundaries, fixed
-Recorder budgets, output evidence and Required fail-closed semantics. Do not
-silently redesign the accepted architecture. Keep the actual red/green sequence,
-C1-C20 named evidence, versions/bounds and limitations in MILESTONE_8_REPORT.md.
+## Remaining authorized work
 
-The final software gate is the complete latest-HEAD gate in design section 12:
-debug/release workspace tests, fmt, warning-free all-target clippy and rustdoc,
-finite demo, actual Babashka client tests, existing M6/M7 recording-enabled
-process/reopen acceptance, M8 configuration/reload/provenance process acceptance,
-and `git diff --check`.
+Only the explicit design-section-12 real-hardware checklist remains:
 
-C16/C17/C19 also require actual Windows COM + Metakon read-only measurements,
-recording, disconnect/reconnect with justified recovery, public API/Babashka and
-SQLite inspection, and clean shutdown. No physical actuator writes. Do not report
-fake or skipped tests as hardware evidence. If unavailable, software may complete
-but M8 remains incomplete: record `M8_HARDWARE_ACCEPTANCE_PENDING` in the handoff
-and stop for the missing bench input. Do not start M9.
+1. Obtain an operator-confirmed actual Metakon, Windows COM binding, firmware,
+   wiring, serial settings and justified clean recovery boundary.
+2. Run read-only compatibility and repeated real measurement acquisition through
+   the production COM adapter. Never issue actuator/register writes.
+3. Record actual observations under Required recording, inspect them through the
+   public API/Babashka and SQLite, and retain exact configuration provenance.
+4. Physically disconnect/reconnect, observe explicit failure, use the explicit
+   reconnect operation only after the justified boundary, and confirm resumed
+   real measurements with a new binding generation.
+5. Cleanly shut down COM plus Recorder and reopen the database.
 
-For a genuine architectural contradiction involving ownership, OutputAuthority,
-Required safety, provenance/evidence, boundedness or shutdown, record the precise
-issue in `ai/HANDOFF.md`, set `STATUS: WAITING_FOR_REVIEW`, and stop.
+Record the date, implementation commit, non-private environment details, hashes,
+observations and shutdown result in `MILESTONE_8_REPORT.md`. Fake, loopback or
+deterministic transports cannot satisfy C16/C17 or the hardware portion of C19.
 
-Only after all software and hardware acceptance passes, finalize the M8 report,
-set `STATUS: READY_FOR_EXTERNAL_REVIEW` in the coordination files, and stop for
-external review. No automatic milestone/model transition.
+If hardware or an operator step remains unavailable, keep
+`M8_HARDWARE_ACCEPTANCE_PENDING` and stop. Only after every hardware row passes
+may the coordination files be set to `READY_FOR_EXTERNAL_REVIEW`. Do not begin
+M9 and do not cross a model or milestone gate automatically.
 
-## Model gate
-
-MODEL HANDOFF
-
-STOP HERE.
-
-Switch:
-
-ASTRA_HIGH -> SOL_HIGH
-
-Resume with:
-
-M8 tests-first implementation against MILESTONE_8_DESIGN.md.
-
-The model gate is crossed. Continue autonomously through the software completion
-gate. If real Metakon/COM hardware is unavailable, finish all software evidence,
-set M8_HARDWARE_ACCEPTANCE_PENDING, and stop without starting M9.
+If the bench reveals a genuine architectural contradiction involving Runtime
+ownership, OutputAuthority, Required recording, evidence, provenance,
+boundedness or shutdown, write the precise issue to `ai/HANDOFF.md`, set
+`STATUS: WAITING_FOR_REVIEW`, and stop.

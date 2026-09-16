@@ -1,6 +1,7 @@
 # M8 implementation report
 
-Status: implementation in progress under SOL_HIGH, 2026-09-16.
+Status: software implementation complete; real-hardware acceptance pending under
+SOL_HIGH, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -9,16 +10,28 @@ are not reported as passing evidence.
 
 ## Acceptance implementation map
 
-| IDs | Tests-first implementation slice | Evidence status |
+| ID | Principal named evidence | Status |
 | --- | --- | --- |
-| C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
-| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence activation reservation, atomic lifecycle provenance and Required fence green; transport-rebind apply remains |
-| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Atomic bounded managed batch and native restart software tests green |
-| C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
-| C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
-| C18 | Public API/Babashka process independence under configured acquisition | Pending |
-| C19 | Finite COM + Recorder shutdown in software fault cases and actual hardware | Clean/stalled software transport and active Recorder close green; hardware pending |
-| C20 | Fixed Recorder budgets and complete M1-M7/M8 regression gate | Pending |
+| C1 | `configuration_validation`, `configuration_startup`, `demo` | Software pass |
+| C2 | `configuration_validation`, `configuration_startup`, `configured_physical`, `managed_script_reload` | Software pass |
+| C3 | `configuration_validation`, `definitions` | Software pass |
+| C4 | `configuration_validation`, `configuration_startup` | Software pass |
+| C5 | `configuration_provenance`, `configuration_reload`, `runtime_lifecycle_operations` | Software pass |
+| C6 | `runtime_lifecycle_operations`, `configured_physical` | Software pass |
+| C7 | `configuration_reload`, `recorder_failure`, `recorder_transactions`, `recorder_process_reopen` | Software pass |
+| C8 | `runtime_lifecycle_operations`, `request_deduplication`, `recorder_required` | Software pass |
+| C9 | `managed_script_reload` | Software pass |
+| C10 | `managed_script_reload`, M5 `runner`/`workers` regressions | Software pass |
+| C11 | `model_restart`, `managed_script_reload`, `runtime_lifecycle_operations` | Software pass |
+| C12 | `windows_com_transport`, `configured_physical` | Windows software pass; bench data pending |
+| C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
+| C14 | `windows_com_transport`, `configured_physical` | Software pass; real disconnect pending |
+| C15 | `configured_physical`, `windows_com_transport` | Software pass |
+| C16 | Actual Windows COM + Metakon read-only bench | **Hardware pending** |
+| C17 | Actual observations, public history and SQLite reopen | **Hardware pending** |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software process pass; bench observation pending |
+| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Software pass; clean hardware close pending |
+| C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
 ## Actual sequence
 
@@ -320,12 +333,46 @@ are not reported as passing evidence.
     coverage now explicitly stages a candidate, mutates the pathname to invalid
     content, and applies the retained candidate while SQLite records the staged
     exact bytes. Both targeted suites pass.
+30. The final software gate ran on implementation HEAD `0a42d73`. Both
+    `cargo test --workspace` and `cargo test --workspace --release` passed all
+    388 named Rust tests, including three actual Babashka process scenarios and
+    the recording-enabled crash/reconnect/Pause/Stop/Shutdown/SQLite-reopen
+    acceptance. Formatting, warning-denied all-target clippy and warning-denied
+    rustdoc passed. The finite `cargo run -p lab-runtime` demo exited normally;
+    actual Babashka 1.13.220 `bb test-client` passed 8 tests/13 assertions; and
+    `git diff --check` passed. No default test was environment-skipped.
+
+## Resolved versions and fixed bounds
+
+The completion environment used Rust/Cargo 1.95.0 and Babashka 1.13.220.
+Relevant resolved crates are `toml` 1.1.6, `serialport` 4.10.1 (default features
+disabled), `mlua` 0.11.6, `rusqlite` 0.40.2, `libsqlite3-sys` 0.38.2,
+`serde_json` 1.0.151 and `sha2` 0.11.0.
+
+The loader admits at most 64 KiB of TOML, 4,096 syntactic values, depth 8,
+128 frozen artifacts and 1 MiB aggregate exact source bytes. Deployment object
+limits remain 8 resources, 64 instruments, 8 managed components, 8 References,
+8 controllers and 8 safe profiles. Lifecycle staging retains one candidate for
+30 monotonic seconds. Lua retains the accepted two workers/one Core stage. COM
+retains one request and one completion slot. Recorder retains the M7 limits of
+1,024 records, 4 MiB and four causal groups; activation uses one of those groups
+and does not add hidden capacity. One lifecycle fact admits at most 256 affected
+identities and 64 KiB charged representation.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
 
 ## Current limitations
 
-No M8 software or physical hardware acceptance has passed yet. In particular,
-fake transports will not be counted as C16/C17 or the hardware portion of C19.
-M8 makes no physical-output, power-loss, remote-security, GUI or long-soak claim.
+No real Metakon bench was available in this phase: no operator-confirmed device,
+firmware, wiring, COM port or justified recovery boundary was supplied. No real
+port was opened and no physical operation was attempted. Consequently C16, C17,
+the real-device portions of C12/C14/C18 and the hardware subgate of C19 remain
+unverified. Deterministic transports are reported only as software evidence and
+are not substitutes for those rows. The donor path was absent on this computer
+and no donor content was changed.
+
+M8 therefore stops at `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for
+external review and does not authorize M9. M8 performs no physical actuator
+write and makes no physical-output-safety, power-loss, remote-security, GUI or
+long-soak certification claim.

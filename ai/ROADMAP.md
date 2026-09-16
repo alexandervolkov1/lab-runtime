@@ -26,15 +26,17 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: M8_IMPLEMENTATION_IN_PROGRESS
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 Current model: SOL_HIGH
-Current phase: M8 tests-first implementation against
-docs/implementation/MILESTONE_8_DESIGN.md.
-The user explicitly crossed ASTRA_HIGH -> SOL_HIGH on 2026-09-16.
+Current phase: M8 real Windows COM/Metakon read-only hardware acceptance only.
+M8 software implementation and the 388-test debug/release completion gates are
+complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
 
-M8 C1-C20 preserves an actual Windows COM/Metakon read-only hardware gate.
-Software completion without C16/C17/C19 hardware evidence leaves M8 incomplete.
+M8 C16/C17 and the hardware part of C19 still require an actual Windows
+COM/Metakon read-only bench, real recording, disconnect/reconnect, API/Babashka
+and SQLite inspection, and clean shutdown. No device was available during the
+software phase. Fake evidence cannot close this gate, so M8 remains incomplete.
 
 First stable release sequence
 M7

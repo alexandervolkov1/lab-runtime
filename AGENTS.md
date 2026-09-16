@@ -28,7 +28,7 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-SOL_HIGH — M8 tests-first implementation only.
+SOL_HIGH — M8 real-hardware acceptance pending.
 ```
 
 M1–M7 are complete and M7 has passed external implementation review.
@@ -54,21 +54,21 @@ docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 
 Current model: SOL_HIGH.
 
-Authorized work: implement M8 tests-first against
-`docs/implementation/MILESTONE_8_DESIGN.md`. M7 at `f3ff456` is externally
-accepted; preserve it and do not start M9.
+Authorized work: complete only the real Windows COM/Metakon read-only hardware
+gate in `docs/implementation/MILESTONE_8_DESIGN.md`. M8 software implementation
+and its 388-test debug/release gates are complete at `0a42d73`. M7 at `f3ff456`
+is externally accepted; preserve both and do not start M9.
 
-STATUS: M8_IMPLEMENTATION_IN_PROGRESS
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 The M8 model gate was explicitly crossed:
 
 ```text
 ASTRA_HIGH -> SOL_HIGH
 ```
 
-SOL_HIGH implements M8 tests-first against its
-design and C1-C20. Real Windows COM/Metakon read-only C16/C17/C19 acceptance is
-mandatory; fake transport cannot replace missing hardware. Software completion
-alone leaves M8 incomplete at that hardware gate. Do not begin M9.
+Real Windows COM/Metakon read-only C16/C17/C19 acceptance remains mandatory;
+fake transport cannot replace missing hardware. Do not add unrelated software,
+claim whole-M8 completion or begin M9 while this gate is pending.
 
 If a genuine architectural contradiction is discovered, record the precise issue in
 `ai/HANDOFF.md`, set:
