@@ -21,16 +21,22 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Duration};
 struct Wire {
     bytes: Vec<u8>,
     readable: VecDeque<u8>,
+    write_limits: VecDeque<usize>,
+    recoveries: usize,
 }
 struct Fake(Rc<RefCell<Wire>>);
 impl ByteTransport for Fake {
     fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
         let mut wire = self.0.borrow_mut();
-        wire.bytes.extend_from_slice(bytes);
-        let body = [15, 0, 6, 1];
-        wire.readable.extend(body);
-        wire.readable.push_back(crc(&body));
-        Ok(bytes.len())
+        let limit = wire.write_limits.pop_front().unwrap_or(bytes.len());
+        let count = bytes.len().min(limit);
+        wire.bytes.extend_from_slice(&bytes[..count]);
+        if count == 7 && count == bytes.len() {
+            let body = [15, 0, 6, 1];
+            wire.readable.extend(body);
+            wire.readable.push_back(crc(&body));
+        }
+        Ok(count)
     }
     fn try_read(&mut self, buffer: &mut [u8]) -> Result<usize, TransportIoError> {
         let mut wire = self.0.borrow_mut();
@@ -41,18 +47,23 @@ impl ByteTransport for Fake {
         Ok(count)
     }
     fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
-        self.0.borrow_mut().readable.clear();
+        let mut wire = self.0.borrow_mut();
+        wire.recoveries += 1;
+        wire.readable.clear();
         Ok(RecoveryStatus::Complete)
     }
 }
 
-fn fixture() -> (Runtime, ActuatorId) {
+fn fixture_with_limits(
+    write_limits: impl IntoIterator<Item = usize>,
+) -> (Runtime, ActuatorId, Rc<RefCell<Wire>>) {
     let mut runtime = Runtime::new();
+    let wire = Rc::new(RefCell::new(Wire {
+        write_limits: write_limits.into_iter().collect(),
+        ..Wire::default()
+    }));
     runtime
-        .register_transport(
-            ResourceId::new(1),
-            Box::new(Fake(Rc::new(RefCell::new(Wire::default())))),
-        )
+        .register_transport(ResourceId::new(1), Box::new(Fake(wire.clone())))
         .unwrap();
     let instrument = InstrumentId::new(711);
     let parameter = ParameterId::new(6);
@@ -121,6 +132,11 @@ fn fixture() -> (Runtime, ActuatorId) {
     runtime
         .command(Command::PollTransports { at: Duration::ZERO })
         .unwrap();
+    (runtime, actuator, wire)
+}
+
+fn fixture() -> (Runtime, ActuatorId) {
+    let (runtime, actuator, _) = fixture_with_limits([]);
     (runtime, actuator)
 }
 
@@ -226,4 +242,170 @@ fn actual_metakon_ack_is_trusted_protocol_ack_without_readback_fact() {
             assert_eq!(*mapping_revision, Some(1));
         }
     }
+}
+
+#[test]
+fn partial_metakon_write_records_uncertainty_and_recovery_without_ack_or_readback() {
+    let (mut runtime, actuator, wire) = fixture_with_limits([7, 2, 0]);
+    wire.borrow_mut().bytes.clear();
+    runtime.enable_recording_facts();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(1),
+                lifetime: Duration::from_secs(1),
+            },
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(75.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(200),
+            }),
+        })
+        .unwrap();
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(2),
+        })
+        .unwrap();
+    runtime.command(Command::PollTransports { at }).unwrap();
+    assert_eq!(wire.borrow().bytes.len(), 2, "actual prefix was sent");
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(3),
+        })
+        .unwrap();
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(4),
+        })
+        .unwrap();
+    assert_eq!(wire.borrow().recoveries, 1);
+    assert_eq!(
+        wire.borrow().bytes.len(),
+        2,
+        "ordinary effect was not retried"
+    );
+    runtime
+        .command(Command::Output {
+            actuator,
+            at: Duration::from_millis(5),
+            command: OutputCommand::RequestSafe,
+        })
+        .unwrap();
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at: Duration::from_millis(5),
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(100),
+        })
+        .unwrap();
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(5),
+        })
+        .unwrap();
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(6),
+        })
+        .unwrap();
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(7),
+        })
+        .unwrap();
+    let facts = runtime.take_recording_facts();
+    let output: Vec<_> = facts
+        .iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage,
+                attempt_id,
+                dispatch_id,
+                authority_epoch,
+                source,
+                ..
+            } => Some((*stage, *attempt_id, *dispatch_id, *authority_epoch, *source)),
+            _ => None,
+        })
+        .collect();
+    assert!(output.iter().any(|row| row.0 == OutputStage::Requested));
+    assert!(output.iter().any(|row| row.0 == OutputStage::Authorized));
+    assert!(output.iter().any(|row| row.0 == OutputStage::SendStarted));
+    assert!(
+        output
+            .iter()
+            .any(|row| row.0 == OutputStage::TransportUncertain)
+    );
+    assert!(output.iter().any(|row| row.0 == OutputStage::Ambiguous));
+    assert!(
+        output.iter().any(|row| row.0 == OutputStage::SafeRequested),
+        "{output:?}"
+    );
+    assert!(
+        output
+            .iter()
+            .any(|row| row.0 == OutputStage::SafeSendStarted),
+        "{output:?}"
+    );
+    assert!(
+        output
+            .iter()
+            .any(|row| row.0 == OutputStage::SafeAcknowledged),
+        "{output:?}"
+    );
+    assert!(!output.iter().any(|row| matches!(
+        row.0,
+        OutputStage::Acknowledged | OutputStage::ReadbackVerified
+    )));
+    let ordinary = output
+        .iter()
+        .find(|row| row.0 == OutputStage::Requested)
+        .unwrap();
+    assert!(ordinary.1.is_some());
+    assert_eq!(ordinary.3, Some(lease.epoch()));
+    assert!(
+        output
+            .iter()
+            .filter(|row| matches!(
+                row.0,
+                OutputStage::Authorized
+                    | OutputStage::SendStarted
+                    | OutputStage::TransportUncertain
+                    | OutputStage::Ambiguous
+            ))
+            .all(|row| row.1 == ordinary.1 && row.2.is_some() && row.3 == ordinary.3)
+    );
+    let safe = output
+        .iter()
+        .find(|row| row.0 == OutputStage::SafeRequested)
+        .unwrap();
+    assert_ne!(safe.1, ordinary.1);
+    assert_ne!(safe.3, ordinary.3);
+    assert!(
+        output
+            .iter()
+            .filter(|row| matches!(
+                row.0,
+                OutputStage::SafeSendStarted | OutputStage::SafeAcknowledged
+            ))
+            .all(|row| row.1 == safe.1 && row.3 == safe.3 && row.2.is_some())
+    );
 }

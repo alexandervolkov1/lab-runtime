@@ -20,8 +20,8 @@ use crate::metakon::{
     encode_read, encode_scaled_i8, encode_write, scale_temperature,
 };
 use crate::output::{
-    ActuatorId, DispatchOutcome, OutputAuthority, OutputCommand, OutputError, OutputOwner,
-    OutputProposal, OutputResult, OutputSnapshot,
+    ActuatorId, DispatchOutcome, OutputAuthority, OutputCommand, OutputError, OutputIntent,
+    OutputOwner, OutputProposal, OutputResult, OutputSnapshot,
 };
 use crate::plant::{ThermalPlantConfig, ThermalPlantInstrument};
 use crate::processing::EmaStatus;
@@ -382,7 +382,7 @@ pub struct Runtime {
     outputs: BTreeMap<ActuatorId, OutputAuthority>,
     resources: BTreeMap<ResourceId, ResourceExecutor>,
     pending_reads: BTreeMap<(ResourceId, TransactionId), PendingRead>,
-    unsettled_outputs: BTreeMap<ResourceId, (ActuatorId, crate::output::DispatchId, Option<u64>)>,
+    unsettled_outputs: BTreeMap<ResourceId, (OutputIntent, crate::output::DispatchId)>,
     output_time: Duration,
     transport_time: Duration,
     recording_facts: crate::recording::FactOutbox,
@@ -3242,34 +3242,30 @@ impl Runtime {
                     }
                     AuthorizationStep::Started => {
                         let dispatch = authority.begin_transport(intent, at).map_err(|_| ())?;
-                        let attempt_id = intent.attempt_id;
                         if intent.safe {
-                            recording_facts.output_correlated(
-                                intent.actuator,
+                            recording_facts.output_transport(
+                                intent,
+                                resource,
                                 crate::recording::OutputStage::SafeSendStarted,
-                                Some(intent.value),
                                 at,
                                 crate::recording::OutputEvidenceSource::TransportProtocol,
-                                attempt_id,
                                 Some(dispatch),
                             );
                         } else {
-                            recording_facts.output_correlated(
-                                intent.actuator,
+                            recording_facts.output_transport(
+                                intent,
+                                resource,
                                 crate::recording::OutputStage::Authorized,
-                                Some(intent.value),
                                 at,
                                 crate::recording::OutputEvidenceSource::None,
-                                attempt_id,
                                 Some(dispatch),
                             );
-                            recording_facts.output_correlated(
-                                intent.actuator,
+                            recording_facts.output_transport(
+                                intent,
+                                resource,
                                 crate::recording::OutputStage::SendStarted,
-                                Some(intent.value),
                                 at,
                                 crate::recording::OutputEvidenceSource::TransportProtocol,
-                                attempt_id,
                                 Some(dispatch),
                             );
                         }
@@ -3343,13 +3339,12 @@ impl Runtime {
             TransportEvent::OutputUncertain { intent, dispatch } => {
                 if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                     authority.transport_uncertain(dispatch)?;
-                    self.recording_facts.output_correlated(
-                        intent.actuator,
+                    self.recording_facts.output_transport(
+                        intent,
+                        resource,
                         crate::recording::OutputStage::TransportUncertain,
-                        Some(intent.value),
                         at,
                         crate::recording::OutputEvidenceSource::TransportProtocol,
-                        intent.attempt_id,
                         Some(dispatch),
                     );
                 }
@@ -3389,33 +3384,30 @@ impl Runtime {
                                 crate::output::DispatchOutcome::Acknowledged,
                                 at,
                             )?;
-                            self.recording_facts.output_correlated(
-                                intent.actuator,
+                            self.recording_facts.output_transport(
+                                intent,
+                                resource,
                                 if intent.safe {
                                     crate::recording::OutputStage::SafeAcknowledged
                                 } else {
                                     crate::recording::OutputStage::Acknowledged
                                 },
-                                Some(intent.value),
                                 at,
                                 crate::recording::OutputEvidenceSource::TransportProtocol,
-                                intent.attempt_id,
                                 Some(dispatch),
                             );
                         }
                     } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.transport_uncertain(dispatch)?;
-                        self.recording_facts.output_correlated(
-                            intent.actuator,
+                        self.recording_facts.output_transport(
+                            intent,
+                            resource,
                             crate::recording::OutputStage::TransportUncertain,
-                            Some(intent.value),
                             at,
                             crate::recording::OutputEvidenceSource::TransportProtocol,
-                            intent.attempt_id,
                             Some(dispatch),
                         );
-                        self.unsettled_outputs
-                            .insert(resource, (intent.actuator, dispatch, intent.attempt_id));
+                        self.unsettled_outputs.insert(resource, (intent, dispatch));
                         self.resources
                             .get_mut(&resource)
                             .expect("executor reinserted before event handling")
@@ -3427,34 +3419,31 @@ impl Runtime {
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
-                    self.recording_facts.output_correlated(
-                        intent.actuator,
+                    self.recording_facts.output_transport(
+                        intent,
+                        resource,
                         crate::recording::OutputStage::Ambiguous,
-                        Some(intent.value),
                         at,
                         crate::recording::OutputEvidenceSource::TransportProtocol,
-                        intent.attempt_id,
                         Some(dispatch),
                     );
                 }
             }
             TransportEvent::BoundaryRecovered => {
-                if let Some((actuator, dispatch, attempt_id)) =
-                    self.unsettled_outputs.remove(&resource)
-                    && let Some(authority) = self.outputs.get_mut(&actuator)
+                if let Some((intent, dispatch)) = self.unsettled_outputs.remove(&resource)
+                    && let Some(authority) = self.outputs.get_mut(&intent.actuator)
                 {
                     authority.complete_transport(
                         dispatch,
                         crate::output::DispatchOutcome::Ambiguous,
                         at,
                     )?;
-                    self.recording_facts.output_correlated(
-                        actuator,
+                    self.recording_facts.output_transport(
+                        intent,
+                        resource,
                         crate::recording::OutputStage::Ambiguous,
-                        authority.snapshot().sent.map(|sent| sent.value),
                         at,
                         crate::recording::OutputEvidenceSource::TransportProtocol,
-                        attempt_id,
                         Some(dispatch),
                     );
                 }

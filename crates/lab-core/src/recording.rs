@@ -6,7 +6,7 @@
 use crate::{
     Sample, Unit, Value,
     control::{ControllerId, ControllerState, PidConfig},
-    output::{ActuatorId, DispatchId},
+    output::{ActuatorId, DispatchId, OutputIntent},
     reference::ReferenceId,
     transport::ResourceId,
 };
@@ -327,6 +327,35 @@ impl FactOutbox {
             None,
             None,
         );
+    }
+
+    /// Freeze the queued M3 intent's original authority and binding identity.
+    /// A late terminal/recovery event may arrive after today's epoch or mapping
+    /// changes; it must still describe the bytes attempted under this intent.
+    pub(crate) fn output_transport(
+        &mut self,
+        intent: OutputIntent,
+        resource: ResourceId,
+        stage: OutputStage,
+        at: Duration,
+        source: OutputEvidenceSource,
+        dispatch_id: Option<DispatchId>,
+    ) {
+        self.push(128, |sequence| RecordingFact::Output {
+            sequence,
+            actuator: intent.actuator,
+            attempt_id: intent.attempt_id,
+            dispatch_id,
+            unit: Some(intent.unit),
+            authority_epoch: Some(intent.epoch),
+            resource: Some(resource),
+            binding_generation: Some(intent.binding_generation),
+            mapping_revision: Some(intent.mapping_revision),
+            stage,
+            value: Some(intent.value),
+            source,
+            at,
+        });
     }
 
     /// Preserve the exact proposed unit even when validation rejects a candidate.
