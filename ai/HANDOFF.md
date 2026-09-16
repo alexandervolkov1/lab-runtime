@@ -16,7 +16,7 @@ Current model:
 SOL_HIGH
 
 Current phase:
-M8 corrected Windows COM recovery; post-fix physical acceptance pending.
+M8 corrected Windows COM reconnect; post-fix physical acceptance pending.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -40,7 +40,7 @@ remain limitations, not new claims of acceptance in those areas.
 Authorized work:
 Await explicit user approval before reopening COM5. Then repeat only the accepted
 read-only M8 disconnect/reconnect/Required Recorder checklist with the new archive.
-Preserve both earlier SQLite evidence sets. Do not add registers, issue writes/
+Preserve all earlier SQLite evidence sets. Do not add registers, issue writes/
 resets, or start M9.
 
 Model gate:
@@ -234,6 +234,48 @@ the unchanged definition hash is
 Both prior SQLite archives retain their recorded hashes and remain untracked.
 COM5 has not been reopened. STATUS returns to `M8_HARDWARE_ACCEPTANCE_PENDING`;
 await explicit operator continuation and do not begin M9.
+
+M8 reviewed reconnect correction checkpoint — 2026-09-16
+
+The corrected physical disconnect run reached Offline on deadline and durably
+recorded exactly one value-less Unavailable row. After operator reconnection,
+however, `reconnect_resource(resource=1, expected_binding_generation=1)` was
+durably accepted then failed with `invalid_configuration`, while its installed
+generation-2 replacement continued ordinary acquisition and recorded new Good
+26/27 °C rows. Normal shutdown was completely clean. That sealed archive is
+preserved unchanged at
+`examples/metakon-513-com5-recovery-corrected-history.sqlite`, SHA-256
+`6afe7924e64326a0dedc37b3d860428a4a351c8f35803c56d51ba271f8caa0e4`,
+with complete coverage, exact provenance and zero output events.
+
+External review authorized a narrow implementation correction. Commit `0ae7b3c`
+adds a bounded resource-scoped reconnect gate, target-only probe operations and
+finite failed-replacement retirement. Ordinary reads for the target remain
+quiesced from before old-session retirement until a distinct Good channel-type 3
+probe and durable lifecycle completion. Unrelated resources and Recorder/safety
+progress continue. Probe failure preserves the advanced generation, keeps the
+Signal Unavailable, retires the replacement and requires another explicit
+reconnect using the actual current generation. Successful release resets the
+periodic deadline without catch-up. No codec, scale, COM setting, queue or
+Recorder bound changed.
+
+The first three acceptance cases were red before production because the scoped
+gate/probe/activation APIs did not exist. The multi-resource and probe-shutdown
+cases were added after the minimal Host implementation; the report records this
+honestly. All 12 configured-physical tests and focused Core/COM/Recorder/lifecycle
+suites pass. The full debug workspace passes and lists 407 named test entries;
+workspace all-target warning-denied Clippy, fmt and diff checks pass. Release and
+warning-denied rustdoc remain deferred to the final hardware gate.
+
+Commit `2a03358` selects the new absent archive
+`examples/metakon-513-com5-reconnect-corrected-history.sqlite`. Runtime TOML
+SHA-256 is
+`200acfe4a2cd36b4375213db9369518d751e0ad43c8401f0b456cb0a03ef6b7c`;
+the definition remains
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+COM5 has not been reopened after the correction. STATUS remains
+`M8_HARDWARE_ACCEPTANCE_PENDING`; await explicit operator continuation and do not
+begin M9.
 
 Design validation passed: exactly 20 distinct C1-C20 matrix rows, resolving local
 design links, balanced Markdown fences, no trailing whitespace in all five

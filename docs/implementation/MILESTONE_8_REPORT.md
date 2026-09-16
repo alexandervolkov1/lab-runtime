@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed recovery correction is
-complete and COM5 has not been reopened, 2026-09-16.
+Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed reconnect correction is
+complete and COM5 has not been reopened after it, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -25,12 +25,12 @@ are not reported as passing evidence.
 | C11 | `model_restart`, `managed_script_reload`, `runtime_lifecycle_operations` | Software pass |
 | C12 | `windows_com_transport`, `configured_physical` | Software pass; actual COM5 open/settings/close observed |
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
-| C14 | `windows_com_transport`, `configured_physical` | Corrected software pass; post-fix actual disconnect/reconnect pending |
+| C14 | `windows_com_transport`, `configured_physical` | Corrected software pass; actual finite disconnect passed, reconnect rerun pending |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | Corrected acquisition pass; post-fix disconnect/reconnect rerun pending |
-| C17 | Actual observations, public history and SQLite reopen | Pre-fix durable evidence retained; post-fix Unavailable/reconnect archive pending |
-| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected live Babashka observation pass, physical reconnect not attempted |
-| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Corrected software pass; post-fix actual COM/Recorder shutdown pending |
+| C16 | Actual Windows COM + Metakon read-only bench | Corrected acquisition and disconnect pass; corrected reconnect rerun pending |
+| C17 | Actual observations, public history and SQLite reopen | Good/Unavailable/failed-reconnect evidence retained; successful reconnect archive pending |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; live clients observed acquisition/disconnect/failed reconnect, final A/B phase pending |
+| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Corrected software and two clean hardware shutdowns pass; final successful-reconnect shutdown pending |
 | C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
 ## Actual sequence
@@ -773,6 +773,73 @@ This evidence is preserved at
 It must not be reopened for a later bench run. External review authorized a
 narrow resource-scoped reconnect-quiescing correction; the next bench must use a
 new archive.
+
+## Reviewed reconnect correction — 2026-09-16
+
+External review accepted the physical contradiction as a narrow implementation
+defect. The first three acceptance tests were added before production and failed
+to compile because the resource-scoped reconnect gate, targeted probe operations,
+activation seam and failed-replacement retirement seam did not exist. They
+reproduce successful probe gating, wrong-channel-type failure and finite probe
+timeout. The multi-resource isolation and shutdown-during-probe cases were added
+after the minimal Host implementation and their production-before-coverage order
+is recorded honestly. The real failed-reconnect SQLite archive above remains the
+end-to-end red evidence for the Service lifecycle path.
+
+Commit `0ae7b3c` adds one bounded `BTreeSet<ResourceId>` owned by Host. Before old
+session retirement, explicit reconnect inserts only its target resource. The
+periodic Metakon scheduler skips ordinary reads bound to that resource while all
+unrelated resources, native safety, recovery and Recorder work continue. Queue
+capacity remains unchanged. The rebind-generated Unavailable observation is
+captured as the compatibility probe baseline, so it means Pending rather than an
+immediate probe failure. Only a later distinct channel-type observation may
+complete the probe, and it must be `Good` integer 3.
+
+Reconnect now queues probes only for the target resource. It does not enter the
+global configuration safe barrier or global acquisition quiesce. After a valid
+probe, the existing durable lifecycle activation is completed before the
+resource gate is released. The periodic schedule restarts at one period after
+the current monotonic time, preventing a catch-up burst; the compatibility probe
+itself never publishes temperature. Application terminal recording occurs in the
+same serialized owner turn before any subsequent scheduler service can admit the
+first ordinary temperature read.
+
+Wrong channel type, Unavailable/protocol/transport failure or deadline retains
+the resource gate, leaves the advanced replacement binding/mapping generation
+authoritative, retires the replacement through the existing finite nonblocking
+shutdown contract and leaves the temperature Unavailable. No old session or
+generation is restored. A later explicit reconnect must therefore use the
+actually current generation; deterministic coverage advances the next successful
+replacement from generation 2 to 3. Stale-session fencing remains the accepted
+M3 replacement rule. A stuck adapter still produces the existing honest finite
+cleanup diagnostics and is never block-joined.
+
+New named regression evidence is:
+
+```text
+c14_reconnect_replacement_stays_quiesced_until_probe_and_lifecycle_activation
+c14_failed_post_install_probe_keeps_new_generation_quiesced_and_offline
+c14_probe_timeout_never_releases_ordinary_reconnect_acquisition
+c14_reconnect_probe_is_resource_scoped_while_unrelated_resource_continues
+c19_shutdown_during_reconnect_probe_fences_work_and_closes_finitely
+```
+
+All 12 `configured_physical` tests pass. The focused Core Metakon/output and
+Recorder evidence suites pass, as do Windows COM, configured lifecycle,
+configuration reload, Recorder quality, COM-plus-Recorder shutdown and Runtime
+shutdown suites. The complete debug workspace gate passes; `cargo test
+--workspace -- --list` reports 407 named test entries. Workspace all-target
+Clippy with warnings denied, formatting and `git diff --check` pass. Full release
+and warning-denied rustdoc remain deferred to the final corrected M8 hardware
+gate as authorized.
+
+Commit `2a03358` changes only the next bench archive to
+`examples/metakon-513-com5-reconnect-corrected-history.sqlite`, which is absent.
+The resulting exact runtime TOML SHA-256 is
+`200acfe4a2cd36b4375213db9369518d751e0ad43c8401f0b456cb0a03ef6b7c`.
+The definition remains unchanged at
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+COM5 has not been reopened after this correction.
 
 ## Current limitations
 

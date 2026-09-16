@@ -28,7 +28,7 @@ debug/release gates. Its reported limitations remain accepted limitations.
 
 STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 Current model: SOL_HIGH
-Current phase: corrected recovery implementation; post-fix hardware rerun pending.
+Current phase: corrected reconnect implementation; post-fix hardware rerun pending.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
@@ -44,9 +44,14 @@ COM worker recovering beyond the configured timeout, without an Unavailable
 Signal; finite shutdown could not confirm transport close. The reviewed narrow
 correction is complete at `71d4e56`: recovery is finite, admission/fencing and
 Unavailable publication are owner-enforced, and shutdown starts retirement from
-every executor state. A 402-test debug workspace gate passes. The post-fix actual
-disconnect/reconnect and clean close remain pending; M8 is incomplete and M9 is
-not authorized.
+every executor state. The next real run proved that correction, then exposed a
+failed reconnect whose installed replacement incorrectly resumed acquisition.
+The reviewed resource-scoped reconnect gate is complete at `0ae7b3c`; target
+ordinary reads now remain quiesced until compatibility and lifecycle success,
+while failed replacements retain their advanced generation and are retired. A
+407-entry debug workspace gate passes. The final corrected physical reconnect,
+client/provenance check and clean close remain pending; M8 is incomplete and M9
+is not authorized.
 
 First stable release sequence
 M7
