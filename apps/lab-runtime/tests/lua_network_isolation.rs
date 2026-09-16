@@ -13,10 +13,11 @@ use lab_core::{Command, InstrumentId, Query, QueryResult, SignalId, TEMPERATURE}
 use lab_lua::{LuaSupervisor, WorkerBarrier};
 use lab_runtime::{
     application::Application,
+    recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, WriterBarrier as SqliteBarrier},
     service::{ServiceHost, ServiceOptions},
     wire::{decode_frame, encode_frame},
 };
-use lab_runtime::{host::HostCore, server};
+use lab_runtime::{host::{Clock, HostCore}, server};
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicUsize;
 static PROFILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -183,15 +184,22 @@ fn standard_profile_prepares_two_real_lua_components_before_readiness_and_schedu
 }
 
 #[test]
-fn two_confirmed_lua_worker_barriers_leave_real_socket_reads_and_native_renewal_alive() {
+fn two_real_lua_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recovery_alive() {
     let _guard = PROFILE_TEST_LOCK.lock().unwrap();
     let barrier = Arc::new(WorkerBarrier::new());
+    let sqlite_barrier = SqliteBarrier::held();
+    let mut entropy = [0u8; 16];
+    getrandom::fill(&mut entropy).unwrap();
+    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+    let database = std::env::temp_dir().join(format!("lab-runtime-m7-lua-sqlite-{suffix}.sqlite"));
     let writes = Arc::new(AtomicUsize::new(0));
     let recoveries = Arc::new(AtomicUsize::new(0));
     let (ready_tx, ready_rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let service_stop = stop.clone();
     let worker_barrier = barrier.clone();
+    let sqlite_worker_barrier = sqlite_barrier.clone();
+    let worker_database = database.clone();
     let wire_writes = writes.clone();
     let wire_recoveries = recoveries.clone();
     let join = thread::spawn(move || {
@@ -269,14 +277,34 @@ fn two_confirmed_lua_worker_barriers_leave_real_socket_reads_and_native_renewal_
             assert!(entered.elapsed() < Duration::from_secs(2));
             thread::yield_now();
         }
-        let service = ServiceHost::startup_from_trusted_host(
+        let recorder = RecorderWorker::open_with_barrier(
+            &worker_database,
+            RecorderLimits::default(),
+            sqlite_worker_barrier,
+        )
+        .unwrap();
+        host.attach_recorder(recorder, RecordingPolicy::BestEffort, Duration::ZERO)
+            .unwrap();
+        let mut service = ServiceHost::startup_from_trusted_host(
             ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"])
                 .unwrap(),
             host,
         )
         .unwrap();
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        service
+            .owner_mut()
+            .start_recording("held SQLite with two Lua slots", clock.now())
+            .unwrap();
+        let started = Instant::now();
+        while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+            assert!(started.elapsed() < Duration::from_secs(2), "Start SQL did not commit");
+            service.owner_mut().service(&clock).unwrap();
+            thread::yield_now();
+        }
         ready_tx.send(service.bound_address()).unwrap();
-        server::run(service, service_stop).unwrap();
+        let _ = server::run(service, service_stop);
     });
     let addr = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(barrier.entered(), 2);
@@ -300,6 +328,11 @@ fn two_confirmed_lua_worker_barriers_leave_real_socket_reads_and_native_renewal_
     line.clear();
     reader.read_line(&mut line).unwrap();
     let started = Instant::now();
+    let sqlite_deadline = Instant::now() + Duration::from_secs(2);
+    while !sqlite_barrier.reached() {
+        assert!(Instant::now() < sqlite_deadline, "SQLite worker never reached held fact SQL");
+        thread::yield_now();
+    }
     let mut observed = false;
     while started.elapsed() < Duration::from_secs(2) {
         stream
@@ -360,6 +393,7 @@ fn two_confirmed_lua_worker_barriers_leave_real_socket_reads_and_native_renewal_
     assert_eq!(later["result"]["epoch"], epoch);
     assert_eq!(later["result"]["owner"], first["result"]["owner"]);
     assert_eq!(barrier.entered(), 2);
+    assert!(sqlite_barrier.reached());
     assert!(
         writes.load(Ordering::Acquire) > 0,
         "real M3 executor never attempted its fake byte adapter"
@@ -385,8 +419,14 @@ fn two_confirmed_lua_worker_barriers_leave_real_socket_reads_and_native_renewal_
         "resource records: {records:?}"
     );
     barrier.release();
+    sqlite_barrier.release();
     stop.store(true, Ordering::Release);
     join.join().unwrap();
+    let remove_by = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&database).is_err() && Instant::now() < remove_by {
+        thread::yield_now();
+    }
+    assert!(!database.exists());
 }
 
 #[test]
