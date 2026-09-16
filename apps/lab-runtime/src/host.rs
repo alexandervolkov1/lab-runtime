@@ -1215,6 +1215,9 @@ impl HostCore {
                 }
             }
         }
+        // Publish the just-latched gap before the next client Query or snapshot.
+        // BestEffort may keep control running, but coverage must be truthful now.
+        self.poll_recorder(now);
     }
 
     /// Install one trusted nonblocking component port before managed startup.
@@ -1914,5 +1917,105 @@ fn event_domain_error(error: EventError) -> Error {
         EventError::Gap | EventError::Future => Error::InvalidConfiguration("event cursor invalid"),
         EventError::Exhausted => Error::InvalidConfiguration("event sequence exhausted"),
         EventError::Oversized => Error::InvalidConfiguration("event record exceeds M6 bound"),
+    }
+}
+
+#[cfg(test)]
+mod recorder_outbox_host_tests {
+    use super::*;
+    use crate::recorder::{RecorderLimits, RecordingState, WriterBarrier};
+    use std::{path::PathBuf, time::Instant};
+
+    fn temporary_database() -> PathBuf {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        std::env::temp_dir().join(format!("lab-runtime-m7-outbox-host-{suffix}.sqlite"))
+    }
+
+    #[test]
+    fn core_outbox_overflow_marks_best_effort_gap_without_stopping_native_control() {
+        let path = temporary_database();
+        let barrier = WriterBarrier::held();
+        let worker =
+            RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+                .unwrap();
+        let mut host = HostCore::virtual_demo().unwrap();
+        host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+            .unwrap();
+        host.start_recording("outbox host overflow", Duration::ZERO)
+            .unwrap();
+        let by = Instant::now() + Duration::from_secs(3);
+        while host.recording_status().unwrap().state != RecordingState::Recording {
+            assert!(Instant::now() < by);
+            host.poll_recorder(Duration::ZERO);
+            std::thread::yield_now();
+        }
+        host.service(&test_clock(Duration::ZERO)).unwrap();
+        host.command(Command::StartController {
+            controller: CONTROLLER,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+        // A trusted test packs one owner unit without the normal Host drain.
+        // This proves the Host's overflow handoff, not a normal client path.
+        for position in 1..=257u64 {
+            host.runtime
+                .command(Command::RefreshMeasurement {
+                    instrument: PLANT,
+                    parameter: lab_core::TEMPERATURE,
+                    at: Duration::from_millis(position),
+                })
+                .unwrap();
+        }
+        assert!(host.runtime.recording_facts_overflowed());
+        let first_missing = host.runtime.recording_first_lost_fact();
+        assert!(first_missing.is_some());
+        host.admit_recording_facts(Duration::from_millis(257));
+        let failed = host.recording_status().unwrap();
+        assert_eq!(failed.state, RecordingState::Failed);
+        assert_eq!(failed.coverage, "gap");
+        assert_eq!(failed.first_missing_fact, first_missing);
+        assert_eq!(
+            failed.first_error.as_deref(),
+            Some("core fact outbox overflow")
+        );
+        barrier.release();
+        for step in 3..=8 {
+            host.service(&test_clock(Duration::from_millis(step * 100)))
+                .unwrap();
+        }
+        let controller = host.query(Query::Controller(CONTROLLER)).unwrap();
+        assert!(matches!(controller, QueryResult::Controller(snapshot)
+            if snapshot.state == ControllerState::Running));
+        host.finish_recorder().unwrap();
+        while !host.recording_status().unwrap().terminal_seal_committed {
+            assert!(Instant::now() < by);
+            host.poll_recorder(Duration::from_millis(800));
+            std::thread::yield_now();
+        }
+        drop(host);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let gaps: i64 = db
+            .query_row("SELECT COUNT(*) FROM gaps", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(gaps, 1);
+        drop(db);
+        let close_by = Instant::now() + Duration::from_secs(3);
+        while std::fs::remove_file(&path).is_err() {
+            assert!(Instant::now() < close_by);
+            std::thread::yield_now();
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct TestClock(Duration);
+    impl Clock for TestClock {
+        fn now(&self) -> Duration {
+            self.0
+        }
+    }
+    fn test_clock(now: Duration) -> TestClock {
+        TestClock(now)
     }
 }
