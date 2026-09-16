@@ -25,6 +25,7 @@ struct Wire {
     limits: VecDeque<usize>,
     recoveries: usize,
     reply_on_write: bool,
+    recover_pending: bool,
 }
 struct Fake(Rc<RefCell<Wire>>);
 impl ByteTransport for Fake {
@@ -51,6 +52,9 @@ impl ByteTransport for Fake {
     fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
         let mut wire = self.0.borrow_mut();
         wire.recoveries += 1;
+        if wire.recover_pending {
+            return Ok(RecoveryStatus::Pending);
+        }
         wire.readable.clear();
         Ok(RecoveryStatus::Complete)
     }
@@ -523,6 +527,140 @@ fn late_m3_ack_after_safe_epoch_reopens_only_as_old_ordinary_evidence() {
         .unwrap();
     assert_eq!(safe.len(), 1);
     assert_ne!(safe[0], ordinary[0]);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn unconfirmed_m3_recovery_keeps_safe_evidence_unknown_and_never_sends_queued_safe_bytes() {
+    let path = temporary_database();
+    let (mut runtime, actuator, wire) = setup();
+    runtime.enable_recording_facts();
+    runtime.require_recording(Duration::ZERO);
+    runtime
+        .confirm_recording_start(Duration::ZERO, Duration::ZERO)
+        .unwrap();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(3),
+                lifetime: Duration::from_secs(1),
+            },
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(75.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(200),
+            }),
+        })
+        .unwrap();
+    wire.borrow_mut().recover_pending = true;
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(2),
+        })
+        .unwrap();
+    runtime.command(Command::PollTransports { at }).unwrap();
+    assert_eq!(wire.borrow().bytes.len(), 2);
+    for ms in [3, 4] {
+        runtime
+            .command(Command::PollTransports {
+                at: Duration::from_millis(ms),
+            })
+            .unwrap();
+    }
+    assert!(wire.borrow().recoveries >= 1);
+    runtime
+        .command(Command::Output {
+            actuator,
+            at: Duration::from_millis(5),
+            command: OutputCommand::RequestSafe,
+        })
+        .unwrap();
+    let blocked_safe = runtime.command(Command::QueueMetakonOutput {
+        actuator,
+        at: Duration::from_millis(5),
+        queue_ttl: Duration::from_secs(1),
+        timeout: Duration::from_millis(100),
+    });
+    assert!(
+        blocked_safe.is_err(),
+        "old in-flight recovery blocks safe dispatch"
+    );
+    for ms in [5, 6, 7, 8] {
+        runtime
+            .command(Command::PollTransports {
+                at: Duration::from_millis(ms),
+            })
+            .unwrap();
+    }
+    runtime.recording_failure(Duration::from_millis(9));
+    runtime
+        .command(Command::PollTransports {
+            at: Duration::from_millis(9),
+        })
+        .unwrap();
+    assert_eq!(
+        wire.borrow().bytes.len(),
+        2,
+        "recovery blocks all safe bytes"
+    );
+    let lab_core::QueryResult::Output(output) =
+        runtime.query(lab_core::Query::Output(actuator)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(output.state, lab_core::output::OutputState::SafePending);
+    assert!(!output.safe_confirmed);
+    assert!(output.fault_latched);
+    assert!(output.lease.is_none());
+    assert!(output.readback.is_none());
+    assert!(
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::from_millis(10),
+                command: OutputCommand::Acquire {
+                    owner: OutputOwner::Manual(4),
+                    lifetime: Duration::from_secs(1),
+                },
+            })
+            .is_err()
+    );
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("unconfirmed recovery archive").unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_millis(11)).unwrap();
+    store.close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let stages: Vec<String> = db
+        .prepare("SELECT stage FROM output_events ORDER BY record_seq")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(stages.contains(&"transport_uncertain".to_owned()));
+    assert!(stages.contains(&"safe_requested".to_owned()));
+    assert!(!stages.contains(&"acknowledged".to_owned()));
+    assert!(!stages.contains(&"safe_acknowledged".to_owned()));
+    assert!(!stages.contains(&"safe_readback_verified".to_owned()));
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
