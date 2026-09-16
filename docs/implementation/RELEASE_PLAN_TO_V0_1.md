@@ -15,7 +15,7 @@ M8 final real-hardware acceptance
 STATUS: READY_FOR_HARDWARE_RERUN
 ```
 
-M9 has not started.
+M9A has not started.
 
 This plan is product direction, not automatic authorization to cross review gates.
 
@@ -76,12 +76,23 @@ lab-core remains OS/GUI/storage/scripting-runtime independent
 The language-neutral managed-component execution contract remains part of the product
 architecture.
 
+It retains `Invocation`, `ComponentResult`, `ComponentCompletion`,
+`ComponentExecutor`, `PlainData` and their generation/revision/failure semantics.
+
 Existing M5 Lua is frozen for v0.1.
+
+M5 Lua is not currently known to violate the safety boundary. Its sandbox denies raw
+transport, OutputAuthority, physical ACK/readback/safe evidence and general Runtime
+mutability. The narrower pre-release issue is Lua-specific leakage into common
+interfaces, including `ComponentDefinition.source`, `lua_source`/`lua_transform`,
+`reload_managed_scripts`, helpers such as `stage_standard_lua`, and
+`ManagedLuaSource`/`managed_lua_source` deployment and provenance vocabulary.
 
 No persistent Lua workspace or Lua application/scenario API is required for v0.1.
 
-Native Rust components may later implement the same managed-component contract and
-replace useful Lua model/filter/transform implementations one-for-one.
+M9A adds a first-class native Rust implementation path through the same contract and
+proves at least one small native model/filter/transform. Neutralizing current names
+must not rewrite historical SQLite evidence merely to rename old Lua provenance.
 
 Optional complete Lua removal is post-v0.1 and requires replacement coverage.
 
@@ -113,9 +124,32 @@ Remaining release gate:
 11. final debug/release/rustdoc/fmt/clippy/Babashka gates;
 12. external M8 review.
 
-Do not start M9 before this gate is accepted.
+Do not start M9A before this gate is accepted.
 
-## M9 — unified Application / emulator / presentation API
+## M9A — neutral managed components and native Rust execution
+
+### Goal
+
+Neutralize Lua-specific leakage from the common managed-component boundary and make
+native Rust a first-class executor path without weakening the established lifecycle
+or safety contract.
+
+Required acceptance:
+
+- neutral common definition, capability, lifecycle and provenance vocabulary for new
+  work;
+- retained `Invocation`, `ComponentResult`, `ComponentCompletion`,
+  `ComponentExecutor`, `PlainData` and generation/revision/failure semantics;
+- native Rust registration and execution through the same validation, unit,
+  bounded-state, bounded-execution, failure and replacement/reload rules;
+- at least one small native Rust model/filter/transform proved through the contract;
+- M5 Lua remains frozen except for bug/regression, safety/security and documentation
+  corrections;
+- historical SQLite evidence remains immutable.
+
+M9A starts only after external M8 acceptance.
+
+## M9B — unified Application / emulator / presentation API
 
 ### Goal
 
@@ -139,9 +173,21 @@ Normalize/extend the language-neutral API required for:
 
 Do not duplicate semantics in each adapter.
 
+Provide Babashka wrappers over the same semantic API rather than implementing
+Babashka-specific domain behavior.
+
 ### Virtual/emulator API
 
-Move user-authored emulator behavior to a validated virtual-instrument interface.
+Retain the existing native virtual foundation:
+
+- `VirtualInstrument` remains the simple deterministic/fault-injection virtual
+  source;
+- `ThermalPlantInstrument` remains the built-in stateful native thermal
+  emulator/reference model.
+
+Add a validated virtual-instrument Application API around that foundation for
+user-authored emulator behavior. Do not remove, replace or rewrite the existing
+native instruments.
 
 Required properties:
 
@@ -153,7 +199,9 @@ Required properties:
 - no physical evidence fabrication;
 - Babashka usability.
 
-This path is separate from the frozen M5 Lua managed-component implementation.
+Babashka now, and future Steel later, use the same semantic API. Steel is an
+Application API client, not an M5 replacement VM. This path remains separate from
+the frozen M5 Lua managed-component implementation.
 
 ### Presentation/workspace
 
@@ -213,7 +261,7 @@ candidate edit
 
 The GUI must not bypass Runtime lifecycle.
 
-### M9 non-goals
+### M9B non-goals
 
 - GUI implementation;
 - persistent Lua workspace;
@@ -290,10 +338,23 @@ Create a coherent release set so users do not need milestone archaeology:
 - Recorder/history guide;
 - GUI guide;
 - Babashka/Application API guide;
-- virtual/emulator guide;
-- frozen M5 Lua component guide;
-- native managed-component/developer guide;
+- virtual/emulator guide based on `VirtualInstrument`,
+  `ThermalPlantInstrument`, the Application API emulator path and a Babashka example;
+- strong native Rust managed-component guide based on real repository code;
+- native-extension developer guide;
 - end-to-end tutorials.
+
+The native managed-component guide teaches when to use a normal native
+instrument/model versus a managed component, `ComponentManifest`/identity,
+`Invocation`, PlainData configuration/state, `ComponentResult`,
+`ComponentExecutor`, validation, units, bounded state/execution, failure propagation,
+generation/replacement/reload, registration, tests and adding one small native Rust
+model/filter/transform.
+
+Do not publish a Lua tutorial, Lua fallback workflow, Lua application API guide,
+`experiment.lua`/`model.lua`/`filter.lua` tutorial or Lua example-script package.
+`MILESTONE_5_DESIGN.md` and `MILESTONE_5_REPORT.md` remain historical engineering
+evidence.
 
 ### Packaging
 
@@ -328,10 +389,9 @@ Not part of the first-release commitment:
 
 1. learn/exercise the Application API with Babashka procedures and emulators;
 2. evaluate embedded Steel as an in-process client of the SAME Application API;
-3. add native Rust implementations of useful managed components;
-4. migrate away from M5 Lua component implementations;
-5. optionally remove `lab-lua` after replacement coverage;
-6. richer controllers, instruments and recipes.
+3. migrate useful remaining M5 Lua implementations after native replacement coverage;
+4. optionally remove `lab-lua` after replacement coverage;
+5. richer controllers, instruments and recipes.
 
 ## v0.1 definition of done
 

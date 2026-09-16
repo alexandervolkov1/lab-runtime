@@ -81,13 +81,25 @@ Runtime validates/commits
 
 The current Core execution seam includes language-neutral data and executor concepts
 such as `Invocation`, `ComponentResult`, `ComponentCompletion`, `ComponentExecutor`
-and `PlainData`.
+and `PlainData`, together with generation, revision and failure semantics.
 
 ### Current Lua role
 
 M5 implemented bounded disposable Lua model/filter/transform components.
 
 For v0.1 this subsystem is FROZEN.
+
+M5 Lua is not currently known to violate the safety boundary. Its existing sandbox
+denies raw transport, OutputAuthority, physical ACK/readback/safe evidence and
+general Runtime mutability.
+
+The narrower pre-release problem is Lua-specific leakage into interfaces that should
+be language-neutral. Known examples include `ComponentDefinition.source: String`,
+public `lua_source`/`lua_transform` capabilities, `reload_managed_scripts`, generic
+lifecycle helpers such as `stage_standard_lua`, and deployment/provenance vocabulary
+such as `ManagedLuaSource`/`managed_lua_source`. M9A will address that vocabulary and
+add the native execution path; it must not rewrite historical SQLite evidence merely
+to rename old Lua provenance.
 
 Allowed changes:
 
@@ -105,8 +117,8 @@ Not planned before v0.1:
 
 ### Native Rust components
 
-Native Rust components may later implement the same managed-component execution
-contract.
+Native Rust components will receive a first-class implementation path through the
+same managed-component execution contract in M9A, after M8 external acceptance.
 
 This gives a simple future migration:
 
@@ -120,7 +132,7 @@ remove the Lua implementation after replacement coverage exists
 
 Recompilation is acceptable for trusted internal algorithms and models.
 
-A future complete `lab-lua` removal is a separate post-release decision.
+A future complete `lab-lua` removal remains a separate post-release decision.
 
 ## User-facing automation
 
@@ -139,8 +151,15 @@ evidence capabilities.
 
 ## Virtual instruments and emulators
 
-User-authored virtual/emulator models should be driven through a validated virtual
-instrument/emulator part of the Application API.
+The repository already has two useful native virtual foundations:
+
+- `VirtualInstrument`, the simple deterministic/fault-injection virtual source;
+- `ThermalPlantInstrument`, the built-in stateful native thermal
+  emulator/reference model.
+
+They remain in the architecture and are not scheduled for removal or replacement.
+M9B adds a validated virtual-instrument/emulator part of the Application API around
+this foundation rather than rewriting it.
 
 This enables the same emulator procedure to be expressed from Babashka now and from
 a future embedded language later.
@@ -330,11 +349,17 @@ an explicit accepted safety policy requires it.
 
 ```text
 M8  final real hardware acceptance
-M9  unified Application + emulator + presentation/control/properties API
+M9A neutral managed-component boundary + first native Rust component path
+M9B unified Application + emulator + presentation/control/properties API + Babashka wrappers
 M10 GUI
 M11 hardening, documentation, tutorials, packaging
 v0.1.0
 ```
 
-Post-v0.1 work may include embedded Steel, native replacement of useful M5 Lua
-components, optional later Lua removal, additional controllers and richer instruments.
+The v0.1 documentation teaches native Rust managed components and the native
+virtual/emulator foundation plus Application API and Babashka use. It does not teach
+a Lua application workflow. `MILESTONE_5_DESIGN.md` and `MILESTONE_5_REPORT.md`
+remain historical engineering evidence.
+
+Post-v0.1 work may include embedded Steel over the same Application API, optional
+later Lua removal, additional controllers and richer instruments.

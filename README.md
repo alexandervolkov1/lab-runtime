@@ -20,7 +20,7 @@ focused reconnect/COM/Recorder suites and real Babashka A/B process acceptance.
 Real M8 hardware acceptance is not complete until the prepared reconnect path succeeds
 on the actual Metakon bench and the final release/rustdoc gates pass.
 
-Do not start M9 before external M8 acceptance.
+Do not start M9A before external M8 acceptance.
 
 ## Active project guidance
 
@@ -51,8 +51,13 @@ The Rust workspace currently contains:
 M5 Lua remains present but frozen for v0.1.
 
 The managed-component execution boundary itself is language-neutral. Native Rust
-components may later implement the same contract and replace useful Lua
-model/filter/transform implementations.
+components become a first-class path through the same contract in M9A. M5 Lua is not
+currently known to violate the safety boundary; the planned cleanup concerns
+Lua-specific naming leaked into otherwise common interfaces.
+
+The existing native `VirtualInstrument` and `ThermalPlantInstrument` remain. M9B
+adds a validated emulator Application API around that foundation rather than
+replacing it.
 
 ## Application model
 
@@ -74,7 +79,8 @@ Clients do not own controller, transport, Recorder or output-safety lifetime.
 
 ```text
 M8  final physical acceptance
-M9  unified Application/emulator/presentation/control/properties API
+M9A neutral managed-component boundary + native Rust component path
+M9B unified Application/emulator/presentation/control/properties API + Babashka wrappers
 M10 GUI
 M11 hardening + docs + packaging
 v0.1.0

@@ -33,7 +33,7 @@ READY_FOR_HARDWARE_RERUN
 Authorized work is only the final read-only M8 hardware acceptance and its final
 verification/reporting gate.
 
-Do not start M9 before external M8 acceptance.
+Do not start M9A before external M8 acceptance.
 
 ## Donor repository
 
@@ -107,6 +107,7 @@ ComponentResult
 ComponentCompletion
 ComponentExecutor
 PlainData
+generation/revision/failure semantics
 ```
 
 A managed component is Runtime-invoked computation:
@@ -120,19 +121,33 @@ Existing M5 Lua is one executor/implementation of this contract.
 For v0.1, M5 Lua is frozen. Only bug/regression, safety/security and documentation
 corrections are allowed.
 
+M5 Lua is not currently known to violate the safety boundary. Its sandbox denies
+raw transport, OutputAuthority, physical ACK/readback/safe evidence and general
+Runtime mutability. The narrower pre-release issue is that Lua-specific implementation
+details leak into interfaces that should be language-neutral, including
+`ComponentDefinition.source`, `lua_source`/`lua_transform`,
+`reload_managed_scripts`, generic lifecycle helpers such as `stage_standard_lua`,
+and provenance vocabulary such as `ManagedLuaSource`/`managed_lua_source`.
+
+Do not rename historical SQLite evidence merely to neutralize old Lua provenance.
+
 Do not add a persistent Lua workspace, Lua application/scenario API, Lua GUI API,
 Lua REPL/editor or broader M5 scope.
 
-Native Rust components may later implement the same managed-component execution
-contract. Useful Lua models/filters/transforms may then be replaced one-for-one by
-native implementations before an optional later `lab-lua` removal.
-
-Do not perform that migration during M8-M11 unless explicitly authorized.
+After external M8 acceptance, M9A may neutralize that interface leakage and add a
+first-class native Rust implementation path through the same contract, proving at
+least one small native model/filter/transform. Do not begin M9A now.
 
 ## Virtual/emulator boundary
 
-User-authored virtual instrument/emulator behavior should use a validated Application
-API rather than M5 Lua.
+The existing `VirtualInstrument` deterministic/fault-injection source and
+`ThermalPlantInstrument` stateful native thermal emulator/reference model remain
+useful native infrastructure. Do not remove or replace them.
+
+M9B adds a validated Application API around this native virtual-instrument foundation
+so Babashka now, and future Steel later, can implement/control user-authored
+emulators through the same semantics. This does not mean rewriting the existing
+native instruments or moving emulator behavior into M5 Lua.
 
 Only explicitly declared virtual/emulated instruments may accept virtual publication
 or model steps.
