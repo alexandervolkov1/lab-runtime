@@ -192,6 +192,16 @@ are not reported as passing evidence.
     rejected after reload; both remain safe/disarmed without implicit rearm.
     Full Core, targeted lifecycle/provenance suites and workspace all-target
     warning-denied clippy pass.
+20. C5 explicit public staging was red at strict wire decode because only the
+    convenience reload operation existed. Added distinct deduplicated
+    `stage_configuration` and `apply_configuration` operations with canonical
+    candidate/base-revision arguments and bounded diff-effect results. Staging
+    performs no active mutation; apply uses the same safe/Recorder lifecycle as
+    convenience reload. Moving the Required recording fence into the apply port
+    also ensures an unknown/stale/expired candidate is rejected before closing
+    recording admission. The public API test observes revision one after stage
+    and revision two only after the matching apply. Protocol, deduplication,
+    lifecycle and warning-denied clippy suites pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

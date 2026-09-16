@@ -212,6 +212,47 @@ fn c8_public_api_exposes_three_separate_deduplicated_operations() {
 }
 
 #[test]
+fn c5_public_stage_and_apply_are_distinct_revision_fenced_operations() {
+    let path = temporary_path();
+    fs::write(&path, deployment("Old", 100, 22.0)).unwrap();
+    let arg = path.to_string_lossy().into_owned();
+    let mut service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .unwrap();
+    let mut application = Application::new(service.boot_id()).unwrap();
+    let hello = application.handle(
+        &mut service,
+        1,
+        request(json!({"v":1,"msg_id":"h","op":"hello","args":{"scope":null}})),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap();
+    fs::write(&path, deployment("Staged", 250, 22.0)).unwrap();
+
+    let staged = application.handle(
+        &mut service,
+        1,
+        request(json!({"v":1,"msg_id":"s","op":"stage_configuration",
+            "request_id":{"scope":scope,"seq":"1"},"args":{}})),
+    );
+    assert_eq!(staged[1]["state"], "completed");
+    let candidate = staged[1]["result"]["candidate_id"].as_str().unwrap();
+    let base = staged[1]["result"]["base_revision"].as_str().unwrap();
+    assert_eq!(service.loaded_configuration().unwrap().revision(), 1);
+
+    let applied = application.handle(
+        &mut service,
+        1,
+        request(json!({"v":1,"msg_id":"a","op":"apply_configuration",
+            "request_id":{"scope":scope,"seq":"2"},"args":{
+                "candidate_id":candidate,"expected_revision":base}})),
+    );
+    assert_eq!(applied[1]["state"], "completed");
+    assert_eq!(applied[1]["result"]["revision"], "2");
+    assert_eq!(service.loaded_configuration().unwrap().revision(), 2);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn c6_pid_reload_pauses_warming_control_proves_safe_and_never_rearms() {
     let path = temporary_path();
     fs::write(&path, controlled_deployment(3.0)).unwrap();

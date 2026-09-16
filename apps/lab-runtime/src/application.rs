@@ -485,7 +485,8 @@ impl Application {
                                 "reference","component","output","runtime_snapshot","operation_status",
                                 "snapshot_page","snapshot_release","subscribe","unsubscribe","reference_retune",
                                 "controller_configure_pid","controller_start","controller_pause",
-                                "controller_resume","reload_configuration","reload_managed_scripts",
+                                "controller_resume","stage_configuration","apply_configuration",
+                                "reload_configuration","reload_managed_scripts",
                                 "restart_virtual_models","runtime_shutdown"];
                             if service.owner().recording_status().is_some() {
                                 capabilities.push("recorder_sqlite_v1");
@@ -1345,6 +1346,15 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
             json!({"controller":controller.to_string()}),
         ),
         Mutation::ReloadConfiguration => ("reload_configuration", json!({})),
+        Mutation::StageConfiguration => ("stage_configuration", json!({})),
+        Mutation::ApplyConfiguration {
+            candidate_id,
+            expected_revision,
+        } => (
+            "apply_configuration",
+            json!({"candidate_id":candidate_id.to_string(),
+                "expected_revision":expected_revision.to_string()}),
+        ),
         Mutation::ReloadManagedScripts => ("reload_managed_scripts", json!({})),
         Mutation::RestartVirtualModels => ("restart_virtual_models", json!({})),
         Mutation::Shutdown => ("shutdown", json!({})),
@@ -1532,6 +1542,11 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
         }
         "runtime_shutdown" => Mutation::Shutdown,
         "reload_configuration" => Mutation::ReloadConfiguration,
+        "stage_configuration" => Mutation::StageConfiguration,
+        "apply_configuration" => Mutation::ApplyConfiguration {
+            candidate_id: id_field(args, "candidate_id")?,
+            expected_revision: id_field(args, "expected_revision")?,
+        },
         "reload_managed_scripts" => Mutation::ReloadManagedScripts,
         "restart_virtual_models" => Mutation::RestartVirtualModels,
         _ => return Err("unsupported_operation"),
@@ -1601,6 +1616,31 @@ fn dispatch(
                 .reload_configuration()
                 .map(|result| json!({"revision":result.revision.to_string()}))
                 .map_err(|_| Error::InvalidConfiguration("configuration reload failed"));
+        }
+        Mutation::StageConfiguration => {
+            return service
+                .stage_configuration()
+                .map(|staged| {
+                    let effects: Vec<_> = staged
+                        .diff()
+                        .effects()
+                        .iter()
+                        .map(|effect| format!("{effect:?}"))
+                        .collect();
+                    json!({"candidate_id":staged.id().to_string(),
+                        "base_revision":staged.base_revision().to_string(),
+                        "effects":effects})
+                })
+                .map_err(|_| Error::InvalidConfiguration("configuration stage failed"));
+        }
+        Mutation::ApplyConfiguration {
+            candidate_id,
+            expected_revision,
+        } => {
+            return service
+                .apply_staged_configuration(candidate_id, expected_revision)
+                .map(|result| json!({"revision":result.revision.to_string()}))
+                .map_err(|_| Error::InvalidConfiguration("configuration apply failed"));
         }
         Mutation::ReloadManagedScripts => {
             return service

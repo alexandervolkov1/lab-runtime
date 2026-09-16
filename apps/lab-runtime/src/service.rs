@@ -6,7 +6,9 @@
 use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor};
 use crate::{
     configuration::{FlowControlDto, ParityDto, RecordingPolicyDto, load_runtime_toml},
-    deployment::{ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError},
+    deployment::{
+        ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
+    },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
     serial::{ComSettings, ComTransport, SerialFlowControl, SerialParity},
 };
@@ -163,10 +165,19 @@ struct LiveApplyPort<'a> {
     host: &'a mut HostCore,
     active: &'a crate::configuration::FrozenDeployment,
     at: std::time::Duration,
+    recording_fence: Option<(bool, std::time::Duration)>,
+}
+impl LiveApplyPort<'_> {
+    fn ensure_recording_fence(&mut self, at: std::time::Duration) {
+        if self.recording_fence.is_none() {
+            self.recording_fence = Some((self.host.begin_configuration_recording_fence(at), at));
+        }
+    }
 }
 impl ApplyPort for LiveApplyPort<'_> {
     fn enter_safe_barrier(&mut self, at: std::time::Duration) -> Result<bool, ApplyError> {
         self.at = at;
+        self.ensure_recording_fence(at);
         self.host
             .enter_configuration_safe_barrier(at)
             .map_err(|_| ApplyError::OwnerFailure)
@@ -180,6 +191,7 @@ impl ApplyPort for LiveApplyPort<'_> {
         &mut self,
         candidate: &crate::configuration::FrozenDeployment,
     ) -> Result<(), ApplyError> {
+        self.ensure_recording_fence(self.at);
         self.host
             .apply_configuration(self.active, candidate, self.at)
             .map_err(|_| ApplyError::OwnerFailure)
@@ -525,6 +537,12 @@ impl ServiceHost {
     pub fn reload_configuration(
         &mut self,
     ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
+        let staged = self.stage_configuration()?;
+        self.apply_staged_configuration(staged.id(), staged.base_revision())
+    }
+
+    /// Load, validate and retain exactly one immutable candidate without active mutation.
+    pub fn stage_configuration(&mut self) -> Result<StagedConfiguration, LifecycleOperationError> {
         let path = self
             .configuration_path
             .as_deref()
@@ -538,12 +556,6 @@ impl ServiceHost {
                     .active(),
             )
             .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
-        let active = self
-            .deployment
-            .as_ref()
-            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-            .active()
-            .clone();
         let lifecycle = self
             .deployment
             .as_mut()
@@ -555,22 +567,38 @@ impl ServiceHost {
                     LifecycleOperationError::Conflict
                 }
             })?;
-        let submitted_at = self.clock.now();
-        let reopen_required = self.host.begin_configuration_recording_fence(submitted_at);
+        Ok(staged)
+    }
+
+    /// Apply one retained candidate under its explicit identity/revision fence.
+    pub fn apply_staged_configuration(
+        &mut self,
+        candidate_id: u64,
+        expected_revision: u64,
+    ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
+        let active = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .active()
+            .clone();
+        let lifecycle = self
+            .deployment
+            .as_mut()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
         let apply_at = self.clock.now();
         let mut port = LiveApplyPort {
             host: &mut self.host,
             active: &active,
             at: apply_at,
+            recording_fence: None,
         };
-        let applied = lifecycle.apply(
-            staged.id(),
-            staged.base_revision(),
-            self.clock.now(),
-            &mut port,
-        );
+        let applied = lifecycle.apply(candidate_id, expected_revision, self.clock.now(), &mut port);
+        let recording_fence = port.recording_fence;
         match applied {
             Ok(ApplyResult::Applied { revision }) => {
+                let (reopen_required, submitted_at) = recording_fence
+                    .expect("successful apply crosses the recording fence before commit");
                 let generation = match self.host.request_live_activation() {
                     Ok(generation) => generation,
                     Err(_) => {

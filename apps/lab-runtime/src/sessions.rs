@@ -116,6 +116,15 @@ pub enum Mutation {
     },
     /// Reload and apply the configured deployment through its classified lifecycle.
     ReloadConfiguration,
+    /// Load and retain one bounded configuration candidate without active mutation.
+    StageConfiguration,
+    /// Apply one retained candidate under its candidate/revision fence.
+    ApplyConfiguration {
+        /// Process-local staged candidate identity.
+        candidate_id: u64,
+        /// Active deployment revision observed at stage time.
+        expected_revision: u64,
+    },
     /// Reload only managed script sources; TOML and native models are unchanged.
     ReloadManagedScripts,
     /// Restart only configured virtual models; sources and TOML are not reread.
