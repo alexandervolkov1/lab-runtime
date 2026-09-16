@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed software corrections are
-complete under SOL_HIGH and COM5 has not been reopened, 2026-09-16.
+Status: `WAITING_FOR_REVIEW` after the corrected real disconnect exposed a
+Windows COM recovery/shutdown contradiction, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -25,12 +25,12 @@ are not reported as passing evidence.
 | C11 | `model_restart`, `managed_script_reload`, `runtime_lifecycle_operations` | Software pass |
 | C12 | `windows_com_transport`, `configured_physical` | Software pass; actual COM5 open/settings/close observed |
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
-| C14 | `windows_com_transport`, `configured_physical` | Software pass; real disconnect pending |
+| C14 | `windows_com_transport`, `configured_physical` | Software pass; **blocked by actual COM5 disconnect recovery** |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | Corrected real acquisition pass; physical disconnect/reconnect pending |
-| C17 | Actual observations, public history and SQLite reopen | Corrected live durable evidence pass; final close/reopen pending |
-| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected live Babashka observation pass, physical recovery pending |
-| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Actual clean COM/Recorder close passed; physical disconnect/reconnect subcase not run |
+| C16 | Actual Windows COM + Metakon read-only bench | Corrected acquisition pass; **blocked before reconnect by missing Offline/Unavailable transition** |
+| C17 | Actual observations, public history and SQLite reopen | Corrected durable Good evidence pass; **no durable Unavailable fact after disconnect** |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected live Babashka observation pass, physical reconnect not attempted |
+| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Recorder flushed, but actual disconnected COM worker did not close within the finite shutdown bound |
 | C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
 ## Actual sequence
@@ -580,19 +580,62 @@ The corrected evidence is separate at
 archive remains unchanged at SHA-256
 `91b1da3f76222389ab77d0f4355f5da6ed8b2f0dbb2271ada2a3532b54fb1eec`.
 No actuator/output write, configuration operation, alternative register/address,
-reset or COM enumeration was performed. The corrected Runtime and Required run
-remain active for the next explicitly operator-cued physical disconnect step;
-the run is not yet sealed and final SQLite reopen evidence is therefore pending.
+reset or COM enumeration was performed. At that checkpoint, the corrected
+Runtime and Required run remained active for the explicitly operator-cued
+physical disconnect step; the run was not yet sealed.
+
+## Actual disconnect contradiction — 2026-09-16
+
+After the operator explicitly reported that the device/cable was physically
+disconnected, only public pure queries were issued. No reconnect, write,
+configuration operation, alternate register/address, reset or COM enumeration
+was attempted. The resource promptly changed from idle to `recovering`, with
+active transaction 498 and prior completed transaction 497. The last temperature
+remained the old `Good` 28.0 °C sample at monotonic timestamp 495054820600 and
+never advanced, so no fabricated new Good sample was published.
+
+The required explicit failure transition did not occur. Across an initial ten
+one-second observations and eight further two-second observations—far beyond the
+configured 2,000-ms recovery timeout—the same transaction 498 remained active,
+the resource never reached `offline`, and the Signal never became `Unavailable`.
+The bounded transport queue grew from 21 to its fixed limit of 32 and then stayed
+at 32. Required recording itself remained healthy with complete coverage and
+continued committing clock/progress facts, but it had no failure observation to
+record.
+
+Under the reviewed discrepancy rule, reconnect was not attempted. Public
+`runtime_shutdown` was accepted and terminated finitely with
+`cleanup_incomplete`: `recorder_flushed=true`, `recorder_unfinished=false`,
+`safe_confirmed=true`, `unfinished_workers=0`, but
+`unfinished_transports=1`, `transports_closed=false`, `cleanup_complete=false`
+and `exit_success=false`. The process exited with code 1 and reported
+`safe shutdown incomplete`. The terminal output list was empty.
+
+Offline SQLite inspection found a sealed complete run and interval with no gaps,
+381 temperature rows, all `Good`, range 27–28 °C, and zero `Unavailable` rows.
+There are still zero `output_events`. The durable boot seal honestly records
+resource 1 as `recovering`, generation 1, active transaction 498, latest completed
+transaction 497. The corrected database SHA-256 after close is
+`d726efe8f562656361c65c970cdb6b78823963861e507026a12c4c3c408593c2`;
+the original erroneous archive remains unchanged at
+`91b1da3f76222389ab77d0f4355f5da6ed8b2f0dbb2271ada2a3532b54fb1eec`.
+The corrected SQLite, empty WAL and SHM files are retained as separate evidence.
+
+This is not a scaling or Metakon frame discrepancy. It is an actual Windows COM
+disconnect/recovery and close-boundary contradiction against C14/C16/C17/C19.
+M8 stops at `WAITING_FOR_REVIEW`; physical reconnect must not be attempted until
+the recovery behavior is reviewed.
 
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
-corrected live run now establishes plausible real temperature and durable
-history. Physical disconnect/reconnect, explicit `reconnect_resource`, final
-clean shutdown and offline SQLite reopen evidence for C14/C16/C17/C19 remain
-pending. Firmware remains unknown and no independent wire capture exists.
+corrected run establishes plausible real temperature and durable history. Its
+physical disconnect did not produce the required Offline/Unavailable transition,
+and the COM worker did not confirm close during finite shutdown. Reconnect and
+resumed-measurement acceptance are deliberately untested. Firmware remains
+unknown and no independent wire capture exists.
 
-M8 stops at `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for external
-review and does not authorize M9. M8 performed no physical actuator write and
-makes no physical-output-safety, power-loss, remote-security, GUI or long-soak
+M8 stops at `WAITING_FOR_REVIEW`; it is not ready for external review and does
+not authorize M9. M8 performed no physical actuator write and makes no
+physical-output-safety, power-loss, remote-security, GUI or long-soak
 certification claim.

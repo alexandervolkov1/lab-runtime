@@ -1,9 +1,9 @@
 # Current work — M8 corrected real-hardware acceptance
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model: SOL_HIGH.
-Current phase: corrected acquisition passed; physical disconnect/reconnect pending.
+Current phase: review actual Windows COM disconnect/recovery contradiction.
 M7: externally accepted at `f3ff456`.
 M8 software implementation: complete at `0a42d73`; reviewed corrections complete
 through `867f985` on 2026-09-16.
@@ -30,23 +30,24 @@ scale explicit, resolved deployment-owned relative paths from runtime.toml, and
 preserved the first SQLite bench archive. Exact red/green history, hashes and
 391-test gates are in `MILESTONE_8_REPORT.md`.
 
-## Current live checkpoint and next authorized action
+## Review stop
 
-The corrected Runtime is active on boot
-`dd5ac8d6362a2322046e4ad20b23932c`, with Required database
-`769be53d8fb9cd4dcbb49bf70880cdbe`, run 1/interval 1. Channel type 3 passed;
-raw/engineering 27/28 agree with the operator's contemporaneous 28 °C display;
-Signal quality is Good; logical resource/resource generation/binding generation/
-mapping revision are 1/1/1/1; durable provenance matches the corrected hashes;
-and `output_events` is zero. Exact evidence is in `MILESTONE_8_REPORT.md`.
+Corrected acquisition passed at 27/28 °C against the operator's 28 °C display.
+After the operator physically disconnected the device/cable, resource 1 entered
+`recovering` but did not reach Offline or publish Unavailable for more than 25
+seconds despite a configured 2-second recovery timeout. Transaction 498 remained
+active and the bounded queue filled to 32. The old Good timestamp did not advance,
+so there was no fabricated new Good sample.
 
-Do not disconnect the device or mutate the Runtime until the user explicitly
-signals that the physical cable/device has been disconnected. Then observe
-Offline/Unavailable without fabricated Good values and stop for the reconnect
-cue. After the user reconnects, use only `reconnect_resource`, verify the same
-logical resource with a new binding generation and resumed real measurements,
-perform the public Babashka/history/provenance checks and shut down COM plus
-Recorder cleanly. Reopen SQLite and record durable evidence in the M8 report.
+Reconnect was not attempted. Finite shutdown flushed Recorder but reported one
+unfinished, unclosed transport and exited unsuccessfully. The sealed corrected
+SQLite archive has complete coverage/no gaps, 381 Good and zero Unavailable
+temperature rows, zero output events, and an honest recovering-resource boot
+seal. Full evidence and hashes are in `MILESTONE_8_REPORT.md`.
+
+Do not reconnect or reopen COM5 until external review determines the correction
+scope. Preserve the corrected SQLite/SHM/empty-WAL files and the original evidence
+files. Do not start M9.
 
 If actual behavior contradicts the trusted protocol/recovery contract, preserve
 the observations, set `STATUS: WAITING_FOR_REVIEW` and stop. A fake transport

@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 corrected Metakon acquisition passed; awaiting physical disconnect cue.
+M8 actual Windows COM disconnect/recovery contradiction review.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,10 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-Keep the corrected read-only Runtime/Required run active. After an explicit user
-cue that the cable/device has been physically disconnected, observe the accepted
-Offline/Unavailable behavior. Do not add registers, issue writes/resets, or
-start M9.
+No further physical COM operation or reconnect until review of the actual
+disconnect/recovery contradiction. Preserve both SQLite evidence sets. Do not
+add registers, issue writes/resets, or start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -178,9 +177,31 @@ resource 1, resource/binding/mapping generations 1/1/1 remain stable. The old
 SQLite archive retains its original hash. No write, reset, alternative register,
 configuration operation or COM enumeration occurred.
 
-The corrected Runtime is intentionally still running and its separate SQLite run
-is unsealed. Await the user's explicit physical-disconnect cue before continuing
-C14/C16/C17/C19. Do not begin M9.
+At that checkpoint, the corrected Runtime was intentionally left running and its
+separate SQLite run was unsealed while the explicit physical-disconnect cue was
+awaited. Do not begin M9.
+
+M8 actual disconnect review stop — 2026-09-16
+
+After the operator disconnected the device/cable, resource 1 entered
+`recovering` with active transaction 498. For more than 25 seconds—well beyond
+the configured 2-second recovery timeout—it never became Offline, the Signal
+never became Unavailable, and transaction 498 remained active. The last Good
+sample retained its old timestamp and no later Good sample was fabricated. The
+bounded queue reached its fixed capacity 32 and stopped growing.
+
+No reconnect or other physical operation was attempted. Bounded shutdown
+returned `cleanup_incomplete`: Recorder flushed and safe confirmation held, but
+one transport remained unfinished and not closed; the process exited with code
+1. Offline SQLite is sealed complete with no gaps, 381 Good temperature rows,
+zero Unavailable rows and zero output events. Its boot seal records the resource
+still recovering with transaction 498 active. Corrected database SHA-256 is
+`d726efe8f562656361c65c970cdb6b78823963861e507026a12c4c3c408593c2`;
+the original archive hash remains unchanged.
+
+This is a genuine C14/C16/C17/C19 Windows COM recovery/shutdown contradiction,
+not a scaling or protocol-frame discrepancy. STATUS is `WAITING_FOR_REVIEW`.
+Do not reconnect, reopen COM5 or begin M9.
 
 Design validation passed: exactly 20 distinct C1-C20 matrix rows, resolving local
 design links, balanced Markdown fences, no trailing whitespace in all five
