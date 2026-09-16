@@ -57,9 +57,17 @@ Current model: SOL_HIGH.
 Authorized work: audit and complete M7 tests-first implementation against
 `docs/implementation/MILESTONE_7_DESIGN.md`.
 
-The M7 design and D1-D18 acceptance contract are complete. Earlier uncommitted
-production changes must be verified with the corresponding acceptance coverage;
-record their actual test sequence honestly in the M7 report.
+The M7 design and D1-D18 acceptance contract are complete. The earlier
+uncommitted production changes have been audited; keep verifying them with
+the corresponding acceptance coverage and record their actual test sequence
+honestly in the M7 report.
+
+The incoming uncommitted production audit is complete. At the user-requested
+2026-09-16 pause, the latest logical Recorder test commit is `53880ca`; M7 is
+still incomplete. Completed coverage and the remaining D1-D18 work are recorded
+in `ai/WORK.md` and `docs/implementation/MILESTONE_7_REPORT.md`. Keep STATUS:
+M7_IMPLEMENTATION_IN_PROGRESS and resume only when the user asks. This pause
+does not request external review or cross a model or milestone gate.
 
 Do not begin M8.
 

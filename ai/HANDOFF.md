@@ -21,8 +21,9 @@ M7 Recorder/SQLite architecture and tests-first D1–D18 acceptance contract.
 Implementation contract:
 docs/implementation/MILESTONE_7_DESIGN.md
 
-M7 production implementation is in progress. Existing uncommitted M7 changes
-preceded the explicit SOL_HIGH switch and are being audited against D1-D18.
+M7 production implementation is in progress. The incoming uncommitted M7
+changes preceded the explicit SOL_HIGH switch and have been audited against
+D1-D18; remaining acceptance work is recorded in the M7 report.
 
 External review result:
 M6 accepted as the implementation baseline for the first-release sequence.
@@ -250,6 +251,22 @@ Current model gate
 M7_IMPLEMENTATION_IN_PROGRESS
 
 Current model: SOL_HIGH. M7 design is complete and accepted as the implementation
-contract. Audit and complete existing M7 work against D1-D18, recording any
+contract. Continue M7 work against D1-D18, recording any
 acceptance tests added after their production code honestly in the M7 report.
 M8 is not authorized. Set READY_FOR_EXTERNAL_REVIEW only after all M7 checks pass.
+
+M7 implementation pause checkpoint — 2026-09-16
+
+The user requested an interruption after finishing the current logical commit
+and recording completed and unfinished work. The latest Recorder acceptance
+commit is 53880ca: an actual blocked-writer server process exits unsuccessfully
+after its finite flush watchdog; a fresh SQLite reopen reports the old run's
+unknown tail. Its named debug/release tests, formatting and focused clippy pass.
+
+The design, incoming production audit and substantial Runtime-owned Recorder,
+Required/BestEffort, SQLite and bounded-history coverage are complete or in
+place. D1-D17 still have edge acceptance cases listed in ai/WORK.md and the
+in-progress MILESTONE_7_REPORT.md. The final D18 latest-head verification and
+version/limit inventory are not complete. This pause remains inside SOL_HIGH
+with STATUS: M7_IMPLEMENTATION_IN_PROGRESS. It is not an external-review request
+or a model handoff. Resume M7 only when the user asks; M8 is not authorized.
