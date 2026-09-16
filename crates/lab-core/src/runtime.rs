@@ -266,6 +266,17 @@ pub enum Command {
         /// Nondecreasing monotonic Runtime time of replacement.
         at: Duration,
     },
+    /// Atomically replace one stopped read-only Metakon definition and binding.
+    ReconfigureMetakon {
+        /// Complete validated candidate with the same logical instrument ID.
+        config: MetakonInstrumentConfig,
+        /// Binding generation observed before the safe/rebind barrier.
+        expected_binding_generation: u64,
+        /// Mapping revision observed before the safe/rebind barrier.
+        expected_mapping_revision: u64,
+        /// Nondecreasing trusted monotonic commit time.
+        at: Duration,
+    },
     /// Change only the display name; preserve all identities and observations.
     RenameInstrument {
         /// Target instrument identity, independent of its display name.
@@ -1606,6 +1617,86 @@ impl Runtime {
                 }
                 self.outputs.extend(replacements);
                 Ok(CommandResult::Registered(instrument))
+            }
+            Command::ReconfigureMetakon {
+                config,
+                expected_binding_generation,
+                expected_mapping_revision,
+                at,
+            } => {
+                let id = config.definition.id;
+                self.check_output_time(at)?;
+                let current = self
+                    .metakon_instruments
+                    .get(&id)
+                    .ok_or(Error::UnknownInstrument(id))?;
+                if current.binding.binding_generation != expected_binding_generation
+                    || current.binding.mapping_revision != expected_mapping_revision
+                    || config.binding.binding_generation
+                        != expected_binding_generation.checked_add(1).unwrap_or(0)
+                    || config.binding.mapping_revision
+                        != expected_mapping_revision.checked_add(1).unwrap_or(0)
+                    || !self.resources.contains_key(&config.binding.resource)
+                {
+                    return Err(Error::InvalidConfiguration(
+                        "stale or invalid Metakon replacement",
+                    ));
+                }
+                if current
+                    .descriptor
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.role == crate::ParameterRole::Actuator)
+                    || self.controllers.values().any(|controller| {
+                        matches!(
+                            controller.state,
+                            ControllerState::Warming | ControllerState::Running
+                        ) && (controller.config.input.instrument() == id
+                            || controller.config.output.instrument() == id)
+                    })
+                {
+                    return Err(OutputError::Busy.into());
+                }
+                let mut candidate = MetakonInstrument::new(config)?;
+                if candidate
+                    .descriptor
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.role == crate::ParameterRole::Actuator)
+                {
+                    return Err(Error::InvalidConfiguration(
+                        "M8 Metakon replacement must remain read-only",
+                    ));
+                }
+                let binding = candidate.binding;
+                let descriptors: Vec<_> = candidate
+                    .descriptor
+                    .parameters
+                    .iter()
+                    .filter_map(|parameter| parameter.signal.map(|signal| (signal, parameter.unit)))
+                    .collect();
+                let mut invalidated = Vec::with_capacity(descriptors.len());
+                for (signal, unit) in descriptors {
+                    let sample =
+                        Sample::unavailable(signal, unit, at, crate::MeasurementFailure::Transport);
+                    candidate
+                        .signals
+                        .get_mut(&signal)
+                        .expect("validated signal")
+                        .push(sample.clone())?;
+                    invalidated.push(sample);
+                }
+                self.pending_reads
+                    .retain(|_, pending| pending.instrument != id);
+                self.metakon_instruments.insert(id, candidate);
+                for sample in invalidated {
+                    self.recording_facts.measurement(
+                        sample,
+                        binding.binding_generation,
+                        binding.mapping_revision,
+                    );
+                }
+                Ok(CommandResult::Registered(id))
             }
             Command::RenameInstrument { instrument, name } => {
                 validate_name(&name)?;

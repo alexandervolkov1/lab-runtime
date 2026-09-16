@@ -20,7 +20,7 @@ use lab_core::{
     transport::{ByteTransport, ResourceId},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
@@ -183,6 +183,7 @@ struct LiveApplyPort<'a> {
     base_revision: u64,
     activation_generation: Option<Option<u64>>,
     postcommit_recording_failure: bool,
+    prepared_bindings: BTreeMap<ResourceId, Box<dyn ByteTransport>>,
 }
 impl LiveApplyPort<'_> {
     fn ensure_recording_fence(&mut self, at: std::time::Duration) {
@@ -200,8 +201,78 @@ impl ApplyPort for LiveApplyPort<'_> {
             .map_err(|_| ApplyError::OwnerFailure)
     }
 
-    fn prepare_bindings(&mut self) -> Result<(), ApplyError> {
-        Err(ApplyError::OwnerFailure)
+    fn prepare_bindings(
+        &mut self,
+        candidate: &crate::configuration::FrozenDeployment,
+    ) -> Result<(), ApplyError> {
+        self.host.begin_configuration_quiesce();
+        let result = (|| {
+            let old = &self.active.effective().dto;
+            let new = &candidate.effective().dto;
+            let mut affected = BTreeSet::new();
+            for (old_resource, new_resource) in old.resources.iter().zip(&new.resources) {
+                if old_resource != new_resource {
+                    affected.insert(ResourceId::new(old_resource.id));
+                    affected.insert(ResourceId::new(new_resource.id));
+                }
+            }
+            for (old_instrument, new_instrument) in old.instruments.iter().zip(&new.instruments) {
+                if old_instrument == new_instrument {
+                    continue;
+                }
+                if let crate::configuration::InstrumentDto::Metakon { resource_id, .. } =
+                    old_instrument
+                {
+                    affected.insert(ResourceId::new(*resource_id));
+                }
+                if let crate::configuration::InstrumentDto::Metakon { resource_id, .. } =
+                    new_instrument
+                {
+                    affected.insert(ResourceId::new(*resource_id));
+                }
+            }
+            for resource_id in affected {
+                let resource = new
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == resource_id.get())
+                    .ok_or(ApplyError::OwnerFailure)?;
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(resource.recovery_timeout_ms);
+                loop {
+                    match self
+                        .host
+                        .prepare_configured_transport_replacement(resource_id)
+                    {
+                        Ok(true) => break,
+                        Ok(false) if std::time::Instant::now() < deadline => {
+                            self.host
+                                .service(&self.clock)
+                                .map_err(|_| ApplyError::OwnerFailure)?;
+                            std::thread::yield_now();
+                        }
+                        _ => return Err(ApplyError::OwnerFailure),
+                    }
+                }
+                let generation = self
+                    .host
+                    .configured_resource_generation(resource_id)
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(ApplyError::OwnerFailure)?;
+                let adapter = ComTransport::open_windows(
+                    com_settings(resource, generation).map_err(|_| ApplyError::OwnerFailure)?,
+                )
+                .map_err(|_| ApplyError::OwnerFailure)?;
+                self.prepared_bindings
+                    .insert(resource_id, Box::new(adapter));
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.host.end_configuration_quiesce();
+        }
+        result
     }
 
     fn commit_configuration(
@@ -244,11 +315,38 @@ impl ApplyPort for LiveApplyPort<'_> {
                 }
             }
         };
-        if self
-            .host
-            .apply_configuration(self.active, candidate, self.clock.now())
-            .is_err()
+        let prepared = std::mem::take(&mut self.prepared_bindings);
+        let mut commit_failed = false;
+        for (resource, adapter) in prepared {
+            if self
+                .host
+                .rebind_configured_transport_from_configuration(
+                    candidate,
+                    resource,
+                    adapter,
+                    self.clock.now(),
+                )
+                .is_err()
+            {
+                commit_failed = true;
+                break;
+            }
+        }
+        if !commit_failed
+            && self
+                .host
+                .apply_configuration(self.active, candidate, self.clock.now())
+                .is_err()
         {
+            commit_failed = true;
+        }
+        if !commit_failed
+            && !candidate.effective().dto.resources.is_empty()
+            && self.host.begin_configured_probes(self.clock.now()).is_err()
+        {
+            commit_failed = true;
+        }
+        if commit_failed {
             let _ = self.host.cancel_configuration_activation(reservation);
             self.host.end_configuration_quiesce();
             return Err(ApplyError::OwnerFailure);
@@ -735,6 +833,7 @@ impl ServiceHost {
             base_revision: expected_revision,
             activation_generation: None,
             postcommit_recording_failure: false,
+            prepared_bindings: BTreeMap::new(),
         };
         let applied = lifecycle.apply(candidate_id, expected_revision, self.clock.now(), &mut port);
         let recording_fence = port.recording_fence;

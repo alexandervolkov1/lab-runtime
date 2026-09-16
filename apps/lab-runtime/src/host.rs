@@ -881,6 +881,125 @@ impl HostCore {
         self.observe(at, None)
     }
 
+    /// Replace a closed resource and every candidate definition/address bound
+    /// to it in one serialized owner turn. The logical IDs remain stable while
+    /// both physical binding generation and mapping revision advance once.
+    pub fn rebind_configured_transport_from_configuration(
+        &mut self,
+        deployment: &FrozenDeployment,
+        resource: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration("configured resource missing"));
+        }
+        let mut replacements = Vec::new();
+        for instrument in &deployment.effective().dto.instruments {
+            let InstrumentDto::Metakon {
+                id,
+                definition,
+                resource_id,
+                address,
+                ..
+            } = instrument
+            else {
+                continue;
+            };
+            if *resource_id != resource.get() {
+                continue;
+            }
+            let old = self
+                .runtime
+                .metakon_binding(InstrumentId::new(*id))
+                .ok_or(Error::InvalidConfiguration("configured binding missing"))?;
+            let bytes = deployment
+                .artifact_bytes(definition)
+                .ok_or(Error::InvalidConfiguration("frozen definition missing"))?;
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| Error::InvalidConfiguration("definition is not UTF-8"))?;
+            let definition = parse_definition_json(text)
+                .map_err(|_| Error::InvalidConfiguration("invalid frozen definition"))?;
+            if definition.id != InstrumentId::new(*id) {
+                return Err(Error::InvalidConfiguration(
+                    "definition and deployment instrument IDs differ",
+                ));
+            }
+            let temperature = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.operation == KnownOperation::Temperature)
+                .ok_or(Error::InvalidConfiguration(
+                    "read-only Metakon definition lacks temperature",
+                ))?
+                .id;
+            let channel_type = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.operation == KnownOperation::ChannelType)
+                .ok_or(Error::InvalidConfiguration(
+                    "read-only Metakon definition lacks compatibility probe",
+                ))?
+                .id;
+            replacements.push((
+                InstrumentId::new(*id),
+                MetakonInstrumentConfig {
+                    definition,
+                    binding: MetakonBinding {
+                        resource,
+                        device: *address,
+                        channel: 0,
+                        binding_generation: old
+                            .binding_generation
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("binding generation exhausted"))?,
+                        mapping_revision: old
+                            .mapping_revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
+                        expected_output_unit: None,
+                    },
+                    history_capacity: 64,
+                },
+                old,
+                temperature,
+                channel_type,
+            ));
+        }
+        if replacements.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "candidate resource has no instrument",
+            ));
+        }
+        self.runtime.replace_transport(resource, adapter)?;
+        for (instrument, config, old, temperature, channel_type) in replacements {
+            self.runtime.command(Command::ReconfigureMetakon {
+                config,
+                expected_binding_generation: old.binding_generation,
+                expected_mapping_revision: old.mapping_revision,
+                at,
+            })?;
+            let read = self
+                .plan
+                .metakon_reads
+                .iter_mut()
+                .find(|read| read.instrument == instrument)
+                .ok_or(Error::InvalidConfiguration(
+                    "configured read schedule missing",
+                ))?;
+            read.parameter = temperature;
+            let probe = self
+                .configured_probes
+                .iter_mut()
+                .find(|probe| probe.instrument == instrument)
+                .ok_or(Error::InvalidConfiguration("configured probe missing"))?;
+            probe.parameter = channel_type;
+            probe.queued = false;
+        }
+        self.closed_resources.remove(&resource);
+        self.observe(at, None)
+    }
+
     /// Retire the current adapter without waiting; true means a replacement can
     /// be installed without creating a second handle owner.
     pub fn prepare_configured_transport_replacement(
@@ -896,6 +1015,17 @@ impl HostCore {
         self.runtime
             .metakon_binding(InstrumentId::new(instrument))
             .map(|binding| binding.binding_generation)
+    }
+
+    /// Highest active binding generation using one stable logical resource.
+    pub(crate) fn configured_resource_generation(&self, resource: ResourceId) -> Option<u64> {
+        self.plan
+            .metakon_reads
+            .iter()
+            .filter_map(|read| self.runtime.metakon_binding(read.instrument))
+            .filter(|binding| binding.resource == resource)
+            .map(|binding| binding.binding_generation)
+            .max()
     }
 
     /// Check frozen channel-type observations without polling or hidden I/O.

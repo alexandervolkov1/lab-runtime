@@ -58,7 +58,7 @@ impl ApplyPort for ProbePort {
         Ok(self.safe_succeeds)
     }
 
-    fn prepare_bindings(&mut self) -> Result<(), ApplyError> {
+    fn prepare_bindings(&mut self, _: &FrozenDeployment) -> Result<(), ApplyError> {
         self.calls.push("bindings");
         Ok(())
     }

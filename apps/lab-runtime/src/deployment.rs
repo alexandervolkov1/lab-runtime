@@ -140,7 +140,7 @@ pub trait ApplyPort {
     /// Stop affected production, revoke authority and prove current-profile safe evidence.
     fn enter_safe_barrier(&mut self, at: Duration) -> Result<bool, ApplyError>;
     /// Prepare a replacement binding after the safe fence, without committing config.
-    fn prepare_bindings(&mut self) -> Result<(), ApplyError>;
+    fn prepare_bindings(&mut self, candidate: &FrozenDeployment) -> Result<(), ApplyError>;
     /// Atomically install one already validated immutable candidate.
     fn commit_configuration(&mut self, candidate: &FrozenDeployment) -> Result<(), ApplyError>;
 }
@@ -252,7 +252,7 @@ impl DeploymentLifecycle {
             .diff
             .effects
             .contains(&DiffEffect::TransportRebind)
-            && owner.prepare_bindings().is_err()
+            && owner.prepare_bindings(&candidate.loaded).is_err()
         {
             return Ok(ApplyResult::FailedBeforeCommit);
         }

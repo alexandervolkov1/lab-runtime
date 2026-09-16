@@ -276,6 +276,24 @@ are not reported as passing evidence.
     C20 test proves 4/4 rejection, later one-of-four reservation, atomic durable
     fact and exact credit release. Configuration provenance/reload, the actual
     configured Babashka A/B process test and warning-denied clippy pass.
+27. C6 definition/address rebind coverage was red because Host exposed only a
+    same-definition reconnect helper and Core could not replace a Metakon mapping.
+    Core now validates the expected old binding/mapping revisions, requires the
+    exact next generations, rejects live dependent control and M8 actuator
+    definitions, drops old pending-read correlations, atomically installs the
+    read-only definition/binding and publishes explicit Transport-unavailable
+    samples under the new identity. Host replaces the already-retired adapter,
+    updates temperature/probe operation mappings from the candidate's frozen
+    definition and retains the stable resource/instrument IDs. Configuration
+    diffing now includes exact definition-content identity, not only its path,
+    and resource topology changes remain restart-required. The deterministic
+    test changes address 1 to 2 and scale 0.1 to 0.2, observes binding generation
+    two and decodes the new-address response only through the new mapping. The
+    production apply port now finitely retires each affected old resource before
+    opening the exact configured replacement; failure ends quiescence but never
+    restores old authority. Configured physical, lifecycle, full Core and
+    warning-denied workspace clippy suites pass. This is software evidence only;
+    no real COM port was opened.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

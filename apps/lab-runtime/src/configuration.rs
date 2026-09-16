@@ -323,10 +323,21 @@ impl FrozenDeployment {
             .iter()
             .map(|item| (item.id(), item.key(), item.kind_name()))
             .collect();
+        let old_resource_topology: Vec<_> = old
+            .resources
+            .iter()
+            .map(|item| (item.id, item.key.as_str(), item.kind))
+            .collect();
+        let new_resource_topology: Vec<_> = new
+            .resources
+            .iter()
+            .map(|item| (item.id, item.key.as_str(), item.kind))
+            .collect();
         let restart_required = old.runtime.key != new.runtime.key
             || old.server != new.server
             || old.recording != new.recording
             || old_topology != new_topology
+            || old_resource_topology != new_resource_topology
             || old.managed_components.len() != new.managed_components.len()
             || old.references.len() != new.references.len()
             || old.controllers.len() != new.controllers.len()
@@ -339,6 +350,16 @@ impl FrozenDeployment {
             .zip(&new.instruments)
             .any(|(old, new)| old.poll_period_ms() != new.poll_period_ms());
         let rebind = old.resources != new.resources
+            || self
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.kind == ArtifactKind::InstrumentDefinition)
+                .map(|artifact| (artifact.declared_path.as_path(), artifact.sha256))
+                .ne(active
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == ArtifactKind::InstrumentDefinition)
+                    .map(|artifact| (artifact.declared_path.as_path(), artifact.sha256)))
             || old
                 .instruments
                 .iter()

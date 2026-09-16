@@ -7,6 +7,7 @@ use lab_core::{
 };
 use lab_runtime::{
     configuration::{ArtifactReader, ConfigurationError, parse_runtime_toml},
+    deployment::{DeploymentLifecycle, DiffEffect},
     host::{Clock, HostCore},
 };
 use std::{
@@ -107,6 +108,13 @@ fn temperature_response(raw: i16) -> Vec<u8> {
 
 fn channel_type_response() -> Vec<u8> {
     let mut bytes = vec![1, 0, 0, 0, 0x41, 3];
+    bytes.push(crc(&bytes));
+    bytes
+}
+
+fn response_for(address: u8, flag: u8, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![address, 0, (payload.len() - 1) as u8, 0, flag];
+    bytes.extend_from_slice(payload);
     bytes.push(crc(&bytes));
     bytes
 }
@@ -216,4 +224,72 @@ fn c14_c15_explicit_rebind_keeps_logical_id_and_fences_old_measurement() {
     };
     assert!((value - 25.1).abs() < 1.0e-9);
     assert_eq!(host.resource_records()[0]["target"]["id"], "7");
+}
+
+#[test]
+fn c6_configuration_rebind_replaces_address_definition_and_mapping_revision() {
+    let active = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let candidate_toml = std::str::from_utf8(CONFIG)
+        .unwrap()
+        .replace("address=1", "address=2");
+    struct CandidateReader;
+    impl ArtifactReader for CandidateReader {
+        fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+            Ok(std::str::from_utf8(DEFINITION)
+                .unwrap()
+                .replace("\"scale\":0.1", "\"scale\":0.2")
+                .into_bytes())
+        }
+    }
+    let candidate = parse_runtime_toml(
+        candidate_toml.as_bytes(),
+        Path::new("C:/bench"),
+        &mut CandidateReader,
+    )
+    .unwrap();
+    let mut lifecycle = DeploymentLifecycle::new(active.clone());
+    let staged = lifecycle.stage(candidate.clone(), Duration::ZERO).unwrap();
+    assert!(
+        staged
+            .diff()
+            .effects()
+            .contains(&DiffEffect::TransportRebind)
+    );
+    assert!(staged.diff().requires_safe_barrier());
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(ResourceId::new(7), Box::new(ScriptedTransport::default()));
+    let mut host = HostCore::configured_with_transports(&active, transports).unwrap();
+
+    host.rebind_configured_transport_from_configuration(
+        &candidate,
+        ResourceId::new(7),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([
+                response_for(2, 0x41, &[3]),
+                response_for(2, 0x44, &100i16.to_le_bytes()),
+            ]),
+            ..ScriptedTransport::default()
+        }),
+        Duration::from_millis(1),
+    )
+    .unwrap();
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    host.begin_configured_probes(Duration::from_millis(1))
+        .unwrap();
+    let mut clock = TestClock::default();
+    for milliseconds in [2, 10, 20, 100, 110, 120] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(host.configured_probes_ready().unwrap());
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(sample.value(), Some(&lab_core::Value::Float(20.0)));
 }
