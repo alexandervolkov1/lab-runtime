@@ -26,13 +26,12 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
-Current model: ASTRA_HIGH
-Current phase: M8 design only, complete in
+STATUS: M8_IMPLEMENTATION_IN_PROGRESS
+Current model: SOL_HIGH
+Current phase: M8 tests-first implementation against
 docs/implementation/MILESTONE_8_DESIGN.md.
-M8 implementation: not yet authorized.
-Next gate: explicit user switch ASTRA_HIGH -> SOL_HIGH for M8 tests-first work.
-Do not start: M8 implementation before that switch, or M9.
+The user explicitly crossed ASTRA_HIGH -> SOL_HIGH on 2026-09-16.
+Do not start M9.
 
 M8 C1-C20 preserves an actual Windows COM/Metakon read-only hardware gate.
 Software completion without C16/C17/C19 hardware evidence leaves M8 incomplete.

@@ -1,11 +1,11 @@
-# Current work — M8 design handoff
+# Current work — M8 tests-first implementation
 
-STATUS: APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
+STATUS: M8_IMPLEMENTATION_IN_PROGRESS
 
-Current model: ASTRA_HIGH
-Current phase: M8 design only — complete; stopped at model handoff.
+Current model: SOL_HIGH
+Current phase: M8 tests-first implementation only.
 M7: externally accepted at `f3ff456`.
-M8 implementation: not yet authorized.
+M8 implementation: explicitly authorized on 2026-09-16.
 M9: not authorized.
 
 ## Completed design
@@ -20,7 +20,7 @@ This phase changed documentation only. No implementation tests, dependencies,
 production code, hardware actions or new M7 acceptance claims were added.
 External reviewer communication belongs only in `ai/HANDOFF.md`.
 
-## Next phase, only after the user's explicit switch
+## Implementation instruction
 
 Read in full before acting:
 
@@ -40,7 +40,7 @@ Recover `git status`, `git log --oneline -20`, unstaged/staged diffs and verify
 the accepted M7 checkpoint plus this M8 design. Do not recreate missing commits
 from memory. Preserve unrelated user changes and the read-only donor.
 
-After authorization, SOL_HIGH implements M8 only, tests-first in small logical
+SOL_HIGH implements M8 only, tests-first in small logical
 increments following design section 12. Preserve M1-M7, Core boundaries, fixed
 Recorder budgets, output evidence and Required fail-closed semantics. Do not
 silently redesign the accepted architecture. Keep the actual red/green sequence,
@@ -81,4 +81,6 @@ Resume with:
 
 M8 tests-first implementation against MILESTONE_8_DESIGN.md.
 
-Await the explicit user instruction; do not start implementation in this phase.
+The model gate is crossed. Continue autonomously through the software completion
+gate. If real Metakon/COM hardware is unavailable, finish all software evidence,
+set M8_HARDWARE_ACCEPTANCE_PENDING, and stop without starting M9.

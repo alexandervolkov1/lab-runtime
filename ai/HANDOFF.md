@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: APPROVED_FOR_ASTRA_HIGH_M8_DESIGN
+STATUS: M8_IMPLEMENTATION_IN_PROGRESS
 
 Current model:
-ASTRA_HIGH
+SOL_HIGH
 
 Current phase:
-M8 design only; design complete, stopped at the explicit implementation handoff.
+M8 tests-first implementation against MILESTONE_8_DESIGN.md.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -37,16 +37,15 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-M8 design only under ASTRA_HIGH, now complete. M8 implementation is not yet
-authorized. Await the user's explicit ASTRA_HIGH -> SOL_HIGH switch; do not
-implement production code or tests during this design phase.
+M8 tests-first implementation only. The user explicitly crossed the
+ASTRA_HIGH -> SOL_HIGH gate on 2026-09-16. Do not start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
-The new M8 ASTRA_HIGH -> SOL_HIGH implementation gate is not yet crossed.
+The M8 ASTRA_HIGH -> SOL_HIGH implementation gate was crossed explicitly.
 
 Do not start:
-M8 implementation before the explicit handoff authorization; M9 or later work.
+M9 or later work.
 
 M8 design completion — 2026-09-16
 
