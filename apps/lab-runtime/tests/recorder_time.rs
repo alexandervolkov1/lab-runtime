@@ -1,18 +1,339 @@
 //! UTC display metadata must never replace monotonic fact order or control time.
 
-use lab_core::{Command, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig};
+use lab_core::{
+    AccessMode, Command, CommandResult, InstrumentId, ParameterId, ParameterRole, Query,
+    QueryResult, Runtime, Unit, Value, ValueSpec, VirtualInstrumentConfig, WriteEffect,
+    instrument::{
+        DataInstrumentDefinition, DataParameterDefinition, KnownOperation, MetakonBinding,
+        MetakonInstrumentConfig,
+    },
+    metakon::crc,
+    output::{
+        ActuatorId, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal, OutputResult,
+        SafeProfile,
+    },
+    transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
+};
 use lab_runtime::{
     host::{Clock, HostCore, SystemClock},
     recorder::{
         RecorderLimits, RecorderWorker, RecordingState, SqliteStore, TimeAnchor, WriterBarrier,
     },
 };
-use std::{cell::Cell, path::PathBuf, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    path::PathBuf,
+    rc::Rc,
+    time::Duration,
+};
 
 struct DeterministicClock(Cell<Duration>);
 impl Clock for DeterministicClock {
     fn now(&self) -> Duration {
         self.0.get()
+    }
+}
+
+#[derive(Default)]
+struct DeterministicWire {
+    written: Vec<u8>,
+    readable: VecDeque<u8>,
+    write_limits: VecDeque<usize>,
+    recoveries: usize,
+}
+
+struct DeterministicTransport(Rc<RefCell<DeterministicWire>>);
+impl ByteTransport for DeterministicTransport {
+    fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        let limit = wire.write_limits.pop_front().unwrap_or(bytes.len());
+        let count = bytes.len().min(limit);
+        wire.written.extend_from_slice(&bytes[..count]);
+        if count == 7 && count == bytes.len() {
+            let body = [15, 0, 6, 1];
+            wire.readable.extend(body);
+            wire.readable.push_back(crc(&body));
+        }
+        Ok(count)
+    }
+
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        let count = bytes.len().min(wire.readable.len());
+        for byte in &mut bytes[..count] {
+            *byte = wire.readable.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        wire.recoveries += 1;
+        wire.readable.clear();
+        Ok(RecoveryStatus::Complete)
+    }
+}
+
+fn m3_time_fixture() -> (
+    Runtime,
+    ActuatorId,
+    ResourceId,
+    Rc<RefCell<DeterministicWire>>,
+) {
+    let wire = Rc::new(RefCell::new(DeterministicWire {
+        // Establish the initial safe evidence before ordinary authority exists.
+        write_limits: [7].into_iter().collect(),
+        ..DeterministicWire::default()
+    }));
+    let mut runtime = Runtime::new();
+    let resource = ResourceId::new(17);
+    let instrument = InstrumentId::new(717);
+    let parameter = ParameterId::new(6);
+    let actuator = ActuatorId::new(instrument, parameter);
+    runtime
+        .register_transport(resource, Box::new(DeterministicTransport(Rc::clone(&wire))))
+        .unwrap();
+    runtime
+        .command(Command::RegisterMetakon(MetakonInstrumentConfig {
+            definition: DataInstrumentDefinition {
+                schema_version: 1,
+                id: instrument,
+                name: "wall-independent M3 output".into(),
+                parameters: vec![DataParameterDefinition {
+                    id: parameter,
+                    name: "power".into(),
+                    value_spec: ValueSpec::Float {
+                        min: 0.0,
+                        max: 100.0,
+                    },
+                    unit: Unit::PERCENT,
+                    access: AccessMode::ReadWrite,
+                    role: ParameterRole::Actuator,
+                    write_effect: WriteEffect::OutputAffecting,
+                    operation: KnownOperation::Output,
+                    scale: 1.0,
+                }],
+            },
+            binding: MetakonBinding {
+                resource,
+                device: 15,
+                channel: 0,
+                binding_generation: 1,
+                mapping_revision: 1,
+                expected_output_unit: Some(Unit::PERCENT),
+            },
+            history_capacity: 2,
+        }))
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator,
+            at: Duration::ZERO,
+            command: OutputCommand::BindProfile(SafeProfile {
+                min: 0.0,
+                max: 100.0,
+                safe_value: 0.0,
+                max_lease: Duration::from_secs(1),
+                max_proposal_ttl: Duration::from_millis(200),
+                required_evidence: EvidenceLevel::Acknowledgement,
+            }),
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator,
+            at: Duration::ZERO,
+            command: OutputCommand::RequestSafe,
+        })
+        .unwrap();
+    runtime
+        .command(Command::QueueMetakonOutput {
+            actuator,
+            at: Duration::ZERO,
+            queue_ttl: Duration::from_secs(1),
+            timeout: Duration::from_millis(20),
+        })
+        .unwrap();
+    runtime
+        .command(Command::PollTransports { at: Duration::ZERO })
+        .unwrap();
+    let mut initial = wire.borrow_mut();
+    initial.written.clear();
+    // The ordinary attempt accepts a real two-byte prefix. After recovery,
+    // the next safe attempt accepts its complete seven-byte request.
+    initial.write_limits = [2, 7].into_iter().collect();
+    drop(initial);
+    (runtime, actuator, resource, wire)
+}
+
+#[test]
+fn m3_first_byte_recovery_and_safe_send_decisions_ignore_wall_clock_jumps() {
+    let anchors = [
+        TimeAnchor::valid(
+            Duration::from_millis(2),
+            2_000,
+            Duration::from_millis(2) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+        TimeAnchor::valid(
+            Duration::from_millis(2),
+            9_999_999_999,
+            Duration::from_millis(2) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+        TimeAnchor::valid(
+            Duration::from_millis(2),
+            -9_999_999_999,
+            Duration::from_millis(2) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+        TimeAnchor::unavailable(
+            Duration::from_millis(2),
+            "wall_read_failed",
+            Duration::from_millis(2) + Duration::from_nanos(100),
+        )
+        .unwrap(),
+    ];
+    let mut traces = Vec::new();
+    for (case, anchor) in anchors.into_iter().enumerate() {
+        let path = temporary_database();
+        let boot_id = format!("{:032x}", case + 101);
+        let boot_anchor =
+            TimeAnchor::valid(Duration::ZERO, 123, Duration::from_nanos(100)).unwrap();
+        let mut store = SqliteStore::open_with_boot_anchor(&path, &boot_id, boot_anchor).unwrap();
+        store.start_run("wall-independent M3 send").unwrap();
+        let (mut runtime, actuator, resource, wire) = m3_time_fixture();
+        let at = Duration::from_millis(1);
+        let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+            .command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::Acquire {
+                    owner: OutputOwner::Manual(1),
+                    lifetime: Duration::from_millis(100),
+                },
+            })
+            .unwrap()
+        else {
+            panic!("manual lease absent")
+        };
+        runtime
+            .command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::Propose(OutputProposal {
+                    lease,
+                    value: Value::Float(75.0),
+                    unit: Unit::PERCENT,
+                    ttl: Duration::from_millis(100),
+                }),
+            })
+            .unwrap();
+        runtime
+            .command(Command::QueueMetakonOutput {
+                actuator,
+                at,
+                queue_ttl: Duration::from_millis(100),
+                timeout: Duration::from_millis(2),
+            })
+            .unwrap();
+
+        let capture = |runtime: &Runtime, wire: &Rc<RefCell<DeterministicWire>>, now_ms: u64| {
+            let QueryResult::Transport(transport) =
+                runtime.query(Query::Transport(resource)).unwrap()
+            else {
+                panic!("transport query changed kind")
+            };
+            let QueryResult::Output(output) = runtime.query(Query::Output(actuator)).unwrap()
+            else {
+                panic!("output query changed kind")
+            };
+            let normalized_output = (
+                output.state,
+                output
+                    .lease
+                    .map(|lease| (lease.owner(), lease.epoch(), lease.expires())),
+                output.epoch,
+                output.fault_latched,
+                output.safe_confirmed,
+                output.pending,
+                output
+                    .in_flight
+                    .map(|dispatch| (dispatch.value(), dispatch.is_safe(), dispatch.epoch())),
+                output.requested,
+                output.sent,
+                output.acknowledged,
+                output.readback,
+                output.outcome,
+            );
+            let wire = wire.borrow();
+            (
+                now_ms,
+                transport,
+                normalized_output,
+                wire.written.clone(),
+                wire.recoveries,
+            )
+        };
+        let mut trace = Vec::new();
+        for now_ms in [1, 3, 4] {
+            let now = Duration::from_millis(now_ms);
+            runtime
+                .command(Command::PollTransports { at: now })
+                .unwrap();
+            if now_ms == 3 {
+                store.append_clock_anchor("periodic", &anchor).unwrap();
+            }
+            trace.push(capture(&runtime, &wire, now_ms));
+        }
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::from_millis(5),
+                command: OutputCommand::RequestSafe,
+            })
+            .unwrap();
+        runtime
+            .command(Command::QueueMetakonOutput {
+                actuator,
+                at: Duration::from_millis(5),
+                queue_ttl: Duration::from_millis(100),
+                timeout: Duration::from_millis(20),
+            })
+            .unwrap();
+        for now_ms in [5, 6, 7] {
+            runtime
+                .command(Command::PollTransports {
+                    at: Duration::from_millis(now_ms),
+                })
+                .unwrap();
+            trace.push(capture(&runtime, &wire, now_ms));
+        }
+        assert_eq!(wire.borrow().written.len(), 9);
+        assert_eq!(wire.borrow().recoveries, 1);
+        let QueryResult::Output(output) = runtime.query(Query::Output(actuator)).unwrap() else {
+            panic!("output query changed kind")
+        };
+        assert!(output.safe_confirmed);
+        traces.push(trace);
+
+        let seal = TimeAnchor::valid(
+            Duration::from_millis(8),
+            8_000,
+            Duration::from_millis(8) + Duration::from_nanos(100),
+        )
+        .unwrap();
+        store.stop_run_with_anchor(&seal).unwrap();
+        store.finish_boot(Duration::from_millis(8)).unwrap();
+        store.close().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+    for changed in &traces[1..] {
+        assert_eq!(
+            changed, &traces[0],
+            "M3 first-byte, recovery or safe-send decision changed with UTC"
+        );
     }
 }
 
