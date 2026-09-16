@@ -6,7 +6,7 @@ use lab_core::{
     transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::{
-    configuration::{ArtifactReader, ConfigurationError, parse_runtime_toml},
+    configuration::{ArtifactReader, ConfigurationError, load_runtime_toml, parse_runtime_toml},
     deployment::{DeploymentLifecycle, DiffEffect},
     host::{Clock, HostCore},
 };
@@ -117,6 +117,54 @@ fn response_for(address: u8, flag: u8, payload: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(payload);
     bytes.push(crc(&bytes));
     bytes
+}
+
+#[test]
+fn c16_metakon_513_thermocouple_scale_preserves_raw_degree_values() {
+    let path = std::fs::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtime.metakon-513-com5.toml"),
+    )
+    .unwrap();
+    let deployment = load_runtime_toml(&path).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(1),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([
+                response_for(5, 0x41, &[3]),
+                response_for(5, 0x44, &23i16.to_le_bytes()),
+                response_for(5, 0x44, &24i16.to_le_bytes()),
+            ]),
+            ..ScriptedTransport::default()
+        }),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    host.begin_configured_probes(clock.now()).unwrap();
+    for milliseconds in [0, 10, 20, 30] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(host.configured_probes_ready().unwrap());
+    let signal = SignalId::new(
+        lab_core::InstrumentId::new(1),
+        lab_core::ParameterId::new(2),
+    );
+    let QueryResult::Latest(Some(first)) = host.query(Query::GetLatestSignal(signal)).unwrap()
+    else {
+        panic!("first real-device-profile temperature missing")
+    };
+    assert_eq!(first.value(), Some(&lab_core::Value::Float(23.0)));
+
+    for milliseconds in [1000, 1010, 1020] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    let QueryResult::Latest(Some(second)) = host.query(Query::GetLatestSignal(signal)).unwrap()
+    else {
+        panic!("second real-device-profile temperature missing")
+    };
+    assert_eq!(second.value(), Some(&lab_core::Value::Float(24.0)));
 }
 
 #[test]

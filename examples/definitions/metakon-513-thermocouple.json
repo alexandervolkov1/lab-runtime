@@ -2,7 +2,7 @@
   "schema_version": 1,
   "profile": "metakon-5x3-v1",
   "id": 1,
-  "name": "Metakon read-only temperature",
+  "name": "Metakon 513 thermocouple whole-degree temperature",
   "parameters": [
     {
       "id": 1,
@@ -22,12 +22,12 @@
       "name": "temperature",
       "value_type": "float",
       "unit": { "id": "degC", "symbol": "°C" },
-      "min": -99.9,
-      "max": 999.9,
+      "min": -999.0,
+      "max": 9999.0,
       "role": "measurement",
       "access": "read_only",
       "operation": "temperature",
-      "scale": 0.1,
+      "scale": 1.0,
       "write_effect": "none"
     }
   ]

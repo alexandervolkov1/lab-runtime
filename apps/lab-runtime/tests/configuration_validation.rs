@@ -251,7 +251,11 @@ fn c1_repository_example_deployments_parse_with_the_production_loader() {
     let examples =
         std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples"))
             .unwrap();
-    for name in ["runtime.virtual.toml", "runtime.metakon-read-only.toml"] {
+    for name in [
+        "runtime.virtual.toml",
+        "runtime.metakon-read-only.toml",
+        "runtime.metakon-513-com5.toml",
+    ] {
         let deployment = load_runtime_toml(&examples.join(name)).unwrap();
         assert!(!deployment.toml_bytes().is_empty());
     }
