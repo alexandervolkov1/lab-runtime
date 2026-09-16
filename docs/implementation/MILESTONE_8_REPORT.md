@@ -242,6 +242,22 @@ are not reported as passing evidence.
     conservative read-only Metakon/COM deployment with a strict trusted-operation
     JSON definition. Both parse through the production loader; the physical
     example is documentation/configuration evidence only and was not opened.
+25. The first full debug gate exposed a pre-existing M7 process-level race rather
+    than an M8 limit shortfall: the actual recorded Babashka A-kill/B-reconnect
+    oracle failed when the already-completed safe `controller_pause` terminal
+    arrived while all four ordinary Recorder groups were charged. Diagnostic
+    reproduction measured a 418-byte terminal with four groups, six records and
+    7,618 bytes outstanding; no byte/record limit was close. The accepted safe
+    action must not be undone, and the four-group limit must not be enlarged.
+    Host now retains only that safe-reducing terminal in its existing bounded
+    pending-operation slot and retries admission after a receipt; ordinary and
+    authority-increasing overflow behavior remains fail-closed. A deterministic
+    held-writer test fills exactly four groups, proves Required stays Recording,
+    releases the worker and verifies the deferred terminal in SQLite. The full
+    `recorder_operations` suite and the actual Babashka 1.13.220 recorded A/B
+    Pause/Stop/Shutdown/reopen oracle pass after the change. Production followed
+    the real process red reproduction; the additional deterministic coverage was
+    added afterward, and this sequence is recorded honestly.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

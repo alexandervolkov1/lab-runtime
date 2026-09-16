@@ -102,7 +102,7 @@ pub struct OperationRecord {
     pub at: Duration,
 }
 impl OperationRecord {
-    fn charge(&self) -> Option<usize> {
+    pub(crate) fn charge(&self) -> Option<usize> {
         self.scope
             .capacity()
             .checked_add(self.data.capacity())?

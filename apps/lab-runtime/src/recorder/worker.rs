@@ -1008,6 +1008,40 @@ impl RecorderWorker {
         }
     }
 
+    /// Check ordinary ingress credit for one already validated operation record.
+    ///
+    /// This owner-local check lets a safe-reducing terminal remain in the
+    /// existing bounded operation tracker until credit is released. It neither
+    /// reserves capacity nor permits an authority-increasing mutation to run.
+    pub(crate) fn operation_credit_available(
+        &mut self,
+        operation: &OperationRecord,
+    ) -> Result<bool, StorageError> {
+        self.poll();
+        let lifecycle_terminal = self.cached.state == RecordingState::Idle
+            && operation.command == "recording_stop"
+            && matches!(operation.phase, "completed" | "failed");
+        if !(matches!(
+            self.cached.state,
+            RecordingState::Starting | RecordingState::Recording
+        ) || lifecycle_terminal)
+            || !operation.valid()
+        {
+            return Err(StorageError("operation fact not admissible".into()));
+        }
+        let bytes = operation
+            .charge()
+            .ok_or_else(|| StorageError("operation credit arithmetic exhausted".into()))?;
+        if bytes > MAX_GROUP_BYTES {
+            return Err(StorageError(
+                "operation record exceeds ingress bound".into(),
+            ));
+        }
+        Ok(self.charged_groups < self.limits.groups
+            && self.charged_records < self.limits.records
+            && bytes <= self.limits.bytes.saturating_sub(self.charged_bytes))
+    }
+
     /// Reserve the exact annotation record ID after an atomic bounded transfer.
     /// Its returned ID is an ingress receipt, never a durable confirmation.
     pub fn try_admit_annotation(

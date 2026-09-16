@@ -319,13 +319,15 @@ pub struct ShutdownStatus {
     pub exit_success: bool,
 }
 
-// Only identity and one small Start intent survive across an inactive interval.
-// Ordinary command payloads are never retained in this owner-side tracker.
+// Identity and at most one bounded Recorder payload survive in each fixed slot.
+// A safe-reducing Pause terminal may wait here for ordinary ingress credit; no
+// authority-increasing mutation uses this postcommit deferral.
 struct PendingOperation {
     command: &'static str,
     accepted_at: Duration,
     accepted_recorded: bool,
     deferred_start: Option<OperationRecord>,
+    deferred_safe_terminal: Option<OperationRecord>,
 }
 
 /// Sole mutable Core owner plus one explicit schedule; callers serialize commands.
@@ -1841,6 +1843,7 @@ impl HostCore {
                     accepted_at: at,
                     accepted_recorded: false,
                     deferred_start: defer.then(|| operation.clone()),
+                    deferred_safe_terminal: None,
                 },
             );
             if defer {
@@ -1856,6 +1859,18 @@ impl HostCore {
             && state == Some(RecordingState::Idle)
             && operation.command == "recording_stop";
         if in_interval || lifecycle_terminal {
+            let defer_safe_terminal = !accepted
+                && operation.command == "controller_pause"
+                && self.recorder.as_mut().is_some_and(|worker| {
+                    matches!(worker.operation_credit_available(&operation), Ok(false))
+                });
+            if defer_safe_terminal {
+                if let Some(pending) = self.pending_operations.get_mut(&key) {
+                    pending.deferred_safe_terminal = Some(operation);
+                }
+                self.poll_recorder(at);
+                return;
+            }
             let admitted = self
                 .recorder
                 .as_mut()
@@ -2242,12 +2257,45 @@ impl HostCore {
         if status.state == RecordingState::Failed {
             self.runtime.disable_recording_facts();
         }
-        if status.state == RecordingState::Recording {
-            let _ = worker.request_probe_at(now);
-        }
+        let recording = status.state == RecordingState::Recording;
         self.recording_status = Some(status);
+        if recording {
+            self.flush_deferred_safe_terminals(now);
+            if let Some(worker) = self.recorder.as_mut() {
+                let _ = worker.request_probe_at(now);
+            }
+        }
         if activated {
             self.flush_deferred_start_acceptance(now);
+        }
+    }
+
+    fn flush_deferred_safe_terminals(&mut self, now: Duration) {
+        let deferred = self.pending_operations.iter().find_map(|(key, pending)| {
+            pending
+                .deferred_safe_terminal
+                .as_ref()
+                .map(|terminal| (key.clone(), terminal.clone()))
+        });
+        let Some((key, terminal)) = deferred else {
+            return;
+        };
+        let credit = self
+            .recorder
+            .as_mut()
+            .and_then(|worker| worker.operation_credit_available(&terminal).ok())
+            .unwrap_or(false);
+        if !credit {
+            return;
+        }
+        let admitted = self
+            .recorder
+            .as_mut()
+            .is_some_and(|worker| worker.try_admit_operation(terminal).is_ok());
+        if admitted {
+            self.pending_operations.remove(&key);
+        } else if self.recording_policy == Some(RecordingPolicy::Required) {
+            self.runtime.recording_failure(now);
         }
     }
 
@@ -3146,6 +3194,98 @@ mod recorder_outbox_host_tests {
             assert!(Instant::now() < close_by);
             std::thread::yield_now();
         }
+    }
+
+    #[test]
+    fn safe_pause_terminal_waits_in_bounded_owner_slot_when_four_groups_are_busy() {
+        let path = temporary_database();
+        let barrier = WriterBarrier::held();
+        let worker =
+            RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+                .unwrap();
+        let mut host = HostCore::virtual_demo().unwrap();
+        host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
+            .unwrap();
+        host.start_recording("safe terminal credit", Duration::ZERO)
+            .unwrap();
+        let by = Instant::now() + Duration::from_secs(3);
+        while host.recording_status().unwrap().state != RecordingState::Recording {
+            assert!(Instant::now() < by);
+            host.poll_recorder(Duration::ZERO);
+            std::thread::yield_now();
+        }
+        for seq in 1..=4 {
+            host.record_operation(OperationRecord {
+                scope: "safe-terminal-credit".into(),
+                request_seq: seq,
+                command: if seq == 1 {
+                    "controller_pause"
+                } else {
+                    "reference_retune"
+                },
+                phase: "accepted",
+                data: "{}".into(),
+                outcome_basis: "application_admission",
+                at: Duration::from_millis(seq),
+            });
+        }
+        assert_eq!(host.recording_status().unwrap().outstanding_groups, 4);
+        host.record_operation(OperationRecord {
+            scope: "safe-terminal-credit".into(),
+            request_seq: 1,
+            command: "controller_pause",
+            phase: "completed",
+            data: "{}".into(),
+            outcome_basis: "domain_result",
+            at: Duration::from_millis(5),
+        });
+        assert_eq!(
+            host.recording_status().unwrap().state,
+            RecordingState::Recording
+        );
+        assert!(
+            host.pending_operations
+                .get(&("safe-terminal-credit".into(), 1))
+                .is_some_and(|pending| pending.deferred_safe_terminal.is_some())
+        );
+
+        barrier.release();
+        while host
+            .pending_operations
+            .contains_key(&("safe-terminal-credit".into(), 1))
+        {
+            assert!(Instant::now() < by);
+            host.poll_recorder(Duration::from_millis(10));
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            host.recording_status().unwrap().state,
+            RecordingState::Recording
+        );
+        host.stop_recording_at(Duration::from_millis(20)).unwrap();
+        while host.recording_status().unwrap().state != RecordingState::Idle {
+            assert!(Instant::now() < by);
+            host.poll_recorder(Duration::from_millis(20));
+            std::thread::yield_now();
+        }
+        host.finish_recorder().unwrap();
+        while host.recording_status().unwrap().state != RecordingState::Closed {
+            assert!(Instant::now() < by);
+            host.poll_recorder(Duration::from_millis(20));
+            std::thread::yield_now();
+        }
+        drop(host);
+        let archive = rusqlite::Connection::open(&path).unwrap();
+        let terminals: i64 = archive
+            .query_row(
+                "SELECT COUNT(*) FROM operation_events WHERE command='controller_pause' AND phase='completed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminals, 1);
+        drop(archive);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[derive(Clone, Copy)]
