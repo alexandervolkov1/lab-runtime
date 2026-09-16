@@ -10,7 +10,7 @@ use crate::{
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
     serial::{ComSettings, ComTransport, SerialFlowControl, SerialParity},
 };
-use lab_core::managed::{ComponentError, ComponentId};
+use lab_core::managed::ComponentError;
 use lab_core::{
     Error as DomainError,
     transport::{ByteTransport, ResourceId},
@@ -546,27 +546,30 @@ impl ServiceHost {
             return Err(LifecycleOperationError::NoManagedComponents);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut prepared = Vec::with_capacity(count);
         for index in 0..count {
-            let component_id =
-                ComponentId::new(candidate.effective().dto.managed_components[index].id);
-            let previous_generation = self
-                .host
-                .component_generation(component_id)
-                .ok_or(LifecycleOperationError::OwnerFailure)?;
             let id = self
                 .host
                 .stage_configured_component(&candidate, index, true, self.clock.now())
                 .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
-            while self.host.component_generation(id) == Some(previous_generation) {
+            while !self.host.component_prepared(id) {
                 if std::time::Instant::now() >= deadline {
+                    self.host.discard_prepared_components();
                     return Err(LifecycleOperationError::OwnerFailure);
                 }
-                self.host
-                    .service(&self.clock)
-                    .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+                if self.host.service(&self.clock).is_err()
+                    || (!self.host.component_prepare_pending() && !self.host.component_prepared(id))
+                {
+                    self.host.discard_prepared_components();
+                    return Err(LifecycleOperationError::InvalidCandidate);
+                }
                 std::thread::yield_now();
             }
+            prepared.push(id);
         }
+        self.host
+            .commit_prepared_components(prepared, self.clock.now())
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
         self.host
             .activate_configured_components(&candidate, self.clock.now())
             .map_err(|_| LifecycleOperationError::OwnerFailure)?;

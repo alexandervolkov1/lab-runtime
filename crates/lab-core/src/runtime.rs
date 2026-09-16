@@ -108,6 +108,24 @@ pub enum Command {
         /// Monotonic commit time used for recording and dependency fencing.
         at: Duration,
     },
+    /// Prepare one replacement init without mutating its committed generation.
+    PrepareComponentReplacement {
+        /// Complete immutable candidate definition.
+        definition: ComponentDefinition,
+        /// Existing component identity retained by the replacement.
+        replaces: ComponentId,
+        /// Trusted monotonic preparation time.
+        at: Duration,
+    },
+    /// Atomically commit a complete bounded set of prepared replacements.
+    CommitPreparedComponents {
+        /// Distinct prepared identities, at most the accepted component bound.
+        components: Vec<ComponentId>,
+        /// Monotonic safe-barrier/commit time.
+        at: Duration,
+    },
+    /// Discard every prepared replacement without touching committed components.
+    DiscardPreparedComponents,
     /// Register an independent native target source.
     RegisterReference(ReferenceConfig),
     /// Advance one independent Reference at trusted monotonic Runtime time.
@@ -262,6 +280,12 @@ pub enum Command {
 pub enum CommandResult {
     /// Candidate admitted for worker init, not yet installed as an instrument.
     ComponentStaged(ComponentId),
+    /// Candidate init completed and remains outside the active graph.
+    ComponentPrepared(ComponentId),
+    /// All named prepared generations became active in one owner command.
+    ComponentsCommitted(usize),
+    /// Prepared candidates were discarded without active mutation.
+    PreparedComponentsDiscarded,
     /// Managed step admitted, not a Good sample or completed callback.
     ComponentInvoked(Correlation),
     /// Bounded completion/safety service was polled, possibly with no result.
@@ -389,6 +413,7 @@ pub struct ParameterObservation {
 pub struct Runtime {
     managed: BTreeMap<ComponentId, ManagedInstance>,
     staged: Option<StagedComponent>,
+    prepared: BTreeMap<ComponentId, PreparedComponent>,
     executor: Option<Box<dyn ComponentExecutor>>,
     managed_quiesced: bool,
     component_runtime: u64,
@@ -440,10 +465,18 @@ struct ManagedInstance {
     diagnostics: Vec<String>,
 }
 
+#[derive(Clone)]
 struct StagedComponent {
     definition: ComponentDefinition,
     replaces: Option<ComponentId>,
     correlation: Correlation,
+    prepare_only: bool,
+}
+
+#[derive(Clone)]
+struct PreparedComponent {
+    staged: StagedComponent,
+    result: crate::managed::ComponentResult,
 }
 
 impl ManagedInstance {
@@ -706,7 +739,19 @@ impl Runtime {
                 definition,
                 replaces,
                 at,
-            } => self.stage_component(definition, replaces, at),
+            } => self.stage_component(definition, replaces, at, false),
+            Command::PrepareComponentReplacement {
+                definition,
+                replaces,
+                at,
+            } => self.stage_component(definition, Some(replaces), at, true),
+            Command::CommitPreparedComponents { components, at } => {
+                self.commit_prepared_components(&components, at)
+            }
+            Command::DiscardPreparedComponents => {
+                self.prepared.clear();
+                Ok(CommandResult::PreparedComponentsDiscarded)
+            }
             Command::InvokeComponent { component, at } => self.invoke_component(component, at),
             Command::PollComponents { at } => {
                 self.poll_components(at)?;
@@ -721,6 +766,7 @@ impl Runtime {
                     {
                         executor.try_cancel(staged.correlation);
                     }
+                    self.prepared.clear();
                     let identities: Vec<_> = self.managed.keys().copied().collect();
                     for id in identities {
                         self.fail_component(id, at);
@@ -1832,11 +1878,18 @@ impl Runtime {
         definition: ComponentDefinition,
         replaces: Option<ComponentId>,
         at: Duration,
+        prepare_only: bool,
     ) -> Result<CommandResult, Error> {
         if self.managed_quiesced {
             return Err(ComponentError::Executor.into());
         }
         if self.staged.is_some() {
+            return Err(ComponentError::Busy.into());
+        }
+        if prepare_only
+            && (self.prepared.len() >= MAX_COMPONENTS
+                || self.prepared.contains_key(&definition.manifest.id))
+        {
             return Err(ComponentError::Busy.into());
         }
         self.validate_component_definition(&definition, replaces)?;
@@ -1877,6 +1930,7 @@ impl Runtime {
             definition,
             replaces,
             correlation,
+            prepare_only,
         });
         Ok(CommandResult::ComponentStaged(id))
     }
@@ -2464,13 +2518,90 @@ impl Runtime {
                 if completion.timely
                     && let Ok(result) = completion.outcome
                 {
-                    let _ = self.commit_staged(staged, result, at);
+                    if staged.prepare_only {
+                        if Self::validate_managed_result(
+                            &result,
+                            &staged.definition.manifest,
+                            InvocationPhase::Init,
+                        )
+                        .is_ok()
+                        {
+                            self.prepared.insert(
+                                staged.definition.manifest.id,
+                                PreparedComponent { staged, result },
+                            );
+                        }
+                    } else {
+                        let _ = self.commit_staged(staged, result, at);
+                    }
                 }
             } else {
                 self.commit_step(completion, at);
             }
         }
         Ok(())
+    }
+
+    fn commit_prepared_components(
+        &mut self,
+        components: &[ComponentId],
+        at: Duration,
+    ) -> Result<CommandResult, Error> {
+        if components.is_empty() || components.len() > MAX_COMPONENTS {
+            return Err(ComponentError::InvalidConfiguration.into());
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        let mut batch = Vec::with_capacity(components.len());
+        for id in components {
+            if !unique.insert(*id) {
+                return Err(ComponentError::InvalidConfiguration.into());
+            }
+            let mut prepared = self
+                .prepared
+                .get(id)
+                .ok_or(ComponentError::Unknown)?
+                .clone();
+            self.validate_component_definition(
+                &prepared.staged.definition,
+                prepared.staged.replaces,
+            )?;
+            Self::validate_managed_result(
+                &prepared.result,
+                &prepared.staged.definition.manifest,
+                InvocationPhase::Init,
+            )?;
+            let old = self.managed.get(id).ok_or(ComponentError::Unknown)?;
+            if old.generation.checked_add(1) != Some(prepared.staged.correlation.generation)
+                || old.signal.latest().is_some_and(|sample| sample.at() > at)
+            {
+                return Err(ComponentError::InvalidResult.into());
+            }
+            // Ordinary old-generation steps may commit while candidate init runs.
+            // The replacement deliberately resets plain state, so fence by
+            // generation and refresh the internal state revision at atomic commit.
+            prepared.staged.correlation.revision = old.revision;
+            batch.push(prepared);
+        }
+        // Every candidate and generation is checked before the first committed
+        // replacement. Any safety pause performed by commit remains fail-closed;
+        // it can never rearm authority if a later invariant unexpectedly fails.
+        for prepared in batch {
+            self.commit_staged(prepared.staged, prepared.result, at)?;
+        }
+        for id in components {
+            self.prepared.remove(id);
+        }
+        Ok(CommandResult::ComponentsCommitted(components.len()))
+    }
+
+    /// Whether a validated replacement init is retained outside the active graph.
+    pub fn component_prepared(&self, id: ComponentId) -> bool {
+        self.prepared.contains_key(&id)
+    }
+
+    /// Whether the single managed init staging slot is currently occupied.
+    pub fn component_prepare_pending(&self) -> bool {
+        self.staged.is_some()
     }
 
     fn start_or_resume_controller(

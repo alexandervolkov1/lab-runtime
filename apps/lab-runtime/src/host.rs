@@ -753,31 +753,40 @@ impl HostCore {
             .map_or(ComponentKind::Source, |input| ComponentKind::Transform {
                 input: SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
             });
-        self.runtime.command(Command::StageComponent {
-            definition: ComponentDefinition {
-                manifest: ComponentManifest {
-                    schema_version: 1,
-                    id,
-                    instrument: InstrumentId::new(component.instrument_id),
-                    name: component.display_name.clone(),
-                    parameter: lab_core::TEMPERATURE,
-                    kind,
-                    unit: Unit::CELSIUS,
-                    min: -100.0,
-                    max: 500.0,
-                    warmup_samples: if component.input_instrument_id.is_some() {
-                        3
-                    } else {
-                        1
-                    },
-                    max_input_age: Duration::from_secs(2),
-                    history_capacity: 32,
+        let definition = ComponentDefinition {
+            manifest: ComponentManifest {
+                schema_version: 1,
+                id,
+                instrument: InstrumentId::new(component.instrument_id),
+                name: component.display_name.clone(),
+                parameter: lab_core::TEMPERATURE,
+                kind,
+                unit: Unit::CELSIUS,
+                min: -100.0,
+                max: 500.0,
+                warmup_samples: if component.input_instrument_id.is_some() {
+                    3
+                } else {
+                    1
                 },
-                source: source.into(),
-                config: PlainData::default(),
+                max_input_age: Duration::from_secs(2),
+                history_capacity: 32,
             },
-            replaces: replaces.then_some(id),
-            at,
+            source: source.into(),
+            config: PlainData::default(),
+        };
+        self.runtime.command(if replaces {
+            Command::PrepareComponentReplacement {
+                definition,
+                replaces: id,
+                at,
+            }
+        } else {
+            Command::StageComponent {
+                definition,
+                replaces: None,
+                at,
+            }
         })?;
         if !replaces {
             self.events.track_component(id);
@@ -800,12 +809,32 @@ impl HostCore {
                 && snapshot.pending.is_none())
     }
 
-    /// Current committed component generation, excluding a staged candidate.
-    pub(crate) fn component_generation(&self, id: ComponentId) -> Option<u64> {
-        match self.runtime.query(Query::Component(id)) {
-            Ok(QueryResult::Component(snapshot)) => Some(snapshot.generation),
-            _ => None,
-        }
+    pub(crate) fn component_prepared(&self, id: ComponentId) -> bool {
+        self.runtime.component_prepared(id)
+    }
+
+    pub(crate) fn component_prepare_pending(&self) -> bool {
+        self.runtime.component_prepare_pending()
+    }
+
+    pub(crate) fn discard_prepared_components(&mut self) {
+        let _ = self.runtime.command(Command::DiscardPreparedComponents);
+    }
+
+    pub(crate) fn commit_prepared_components(
+        &mut self,
+        components: Vec<ComponentId>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let CommandResult::ComponentsCommitted(_) = self
+            .runtime
+            .command(Command::CommitPreparedComponents { components, at })?
+        else {
+            return Err(Error::InvalidConfiguration(
+                "unexpected component batch result",
+            ));
+        };
+        self.observe(at, None)
     }
 
     /// Start configured component cadences only after every init committed.

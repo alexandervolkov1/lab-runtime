@@ -13,7 +13,7 @@ are not reported as passing evidence.
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
 | C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence Host apply and public operation green; safe/Required integration remains |
-| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Single-component C9/C10 and native C11 green; atomic multi-component reload remains |
+| C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Atomic bounded managed batch and native restart software tests green |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
 | C18 | Public API/Babashka process independence under configured acquisition | Pending |
@@ -118,6 +118,18 @@ are not reported as passing evidence.
     production capacity (no test ordering or shared domain state); startup still
     uses its finite Busy retry. The full regression must be rerun before a gate is
     claimed.
+13. C9 multi-component acceptance was red because the sequential reload committed
+    generation 2 for the first source before invalid Lua in the second source was
+    known. Core now retains up to the existing eight-component bound of validated
+    init results outside the active graph while preserving the accepted single
+    staging slot and two Lua workers. One checked owner command validates every
+    identity/generation again and commits the complete batch; failure discards all
+    prepared candidates. Old-generation steps may progress during preparation,
+    so their state revision is refreshed only at the fenced commit while the
+    component generation remains the stale-work boundary. The three managed
+    tests now prove invalid two-source atomicity, subsequent all-source generation
+    advance, single-source reload and invalid-source preservation. Full Core tests
+    and warning-free targeted clippy pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
