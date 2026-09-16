@@ -478,3 +478,72 @@ fn two_causal_fact_groups_under_one_held_writer_use_one_bounded_batch_commit() {
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn four_full_causal_groups_commit_exactly_the_256_record_batch_limit() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    worker.request_start("full batch cap").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let signal = SignalId::new(InstrumentId::new(186), lab_core::TEMPERATURE);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    for group in 0..4u64 {
+        let facts = (1..=64u64)
+            .map(|position| {
+                let sequence = group * 64 + position;
+                RecordingFact::Measurement {
+                    sequence,
+                    sample: Sample::validated_good(
+                        signal,
+                        Unit::CELSIUS,
+                        Duration::from_millis(sequence),
+                        Value::Float(sequence as f64),
+                    )
+                    .unwrap(),
+                    generation: 1,
+                    revision: 1,
+                }
+            })
+            .collect();
+        worker
+            .try_admit_at(facts, Duration::from_millis(group + 1))
+            .unwrap();
+        if group == 0 {
+            while !barrier.reached() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(barrier.reached(), "first SQL stage was never held");
+        }
+    }
+    let pending = worker.poll();
+    assert_eq!(pending.outstanding_records, 256);
+    assert_eq!(pending.outstanding_groups, 4);
+    assert!(pending.outstanding_bytes <= 4 * 1024 * 1024);
+    barrier.release();
+    while worker.poll().outstanding_records > 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().outstanding_records, 0);
+    assert_eq!(worker.poll().outstanding_groups, 0);
+    worker.request_stop().unwrap();
+    await_state(&mut worker, RecordingState::Idle);
+    worker.request_finish().unwrap();
+    await_state(&mut worker, RecordingState::Closed);
+    drop(worker);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = db
+        .query_row("SELECT COUNT(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    let commits: Vec<u8> = db
+        .query_row("SELECT commit_no FROM durable_checkpoints", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 256);
+    assert_eq!(u64::from_be_bytes(commits.try_into().unwrap()), 4);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
