@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 actual Windows COM/Metakon read-only hardware acceptance only.
+M8 actual Metakon protocol-value discrepancy review; physical testing stopped.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,9 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-Only the remaining M8 real Metakon read-only hardware checklist. The user
-explicitly crossed the ASTRA_HIGH -> SOL_HIGH implementation gate on 2026-09-16.
-Do not start M9.
+No further physical protocol experiment until review of the actual Metakon 513
+value discrepancy. Do not change scale/register/address speculatively, resume
+the disconnect test, or start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -92,6 +92,33 @@ the hardware subgate of C19 therefore remain open, along with the bench portions
 of C12/C14/C18. Deterministic transports are only software evidence. No actuator
 write or physical-output safety claim was made. The donor path was unavailable
 and was not modified.
+
+M8 real Metakon review stop — 2026-09-16
+
+The operator connected an actual Metakon 513 on COM5, address 5, thermocouple
+input, 9600 8N1/no flow control, with the actuator load disconnected and display
+approximately 21 °C. Exact config, definition and SQLite hashes are recorded in
+`MILESTONE_8_REPORT.md`. No actuator/configuration write, alternate address or
+register, reset or experimental operation was attempted.
+
+The strict register-0 channel-type probe returned the required U8 value 3 and the
+service reached ready. Register-1 responses passed exact address/function/type/
+length/CRC checks and produced raw I16 values 23/24. With the accepted definition
+scale 0.1 they became twelve durable `Good` observations of 2.3–2.4 °C, which is
+not plausible against the approximately 21 °C display. Required SQLite recording
+has complete coverage, no gaps and zero output events. Actual COM plus Recorder
+shutdown completed cleanly. The physical disconnect/reconnect test was not begun.
+
+The first user-approved relative config launch also exposed a pre-COM defect:
+the relative config parent left the Recorder path relative and startup rejected
+it as non-absolute. Launching the same unchanged bytes with an absolute config
+path succeeded. Neither this defect nor the value discrepancy was hidden.
+
+The adapter does not retain independent raw-frame logs. Strict-decoder frame
+reconstructions, public snapshots, SQLite rows and shutdown results are in the
+report. Review authoritative Metakon 513 documentation or existing read-only
+donor evidence before authorizing any mapping change. Do not guess a scale or
+probe another register. STATUS remains `WAITING_FOR_REVIEW`.
 
 Documentation only: no production code, tests or dependencies changed; no COM
 opened; no accepted M7 test gate rerun or new hardware evidence claimed. The

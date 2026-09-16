@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: software implementation complete; real-hardware acceptance pending under
-SOL_HIGH, 2026-09-16.
+Status: `WAITING_FOR_REVIEW` after a real-hardware protocol-value discrepancy;
+software implementation remains complete under SOL_HIGH, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -23,14 +23,14 @@ are not reported as passing evidence.
 | C9 | `managed_script_reload` | Software pass |
 | C10 | `managed_script_reload`, M5 `runner`/`workers` regressions | Software pass |
 | C11 | `model_restart`, `managed_script_reload`, `runtime_lifecycle_operations` | Software pass |
-| C12 | `windows_com_transport`, `configured_physical` | Windows software pass; bench data pending |
+| C12 | `windows_com_transport`, `configured_physical` | Software pass; actual COM5 open/settings/close observed |
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
 | C14 | `windows_com_transport`, `configured_physical` | Software pass; real disconnect pending |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | **Hardware pending** |
-| C17 | Actual observations, public history and SQLite reopen | **Hardware pending** |
-| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software process pass; bench observation pending |
-| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Software pass; clean hardware close pending |
+| C16 | Actual Windows COM + Metakon read-only bench | **Blocked:** strict reads decode as 2.3–2.4 °C while display is about 21 °C |
+| C17 | Actual observations, public history and SQLite reopen | Partial durable evidence retained; semantic value discrepancy blocks acceptance |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; actual clients disconnected/reconnected while acquisition continued, but invalid value blocks bench acceptance |
+| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Actual clean COM/Recorder close passed; physical disconnect/reconnect subcase not run |
 | C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
 ## Actual sequence
@@ -359,20 +359,84 @@ retains one request and one completion slot. Recorder retains the M7 limits of
 and does not add hidden capacity. One lifecycle fact admits at most 256 affected
 identities and 64 KiB charged representation.
 
+## Actual Metakon 513 bench attempt — 2026-09-16
+
+The operator supplied a Metakon 513 on COM5, address 5, thermocouple input,
+one channel, 9600 8N1/no flow control, unknown firmware, with the actuator load
+physically disconnected. The device display was reported as approximately
+21 °C. The exact read-only deployment is
+`examples/runtime.metakon-513-com5.toml`, SHA-256
+`fc849d3586fbc06a1b2465d877100074edda1e6468e4c8f6d5f0a7f2f292ec2c`.
+Its frozen definition hash is
+`0260b37bce4c72795ad2a55188f4dbbf2b923f8b85ffd177078e27edb4b9921b`.
+The definition exposes only `channel_type` register 0 and `temperature`
+register 1 as read-only operations; no actuator parameter is present.
+
+The user-approved relative launch command failed before COM composition with
+`StorageError("storage path must be a local absolute path")`. Passing the same
+unchanged config file by absolute path made its relative Recorder path absolute
+and started successfully. This is a configuration-path handling defect, not a
+device response. No COM port was opened by the failed attempt.
+
+The absolute-path launch opened only COM5 and reached `ready` under boot
+`5c9239c5365b1a20560e2d77a4b9b000`. Reaching readiness proves that the strict
+read-only channel-type compatibility probe returned the required U8 value 3 at
+address 5/channel 0/register 0. Repeated address 5/channel 0/register 1 reads
+passed exact address/function/type/length/CRC validation and published generation
+1/revision 1 `Good` signals, but their values were 2.3–2.4 °C rather than the
+approximately 21 °C physical display. Five public Babashka samples were
+`2.4, 2.4, 2.4, 2.3, 2.3 °C`; the durable run contains twelve such rows with
+minimum 2.3 and maximum 2.4 °C.
+
+The accepted codec does not expose or persist a raw-frame log. Its strict decode
+and the resulting raw I16 values uniquely constrain the accepted frames below;
+these are deterministic reconstructions, not an independent wire capture:
+
+```text
+channel_type request:        05 00 00 00 6A
+channel_type accepted reply: 05 00 00 00 41 03 00
+temperature request:         05 00 01 00 AE
+raw 23 accepted reply:       05 00 01 00 44 17 00 2F
+raw 24 accepted reply:       05 00 01 00 44 18 00 37
+```
+
+Required recording was explicitly started through the public API. It committed
+run 1/interval 1 with complete coverage and no first error; its durable prefix
+advanced while observations continued. Offline read-only SQLite inspection found
+12 `measurement` rows for instrument 1/parameter 2, all `good`, no unavailable
+rows, no gaps and zero `output_events`. Exact `runtime_toml` and instrument
+definition hashes match the files above. The closed SQLite file is
+`examples/metakon-513-com5-history.sqlite`, SHA-256
+`91b1da3f76222389ab77d0f4355f5da6ed8b2f0dbb2271ada2a3532b54fb1eec`.
+
+Multiple actual Babashka clients disconnected and reconnected while acquisition
+continued. Resource snapshots reported logical resource 1, generation/binding 1,
+completed transactions and an empty queue between polls. Shutdown then completed
+with `safe_confirmed=true`, `transports_closed=true`,
+`recorder_flushed=true`, zero unfinished transports/workers and exit success.
+The sealed interval and run both have complete coverage.
+
+No actuator/configuration write, alternate register/address, output test,
+implicit reset or experimental command was attempted. On the value discrepancy,
+the Runtime was stopped before the physical cable disconnect/reconnect test, as
+required. C16/C17 cannot pass until the accepted Metakon 513 register/scaling
+knowledge is reviewed against authoritative device documentation or read-only
+donor evidence; no speculative scale or register change is authorized.
+
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
 
 ## Current limitations
 
-No real Metakon bench was available in this phase: no operator-confirmed device,
-firmware, wiring, COM port or justified recovery boundary was supplied. No real
-port was opened and no physical operation was attempted. Consequently C16, C17,
-the real-device portions of C12/C14/C18 and the hardware subgate of C19 remain
-unverified. Deterministic transports are reported only as software evidence and
-are not substitutes for those rows. The donor path was absent on this computer
+The actual COM5 open/settings/compatibility probe, repeated syntactically valid
+reads, Required durability, client independence and clean COM/Recorder close are
+real hardware evidence. They do not satisfy C16/C17 because the decoded values
+contradict the physical display. The physical disconnect/reconnect portion of
+C14/C16/C17/C19 was deliberately not started. Firmware remains unknown and no
+independent wire capture exists. The donor path remains absent on this computer
 and no donor content was changed.
 
-M8 therefore stops at `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for
-external review and does not authorize M9. M8 performs no physical actuator
-write and makes no physical-output-safety, power-loss, remote-security, GUI or
-long-soak certification claim.
+M8 stops at `WAITING_FOR_REVIEW`; it is not ready for external review and does
+not authorize M9. M8 performed no physical actuator write and makes no
+physical-output-safety, power-loss, remote-security, GUI or long-soak
+certification claim.

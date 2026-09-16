@@ -26,17 +26,18 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 Current model: SOL_HIGH
-Current phase: M8 real Windows COM/Metakon read-only hardware acceptance only.
+Current phase: review actual Metakon 513 protocol-value discrepancy.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
 
-M8 C16/C17 and the hardware part of C19 still require an actual Windows
-COM/Metakon read-only bench, real recording, disconnect/reconnect, API/Babashka
-and SQLite inspection, and clean shutdown. No device was available during the
-software phase. Fake evidence cannot close this gate, so M8 remains incomplete.
+An actual COM5 bench passed compatibility, strict frame decoding, Required
+recording and clean shutdown, but register-1 values decoded as 2.3–2.4 °C while
+the device displayed approximately 21 °C. Testing stopped before physical
+disconnect/reconnect. Review is required before any scale/register change; M8
+remains incomplete and M9 is not authorized.
 
 First stable release sequence
 M7

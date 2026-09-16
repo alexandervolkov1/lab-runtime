@@ -28,7 +28,7 @@ This repository is an architecture-first greenfield project.
 The current phase is:
 
 ```text
-SOL_HIGH — M8 real-hardware acceptance pending.
+SOL_HIGH — M8 Metakon protocol discrepancy review.
 ```
 
 M1–M7 are complete and M7 has passed external implementation review.
@@ -54,21 +54,22 @@ docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 
 Current model: SOL_HIGH.
 
-Authorized work: complete only the real Windows COM/Metakon read-only hardware
-gate in `docs/implementation/MILESTONE_8_DESIGN.md`. M8 software implementation
-and its 388-test debug/release gates are complete at `0a42d73`. M7 at `f3ff456`
-is externally accepted; preserve both and do not start M9.
+Authorized work: review the actual Metakon 513 register-1 value discrepancy
+recorded in `docs/implementation/MILESTONE_8_REPORT.md`. Do not resume hardware,
+change mapping speculatively or start M9. M8 software implementation remains
+complete at `0a42d73`; M7 at `f3ff456` remains externally accepted.
 
-STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
+STATUS: WAITING_FOR_REVIEW
 The M8 model gate was explicitly crossed:
 
 ```text
 ASTRA_HIGH -> SOL_HIGH
 ```
 
-Real Windows COM/Metakon read-only C16/C17/C19 acceptance remains mandatory;
-fake transport cannot replace missing hardware. Do not add unrelated software,
-claim whole-M8 completion or begin M9 while this gate is pending.
+The actual read-only COM5 bench passed compatibility but decoded 2.3–2.4 °C
+against an approximately 21 °C display. No further register/scale/address probe,
+write/reset or disconnect test is authorized before review. Do not claim M8
+completion or begin M9.
 
 If a genuine architectural contradiction is discovered, record the precise issue in
 `ai/HANDOFF.md`, set:
