@@ -14,7 +14,7 @@ are not reported as passing evidence.
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
 | C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Initial lifecycle slice green; Runtime/Recorder integration remains |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | C11 Core restart primitive green; C9-C10 and public operation remain |
-| C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter slice green; Host process integration remains |
+| C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
 | C18 | Public API/Babashka process independence under configured acquisition | Pending |
 | C19 | Finite COM + Recorder shutdown in software fault cases and actual hardware | Software pending; hardware pending |
@@ -74,6 +74,17 @@ are not reported as passing evidence.
    signal currency and records later samples with the new generation. Two
    targeted Core tests and warning-free targeted clippy pass. Public operation
    composition and managed-model restart remain separate work.
+8. C12-C17 configured physical-composition acceptance was red because Host had
+   no transport-injected deployment builder. Added exact frozen-definition
+   composition into the existing M3 `ResourceExecutor`, scheduled only the
+   trusted read-only temperature primitive and published its decoded value
+   through the normal Signal/fact path with resource/binding correlation. The
+   first green run exposed exact binary floating-point comparison in the test;
+   the oracle was corrected to a tight numeric tolerance. Two software tests,
+   configured startup regression and warning-free targeted clippy pass. The
+   production service now creates concrete COM workers before listener binding.
+   This is deterministic software evidence only; no actual COM port or Metakon
+   was opened and C16/C17 hardware remain pending.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

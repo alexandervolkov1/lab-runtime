@@ -5,13 +5,18 @@
 
 use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor};
 use crate::{
-    configuration::{RecordingPolicyDto, load_runtime_toml},
+    configuration::{FlowControlDto, ParityDto, RecordingPolicyDto, load_runtime_toml},
     deployment::DeploymentLifecycle,
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
+    serial::{ComSettings, ComTransport, SerialFlowControl, SerialParity},
 };
-use lab_core::Error as DomainError;
 use lab_core::managed::ComponentError;
+use lab_core::{
+    Error as DomainError,
+    transport::{ByteTransport, ResourceId},
+};
 use std::{
+    collections::BTreeMap,
     error::Error,
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
@@ -208,7 +213,34 @@ impl ServiceHost {
             None
         };
         let mut host = if let Some(deployment) = loaded.as_ref() {
-            HostCore::configured_native(deployment)?
+            let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+            for resource in &deployment.effective().dto.resources {
+                let settings = ComSettings::new(
+                    resource.id,
+                    &resource.port,
+                    resource.baud_rate,
+                    resource.data_bits,
+                    match resource.parity {
+                        ParityDto::None => SerialParity::None,
+                        ParityDto::Odd => SerialParity::Odd,
+                        ParityDto::Even => SerialParity::Even,
+                    },
+                    resource.stop_bits,
+                    match resource.flow_control {
+                        FlowControlDto::None => SerialFlowControl::None,
+                        FlowControlDto::Software => SerialFlowControl::Software,
+                        FlowControlDto::Hardware => SerialFlowControl::Hardware,
+                    },
+                    std::time::Duration::from_millis(resource.read_timeout_ms),
+                    std::time::Duration::from_millis(resource.write_timeout_ms),
+                    1,
+                )
+                .map_err(|_| io::Error::other("invalid configured COM settings"))?;
+                let adapter = ComTransport::open_windows(settings)
+                    .map_err(|_| io::Error::other("COM worker could not start"))?;
+                transports.insert(ResourceId::new(resource.id), Box::new(adapter));
+            }
+            HostCore::configured_with_transports(deployment, transports)?
         } else {
             HostCore::virtual_demo()?
         };

@@ -11,6 +11,7 @@ use crate::recorder::{
 };
 use crate::{
     configuration::{FrozenDeployment, InstrumentDto},
+    definition::parse_definition_json,
     events::{EventError, EventLog},
 };
 use lab_core::{
@@ -18,6 +19,7 @@ use lab_core::{
     ParameterDescriptor, ParameterRole, Query, QueryResult, Runtime, Sample, SampleQuality,
     SignalId, Unit, ValueSpec, WriteEffect,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
+    instrument::{KnownOperation, MetakonBinding, MetakonInstrumentConfig},
     managed::{
         ComponentDefinition, ComponentError, ComponentExecutor, ComponentId, ComponentKind,
         ComponentManifest, ComponentState, PlainData, PlainValue,
@@ -189,16 +191,26 @@ impl Periodic {
 pub struct SchedulePlan {
     safety: Periodic,
     plants: Vec<(InstrumentId, Periodic)>,
+    metakon_reads: Vec<MetakonReadSchedule>,
     references: Vec<(ReferenceId, Periodic)>,
     controllers: Vec<(ControllerId, SignalId, Periodic)>,
     sources: Vec<(ComponentId, Periodic)>,
     transforms: Vec<(ComponentId, SignalId)>,
+}
+
+struct MetakonReadSchedule {
+    instrument: InstrumentId,
+    parameter: lab_core::ParameterId,
+    slot: Periodic,
+    queue_ttl: Duration,
+    timeout: Duration,
 }
 impl SchedulePlan {
     fn virtual_demo() -> Self {
         Self {
             safety: Periodic::new(Duration::from_millis(10)),
             plants: vec![(PLANT, Periodic::new(Duration::from_millis(100)))],
+            metakon_reads: Vec::new(),
             references: vec![(REFERENCE, Periodic::new(Duration::from_millis(100)))],
             controllers: vec![(
                 CONTROLLER,
@@ -221,6 +233,7 @@ impl SchedulePlan {
         Self {
             safety: Periodic::new(Duration::from_millis(10)),
             plants: Vec::new(),
+            metakon_reads: Vec::new(),
             references: vec![(reference, Periodic::new(Duration::from_millis(100)))],
             controllers: vec![(controller, input, Periodic::new(Duration::from_millis(100)))],
             sources: Vec::new(),
@@ -297,16 +310,21 @@ impl HostCore {
     /// Construct a validated configured native observation graph without opening
     /// storage, listeners, Lua or physical resources.
     pub fn configured_native(deployment: &FrozenDeployment) -> Result<Self, Error> {
+        Self::configured_with_transports(deployment, BTreeMap::new())
+    }
+
+    /// Construct a configured graph with exactly one adapter for every declared
+    /// resource. Adapters are created outside Core and remain exclusively owned
+    /// by its existing bounded M3 resource executor.
+    pub fn configured_with_transports(
+        deployment: &FrozenDeployment,
+        mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>>,
+    ) -> Result<Self, Error> {
         let dto = &deployment.effective().dto;
-        if !dto.resources.is_empty()
-            || !dto.managed_components.is_empty()
+        if !dto.managed_components.is_empty()
             || !dto.references.is_empty()
             || !dto.controllers.is_empty()
             || !dto.safe_profiles.is_empty()
-            || dto
-                .instruments
-                .iter()
-                .any(|instrument| matches!(instrument, InstrumentDto::Metakon { .. }))
         {
             return Err(Error::InvalidConfiguration(
                 "configured graph capability not initialized",
@@ -314,6 +332,21 @@ impl HostCore {
         }
         let mut runtime = Runtime::new();
         let mut measurements = Vec::with_capacity(dto.instruments.len());
+        let mut resources = Vec::with_capacity(dto.resources.len());
+        for resource in &dto.resources {
+            let id = ResourceId::new(resource.id);
+            let adapter = transports
+                .remove(&id)
+                .ok_or(Error::InvalidConfiguration("configured transport missing"))?;
+            runtime.register_transport(id, adapter)?;
+            resources.push(id);
+        }
+        if !transports.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "undeclared configured transport",
+            ));
+        }
+        let mut metakon_reads = Vec::new();
         for instrument in &dto.instruments {
             match instrument {
                 InstrumentDto::VirtualMeasurement {
@@ -364,7 +397,56 @@ impl HostCore {
                         Periodic::new(Duration::from_millis(*poll_period_ms)),
                     ));
                 }
-                InstrumentDto::Metakon { .. } => unreachable!("rejected above"),
+                InstrumentDto::Metakon {
+                    id,
+                    definition,
+                    resource_id,
+                    address,
+                    poll_period_ms,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } => {
+                    let bytes = deployment
+                        .artifact_bytes(definition)
+                        .ok_or(Error::InvalidConfiguration("frozen definition missing"))?;
+                    let text = std::str::from_utf8(bytes)
+                        .map_err(|_| Error::InvalidConfiguration("definition is not UTF-8"))?;
+                    let definition = parse_definition_json(text)
+                        .map_err(|_| Error::InvalidConfiguration("invalid frozen definition"))?;
+                    if definition.id != InstrumentId::new(*id) {
+                        return Err(Error::InvalidConfiguration(
+                            "definition and deployment instrument IDs differ",
+                        ));
+                    }
+                    let temperature = definition
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.operation == KnownOperation::Temperature)
+                        .ok_or(Error::InvalidConfiguration(
+                            "read-only Metakon definition lacks temperature",
+                        ))?
+                        .id;
+                    runtime.command(Command::RegisterMetakon(MetakonInstrumentConfig {
+                        definition,
+                        binding: MetakonBinding {
+                            resource: ResourceId::new(*resource_id),
+                            device: *address,
+                            channel: 0,
+                            binding_generation: 1,
+                            mapping_revision: 1,
+                            expected_output_unit: None,
+                        },
+                        history_capacity: 64,
+                    }))?;
+                    metakon_reads.push(MetakonReadSchedule {
+                        instrument: InstrumentId::new(*id),
+                        parameter: temperature,
+                        slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
+                        queue_ttl: Duration::from_millis(*queue_timeout_ms),
+                        timeout: Duration::from_millis(*transaction_timeout_ms),
+                    });
+                }
             }
         }
         let events = EventLog::new(&runtime, &[], &[], "00000000000000000000000000000000");
@@ -383,6 +465,7 @@ impl HostCore {
             plan: SchedulePlan {
                 safety: Periodic::new(Duration::from_millis(10)),
                 plants: measurements,
+                metakon_reads,
                 references: Vec::new(),
                 controllers: Vec::new(),
                 sources: Vec::new(),
@@ -393,7 +476,7 @@ impl HostCore {
             components: Vec::new(),
             outputs: Vec::new(),
             active_safety_profiles: Vec::new(),
-            resources: Vec::new(),
+            resources,
             last_now: Duration::ZERO,
             stopping: false,
             recorder: None,
@@ -1750,6 +1833,7 @@ impl HostCore {
     /// Network requests cannot access this seam or choose controller cadence.
     pub fn replace_plan(&mut self, plan: SchedulePlan) -> Result<(), Error> {
         if plan.plants.len() > 8
+            || plan.metakon_reads.len() > 64
             || plan.references.len() > 8
             || plan.controllers.len() > 8
             || plan.sources.len() + plan.transforms.len() > 8
@@ -1893,6 +1977,28 @@ impl HostCore {
                     .map_err(event_domain_error)?;
                 if let Err(error) = outcome
                     && !matches!(error, Error::MeasurementUnavailable { .. })
+                {
+                    return Err(error);
+                }
+                report.measurements += 1;
+                report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
+            }
+        }
+        for read in &mut self.plan.metakon_reads {
+            let now = clock.now();
+            if self.plan.safety.due(now) {
+                return Ok(report);
+            }
+            if let Some(skipped) = read.slot.take(now)? {
+                let outcome = self.runtime.command(Command::QueueMetakonRead {
+                    instrument: read.instrument,
+                    parameter: read.parameter,
+                    at: clock.now(),
+                    queue_ttl: read.queue_ttl,
+                    timeout: read.timeout,
+                });
+                if let Err(error) = outcome
+                    && !matches!(error, Error::Transport(_))
                 {
                     return Err(error);
                 }

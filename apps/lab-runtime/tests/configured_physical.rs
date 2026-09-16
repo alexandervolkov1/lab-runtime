@@ -1,0 +1,147 @@
+//! C12-C17 software acceptance for configured read-only physical acquisition.
+
+use lab_core::{
+    Query, QueryResult, SignalId,
+    metakon::crc,
+    transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
+};
+use lab_runtime::{
+    configuration::{ArtifactReader, ConfigurationError, parse_runtime_toml},
+    host::{Clock, HostCore},
+};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::Path,
+    time::Duration,
+};
+
+const DEFINITION: &[u8] = br#"{
+ "schema_version":1,"profile":"metakon-5x3-v1","id":11,"name":"Metakon",
+ "parameters":[
+  {"id":1,"name":"channel_type","value_type":"integer","unit":{"id":"1","symbol":"1"},"min":0,"max":255,"role":"diagnostic","access":"read_only","operation":"channel_type","scale":1,"write_effect":"none"},
+  {"id":2,"name":"temperature","value_type":"float","unit":{"id":"degC","symbol":"C"},"min":-99.9,"max":999.9,"role":"measurement","access":"read_only","operation":"temperature","scale":0.1,"write_effect":"none"}
+ ]}"#;
+const CONFIG: &[u8] = br#"schema_version=1
+[runtime]
+key="bench"
+display_name="Bench"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[resources]]
+id=7
+key="bus"
+kind="windows_com_read_only"
+port="COM3"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=50
+write_timeout_ms=50
+open_timeout_ms=500
+recovery_timeout_ms=500
+[[instruments]]
+id=11
+key="temperature"
+kind="metakon"
+definition="metakon.json"
+resource_id=7
+address=1
+poll_period_ms=100
+queue_timeout_ms=50
+transaction_timeout_ms=50
+"#;
+
+struct Reader;
+impl ArtifactReader for Reader {
+    fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+        Ok(DEFINITION.to_vec())
+    }
+}
+
+#[derive(Default)]
+struct ScriptedTransport {
+    responses: VecDeque<Vec<u8>>,
+    readable: VecDeque<u8>,
+    writes: Vec<Vec<u8>>,
+}
+impl ByteTransport for ScriptedTransport {
+    fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+        self.writes.push(bytes.to_vec());
+        if let Some(response) = self.responses.pop_front() {
+            self.readable.extend(response);
+        }
+        Ok(bytes.len())
+    }
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+        let count = bytes.len().min(self.readable.len());
+        for byte in &mut bytes[..count] {
+            *byte = self.readable.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        Ok(RecoveryStatus::Complete)
+    }
+}
+
+#[derive(Default)]
+struct TestClock(Duration);
+impl Clock for TestClock {
+    fn now(&self) -> Duration {
+        self.0
+    }
+}
+
+fn temperature_response(raw: i16) -> Vec<u8> {
+    let [low, high] = raw.to_le_bytes();
+    let mut bytes = vec![1, 0, 1, 0, 0x44, low, high];
+    bytes.push(crc(&bytes));
+    bytes
+}
+
+#[test]
+fn c12_c17_configured_metakon_publishes_normal_signal_with_binding_identity() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(7),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([temperature_response(234)]),
+            ..ScriptedTransport::default()
+        }),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    for milliseconds in [0, 10, 20] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let Some(lab_core::Value::Float(value)) = sample.value() else {
+        panic!()
+    };
+    assert!((value - 23.4).abs() < 1.0e-9);
+    assert_eq!(host.resource_records()[0]["target"]["id"], "7");
+}
+
+#[test]
+fn c2_missing_configured_transport_rejects_atomically() {
+    let mut reader = Reader;
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut reader).unwrap();
+    assert!(HostCore::configured_with_transports(&deployment, BTreeMap::new()).is_err());
+}

@@ -206,6 +206,14 @@ impl FrozenDeployment {
         resolve_artifact(&self.base, declared)
     }
 
+    pub(crate) fn artifact_bytes(&self, declared: &Path) -> Option<&[u8]> {
+        let resolved = self.resolved_path(declared).ok()?;
+        self.artifacts
+            .iter()
+            .find(|artifact| artifact.declared_path == resolved)
+            .map(FrozenArtifact::bytes)
+    }
+
     pub(crate) fn provenance_entries(&self) -> Vec<(String, String, Vec<u8>)> {
         let mut entries = Vec::with_capacity(self.artifacts.len() + 1);
         entries.push((
