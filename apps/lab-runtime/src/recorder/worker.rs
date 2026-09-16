@@ -1364,13 +1364,18 @@ fn fact_charge(fact: &RecordingFact) -> usize {
     match fact {
         RecordingFact::Output { .. } => 512,
         RecordingFact::Controller { .. } | RecordingFact::Reference { .. } => 512,
-        RecordingFact::Measurement { sample, .. } => {
-            512 + match sample.value() {
-                Some(Value::Text(value) | Value::Enum(value)) => value
-                    .capacity()
-                    .saturating_add(value.len().saturating_mul(6)),
-                _ => 0,
-            }
+        RecordingFact::Measurement {
+            sample, lineage, ..
+        } => {
+            // CapturedInput is inline in the transferred Vec, but SQLite also
+            // builds a separately owned, at-most-512-byte lineage envelope.
+            512 + usize::from(lineage.is_some()) * 512
+                + match sample.value() {
+                    Some(Value::Text(value) | Value::Enum(value)) => value
+                        .capacity()
+                        .saturating_add(value.len().saturating_mul(6)),
+                    _ => 0,
+                }
         }
     }
 }

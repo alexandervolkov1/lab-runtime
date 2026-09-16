@@ -2,7 +2,7 @@
 
 use lab_core::{
     Command, InstrumentId, Runtime, Sample, SignalId, Unit, Value, VirtualInstrumentConfig,
-    recording::RecordingFact,
+    managed::CapturedInput, recording::RecordingFact,
 };
 use lab_runtime::recorder::{RecorderLimits, RecorderWorker, RecordingState, WriterBarrier};
 use std::{
@@ -136,6 +136,64 @@ fn escaped_measurement_charges_owned_and_encoded_bytes_before_group_admission() 
     let status = worker.poll();
     assert_eq!(status.state, RecordingState::Failed);
     assert_eq!(status.outstanding_records, 0);
+    assert_eq!(status.outstanding_bytes, 0);
+    assert_eq!(status.first_missing_fact, Some(1));
+    worker.request_finish().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !worker.poll().worker_closed && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(worker.poll().worker_closed);
+    drop(worker);
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let rows: i64 = archive
+        .query_row("SELECT COUNT(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn transform_lineage_encoder_scratch_is_charged_before_group_admission() {
+    let path = temporary_database();
+    let mut worker = RecorderWorker::open(
+        &path,
+        RecorderLimits {
+            records: 4,
+            bytes: std::mem::size_of::<RecordingFact>() + 900,
+            groups: 2,
+        },
+    )
+    .unwrap();
+    worker.request_start("lineage scratch charge").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let fact = RecordingFact::Measurement {
+        sequence: 1,
+        sample: Sample::validated_good(
+            SignalId::new(InstrumentId::new(179), lab_core::TEMPERATURE),
+            Unit::CELSIUS,
+            Duration::from_secs(1),
+            Value::Float(84.0),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+        state_revision: Some(1),
+        lineage: Some(CapturedInput {
+            signal: SignalId::new(InstrumentId::new(178), lab_core::TEMPERATURE),
+            value: 42.0,
+            unit: Unit::CELSIUS,
+            at: Duration::from_secs(1),
+            freshness_at: Duration::from_secs(1),
+            source_generation: 1,
+            source_revision: 1,
+            source_state_revision: Some(1),
+        }),
+    };
+    assert!(worker.try_admit(vec![fact]).is_err());
+    let status = worker.poll();
+    assert_eq!(status.state, RecordingState::Failed);
     assert_eq!(status.outstanding_bytes, 0);
     assert_eq!(status.first_missing_fact, Some(1));
     worker.request_finish().unwrap();
