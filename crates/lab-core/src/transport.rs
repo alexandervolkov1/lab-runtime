@@ -60,6 +60,15 @@ pub enum RecoveryStatus {
     Complete,
 }
 
+/// Progress of a nonblocking adapter retirement request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportShutdown {
+    /// A worker or OS handle is still retiring; callers must not join it.
+    Pending,
+    /// The adapter reports that its worker and handle are closed.
+    Complete,
+}
+
 /// Minimal OS-independent byte boundary.
 ///
 /// Implementations must return promptly. `Ok(0)` means no progress and is not send
@@ -72,6 +81,10 @@ pub trait ByteTransport {
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError>;
     /// Make one bounded recovery step.
     fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError>;
+    /// Fence new adapter work and make one nonblocking close-progress attempt.
+    fn try_shutdown(&mut self) -> TransportShutdown {
+        TransportShutdown::Complete
+    }
 }
 
 /// Executor-level validation/admission failure.
@@ -214,6 +227,7 @@ pub struct ResourceExecutor {
     latest: Option<TransactionRecord>,
     latest_response: Option<Vec<u8>>,
     event: Option<TransportEvent>,
+    closed: bool,
 }
 
 /// Step requested from the trusted Runtime output coordinator.
@@ -259,6 +273,7 @@ impl ResourceExecutor {
             latest: None,
             latest_response: None,
             event: None,
+            closed: false,
         }
     }
 
@@ -422,6 +437,24 @@ impl ResourceExecutor {
             generation: self.generation,
             latest: self.latest,
         }
+    }
+
+    /// Retire an idle adapter without waiting for an OS call or worker join.
+    pub fn try_shutdown(&mut self) -> TransportShutdown {
+        self.queue.clear();
+        self.safe_queue = None;
+        if !matches!(self.state, OwnedState::Idle | OwnedState::Offline) {
+            return TransportShutdown::Pending;
+        }
+        if self.closed {
+            return TransportShutdown::Complete;
+        }
+        let status = self.adapter.try_shutdown();
+        if status == TransportShutdown::Complete {
+            self.closed = true;
+            self.state = OwnedState::Offline;
+        }
+        status
     }
 
     /// Borrow the last completed response bytes; a later terminal result replaces them.

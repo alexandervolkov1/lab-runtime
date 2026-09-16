@@ -145,8 +145,10 @@ impl Application {
             return Vec::new();
         };
         let result = json!({"safe_confirmed":status.safe_confirmed,"unfinished_workers":status.unfinished_workers,
+            "unfinished_transports":status.unfinished_transports,
+            "transports_closed":status.transports_closed,
             "fatal_error":status.fatal_error,
-            "cleanup_complete":status.unfinished_workers==0,
+            "cleanup_complete":status.unfinished_workers==0 && status.transports_closed,
             "recorder_flushed":status.recorder_flushed,
             "recorder_unfinished":status.recorder_unfinished,
             "recorder_error":status.recorder_error,

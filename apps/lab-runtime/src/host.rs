@@ -33,7 +33,7 @@ use lab_core::{
     transport::{ByteTransport, ExecutorState, ResourceId, TransactionOutcome},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -264,6 +264,10 @@ pub struct ShutdownStatus {
     pub safe_confirmed: bool,
     /// Fixed executor slots still executing; Rust safe work never waits for them.
     pub unfinished_workers: usize,
+    /// Physical byte resources whose adapter/worker has not confirmed close.
+    pub unfinished_transports: usize,
+    /// Every configured byte resource confirmed finite retirement.
+    pub transports_closed: bool,
     /// A fatal owner/identity fault occurred even if virtual safe evidence remains.
     pub fatal_error: bool,
     /// Every admitted recording fact and terminal seal was confirmed before close.
@@ -296,6 +300,7 @@ pub struct HostCore {
     outputs: Vec<ActuatorId>,
     active_safety_profiles: Vec<(ActuatorId, SafeProfile)>,
     resources: Vec<ResourceId>,
+    closed_resources: BTreeSet<ResourceId>,
     last_now: Duration,
     stopping: bool,
     recorder: Option<RecorderWorker>,
@@ -479,6 +484,7 @@ impl HostCore {
             outputs: Vec::new(),
             active_safety_profiles: Vec::new(),
             resources,
+            closed_resources: BTreeSet::new(),
             last_now: Duration::ZERO,
             stopping: false,
             recorder: None,
@@ -587,6 +593,7 @@ impl HostCore {
             outputs: vec![actuator],
             active_safety_profiles: vec![(actuator, safe_profile)],
             resources: Vec::new(),
+            closed_resources: BTreeSet::new(),
             last_now: Duration::ZERO,
             stopping: false,
             recorder: None,
@@ -1600,6 +1607,15 @@ impl HostCore {
         })
     }
 
+    fn outputs_safe_for_transport_close(&self) -> bool {
+        self.outputs.iter().all(|actuator| {
+            matches!(self.runtime.query(Query::Output(*actuator)),
+                Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed
+                    && snapshot.lease.is_none() && !snapshot.pending
+                    && snapshot.in_flight.is_none())
+        })
+    }
+
     fn poll_recorder(&mut self, now: Duration) {
         let Some(worker) = self.recorder.as_mut() else {
             return;
@@ -2080,6 +2096,11 @@ impl HostCore {
         let safe_confirmed=self.outputs.iter().all(|actuator|matches!(self.runtime.query(Query::Output(*actuator)),
             Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed && snapshot.lease.is_none()));
         let unfinished_workers = self.runtime.unfinished_component_workers();
+        let unfinished_transports = self
+            .resources
+            .len()
+            .saturating_sub(self.closed_resources.len());
+        let transports_closed = unfinished_transports == 0;
         let recorder_state = self.recording_status.as_ref().map(|status| status.state);
         let recorder_flushed = self.recording_status.as_ref().is_none_or(|status| {
             status.state == RecordingState::Closed
@@ -2095,12 +2116,15 @@ impl HostCore {
         ShutdownStatus {
             safe_confirmed,
             unfinished_workers,
+            unfinished_transports,
+            transports_closed,
             fatal_error: false,
             recorder_flushed,
             recorder_unfinished,
             recorder_error,
             exit_success: safe_confirmed
                 && unfinished_workers == 0
+                && transports_closed
                 && recorder_flushed
                 && !recorder_error,
         }
@@ -2234,6 +2258,18 @@ impl HostCore {
             self.observe(clock.now(), None)?;
             report.safety += 1;
             report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
+        }
+        if self.stopping && self.outputs_safe_for_transport_close() {
+            for resource in self.resources.clone() {
+                if self.closed_resources.contains(&resource) {
+                    continue;
+                }
+                if self.runtime.shutdown_transport(resource)?
+                    == lab_core::transport::TransportShutdown::Complete
+                {
+                    self.closed_resources.insert(resource);
+                }
+            }
         }
         if self.stopping {
             return Ok(report);

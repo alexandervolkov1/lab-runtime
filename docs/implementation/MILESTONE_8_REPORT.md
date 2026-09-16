@@ -17,7 +17,7 @@ are not reported as passing evidence.
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
 | C18 | Public API/Babashka process independence under configured acquisition | Pending |
-| C19 | Finite COM + Recorder shutdown in software fault cases and actual hardware | Software pending; hardware pending |
+| C19 | Finite COM + Recorder shutdown in software fault cases and actual hardware | Clean/stalled software transport and active Recorder close green; hardware pending |
 | C20 | Fixed Recorder budgets and complete M1-M7/M8 regression gate | Pending |
 
 ## Actual sequence
@@ -130,6 +130,16 @@ are not reported as passing evidence.
     tests now prove invalid two-source atomicity, subsequent all-source generation
     advance, single-source reload and invalid-source preservation. Full Core tests
     and warning-free targeted clippy pass.
+14. C19 transport shutdown acceptance was red because `ByteTransport` had no
+    explicit retirement progress contract and Host could not distinguish a closed
+    adapter from a detached worker. Added a nonblocking Pending/Complete shutdown
+    step to the existing M3 ownership boundary, implemented COM retire/drain/join
+    only after `is_finished`, and made Host close resources only after output-safe
+    obligations resolve. Shutdown status now reports COM cleanup independently
+    from managed workers and Recorder flush. Software tests cover clean and
+    indefinitely stalled transports plus concurrent active Recorder close and
+    successful SQLite reopen. Two targeted tests and warning-free clippy pass;
+    actual hardware close remains C19-pending.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

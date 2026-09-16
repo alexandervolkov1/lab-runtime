@@ -9,7 +9,7 @@
 
 use lab_core::{
     metakon::MAX_FRAME_BYTES,
-    transport::{ByteTransport, RecoveryStatus, TransportIoError},
+    transport::{ByteTransport, RecoveryStatus, TransportIoError, TransportShutdown},
 };
 use std::{
     collections::VecDeque,
@@ -381,6 +381,23 @@ impl ByteTransport for ComTransport {
             return Ok(RecoveryStatus::Complete);
         }
         Ok(RecoveryStatus::Pending)
+    }
+
+    fn try_shutdown(&mut self) -> TransportShutdown {
+        self.retire();
+        self.drain_completion();
+        if self.state != ComState::Closed {
+            return TransportShutdown::Pending;
+        }
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.is_finished())
+            && let Some(worker) = self.worker.take()
+        {
+            let _ = worker.join();
+        }
+        TransportShutdown::Complete
     }
 }
 

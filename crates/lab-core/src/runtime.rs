@@ -31,7 +31,7 @@ use crate::reference::{
 };
 use crate::transport::{
     AuthorizationStep, ByteTransport, ExecutorSnapshot, ResourceExecutor, ResourceId,
-    TransactionId, TransactionOutcome, TransportError, TransportEvent,
+    TransactionId, TransactionOutcome, TransportError, TransportEvent, TransportShutdown,
 };
 use crate::{
     Error, InstrumentDescriptor, InstrumentId, ParameterId, ParameterRole, Sample, SampleQuality,
@@ -2540,6 +2540,14 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    /// Make one nonblocking retirement attempt for an existing byte resource.
+    pub fn shutdown_transport(&mut self, resource: ResourceId) -> Result<TransportShutdown, Error> {
+        self.resources
+            .get_mut(&resource)
+            .map(ResourceExecutor::try_shutdown)
+            .ok_or(TransportError::UnknownResource.into())
     }
 
     fn commit_prepared_components(
