@@ -1,573 +1,340 @@
-# lab-runtime — Project Brief
+# lab-runtime — current product brief
 
-## Статус
+## Goal
 
-Это новый проект.
+`lab-runtime` is a long-running Rust laboratory automation Runtime.
 
-Он не является рефакторингом существующего `com_port_reader` и на первом архитектурном этапе не должен наследовать его структуру автоматически.
+It owns authoritative experiment state and combines:
 
-Существующий проект является:
+- physical and virtual instruments;
+- acquisition;
+- signal processing;
+- native References/controllers;
+- central output safety;
+- durable recording/history;
+- a language-neutral Application API;
+- external interactive automation;
+- a separate GUI client.
 
-* работающей версией v1;
-* источником проверенных алгоритмов;
-* источником драйверов;
-* источником реальных требований;
-* будущим донором отдельных реализаций.
+The architecture should remain understandable enough to study and small enough for
+real laboratory workloads.
 
-Архитектура lab-runtime должна сначала быть спроектирована независимо.
+## Runtime ownership
 
-После утверждения архитектуры будет отдельный этап сопоставления новой системы с кодом v1 и переноса подходящих компонентов.
+The Rust Runtime is the single authoritative mutable experiment owner.
 
----
-
-# Главная цель
-
-Создать универсальный runtime для лабораторной автоматизации.
-
-Система должна сочетать:
-
-* быстрое и надёжное ядро на Rust;
-* поддержку физических приборов;
-* динамически подключаемые приборы;
-* обработку сигналов;
-* управление процессами;
-* безопасную работу с исполнительными устройствами;
-* встроенные скриптовые расширения;
-* внешнюю интерактивную автоматизацию;
-* GUI;
-* регистрацию эксперимента;
-* возможность удалённого подключения в будущем.
-
-Главное требование к архитектуре:
-
-> Расширение системы должно требовать изменения Rust Core только тогда, когда для этого действительно нужна новая низкоуровневая или safety-critical возможность.
-
----
-
-# 1. Приборы
-
-Система должна работать с различными физическими приборами.
-
-Основной транспорт на первом этапе:
-
-* serial / COM / RS-485.
-
-В будущем архитектура не должна мешать добавить:
-
-* TCP;
-* другие транспорты;
-* виртуальные устройства;
-* replay/mock устройства.
-
-Физический прибор может быть реализован несколькими способами.
-
-## Native Rust instrument
-
-Полноценный драйвер на Rust.
-
-Используется для:
-
-* нового физического протокола;
-* сложного бинарного протокола;
-* критичных по надёжности устройств;
-* производительных реализаций.
-
-## Data-driven instrument
-
-Если Rust уже знает протокол, новый прибор должен по возможности добавляться декларативно.
-
-Например для Modbus RTU определение может содержать:
-
-* slave address;
-* параметры;
-* регистры;
-* типы данных;
-* scaling;
-* units;
-* read/write permissions;
-* limits.
-
-Добавление такого прибора не должно требовать перекомпиляции Rust Core.
-
-## Script-backed instrument
-
-Если нужен только небольшой набор операций нестандартного прибора, должно быть возможно написать небольшой script adapter.
-
-Пример:
-
-* запросить температуру;
-* установить мощность;
-* распарсить текстовый ответ.
-
-После регистрации такой script-backed instrument должен выглядеть для остальной системы как обычный Instrument.
-
----
-
-# 2. Разделение transport / protocol / instrument
-
-Архитектура должна явно рассмотреть разделение:
-
-```text
-Transport
-    ↓
-Protocol
-    ↓
-Instrument
-```
-
-Transport отвечает за передачу данных.
-
-Protocol отвечает за framing и семантику протокола.
-
-Instrument отвечает за предметные понятия:
-
-```text
-temperature
-pressure
-setpoint
-power
-flow
-```
-
-Необходимо оценить, насколько строго это разделение должно присутствовать в runtime API.
-
----
-
-# 3. Единая модель Instrument
-
-Независимо от реализации:
-
-```text
-Rust driver
-data-driven definition
-Lua driver
-virtual instrument
-future external plugin
-```
-
-прибор должен представляться ядру через единую domain model.
-
-Instrument должен уметь публиковать descriptor.
-
-Descriptor потенциально содержит:
-
-* instrument type;
-* identity;
-* display name;
-* parameters;
-* parameter types;
-* units;
-* readable/writable flags;
-* limits;
-* polling capability;
-* control-output capability;
-* other capabilities.
-
-GUI и внешние клиенты должны преимущественно использовать descriptors, а не hardcoded knowledge конкретных приборов.
-
----
-
-# 4. Signal processing
-
-Система должна позволять строить поток обработки сигналов.
-
-Необходимо рассмотреть общую модель вроде:
-
-```text
-Source
-  ↓
-Transform
-  ↓
-Filter
-  ↓
-Controller
-  ↓
-Sink
-```
-
-Также требуется понятие Reference.
-
-Например:
-
-```text
-FixedReference
-RampReference
-ProgramReference
-ScriptReference
-```
-
-Постепенное изменение setpoint должно рассматриваться отдельно от самого PID-контроллера.
-
----
-
-# 5. Фильтры
-
-Нужны как минимум два класса фильтров.
-
-## Native filters
-
-Реализованы на Rust.
-
-Для:
-
-* часто используемых алгоритмов;
-* производительности;
-* deterministic execution.
-
-## Script filters
-
-Пользователь должен иметь возможность добавить экспериментальный или простой фильтр без перекомпиляции Rust Core.
-
-Снаружи native и script filter желательно должны выглядеть одинаково.
-
----
-
-# 6. Управление
-
-Нужны native Rust controllers:
-
-* PID;
-* On/Off;
-* существующий Furnace controller;
-* будущие deterministic/safety-critical controllers.
-
-При этом архитектура должна позволять добавлять экспериментальные control strategies без перекомпиляции ядра.
-
-Нужно рассмотреть:
-
-* embedded script controller;
-* external controller;
-* future compiled plugin.
-
-Все controller implementations должны работать через единую safety boundary.
-
-Controller не должен напрямую писать в физический прибор.
-
-Предпочтительная концепция:
-
-```text
-Controller
-    ↓
-OutputProposal
-    ↓
-OutputArbiter / Safety
-    ↓
-Instrument
-```
-
----
-
-# 7. Output safety
-
-Rust должен оставаться окончательным владельцем физического выхода.
-
-Нужно предусмотреть:
-
-* ownership;
-* manual/automatic state;
-* safe output;
-* output limits;
-* interlocks;
-* failed writes;
-* controller pause/resume;
-* controller removal;
-* client disconnect;
-* script failure;
-* watchdog/lease для external control.
-
-Script или внешний клиент могут предложить output value, но не должны обходить safety layer.
-
----
-
-# 8. Lua
-
-Lua рассматривается как embedded extension language.
-
-Её потенциальные области:
-
-* lightweight instrument drivers;
-* protocol adapters;
-* virtual instruments;
-* emulators;
-* simple filters;
-* local transforms;
-* возможно lightweight local control nodes.
-
-Преимущества:
-
-* встроенность;
-* небольшой runtime;
-* отсутствие отдельного процесса;
-* удобные callbacks;
-* простое распространение программы.
-
-Lua не должна автоматически становиться владельцем всего high-level orchestration.
-
----
-
-# 9. Babashka / Clojure
-
-Babashka рассматривается как external orchestration environment.
-
-Её потенциальные области:
-
-* experiment scenarios;
-* recipes;
-* high-level procedures;
-* supervisory logic;
-* live development;
-* REPL/nREPL;
-* dynamic configuration;
-* composition of instruments/signals/controllers;
-* experimental external control.
-
-Babashka подключается к Rust Runtime через стабильный внешний API.
-
-Rust Runtime должен продолжать безопасную работу при закрытии или перезапуске Babashka.
-
----
-
-# 10. Два скриптовых языка
-
-Необходимо критически оценить сложность использования одновременно Lua и Babashka.
-
-Предпочтительная концепция:
-
-```text
-Lua
-    embedded extensions close to runtime
-
-Babashka
-    external interactive orchestration
-```
-
-Необходимо избегать создания двух полностью дублирующихся scripting APIs.
-
-Архитектура должна явно определить:
-
-* где заканчивается Lua;
-* где начинается Babashka;
-* какие возможности намеренно доступны обоим;
-* какие принадлежат только одному уровню.
-
-Если два языка дают больше сложности, чем пользы, архитектор должен прямо это сказать и предложить альтернативу.
-
----
-
-# 11. External API
-
-Rust Runtime должен в будущем предоставлять внешний API.
-
-Первая версия:
-
-```text
-localhost only
-```
-
-Предпочтительно простой versioned protocol.
-
-Возможный кандидат:
-
-```text
-TCP + NDJSON
-```
-
-но это не зафиксированное решение.
-
-Архитектура должна предусматривать в будущем:
-
-* remote clients;
-* reconnect;
-* multiple clients;
-* GUI as client;
-* Babashka as client;
-* monitoring client;
-* authentication/authorization extension;
-* SSH/VPN remote operation.
-
-Client lifetime не должен определять experiment lifetime.
-
----
-
-# 12. GUI
-
-GUI не должен быть ядром системы.
-
-Желаемая граница:
+Clients and adapters do not own critical experiment state.
 
 ```text
 GUI
-  ↓
-Domain Commands / Queries / Events
-  ↓
+Babashka
+future embedded scripting
+tests
+        ↓
+language-neutral Application API
+        ↓
 Runtime
 ```
 
-GUI не должен владеть:
+Client lifetime is not experiment lifetime.
 
-* polling;
-* protocol logic;
-* controllers;
-* safety;
-* recorder;
-* instrument semantics.
+Queries return committed snapshots and do not perform hidden physical refresh.
 
-Первым GUI может снова стать egui, но Runtime не должен зависеть от egui.
+Commands/Operations perform mutation or work.
 
----
+## First stable release: v0.1.0
 
-# 13. Recorder
+v0.1.0 should provide:
 
-Durable recording остаётся ответственностью Rust Runtime.
+- long-running headless Runtime;
+- declarative deployment configuration;
+- validated/staged lifecycle changes;
+- real read-only Windows COM support;
+- conservative Metakon 513 read path;
+- Runtime-owned Recorder + SQLite;
+- bounded raw history queries;
+- native Reference/PID/controller lifecycle;
+- public local Application API;
+- optional Babashka client;
+- server-owned semantic presentation/workspace state;
+- separate Rust eframe/egui/egui_plot GUI;
+- contextual control panels;
+- Properties/configuration editing through the normal lifecycle;
+- clear user/developer documentation and tutorials;
+- Windows packaging and checksums.
 
-Нужно записывать как минимум:
+v0.1.0 does not claim physical actuator qualification.
 
-* measurements;
-* important runtime events;
-* user actions;
-* controller/output actions;
-* errors;
-* configuration/session metadata.
+## Managed components
 
-Внешние scripts должны иметь возможность добавлять структурированные experiment events.
+The language-neutral managed-component boundary is useful independent of Lua.
 
----
-
-# 14. Extension levels
-
-Архитектура должна оценить следующий многоуровневый extension model:
-
-| Extension level            | Typical purpose                                       | Core rebuild |
-| -------------------------- | ----------------------------------------------------- | ------------ |
-| Rust built-in              | hardware, protocols, safety, deterministic algorithms | yes          |
-| data-driven                | known protocols / simple device definitions           | no           |
-| embedded Lua               | lightweight runtime extensions                        | no           |
-| Babashka                   | orchestration and interactive development             | no           |
-| future WASM/process plugin | compiled third-party extensions                       | no           |
-
-WASM/plugin system не нужно автоматически включать в первую реализацию.
-
-Нужно лишь определить, требуется ли оставить для него разумную extension boundary.
-
----
-
-# 15. Native plugins
-
-Не следует автоматически использовать Rust dynamic libraries как plugin ABI.
-
-Необходимо сравнить:
-
-* Rust dylib plugins;
-* stable C ABI;
-* WASM;
-* isolated plugin processes;
-* embedded Lua.
-
-Критерии:
-
-* safety;
-* ABI stability;
-* crash isolation;
-* complexity;
-* latency;
-* ease of development.
-
----
-
-# 16. Runtime properties
-
-Система рассчитана на лабораторные процессы продолжительностью до многих часов или дней.
-
-Runtime должен иметь ясную модель:
-
-* state ownership;
-* scheduling;
-* command handling;
-* event handling;
-* thread/task ownership;
-* shutdown;
-* error propagation;
-* reconnect;
-* persistence.
-
-Slow UI/script/network clients не должны блокировать acquisition или native controllers.
-
----
-
-# 17. Главные архитектурные сущности
-
-На первом этапе необходимо особенно хорошо определить:
+Conceptually:
 
 ```text
-Instrument
-InstrumentDescriptor
+Runtime
+  ↓ Invocation
+managed component
+  ↓ ComponentResult
+Runtime validates/commits
+```
 
+The current Core execution seam includes language-neutral data and executor concepts
+such as `Invocation`, `ComponentResult`, `ComponentCompletion`, `ComponentExecutor`
+and `PlainData`.
+
+### Current Lua role
+
+M5 implemented bounded disposable Lua model/filter/transform components.
+
+For v0.1 this subsystem is FROZEN.
+
+Allowed changes:
+
+- bug/regression fixes;
+- safety/security fixes;
+- documentation corrections.
+
+Not planned before v0.1:
+
+- persistent Lua application workspace;
+- Lua scenario/orchestration API;
+- Lua GUI API;
+- Lua REPL/editor;
+- broader M5 component features.
+
+### Native Rust components
+
+Native Rust components may later implement the same managed-component execution
+contract.
+
+This gives a simple future migration:
+
+```text
+M5 Lua model/filter/transform
+        ↓
+equivalent native Rust component
+        ↓
+remove the Lua implementation after replacement coverage exists
+```
+
+Recompilation is acceptable for trusted internal algorithms and models.
+
+A future complete `lab-lua` removal is a separate post-release decision.
+
+## User-facing automation
+
+User-facing experiment automation should use one semantic Application API.
+
+Babashka is the current external interactive/orchestration client.
+
+A future embedded scripting language may expose the same Application semantics through
+an in-process adapter.
+
+The intended post-v0.1 candidate is Steel, but Steel is not part of the v0.1
+commitment and is not currently authorized.
+
+No scripting language receives raw Runtime mutability, OutputAuthority or physical
+evidence capabilities.
+
+## Virtual instruments and emulators
+
+User-authored virtual/emulator models should be driven through a validated virtual
+instrument/emulator part of the Application API.
+
+This enables the same emulator procedure to be expressed from Babashka now and from
+a future embedded language later.
+
+Only explicitly declared virtual/emulated instruments may accept virtual model
+publication.
+
+A script/client may never manufacture facts for a physical instrument or fabricate
+ACK/readback/safe/transport evidence.
+
+## Instruments and transports
+
+The trusted architecture keeps these concerns separate where useful:
+
+```text
 Transport
+  ↓
 Protocol
-
-Signal
-SignalNode
-
-Source
-Transform
-Filter
-
-Reference
-
-Controller
-OutputProposal
-OutputArbiter
-
-Runtime Command
-Runtime Event
-
-Recorder
-
-Extension
+  ↓
+Instrument semantics
 ```
 
-Не все эти сущности обязаны стать Rust traits.
+Runtime owns physical transport resources and scheduling.
 
-Архитектор должен выбирать representation исходя из простоты и реальных требований.
+Data-driven instrument definitions may describe known protocol primitives.
 
----
+New low-level protocols, complex drivers and reliability-sensitive paths remain
+native Rust.
 
-# 18. Что НЕ требуется на первом этапе
+## Signals, References and controllers
 
-Не нужно:
+Signals carry typed values, unit metadata, quality and explicit time.
 
-* писать GUI;
-* переносить код v1;
-* реализовывать COM;
-* реализовывать PID;
-* внедрять Lua;
-* внедрять Babashka;
-* проектировать полный wire protocol;
-* создавать десятки crates;
-* создавать generic plugin framework;
-* достигать feature parity с v1.
+Current native control includes:
 
-Первый этап должен доказать архитектуру на уровне domain boundaries и runtime responsibilities.
+- independent Reference;
+- EMA processing;
+- native PID;
+- controller lifecycle;
+- bounded native output leases.
 
----
-
-# 19. Отношение к v1
-
-`com_port_reader` v1 является отдельной стабильной системой.
-
-После утверждения архитектуры lab-runtime будет выполнен отдельный анализ:
+Controllers do not write hardware directly.
 
 ```text
-lab-runtime subsystem
-    ↕
-existing v1 implementation
+Controller
+  ↓
+OutputProposal
+  ↓
+OutputAuthority
+  ↓
+trusted operation mapping
+  ↓
+Transport
 ```
 
-После этого подходящие части кода будут:
+## Output safety
 
-* перенесены;
-* адаптированы;
-* переписаны;
-* либо оставлены только в v1.
+Rust owns physical output authority.
 
-Новая архитектура не должна автоматически повторять структуру v1.
+Keep separate:
+
+```text
+requested
+authorized
+send started
+ACK
+readback
+physical effect
+```
+
+ACK is never silently promoted to readback.
+
+A timeout after possible output transmission does not prove that nothing happened.
+
+No client, GUI, Lua component or future Steel script may fabricate physical evidence.
+
+## Recorder
+
+Recorder is Runtime-owned.
+
+SQLite is a storage adapter, not the domain model.
+
+Recording and history survive client disconnects.
+
+Disk I/O must not block native safety/control progress.
+
+Required recording follows the accepted fail-closed behavior.
+
+## Application API
+
+The Application API should be the semantic boundary used by GUI, Babashka and future
+embedded scripting.
+
+It should cover, as required by product work:
+
+- discover/describe;
+- current snapshots;
+- subscriptions/events;
+- bounded history;
+- Reference operations;
+- PID/controller lifecycle/configuration;
+- recording;
+- reconnect/resource status;
+- configuration stage/apply/reload;
+- virtual/emulator operations;
+- presentation/workspace operations;
+- control-panel operations;
+- properties/configuration editing.
+
+Wire DTOs are adapters and must not become the Core domain model.
+
+## Presentation and GUI
+
+Presentation is server-owned semantic state, separate from safety-critical state.
+
+The target presentation model supports:
+
+- workspaces;
+- plot panels;
+- traces;
+- labels;
+- colors;
+- visibility;
+- ordering;
+- panel assignment;
+- time windows;
+- follow/live;
+- axis policy;
+- control panels;
+- logs.
+
+The GUI is a separate Rust client using the public Application API.
+
+Required donor plotting behavior to preserve/adapt:
+
+- multiple plot panels;
+- multiple traces per panel;
+- local-time/time-axis formatting;
+- pan/zoom;
+- follow/live;
+- auto/manual Y;
+- double-click autoscale;
+- legend;
+- trace color/visibility/labels;
+- ordering/panel assignment;
+- configurable time window;
+- plot sizing;
+- downsampling;
+- signal/series sidebar.
+
+Contextual controls should include:
+
+- live signal/value display;
+- Reference editor/display;
+- PID configuration/status;
+- controller start/pause/resume;
+- recording start/stop/status;
+- resource/instrument status;
+- reconnect;
+- logs;
+- Properties.
+
+No scenario menu is required for v0.1.
+
+Properties edits must produce structured validated candidates and use the normal
+validate/stage/apply lifecycle.
+
+## External API and Babashka
+
+The first API is local-first and not an Internet security claim.
+
+Babashka is optional and not a Runtime startup dependency.
+
+Babashka is appropriate for:
+
+- REPL-driven exploration;
+- experiment procedures;
+- supervisory orchestration;
+- emulator scripts;
+- Application API learning;
+- presentation/workspace manipulation.
+
+Disconnecting Babashka does not stop Runtime-owned native acquisition/control unless
+an explicit accepted safety policy requires it.
+
+## Current release path
+
+```text
+M8  final real hardware acceptance
+M9  unified Application + emulator + presentation/control/properties API
+M10 GUI
+M11 hardening, documentation, tutorials, packaging
+v0.1.0
+```
+
+Post-v0.1 work may include embedded Steel, native replacement of useful M5 Lua
+components, optional later Lua removal, additional controllers and richer instruments.

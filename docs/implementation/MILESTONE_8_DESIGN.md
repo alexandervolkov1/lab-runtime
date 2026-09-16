@@ -11,7 +11,9 @@ M7, including D1-D18 and the reported 345-test debug/release gates. Preserve
 [M3 transport contract](MILESTONE_3_DESIGN.md),
 [M5 component contract](MILESTONE_5_DESIGN.md), and the accepted M1-M6 contracts.
 Authority: the user's M7 external-review result and
-[release plan sections 17-26](RELEASE_PLAN_M7_TO_V0_1.md).
+the historical release-plan sections used by this design. Those sections were
+removed from the active tree and remain preserved in Git history; the current path
+is in [the release plan to v0.1.0](RELEASE_PLAN_TO_V0_1.md).
 
 ## 1. Scope and fixed architectural choices
 

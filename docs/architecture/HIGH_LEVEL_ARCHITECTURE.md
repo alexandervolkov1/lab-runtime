@@ -2,7 +2,7 @@
 
 Статус: target baseline, 2026-09-14. Реализованы M1–M2; [отчёт M2](../implementation/MILESTONE_2_REPORT.md). Общий план M2–M6 разрешён последовательно, но текущая обязательная остановка — после M2 и документационного контракта M3, до переключения Astra High → Sol High. Описанные ниже будущие подсистемы не считаются реализованными.
 
-Основание: [AGENTS.md](../../AGENTS.md), [PROJECT_BRIEF.md](../../PROJECT_BRIEF.md), [ARCHITECTURE_PLAN.md](../../ARCHITECTURE_PLAN.md), завершённый [migration mapping](../migration/V1_TO_LAB_RUNTIME_MAP.md) и [architecture feedback](../migration/ARCHITECTURE_FEEDBACK.md). Исходный архитектурный этап выполнялся независимо от donor; нынешние уточнения явно внесены перед implementation.
+Основание: [AGENTS.md](../../AGENTS.md), [PROJECT_BRIEF.md](../../PROJECT_BRIEF.md), исторический bootstrap architecture plan (удалён из active tree и сохранён в Git history), завершённый [migration mapping](../migration/V1_TO_LAB_RUNTIME_MAP.md) и [architecture feedback](../migration/ARCHITECTURE_FEEDBACK.md). Исходный архитектурный этап выполнялся независимо от donor; нынешние уточнения явно внесены перед implementation.
 
 ## 1. Цели и границы этапа
 

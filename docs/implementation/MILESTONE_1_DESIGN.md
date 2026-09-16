@@ -1,7 +1,8 @@
 # Milestone 1: domain foundation
 
 Дата: 2026-09-14. Дизайн зафиксирован **до написания Rust**. Scope задают
-[Foundation plan](../../FOUNDATION_MILESTONE1_PLAN.md) и [AGENTS](../../AGENTS.md).
+Historical foundation bootstrap plan (removed from the active tree and preserved
+in Git history) and [AGENTS](../../AGENTS.md).
 Это минимальный in-process foundation, не полный автономный runtime.
 
 ## 1. Граница и структура

@@ -1,507 +1,225 @@
-# Permanent coordination files
+# Agent rules
 
-The permanent coordination files are:
+`lab-runtime` is an architecture-first laboratory automation Runtime.
+
+This file contains stable project rules. Current work authorization belongs in
+`ai/WORK.md`.
+
+## Active coordination files
+
+Read these before a new implementation slice:
 
 ```text
+PROJECT_BRIEF.md
 ai/HANDOFF.md
 ai/ROADMAP.md
 ai/WORK.md
+docs/implementation/RELEASE_PLAN_TO_V0_1.md
 ```
 
-Read all three before each new phase.
+`ai/WORK.md` is the only detailed currently authorized implementation task.
 
-`ai/HANDOFF.md` is the only file used for external reviewer communication.
-
-`ai/WORK.md` contains the current phase instruction and is replaced at a phase handoff.
-
-`ai/ROADMAP.md` contains the persistent product roadmap.
-
-Legacy root-level model instruction/handoff files are temporary compatibility
-material and will be removed during the mandatory pre-release Markdown cleanup.
-
-# Agent Instructions
-
-This repository is an architecture-first greenfield project.
+Milestone, architecture, migration and ADR documents are historical engineering
+context. Read them on demand. They do not override the active authorization.
 
 ## Current phase
 
-The current phase is:
+Current status:
 
 ```text
-SOL_HIGH — M8 Metakon protocol discrepancy review.
+READY_FOR_HARDWARE_RERUN
 ```
 
-M1–M7 are complete and M7 has passed external implementation review.
+Authorized work is only the final read-only M8 hardware acceptance and its final
+verification/reporting gate.
 
-The persistent path from M7 to v0.1.0 is defined in:
+Do not start M9 before external M8 acceptance.
 
-```text
-docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
-```
+## Donor repository
 
-Read before acting:
-
-```text
-ai/HANDOFF.md
-ai/ROADMAP.md
-ai/WORK.md
-AGENTS.md
-PROJECT_BRIEF.md
-docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
-```
-
-`ai/WORK.md` is the authoritative instruction for the currently authorized phase.
-
-Current model: SOL_HIGH.
-
-Authorized work: review the actual Metakon 513 register-1 value discrepancy
-recorded in `docs/implementation/MILESTONE_8_REPORT.md`. Do not resume hardware,
-change mapping speculatively or start M9. M8 software implementation remains
-complete at `0a42d73`; M7 at `f3ff456` remains externally accepted.
-
-STATUS: WAITING_FOR_REVIEW
-The M8 model gate was explicitly crossed:
-
-```text
-ASTRA_HIGH -> SOL_HIGH
-```
-
-The actual read-only COM5 bench passed compatibility but decoded 2.3–2.4 °C
-against an approximately 21 °C display. No further register/scale/address probe,
-write/reset or disconnect test is authorized before review. Do not claim M8
-completion or begin M9.
-
-If a genuine architectural contradiction is discovered, record the precise issue in
-`ai/HANDOFF.md`, set:
-
-```text
-STATUS: WAITING_FOR_REVIEW
-```
-
-and stop.
-
-Do not silently cross a model or milestone gate.
-
-## Milestone discipline
-
-Implement only concepts required by the current milestone.
-
-A concept in the target architecture is not a reason to implement it ahead of time.
-
-Completed milestones and historical plans remain useful engineering context, but
-they do not override the current authorization in:
-
-```text
-ai/HANDOFF.md
-ai/WORK.md
-docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
-```
-
-Do not interpret legacy root-level model instruction files as current authorization.
-
-## Source of truth
-
-Read:
-
-```text
-PROJECT_BRIEF.md
-```
-
-before doing architectural work.
-
-The current architecture and implementation contracts are also defined by the
-relevant documents under:
-
-```text
-docs/architecture/
-docs/implementation/
-docs/migration/
-docs/adr/
-```
-
-Use the current milestone design and report as the immediate implementation
-contract when one exists.
-
-## Relationship to v1
-
-The existing `com_port_reader` project is a separate stable v1 implementation.
-
-Do not copy its architecture automatically.
-
-The donor repository is:
+The read-only `com_port_reader` donor may exist at either:
 
 ```text
 D:\rust\com_port_reader
+D:\rust_projects\com_port_reader
 ```
 
-and must remain read-only.
+Check both before reporting it unavailable.
 
-It is a source of:
+Never modify the donor.
+Never make it a workspace dependency.
 
-```text
-working behavior
-tested algorithms
-protocol knowledge
-validation knowledge
-user-interface requirements
-test cases
-real product requirements
-```
+Use it only as a source of verified behavior, algorithms, protocol knowledge, tests,
+GUI requirements and migration evidence.
 
-It is not a workspace dependency.
+## Core ownership
 
-Architecture and migration analysis in `docs/architecture` and `docs/migration`
-form the target baseline, not permission to copy the donor structure.
+The Rust Runtime is the sole authoritative mutable experiment owner.
 
-When reusing donor knowledge, preserve useful behavior and test intent while
-adapting ownership, safety, lifecycle and concurrency semantics to `lab-runtime`.
-
-Do not modify the donor repository.
-
-## Design priorities
-
-In order:
-
-1. safety;
-2. conceptual clarity;
-3. extensibility;
-4. interactive development;
-5. reliability for long-running experiments;
-6. testability;
-7. simplicity;
-8. performance.
-
-Do not optimize for hypothetical extreme throughput.
-
-Typical workloads are small compared with general data-acquisition systems.
-
-Prefer an implementation that is easy to reason about and study over one that is
-more generic merely for future possibilities.
-
-## Architecture style
-
-Prefer:
-
-* explicit domain boundaries;
-* dependency inversion where it solves a real problem;
-* data-driven capabilities;
-* descriptors and introspection;
-* composition;
-* clear state ownership;
-* clear lifecycle semantics;
-* bounded queues and histories;
-* explicit failure behavior;
-* explicit time semantics;
-* small understandable modules.
-
-Avoid:
-
-* speculative abstractions;
-* large generic frameworks;
-* trait proliferation;
-* unnecessary micro-crates;
-* dependency on a specific GUI;
-* dependency on one scripting language;
-* Rust ABI plugin systems without a demonstrated need;
-* unbounded queues or histories;
-* hidden blocking on the Runtime owner;
-* hidden I/O inside Queries;
-* duplicated application semantics in different adapters;
-* clever code that obscures ownership, timing or safety.
-
-## Runtime ownership
-
-The Rust Runtime owns authoritative experiment state.
-
-GUI, Babashka, Lua and network connections are clients or adapters.
-
-They must not accidentally become owners of critical state.
-
-Preserve these principles:
+Preserve:
 
 ```text
 client lifetime != experiment lifetime
-
 GUI lifetime != experiment lifetime
-
 Babashka lifetime != native controller lifetime
 
-Lua lifetime != safety lifetime
-
 Query = committed snapshot
-
 Command / Operation = mutation or work
 
 Runtime owns controller lifecycle
-
 Runtime owns transport scheduling
-
 Runtime owns Recorder lifecycle
-
 Runtime owns output safety
 ```
 
-Slow clients, scripts or GUI work must not block native safety-critical progress.
+GUI, Babashka and future embedded scripting are clients/adapters.
 
-## Extension philosophy
+A slow client, script, GUI operation or disk writer must not block required native
+safety/control progress.
 
-The system supports several extension levels:
+## Application boundary
 
-* native Rust;
-* data-driven definitions;
-* embedded Lua;
-* external Babashka/Clojure orchestration;
-* possibly compiled or isolated extensions later if a real need appears.
+Keep one coherent language-neutral semantic Application API.
 
-These levels must share one coherent domain model rather than becoming independent
-parallel applications.
+Adapters may use different encodings or convenience helpers, but must not duplicate
+or contradict domain semantics.
 
-### Native Rust
-
-Native Rust remains first-class.
-
-Recompilation is acceptable for:
+The expected client directions are:
 
 ```text
-performance-critical code
-high-rate processing
-new low-level protocols
-hardware drivers
-safety-sensitive components
-reliability-sensitive controllers
+Babashka -> public local API -> Runtime
+GUI       -> public local API -> Runtime
+future Steel -> in-process Application adapter -> Runtime
 ```
 
-Do not introduce a dynamic native plugin ABI merely to avoid recompilation.
+Future Steel is post-v0.1 work, not current scope.
 
-### Data-driven extensions
+## Managed-component boundary
 
-Use declarative definitions when Rust already knows the required trusted protocol
-primitives and semantics.
+The language-neutral managed-component execution contract is useful and remains part
+of the architecture.
 
-Do not turn configuration formats into programming languages.
-
-### Lua
-
-Lua is embedded and optional.
-
-Two different Lua roles are intentionally allowed.
-
-#### Managed Lua components
-
-Existing bounded managed components use disposable Lua VMs and explicit bounded
-plain state.
-
-They are suitable for:
+Core concepts include:
 
 ```text
-models
-filters
-transforms
-small bounded extension callbacks
+Invocation
+ComponentResult
+ComponentCompletion
+ComponentExecutor
+PlainData
 ```
 
-They must preserve:
+A managed component is Runtime-invoked computation:
 
 ```text
-generation fencing
-bounded state
-bounded execution
-failure isolation
-no raw transport ownership
-no safety authority
+Runtime -> component -> validated result
 ```
 
-#### Persistent Lua workspace
+Existing M5 Lua is one executor/implementation of this contract.
 
-A later release milestone may add a separate persistent Lua workspace for local
-fallback experiment scripting.
+For v0.1, M5 Lua is frozen. Only bug/regression, safety/security and documentation
+corrections are allowed.
 
-Its purpose is:
+Do not add a persistent Lua workspace, Lua application/scenario API, Lua GUI API,
+Lua REPL/editor or broader M5 scope.
 
-> Allow useful experiment automation with only `lab-runtime`, configuration,
-> scripts and instruments, without requiring Babashka or GUI.
+Native Rust components may later implement the same managed-component execution
+contract. Useful Lua models/filters/transforms may then be replaced one-for-one by
+native implementations before an optional later `lab-lua` removal.
 
-It must remain outside the Runtime owner lane.
+Do not perform that migration during M8-M11 unless explicitly authorized.
 
-It must not receive:
+## Virtual/emulator boundary
 
-```text
-raw COM handles
-ByteTransport ownership
-OutputLease
-OutputAuthority
-physical-evidence completion
-mutable Runtime references
-raw actuator bytes
-```
+User-authored virtual instrument/emulator behavior should use a validated Application
+API rather than M5 Lua.
 
-Do not recreate the entire historical v1 global Lua `app` API.
+Only explicitly declared virtual/emulated instruments may accept virtual publication
+or model steps.
 
-### Babashka
-
-Babashka is an optional external orchestration environment.
-
-It is not a Runtime dependency.
-
-`bb.exe` must not be required for normal Runtime startup or deployment.
-
-Babashka uses the public external API and is appropriate for:
+A client/script must never fabricate:
 
 ```text
-interactive REPL work
-experiment procedures
-supervisory orchestration
-dynamic composition
-external automation
-presentation/workspace manipulation
-```
-
-A disconnected Babashka client must not stop a Runtime-owned native controller
-unless an explicit safety policy requires that behavior.
-
-## Safety
-
-No extension mechanism may bypass the central output-safety/arbitration layer.
-
-Physical output control remains authoritative in Rust.
-
-Preserve the distinction between:
-
-```text
-requested
-authorized
-send started
-ACK
-readback
-physical effect
-```
-
-An ACK is not readback.
-
-A timeout does not prove that a physical write did not occur.
-
-A client, GUI or Lua script must never be able to fabricate:
-
-```text
+physical instrument observation
 ACK
 ReadbackVerified
 safe evidence
 transport completion
 ```
 
-Finite native controller leases remain finite.
+Physical evidence remains Rust-owned.
 
-Only trusted Runtime-native progress may use private native renewal semantics.
+## Output safety
 
-External/manual ownership must not inherit native renewal merely because an
-identifier resembles a controller ID.
+No adapter or extension may bypass central OutputAuthority.
 
-Safe transition never means automatic rearm.
-
-Reload never means automatic rearm.
-
-## Configuration philosophy
-
-Deployment configuration must be declarative.
-
-The target first-release configuration is expected to use a human-readable
-configuration such as:
+Keep these states distinct:
 
 ```text
-runtime.toml
+requested
+authorized
+send started / first possible byte
+acknowledged
+readback
+physical effect
 ```
 
-Parsing configuration must not perform experiment side effects.
+ACK is not readback.
+Timeout does not prove that a physical write did not occur.
 
-Configuration loading should follow:
+Re-check current authority immediately before the first possible output byte.
+
+After possible partial/ambiguous physical output, do not blindly start a fresh retry.
+
+Finite leases remain finite.
+Safe transition never means automatic rearm.
+Reload never means automatic rearm.
+
+## Configuration
+
+Deployment configuration is declarative and validated before activation.
+
+Required lifecycle:
 
 ```text
 read candidate
-    ↓
 parse
-    ↓
 validate
-    ↓
-cross-reference validation
-    ↓
+cross-reference
 safety validation
-    ↓
 stage
-    ↓
 apply through Runtime lifecycle
 ```
 
-An invalid candidate must not partially mutate the active Runtime.
+Invalid candidates do not partially mutate active Runtime state.
 
-Safety-sensitive configuration changes require an explicit safe barrier before
-commit.
+Safety-sensitive changes require an explicit safe barrier.
 
-The following concepts are distinct:
+GUI Properties editing must use the same validation/stage/apply lifecycle rather than
+mutating live state directly.
 
-```text
-compiled Rust capabilities
-runtime deployment configuration
-instrument definition
-instrument instance configuration
-safety configuration
-Lua extension code
-Babashka procedure
-presentation workspace
-durable experiment history
-```
+## Recorder
 
-Do not merge them merely because one file format could technically contain all of
-them.
+Recorder is Runtime-owned and independent of GUI/client lifetime.
 
-## Reload semantics
+Runtime producers do not block on disk I/O.
 
-The first release plan includes explicit operations for:
+Recorder queues, batches and histories are bounded.
 
-```text
-Reload configuration
-Reload managed scripts
-Restart virtual emulator/model
-```
+Required recording failure must follow the accepted fail-closed contract.
 
-They are Runtime operations, not GUI-only behavior.
-
-A GUI button or Babashka helper invokes the same application operation.
-
-General rule:
-
-```text
-reload != rearm
-```
-
-A reload/restart must preserve generation/revision fencing and explicitly handle
-dependent controllers and outputs.
-
-## Recorder and persistence
-
-Recorder is Runtime-owned.
-
-It is independent of GUI, Babashka and connection lifetime.
-
-Durable history and transient client-event replay are different concerns.
-
-Do not turn the M6 semantic event ring directly into a persistence schema.
-
-SQLite is the planned first storage adapter, not the domain model.
-
-Persistence code must remain outside `lab-core`.
-
-Runtime producers must not block on disk I/O.
-
-Recorder queues and batches must be bounded with explicit failure/overflow policy.
-
-Where recording is configured as required for control, Recorder failure must lead
-to the reviewed safe/fault behavior rather than silently continuing indefinitely.
+Durable history and transient event replay remain separate concepts.
 
 ## GUI and presentation
 
-GUI is a client.
+GUI is a separate client over the public Application API.
 
-The target first official GUI is expected to use:
+Runtime must not depend on egui.
+
+Server-owned semantic presentation state may be manipulated by GUI or external
+clients.
+
+The target GUI uses:
 
 ```text
 Rust
@@ -510,150 +228,41 @@ egui
 egui_plot
 ```
 
-unless a later design review finds a concrete blocker.
+unless a concrete blocker appears.
 
-The GUI must communicate through the public Runtime server API.
-
-It must not obtain a private mutable Runtime reference merely for convenience.
-
-Presentation state is separate from safety-critical domain state.
-
-The release plan includes a semantic presentation/workspace model supporting:
+Preserve/adapt successful donor plot behavior:
 
 ```text
-workspaces
-plot panels
-traces
+multiple plot panels
+multiple traces
+trace labels
 colors
 visibility
-labels
+ordering
 panel assignment
-axis settings
-control panels
-logs panel
-```
-
-Both GUI and Babashka should be able to manipulate this presentation model.
-
-### v1 GUI behavior worth preserving
-
-The user considers the following v1 behavior successful and it should be
-REUSED/ADAPTED where practical:
-
-```text
-plot rendering behavior
-egui_plot interaction
-time-axis labels
-pan
-zoom
-follow/live behavior
-Y auto/manual behavior
-multiple series
-legends
-series colors
-series visibility
+local-time/time-axis formatting
+pan/zoom
+follow/live
+configurable time window
+auto/manual Y
+double-click autoscale
+legend
 plot sizing
-downsampling / plot-point preparation
-series sidebar
-series display labels
-series-to-panel assignment
-logs panel
+downsampling
+signal/series sidebar
+logs
 ```
 
-Preserve user-visible behavior where useful.
+Required contextual controls include Reference, PID, controller lifecycle, recording,
+resource/instrument status, reconnect and Properties.
 
-Do not preserve old shared-state ownership merely because the rendering code came
-from v1.
-
-### Main GUI actions
-
-Avoid a toolbar full of global application buttons.
-
-The important infrastructure actions are expected to be:
-
-```text
-Reload configuration
-Reload scripts
-Restart emulator/model
-```
-
-Normal Reference/controller/recording controls belong in contextual control
-panels.
-
-A future Lua workspace/REPL should preferably live in a separate optional window,
-not dominate the main GUI.
-
-## External API
-
-The current external API is local-first.
-
-The first release is not an Internet-facing service.
-
-Do not silently broaden loopback/local assumptions into a remote-security claim.
-
-Future remote clients may be supported later through a separately reviewed
-security/permission model.
-
-Wire DTOs are adapters.
-
-They are not the Core domain model and not the Recorder persistence schema.
-
-## Commands, Queries and Events
-
-Preserve one coherent application boundary across adapters.
-
-Conceptually:
-
-```text
-GUI
-Babashka
-Lua workspace
-tests
-       ↓
-Commands / Queries / Events
-       ↓
-Runtime
-```
-
-Adapters may differ in encoding or convenience helpers.
-
-They must not implement conflicting domain semantics.
-
-Queries do not perform hidden physical refresh or mutation.
-
-Physical read/refresh work is an explicit Command/Operation where applicable.
+No scenario menu is required for v0.1.
 
 ## Boundedness
 
-Every long-running structure must have an explicit bound or lifecycle.
+Every long-running collection/queue/worker has an explicit bound or lifecycle.
 
-This includes, where applicable:
-
-```text
-signal windows
-transport queues
-Recorder queues
-client request queues
-event rings
-operation retention
-snapshots
-Lua state
-Lua workers
-presentation state
-GUI client caches
-history queries
-diagnostics/log buffers
-```
-
-Do not use:
-
-```text
-Vec forever
-unbounded channel
-unbounded lazy event sequence
-```
-
-in long-running production paths.
+Do not use unbounded production queues, histories or lazy event streams.
 
 Document overflow/eviction behavior.
 
@@ -671,7 +280,7 @@ deadlines
 ordering
 ```
 
-Wall-clock time is for:
+Use wall-clock time for:
 
 ```text
 human-readable recording
@@ -679,309 +288,88 @@ display
 export
 ```
 
-A wall-clock adjustment must not change control behavior.
-
-When Recorder stores both, document their relationship explicitly.
+Wall-clock changes must not alter control behavior.
 
 ## Failure behavior
 
-Ordinary subsystem failure should be scoped where possible.
+Scope ordinary failures where possible.
 
-Do not globally kill Runtime for:
+Do not globally kill Runtime merely for:
 
 ```text
-ordinary Lua error
 one malformed client
 GUI disconnect
 Babashka disconnect
 one unavailable measurement
 one invalid configuration candidate
+ordinary frozen-M5 Lua failure
 presentation persistence failure
 ```
 
-unless the current safety/persistence contract explicitly requires escalation.
-
-Safety-critical failure must fail closed.
+Safety-critical failures fail closed.
 
 Do not hide ambiguity by reporting success.
+
+## Concurrency
+
+Whenever adding a thread/worker/channel, document:
+
+```text
+mutable-state owner
+who may block
+queue capacity
+overflow policy
+shutdown behavior
+failure behavior
+why the boundary exists
+```
+
+The Runtime owner must not wait on network, GUI, scripts or disk I/O in a way that
+prevents required safety service.
+
+## Core dependency discipline
+
+`lab-core` remains OS-, GUI-, storage- and scripting-runtime-independent.
+
+Avoid crate proliferation and speculative framework layers.
+
+Native Rust rebuilds are acceptable for trusted algorithms, models, filters,
+protocols, drivers and safety-sensitive code.
+
+## Code and documentation quality
+
+The implementation is intended to be studied.
+
+All Rust module docs, rustdoc, implementation comments, TODO/FIXME text and rustdoc
+examples are in English.
+
+Document non-obvious ownership, lifecycle, time, failure, safety and boundedness.
+
+Prefer comments that explain why.
+
+Keep missing-docs enforcement active.
 
 ## Git
 
 Use:
 
 ```text
-1 logical architectural change = 1 commit
+1 logical change = 1 commit
 ```
 
-Keep documentation/baseline commits separate from implementation commits.
+Keep documentation cleanup separate from behavior changes.
 
-Use small logical commits.
+Do not modify unrelated user files.
 
-Do not combine unrelated cleanup with behavioral changes.
+## Model use
 
-Preserve unrelated user files.
+SOL_HIGH is the default implementation model for difficult slices.
 
-In particular, preserve:
+Use cheaper models for mechanical documentation, fixture, packaging and routine UI
+plumbing where appropriate.
 
-```text
-ai/project_snapshot.txt
-```
+Use ASTRA_HIGH only when a genuine unresolved architecture/safety/lifecycle/trust
+boundary contradiction appears. Do not require Astra automatically for every
+milestone.
 
-if it exists outside the authorized task.
-
-Do not commit automatically unless the current user instructions permit commits.
-
-Never modify the donor repository.
-
-## Tests
-
-Use descriptive behavioral names.
-
-Tests must be independent and must not rely on execution order.
-
-Prefer names such as:
-
-```text
-host_scheduler.rs
-request_deduplication.rs
-subscription_recovery.rs
-recorder_failure.rs
-configuration_reload.rs
-presentation_workspace.rs
-gui_reconnect.rs
-```
-
-Use `step_01_...` naming only for intentionally human-readable scenario/tutorial
-stages, never as an execution-order dependency.
-
-Do not mass-rename historical tests during unrelated implementation work.
-
-The mandatory pre-release cleanup may perform `git mv` test renames in separate
-rename-only commits.
-
-## Documentation and teaching quality
-
-The user intends to study the implementation after the first stable release.
-
-Source readability and documentation are first-class requirements.
-
-All Rust:
-
-```text
-//! module documentation
-/// rustdoc
-// implementation comments
-TODO
-FIXME
-rustdoc examples
-```
-
-must be written in English.
-
-Every important public API must have meaningful rustdoc.
-
-Document non-obvious:
-
-```text
-ownership
-state transitions
-mutation behavior
-time semantics
-failure semantics
-safety significance
-boundedness
-shutdown behavior
-```
-
-For important private helpers, add comments when they explain an invariant or
-architectural reason.
-
-Prefer comments that explain why.
-
-Good:
-
-```rust
-// Re-check the current authority immediately before the first possible byte so
-// a proposal revoked while queued cannot reach the actuator.
-```
-
-Bad:
-
-```rust
-// Check authority.
-```
-
-Keep missing-docs enforcement active.
-
-Prefer clear intermediate variables and explicit control flow over clever compressed
-code when that makes the architecture easier to learn.
-
-## Algorithms
-
-For important algorithms such as:
-
-```text
-PID
-EMA
-Ramp Reference
-CRC
-thermal model
-downsampling
-Recorder batching
-scheduler deadline advancement
-```
-
-document:
-
-```text
-the algorithm/equation
-state carried between calls
-time assumptions
-validation-before-commit behavior
-failure behavior
-donor provenance where reused
-```
-
-Do not merely copy old implementation code.
-
-## Concurrency
-
-Whenever introducing a thread, worker or channel, document:
-
-```text
-who owns mutable state
-who may block
-queue capacity
-overflow policy
-shutdown behavior
-failure behavior
-why the concurrency boundary exists
-```
-
-The Runtime owner must not wait on:
-
-```text
-network socket I/O
-GUI
-Babashka
-Lua execution
-Recorder disk I/O
-```
-
-in a way that prevents required safety service.
-
-## Crate/module discipline
-
-Avoid crate proliferation.
-
-Create a new crate only when it establishes a useful dependency or deployment
-boundary.
-
-Do not create one crate per architectural noun.
-
-`lab-core` should remain small and OS/presentation/storage independent.
-
-Host adapters and executable composition belong around Core.
-
-## Mandatory pre-release cleanup
-
-Before v0.1.0 perform a deliberate repository documentation cleanup.
-
-Classify tracked Markdown files as:
-
-```text
-KEEP
-CONSOLIDATE
-ARCHIVE
-DELETE
-```
-
-Keep the permanent coordination files:
-
-```text
-ai/HANDOFF.md
-ai/ROADMAP.md
-ai/WORK.md
-```
-
-Consolidate obsolete duplicate roadmaps/prompts/handoffs.
-
-Git history already preserves removed historical instructions.
-
-Do not perform this cleanup early merely to make the repository look tidy.
-
-## Release documentation target
-
-The first stable release must include clear user and developer documentation.
-
-The release is not complete if understanding the architecture requires reading all
-historical milestone reports.
-
-The public documentation should explain at least:
-
-```text
-architecture
-Runtime ownership
-instruments
-signals
-controllers
-OutputAuthority
-configuration
-Lua
-Babashka
-recording
-GUI
-tutorial workflow
-how to add native extensions
-```
-
-The final release plan is defined in:
-
-```text
-docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
-```
-
-## Post-release direction
-
-After v0.1.0, default development should move away from large autonomous agent
-milestones and toward a smaller educational workflow:
-
-```text
-explain
-    ↓
-inspect
-    ↓
-implement a small feature
-    ↓
-REPL/test
-    ↓
-discuss
-    ↓
-commit
-```
-
-Likely post-release subjects include:
-
-```text
-On/Off controller
-remaining filters
-Furnace controller
-richer Metakon support
-Babashka recipes
-Lua workspace GUI
-Arduino driver/protocol
-experimental controllers/models
-physical output acceptance
-```
-
-The architecture should allow these without redesigning the Runtime ownership,
-server, Recorder or OutputAuthority boundaries.
-
-## Language
-
-Conversation and architecture-review output may be in Russian during design and
-review phases.
-
-All source documentation, Rust comments, TODO/FIXME text and documentation
-examples intended to live in the repository must be in English unless a user-facing
-localized document explicitly requires another language.
+No model crosses a milestone/review gate automatically.

@@ -1,145 +1,271 @@
-Product roadmap
+# Product roadmap
 
-ai/HANDOFF.md contains the current review/model gate.
+`ai/HANDOFF.md` contains the current state.
+`ai/WORK.md` contains the only currently authorized detailed task.
 
-ai/WORK.md contains only the currently authorized model task.
+## Completed
 
-The persistent detailed path to the first stable release is:
-
-docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
-Completed
+```text
 M1  domain foundation
 M2  central OutputAuthority
 M3  bounded transport + narrow Metakon + data-driven definitions
-M4  native control pipeline + corrected Warming/renewal
-M5  bounded disposable Lua components
-M6  autonomous headless Runtime + local API + real Babashka process
-M7  Runtime-owned Recorder/SQLite + durable provenance + bounded raw history
+M4  native control pipeline + Warming + finite native renewal
+M5  bounded disposable Lua managed components
+M6  autonomous host + local API + real Babashka process
+M7  Runtime-owned Recorder/SQLite + durable provenance/history
+```
 
-M6 was verified at the supplied checkpoint with 189 named Rust tests plus real Babashka A/B acceptance and has now passed the external release-planning review.
+M7 is externally accepted.
 
-Current gate
+M5 Lua remains implemented but is frozen for v0.1.
 
-M7 Recorder/SQLite design and the tests-first D1–D18 acceptance contract are
-complete in docs/implementation/MILESTONE_7_DESIGN.md.
+The language-neutral managed-component contract remains useful. Native Rust components
+may later implement the same `Invocation -> ComponentResult` execution semantics.
 
-M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
-debug/release gates. Its reported limitations remain accepted limitations.
+## Current: M8 final physical acceptance
 
-STATUS: READY_FOR_HARDWARE_RERUN
-Current model: SOL_HIGH
-Current phase: M8 software corrections complete; final hardware rerun pending.
-M8 software implementation and the 388-test debug/release completion gates are
-complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
-Do not start M9.
+M8 already provides:
 
-An actual COM5 bench passed compatibility, strict frame decoding, Required
-recording and clean shutdown, but exposed a deployment-specific decimal scale
-error. The reviewed tests-first corrections are complete at `867f985`: the
-actual thermocouple profile is explicit, relative deployment paths are stable,
-and the first SQLite archive is preserved. Corrected real 27/28 °C readings agree
-with the contemporaneous 28 °C front panel and are durably recorded with Good
-quality and zero output events. Actual disconnect then left one transaction and
-COM worker recovering beyond the configured timeout, without an Unavailable
-Signal; finite shutdown could not confirm transport close. The reviewed narrow
-correction is complete at `71d4e56`: recovery is finite, admission/fencing and
-Unavailable publication are owner-enforced, and shutdown starts retirement from
-every executor state. The next real run proved that correction, then exposed a
-failed reconnect whose installed replacement incorrectly resumed acquisition.
-The reviewed resource-scoped reconnect gate is complete at `0ae7b3c`; target
-ordinary reads now remain quiesced until compatibility and lifecycle success,
-while failed replacements retain their advanced generation and are retired. A
-407-entry debug workspace gate passes. The corrected rerun proved finite
-disconnect and stopped ordinary acquisition after a failed reconnect, but the
-reconnect still returned `invalid_configuration` and Required Recorder failed
-with `fact record reservation mismatch`. The resulting unsealed evidence archive
-is preserved at the hash recorded in `MILESTONE_8_REPORT.md`. The reviewed
-Recorder correction is complete at `fdf8a73`: lifecycle work reserves capacity
-without assigning a future FIFO identity, compatibility facts remain contiguous,
-and activation takes the current tail identity only when immediately enqueued.
-Cancellation creates no rewind or gap; Required failure remains fail-closed. The
-debug workspace now passes 414 named tests plus actual Babashka A/B, fmt, Clippy
-and diff gates. A new absent archive is selected at `2ec104b`. Await explicit
-continuation of the read-only hardware gate. That run reconfirmed real Good
-acquisition, one durable Unavailable, finite Offline and healthy contiguous
-Recorder operation. Its single explicit reconnect nevertheless failed before a
-generation-2 binding or probe was installed. Clean shutdown sealed complete
-evidence with zero outputs. The archive hash and exact facts are in
-`MILESTONE_8_REPORT.md`. The pre-rebind failure is now deterministically
-localized to an old Host monotonic timestamp rejected by Core before retirement.
-The correction and bounded reconnect diagnostics pass the full software gate at
-implementation HEAD `6f641e2`; the independent lost-stop audit also corrected a
-latent bounded COM retirement defect. Only the final explicitly authorized
-hardware rerun remains. M8 is incomplete and M9 is not authorized.
+- strict `runtime.toml`;
+- immutable/frozen deployment artifacts;
+- validated staging and safe lifecycle activation;
+- distinct config/script/model/reconnect operations;
+- read-only Windows COM adapter;
+- real Metakon read path;
+- Required Recorder integration;
+- bounded reconnect diagnostics and corrected recovery/rebind logic.
 
-First stable release sequence
-M7
-    Runtime-owned Recorder
-    SQLite
-    durable provenance
-    bounded history query
+Current status:
 
-M8
-    runtime.toml deployment configuration
-    validation/staging/reload
-    managed script reload
-    virtual model/emulator restart
-    Windows COM adapter
-    real Metakon read-only smoke
+```text
+READY_FOR_HARDWARE_RERUN
+```
 
-M9
-    optional persistent Lua workspace/fallback scripts
-    presentation/workspace model
-    Babashka presentation operations
+Remaining:
 
-M10
-    separate Rust egui/eframe GUI client
-    reuse/adapt successful v1 plot behavior
-    series sidebar
-    logs
-    control panels
-    minimal reload controls
+- successful real reconnect through generation 2;
+- Babashka independence during that physical run;
+- one harmless live-safe change;
+- clean final shutdown/history evidence;
+- final release/rustdoc and regression gates;
+- external M8 review.
 
-M11 / release candidate
-    integration/fault hardening
-    repository cleanup
-    test-file naming cleanup
-    final architecture/user/developer documentation
-    tutorials
-    Windows packaging
-    SHA256
-    release review
+M9 is not authorized before external M8 acceptance.
 
+## M9 — unified Application, emulator and presentation API
+
+Purpose: complete one language-neutral semantic API before GUI and before any future
+embedded scripting language.
+
+### Application API
+
+Complete/normalize the API required by:
+
+```text
+Babashka
+GUI
+future in-process scripting adapter
+tests
+```
+
+Do not create language-specific domain semantics.
+
+### Virtual/emulator API
+
+Add a validated virtual/emulator path so user-written models can drive only explicitly
+declared virtual instruments.
+
+The API must preserve:
+
+- typed values/units/quality;
+- generation/revision fencing;
+- bounded publication/work;
+- explicit model lifecycle;
+- stale/failure behavior;
+- no physical-evidence fabrication.
+
+Babashka must be able to write useful instrument/emulator scripts through this API.
+
+### Managed components
+
+Do not expand M5 Lua.
+
+Keep the language-neutral managed-component contract.
+
+Native Rust managed components are allowed by the architecture and may later replace
+Lua implementations one-for-one, but that migration is not required for v0.1.
+
+### Presentation/workspace API
+
+Implement server-owned semantic presentation state:
+
+- workspace;
+- plot panel;
+- trace;
+- label;
+- color;
+- visibility;
+- order;
+- panel assignment;
+- time window;
+- follow/live;
+- axis policy;
+- logs panel;
+- control panels.
+
+Both GUI and Babashka should manipulate the same model.
+
+### Control-panel API
+
+Support semantic controls at least for:
+
+- signal/value display;
+- Reference display/editor;
+- PID settings/status;
+- controller start/pause/resume;
+- recording controls/status;
+- resource/instrument status;
+- reconnect;
+- generic validated configuration/property fields where applicable.
+
+Scripts declare semantic controls. They do not receive egui callbacks.
+
+### Properties/configuration API
+
+Expose structured candidate editing sufficient for the GUI Properties window.
+
+Changes use:
+
+```text
+edit structured candidate
+-> validate
+-> stage
+-> classify effects
+-> safe apply
+```
+
+Do not bypass Runtime lifecycle.
+
+### M9 non-goals
+
+- persistent Lua application workspace;
+- Lua REPL/editor;
+- Steel implementation;
+- GUI implementation;
+- scenario menu;
+- physical actuator qualification.
+
+## M10 — separate GUI client
+
+Implement a Rust:
+
+```text
+eframe
+egui
+egui_plot
+```
+
+client over the public Application API.
+
+### Required plotting UX
+
+Preserve/adapt donor behavior:
+
+- multiple plot panels;
+- multiple traces per plot;
+- labels/colors/visibility;
+- trace ordering;
+- signal-to-panel assignment;
+- UNIX/elapsed data with local-time formatting;
+- pan/zoom;
+- follow/live;
+- configurable time window;
+- auto/manual Y;
+- double-click autoscale;
+- legend;
+- plot sizing;
+- bounded/downsampled point preparation;
+- signal/series sidebar.
+
+### Required application UI
+
+- contextual control panels;
+- Reference;
+- PID;
+- controller lifecycle;
+- recording;
+- resource/instrument status;
+- reconnect;
+- bounded/filterable logs;
+- separate Properties window.
+
+No scenario menu for v0.1.
+
+No embedded Lua/Steel editor or REPL for v0.1.
+
+## M11 — hardening, documentation and release
+
+### Hardening
+
+- integration/fault regression;
+- reconnect/restart/reload behavior;
+- GUI disconnect/reconnect;
+- Recorder/history reopening;
+- boundedness review;
+- shutdown paths;
+- clean-machine Windows validation.
+
+### Documentation
+
+Produce a coherent first-release set:
+
+- README/quick start;
+- architecture guide;
+- deployment/configuration guide;
+- instrument/Metakon guide;
+- control/Reference/PID guide;
+- Recorder/history guide;
+- GUI guide;
+- Babashka/API guide;
+- frozen M5 Lua component guide and limitations;
+- developer/native-extension guide;
+- end-to-end tutorials.
+
+A user should not need to read all historical milestone reports to understand v0.1.
+
+### Packaging
+
+- Windows package;
+- examples;
+- version metadata;
+- SHA-256;
+- reproducible release smoke;
+- final external review.
+
+Then:
+
+```text
 v0.1.0
+```
 
-Each milestone requires:
+## Post-v0.1 direction
 
-ASTRA_HIGH design
-    ↓
-manual model switch
-    ↓
-SOL_HIGH tests-first implementation
-    ↓
-external review
+Not authorized now:
 
-No model crosses a gate automatically.
+1. use Babashka interactively to learn and exercise the public Application API;
+2. evaluate/implement Steel as an embedded client of the SAME Application API;
+3. add native Rust managed-component implementations for useful M5 Lua models/filters;
+4. after replacement coverage exists, optionally remove `lab-lua`;
+5. richer controllers, instruments and recipes.
 
-Release character
+Steel is an option, not a v0.1 requirement.
 
-v0.1.0 is a usable and extensible laboratory Runtime, not full historical
-com_port_reader feature parity.
+## Model economy
 
-Full On/Off/Furnace/filter parity, richer recipes, Arduino and other extensions
-continue after release in an educational explain -> code -> test -> commit workflow.
+Default:
 
-Babashka is an optional external client and bb.exe is not a Runtime dependency.
+- SOL_HIGH for substantial implementation;
+- cheaper model for mechanical docs/fixtures/packaging/routine UI plumbing;
+- ASTRA_HIGH only for a genuine unresolved architecture/safety/lifecycle/trust-boundary contradiction.
 
-Lua has two distinct roles:
-
-managed disposable bounded components
-+
-small optional persistent local workspace for fallback experiment scripting
-
-Neither role owns physical safety.
-
-The GUI is a separate client and must work through the same public Runtime API.
+No automatic Astra -> Sol ceremony for every milestone.

@@ -6,7 +6,9 @@ model switch before implementation.**
 This document is the M7 implementation and tests-first acceptance contract. It
 does not claim that recording is implemented. M8 configuration/COM, GUI,
 persistent Lua, historical v1 import and automatic experiment recovery are outside
-this phase. The product contract is [release plan sections 6–16](RELEASE_PLAN_M7_TO_V0_1.md).
+this phase. The historical release-plan sections used by this design were removed
+from the active tree and remain preserved in Git history. The current product path
+is in [the release plan to v0.1.0](RELEASE_PLAN_TO_V0_1.md).
 
 ## 1. Baseline and decisions
 
