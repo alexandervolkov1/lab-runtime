@@ -6,7 +6,7 @@
 //! to reread a mutable pathname for provenance.
 
 use crate::definition::{MAX_DEFINITION_BYTES, parse_definition_json};
-use lab_core::{AccessMode, ParameterRole, WriteEffect, instrument::KnownOperation};
+use lab_core::{AccessMode, ParameterRole, Unit, WriteEffect, instrument::KnownOperation};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -636,10 +636,44 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
     }
 
     let reference_ids: BTreeSet<_> = dto.references.iter().map(|item| item.id).collect();
+    let reference_keys: BTreeSet<_> = dto
+        .references
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect();
     if reference_ids.len() != dto.references.len() || reference_ids.contains(&0) {
         return Err(ConfigurationError::invalid(
             "duplicate or zero Reference identity",
         ));
+    }
+    if reference_keys.len() != dto.references.len() {
+        return Err(ConfigurationError::invalid("duplicate Reference key"));
+    }
+    for reference in &dto.references {
+        validate_key(&reference.key)?;
+        Unit::new(&reference.unit_id, &reference.unit_symbol)
+            .map_err(|_| ConfigurationError::invalid("invalid Reference unit"))?;
+        if !reference.value.is_finite() {
+            return Err(ConfigurationError::invalid("invalid Reference value"));
+        }
+        match reference.kind {
+            ReferenceKindDto::Fixed if reference.target.is_some() || reference.rate.is_some() => {
+                return Err(ConfigurationError::invalid(
+                    "Fixed Reference cannot declare ramp fields",
+                ));
+            }
+            ReferenceKindDto::Ramp => {
+                let (Some(target), Some(rate)) = (reference.target, reference.rate) else {
+                    return Err(ConfigurationError::invalid(
+                        "Ramp Reference requires target and rate",
+                    ));
+                };
+                if !target.is_finite() || !rate.is_finite() || rate <= 0.0 {
+                    return Err(ConfigurationError::invalid("invalid Ramp Reference"));
+                }
+            }
+            ReferenceKindDto::Fixed => {}
+        }
     }
     let safe_outputs: BTreeSet<_> = dto
         .safe_profiles
@@ -667,11 +701,27 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
         {
             return Err(ConfigurationError::invalid("invalid safe profile"));
         }
+        let eligible_native_output = dto.instruments.iter().any(|instrument| {
+            matches!(
+                instrument,
+                InstrumentDto::VirtualMeasurement { id, .. }
+                    | InstrumentDto::ThermalPlant { id, .. }
+                    if *id == safe.instrument_id
+                        && safe.parameter_id == lab_core::HEATER_POWER.get()
+            )
+        });
+        if !eligible_native_output || safe.min < 0.0 || safe.max > 100.0 {
+            return Err(ConfigurationError::invalid(
+                "safe profile targets an ineligible output",
+            ));
+        }
     }
     let mut controller_ids = BTreeSet::new();
+    let mut controller_keys = BTreeSet::new();
     for controller in &dto.controllers {
         validate_nonzero(controller.id, "controller id")?;
-        if !controller_ids.insert(controller.id) {
+        validate_key(&controller.key)?;
+        if !controller_ids.insert(controller.id) || !controller_keys.insert(&controller.key) {
             return Err(ConfigurationError::invalid("duplicate controller identity"));
         }
         if !instrument_ids.contains(&controller.input_instrument_id) {
@@ -689,6 +739,82 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
             ));
         }
         validate_period(controller.period_ms, "controller period")?;
+        let input_unit = if dto.instruments.iter().any(|instrument| {
+            matches!(
+                instrument,
+                InstrumentDto::VirtualMeasurement { id, .. }
+                    | InstrumentDto::ThermalPlant { id, .. }
+                    if *id == controller.input_instrument_id
+                        && controller.input_parameter_id == lab_core::TEMPERATURE.get()
+            )
+        }) || dto.managed_components.iter().any(|component| {
+            component.instrument_id == controller.input_instrument_id
+                && controller.input_parameter_id == lab_core::TEMPERATURE.get()
+        }) {
+            Some(Unit::CELSIUS.id())
+        } else if dto.instruments.iter().any(|instrument| {
+            matches!(instrument, InstrumentDto::Metakon { id, .. } if *id == controller.input_instrument_id)
+        }) {
+            // Frozen definition validation below resolves physical parameter units.
+            None
+        } else {
+            return Err(ConfigurationError::invalid(
+                "controller input is not a signal",
+            ));
+        };
+        let reference = dto
+            .references
+            .iter()
+            .find(|reference| reference.id == controller.reference_id)
+            .expect("Reference identity checked above");
+        if input_unit.is_some_and(|unit| unit != reference.unit_id) {
+            return Err(ConfigurationError::invalid(
+                "controller input and Reference unit mismatch",
+            ));
+        }
+        for (duration, label) in [
+            (controller.ema_time_constant_ms, "EMA time constant"),
+            (controller.max_input_age_ms, "maximum input age"),
+            (controller.max_tick_gap_ms, "maximum tick gap"),
+            (controller.lease_lifetime_ms, "lease lifetime"),
+            (controller.proposal_ttl_ms, "proposal TTL"),
+        ] {
+            validate_transaction_time(duration, label)?;
+        }
+        if controller.ema_warmup_samples == 0 || controller.ema_warmup_samples > 1024 {
+            return Err(ConfigurationError::invalid("EMA warmup out of range"));
+        }
+        if ![
+            controller.kp,
+            controller.ki,
+            controller.kd,
+            controller.output_min,
+            controller.output_max,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+            || controller.output_min >= controller.output_max
+        {
+            return Err(ConfigurationError::invalid("invalid PID configuration"));
+        }
+        let safe = dto
+            .safe_profiles
+            .iter()
+            .find(|safe| {
+                safe.instrument_id == controller.output_instrument_id
+                    && safe.parameter_id == controller.output_parameter_id
+            })
+            .expect("safe output checked above");
+        if controller.output_min < safe.min
+            || controller.output_max > safe.max
+            || controller.lease_lifetime_ms > safe.max_lease_ms
+            || controller.proposal_ttl_ms > safe.max_proposal_ttl_ms
+            || controller.proposal_ttl_ms > controller.lease_lifetime_ms
+        {
+            return Err(ConfigurationError::invalid(
+                "controller exceeds safe-profile limits",
+            ));
+        }
     }
     Ok(())
 }
@@ -1099,8 +1225,13 @@ pub(crate) struct ManagedComponentDto {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReferenceDto {
     pub(crate) id: u64,
+    pub(crate) key: String,
     pub(crate) kind: ReferenceKindDto,
     pub(crate) value: f64,
+    #[serde(default)]
+    pub(crate) target: Option<f64>,
+    #[serde(default)]
+    pub(crate) rate: Option<f64>,
     pub(crate) unit_id: String,
     pub(crate) unit_symbol: String,
 }
@@ -1116,12 +1247,24 @@ pub(crate) enum ReferenceKindDto {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ControllerDto {
     pub(crate) id: u64,
+    pub(crate) key: String,
     pub(crate) input_instrument_id: u64,
     pub(crate) input_parameter_id: u64,
     pub(crate) output_instrument_id: u64,
     pub(crate) output_parameter_id: u64,
     pub(crate) reference_id: u64,
     pub(crate) period_ms: u64,
+    pub(crate) ema_time_constant_ms: u64,
+    pub(crate) ema_warmup_samples: usize,
+    pub(crate) kp: f64,
+    pub(crate) ki: f64,
+    pub(crate) kd: f64,
+    pub(crate) output_min: f64,
+    pub(crate) output_max: f64,
+    pub(crate) max_input_age_ms: u64,
+    pub(crate) max_tick_gap_ms: u64,
+    pub(crate) lease_lifetime_ms: u64,
+    pub(crate) proposal_ttl_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

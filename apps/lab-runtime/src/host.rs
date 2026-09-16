@@ -10,7 +10,7 @@ use crate::recorder::{
     RecordingState, RecordingStatus, RunsCursor, RunsPage, StorageError,
 };
 use crate::{
-    configuration::{FrozenDeployment, InstrumentDto},
+    configuration::{EvidenceDto, FrozenDeployment, InstrumentDto, ReferenceKindDto},
     definition::parse_definition_json,
     events::{EventError, EventLog},
 };
@@ -336,14 +336,6 @@ impl HostCore {
         mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>>,
     ) -> Result<Self, Error> {
         let dto = &deployment.effective().dto;
-        if !dto.references.is_empty()
-            || !dto.controllers.is_empty()
-            || !dto.safe_profiles.is_empty()
-        {
-            return Err(Error::InvalidConfiguration(
-                "configured graph capability not initialized",
-            ));
-        }
         let mut runtime = Runtime::new();
         let mut measurements = Vec::with_capacity(dto.instruments.len());
         let mut model_generations = BTreeMap::new();
@@ -481,7 +473,140 @@ impl HostCore {
                 }
             }
         }
-        let events = EventLog::new(&runtime, &[], &[], "00000000000000000000000000000000");
+        let mut outputs = Vec::with_capacity(dto.safe_profiles.len());
+        let mut active_safety_profiles = Vec::with_capacity(dto.safe_profiles.len());
+        for safe in &dto.safe_profiles {
+            let actuator = ActuatorId::new(
+                InstrumentId::new(safe.instrument_id),
+                lab_core::ParameterId::new(safe.parameter_id),
+            );
+            let profile = SafeProfile {
+                min: safe.min,
+                max: safe.max,
+                safe_value: safe.safe_value,
+                max_lease: Duration::from_millis(safe.max_lease_ms),
+                max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                required_evidence: match safe.required_evidence {
+                    EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                    EvidenceDto::Readback => EvidenceLevel::Readback,
+                },
+            };
+            runtime.command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::BindProfile(profile.clone()),
+            })?;
+            runtime.command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::RequestSafe,
+            })?;
+            let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
+                runtime.command(Command::Output {
+                    actuator,
+                    at: Duration::ZERO,
+                    command: OutputCommand::BeginDispatch,
+                })?
+            else {
+                return Err(Error::InvalidConfiguration(
+                    "configured safe dispatch unavailable",
+                ));
+            };
+            runtime.command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::Complete {
+                    dispatch_id: dispatch.id(),
+                    outcome: DispatchOutcome::ReadbackVerified,
+                },
+            })?;
+            outputs.push(actuator);
+            active_safety_profiles.push((actuator, profile));
+        }
+        let mut references = Vec::with_capacity(dto.references.len());
+        for reference in &dto.references {
+            let id = ReferenceId::new(reference.id);
+            let unit = Unit::new(&reference.unit_id, &reference.unit_symbol)?;
+            runtime.command(Command::RegisterReference(match reference.kind {
+                ReferenceKindDto::Fixed => ReferenceConfig::Fixed {
+                    id,
+                    value: reference.value,
+                    unit,
+                },
+                ReferenceKindDto::Ramp => ReferenceConfig::Ramp {
+                    id,
+                    start: reference.value,
+                    target: reference
+                        .target
+                        .ok_or(Error::InvalidConfiguration("ramp target missing"))?,
+                    rate: reference
+                        .rate
+                        .ok_or(Error::InvalidConfiguration("ramp rate missing"))?,
+                    unit,
+                    at: Duration::ZERO,
+                },
+            }))?;
+            // Reference progression is independent of controller execution. The
+            // schema-v1 fixed 100 ms cadence is deterministic and bounded.
+            references.push((id, Periodic::new(Duration::from_millis(100))));
+        }
+        let mut controllers = Vec::with_capacity(dto.controllers.len());
+        for controller in &dto.controllers {
+            let id = ControllerId::new(controller.id);
+            let input = SignalId::new(
+                InstrumentId::new(controller.input_instrument_id),
+                lab_core::ParameterId::new(controller.input_parameter_id),
+            );
+            runtime.command(Command::RegisterController(NativeControllerConfig {
+                id,
+                input,
+                output: ActuatorId::new(
+                    InstrumentId::new(controller.output_instrument_id),
+                    lab_core::ParameterId::new(controller.output_parameter_id),
+                ),
+                reference: ReferenceId::new(controller.reference_id),
+                ema: EmaConfig {
+                    time_constant: Duration::from_millis(controller.ema_time_constant_ms),
+                    warmup_samples: controller.ema_warmup_samples,
+                    unit: match runtime
+                        .query(Query::Reference(ReferenceId::new(controller.reference_id)))?
+                    {
+                        QueryResult::Reference(ReferenceSnapshot::Fixed { unit, .. }) => unit,
+                        QueryResult::Reference(ReferenceSnapshot::Ramp { state, .. }) => state.unit,
+                        _ => {
+                            return Err(Error::InvalidConfiguration(
+                                "configured Reference missing",
+                            ));
+                        }
+                    },
+                },
+                pid: PidConfig {
+                    kp: controller.kp,
+                    ki: controller.ki,
+                    kd: controller.kd,
+                    output_min: controller.output_min,
+                    output_max: controller.output_max,
+                },
+                max_input_age: Duration::from_millis(controller.max_input_age_ms),
+                max_tick_gap: Duration::from_millis(controller.max_tick_gap_ms),
+                lease_lifetime: Duration::from_millis(controller.lease_lifetime_ms),
+                proposal_ttl: Duration::from_millis(controller.proposal_ttl_ms),
+            }))?;
+            runtime.command(Command::PrepareController(id))?;
+            controllers.push((
+                id,
+                input,
+                Periodic::new(Duration::from_millis(controller.period_ms)),
+            ));
+        }
+        let controller_ids: Vec<_> = controllers.iter().map(|(id, _, _)| *id).collect();
+        let reference_ids: Vec<_> = references.iter().map(|(id, _)| *id).collect();
+        let events = EventLog::new(
+            &runtime,
+            &controller_ids,
+            &reference_ids,
+            "00000000000000000000000000000000",
+        );
         let deployment_provenance = deployment
             .provenance_entries()
             .into_iter()
@@ -498,16 +623,16 @@ impl HostCore {
                 safety: Periodic::new(Duration::from_millis(10)),
                 plants: measurements,
                 metakon_reads,
-                references: Vec::new(),
-                controllers: Vec::new(),
+                references,
+                controllers,
                 sources: Vec::new(),
                 transforms: Vec::new(),
             },
             consumed: BTreeMap::new(),
             consumed_managed: BTreeMap::new(),
             components: Vec::new(),
-            outputs: Vec::new(),
-            active_safety_profiles: Vec::new(),
+            outputs,
+            active_safety_profiles,
             resources,
             closed_resources: BTreeSet::new(),
             last_now: Duration::ZERO,

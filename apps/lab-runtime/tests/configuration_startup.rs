@@ -1,6 +1,11 @@
 //! C1/C2 startup acceptance for `--serve --config` composition.
 
-use lab_core::{Query, QueryResult};
+use lab_core::{
+    Query, QueryResult,
+    control::{ControllerId, ControllerState},
+    output::{ActuatorId, OutputState},
+    reference::{ReferenceId, ReferenceSnapshot},
+};
 use lab_runtime::service::{ServiceHost, ServiceOptions};
 use std::{fs, path::PathBuf};
 
@@ -32,6 +37,71 @@ history_capacity=8
 base_temperature=23.5
 measurement_enabled=true
 poll_period_ms=50
+"#
+    )
+}
+
+fn native_control_toml(port: u16) -> String {
+    format!(
+        r#"schema_version=1
+[runtime]
+key="configured-control"
+display_name="Configured native control"
+[server]
+host="127.0.0.1"
+port={port}
+[recording]
+enabled=false
+policy="best_effort"
+[[instruments]]
+id=51
+key="plant"
+kind="thermal_plant"
+display_name="Configured plant"
+history_capacity=16
+ambient_temperature=20.0
+initial_temperature=20.0
+gain_per_percent=0.8
+time_constant_ms=8000
+poll_period_ms=100
+[[references]]
+id=52
+key="setpoint"
+kind="ramp"
+value=20.0
+target=50.0
+rate=2.0
+unit_id="degC"
+unit_symbol="°C"
+[[safe_profiles]]
+instrument_id=51
+parameter_id=2
+min=0.0
+max=100.0
+safe_value=0.0
+max_lease_ms=2000
+max_proposal_ttl_ms=200
+required_evidence="readback"
+[[controllers]]
+id=53
+key="temperature-pid"
+input_instrument_id=51
+input_parameter_id=1
+output_instrument_id=51
+output_parameter_id=2
+reference_id=52
+period_ms=100
+ema_time_constant_ms=200
+ema_warmup_samples=3
+kp=3.0
+ki=0.4
+kd=0.2
+output_min=0.0
+output_max=100.0
+max_input_age_ms=500
+max_tick_gap_ms=500
+lease_lifetime_ms=2000
+proposal_ttl_ms=200
 "#
     )
 }
@@ -88,5 +158,48 @@ fn c2_invalid_config_fails_before_listener_binding_and_mixed_cli_is_rejected() {
             .is_err()
     );
     drop(rebound);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn c1_c4_configured_native_graph_starts_ready_safe_and_disarmed() {
+    let path = temporary_path("native-control", "toml");
+    fs::write(&path, native_control_toml(0)).unwrap();
+    let text = path.to_string_lossy().into_owned();
+
+    let service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &text]).unwrap())
+            .unwrap();
+    let QueryResult::Reference(ReferenceSnapshot::Ramp { state, .. }) = service
+        .owner()
+        .query(Query::Reference(ReferenceId::new(52)))
+        .unwrap()
+    else {
+        panic!("configured ramp Reference missing")
+    };
+    assert_eq!(state.current, 20.0);
+    assert_eq!(state.target, 50.0);
+    let QueryResult::Controller(controller) = service
+        .owner()
+        .query(Query::Controller(ControllerId::new(53)))
+        .unwrap()
+    else {
+        panic!("configured controller missing")
+    };
+    assert_eq!(controller.state, ControllerState::Ready);
+    let QueryResult::Output(output) = service
+        .owner()
+        .query(Query::Output(ActuatorId::new(
+            lab_core::InstrumentId::new(51),
+            lab_core::HEATER_POWER,
+        )))
+        .unwrap()
+    else {
+        panic!("configured output missing")
+    };
+    assert_eq!(output.state, OutputState::Disarmed);
+    assert!(output.lease.is_none());
+
+    drop(service);
     fs::remove_file(path).unwrap();
 }

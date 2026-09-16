@@ -167,6 +167,17 @@ are not reported as passing evidence.
     C9 test proves label/TOML revision changes retain source bytes and generation
     until the distinct script reload, which then advances the generation while
     preserving that TOML hash. All managed reload tests and clippy pass.
+18. C1/C4 declarative native-control startup was red because the typed TOML
+    schema did not contain the accepted PID/EMA/lease fields and Host explicitly
+    rejected every Reference/controller/safe-profile graph. Added strict bounded
+    schema fields and validation, then composed existing Core Fixed/Ramp,
+    SafeProfile and native PID objects in safe dependency order. Startup proves
+    old-profile safe evidence before readiness, prepares the controller as Ready,
+    and leaves the output Disarmed with no lease. A separate red C4 test then
+    showed pure validation admitted a mismatched Reference/input unit and a
+    measurement parameter disguised as an output; both now reject before any
+    artifact read. Three startup tests, five validation tests and warning-free
+    targeted clippy pass. No controller is started or armed by configuration.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
