@@ -617,3 +617,108 @@ fn four_full_causal_groups_commit_exactly_the_256_record_batch_limit() {
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn four_delayed_managed_lineage_groups_charge_nested_scratch_at_batch_peak() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let mut worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    worker.request_start("managed lineage batch peak").unwrap();
+    await_state(&mut worker, RecordingState::Recording);
+    let derived = SignalId::new(InstrumentId::new(187), lab_core::TEMPERATURE);
+    let source = SignalId::new(InstrumentId::new(188), lab_core::TEMPERATURE);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut expected_charge = 0usize;
+    for group in 0..4u64 {
+        let facts: Vec<_> = (1..=64u64)
+            .map(|position| {
+                let sequence = group * 64 + position;
+                let observed = Duration::from_millis(sequence);
+                let published = observed + Duration::from_secs(2);
+                RecordingFact::Measurement {
+                    sequence,
+                    sample: Sample::derived_good(
+                        derived,
+                        Unit::CELSIUS,
+                        published,
+                        observed,
+                        Value::Float(sequence as f64),
+                    )
+                    .unwrap(),
+                    generation: 3,
+                    revision: 1,
+                    state_revision: Some(sequence),
+                    lineage: Some(CapturedInput {
+                        signal: source,
+                        value: sequence as f64 / 2.0,
+                        unit: Unit::CELSIUS,
+                        at: observed,
+                        freshness_at: observed,
+                        source_generation: 2,
+                        source_revision: 1,
+                        source_state_revision: Some(sequence),
+                    }),
+                }
+            })
+            .collect();
+        expected_charge = expected_charge
+            .checked_add(facts.capacity() * std::mem::size_of::<RecordingFact>())
+            .and_then(|value| value.checked_add(facts.len() * 1024))
+            .unwrap();
+        worker
+            .try_admit_at(facts, Duration::from_millis(group + 1))
+            .unwrap();
+        if group == 0 {
+            while !barrier.reached() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(barrier.reached(), "first managed SQL batch was not held");
+        }
+    }
+    let pending = worker.poll();
+    assert_eq!(pending.outstanding_records, 256);
+    assert_eq!(pending.outstanding_groups, 4);
+    assert_eq!(
+        pending.outstanding_bytes, expected_charge,
+        "all transferred Vec capacity and per-lineage encoder scratch must remain charged"
+    );
+    assert!(pending.outstanding_bytes <= 512 * 1024);
+
+    barrier.release();
+    while worker.poll().outstanding_records != 0 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(worker.poll().outstanding_bytes, 0);
+    worker.request_stop().unwrap();
+    await_state(&mut worker, RecordingState::Idle);
+    worker.request_finish().unwrap();
+    await_state(&mut worker, RecordingState::Closed);
+    drop(worker);
+
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let rows: (i64, i64, i64) = db
+        .query_row(
+            "SELECT COUNT(*),
+                    SUM(CASE WHEN state_revision IS NOT NULL AND lineage IS NOT NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN observed_at < published_at THEN 1 ELSE 0 END)
+             FROM measurements",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(rows, (256, 256, 256));
+    let commits: Vec<u8> = db
+        .query_row("SELECT commit_no FROM durable_checkpoints", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        u64::from_be_bytes(commits.try_into().unwrap()),
+        4,
+        "four managed groups must share one fact transaction"
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
