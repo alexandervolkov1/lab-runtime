@@ -1,8 +1,19 @@
 //! A stalled SQLite worker must not halt native safety or BestEffort control.
 
 use lab_core::{
-    Command, Query, QueryResult,
-    output::{ActuatorId, OutputState},
+    AccessMode, Command, CommandResult, InstrumentId, ParameterId, ParameterRole, Query,
+    QueryResult, Unit, Value, ValueSpec, WriteEffect,
+    control::ControllerState,
+    instrument::{
+        DataInstrumentDefinition, DataParameterDefinition, KnownOperation, MetakonBinding,
+        MetakonInstrumentConfig,
+    },
+    metakon::crc,
+    output::{
+        ActuatorId, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal, OutputResult,
+        OutputState, SafeProfile,
+    },
+    transport::{ByteTransport, ExecutorState, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::{
     host::{Clock, HostCore},
@@ -12,9 +23,12 @@ use lab_runtime::{
 };
 use serde_json::{Value as JsonValue, json};
 use std::{
+    cell::RefCell,
+    collections::VecDeque,
     io::{BufRead, BufReader, Write},
     net::TcpStream,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -66,6 +80,325 @@ fn start(host: &mut HostCore) {
         at: Duration::ZERO,
     })
     .unwrap();
+}
+
+#[derive(Default)]
+struct M3Wire {
+    written: Vec<u8>,
+    readable: VecDeque<u8>,
+    write_limits: VecDeque<usize>,
+    recoveries: usize,
+    recovery_pending: bool,
+}
+
+struct M3Transport(Rc<RefCell<M3Wire>>);
+impl ByteTransport for M3Transport {
+    fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        let limit = wire.write_limits.pop_front().unwrap_or(bytes.len());
+        let count = bytes.len().min(limit);
+        wire.written.extend_from_slice(&bytes[..count]);
+        if count == 7 && count == bytes.len() {
+            let body = [15, 0, 6, 1];
+            wire.readable.extend(body);
+            wire.readable.push_back(crc(&body));
+        }
+        Ok(count)
+    }
+
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        let count = bytes.len().min(wire.readable.len());
+        for byte in &mut bytes[..count] {
+            *byte = wire.readable.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        wire.recoveries += 1;
+        if wire.recovery_pending {
+            Ok(RecoveryStatus::Pending)
+        } else {
+            wire.readable.clear();
+            Ok(RecoveryStatus::Complete)
+        }
+    }
+}
+
+fn install_m3_output(
+    host: &mut HostCore,
+    resource: ResourceId,
+    instrument: InstrumentId,
+    wire: Rc<RefCell<M3Wire>>,
+) -> ActuatorId {
+    let parameter = ParameterId::new(6);
+    let actuator = ActuatorId::new(instrument, parameter);
+    host.register_transport(resource, Box::new(M3Transport(Rc::clone(&wire))))
+        .unwrap();
+    host.command(Command::RegisterMetakon(MetakonInstrumentConfig {
+        definition: DataInstrumentDefinition {
+            schema_version: 1,
+            id: instrument,
+            name: "held-writer M3 output".into(),
+            parameters: vec![DataParameterDefinition {
+                id: parameter,
+                name: "power".into(),
+                value_spec: ValueSpec::Float {
+                    min: 0.0,
+                    max: 100.0,
+                },
+                unit: Unit::PERCENT,
+                access: AccessMode::ReadWrite,
+                role: ParameterRole::Actuator,
+                write_effect: WriteEffect::OutputAffecting,
+                operation: KnownOperation::Output,
+                scale: 1.0,
+            }],
+        },
+        binding: MetakonBinding {
+            resource,
+            device: 15,
+            channel: 0,
+            binding_generation: 1,
+            mapping_revision: 1,
+            expected_output_unit: Some(Unit::PERCENT),
+        },
+        history_capacity: 2,
+    }))
+    .unwrap();
+    host.command(Command::Output {
+        actuator,
+        at: Duration::ZERO,
+        command: OutputCommand::BindProfile(SafeProfile {
+            min: 0.0,
+            max: 100.0,
+            safe_value: 0.0,
+            max_lease: Duration::from_secs(1),
+            max_proposal_ttl: Duration::from_millis(200),
+            required_evidence: EvidenceLevel::Acknowledgement,
+        }),
+    })
+    .unwrap();
+    host.track_trusted_output(actuator).unwrap();
+    host.command(Command::Output {
+        actuator,
+        at: Duration::ZERO,
+        command: OutputCommand::RequestSafe,
+    })
+    .unwrap();
+    host.command(Command::QueueMetakonOutput {
+        actuator,
+        at: Duration::ZERO,
+        queue_ttl: Duration::from_secs(1),
+        timeout: Duration::from_millis(20),
+    })
+    .unwrap();
+    host.command(Command::PollTransports { at: Duration::ZERO })
+        .unwrap();
+    let QueryResult::Output(output) = host.query(Query::Output(actuator)).unwrap() else {
+        panic!("M3 output query changed kind")
+    };
+    assert!(output.safe_confirmed);
+    wire.borrow_mut().written.clear();
+    actuator
+}
+
+fn queue_manual_m3(host: &mut HostCore, actuator: ActuatorId, at: Duration, value: f64) {
+    let CommandResult::Output(OutputResult::Lease(lease)) = host
+        .command(Command::Output {
+            actuator,
+            at,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(77),
+                lifetime: Duration::from_millis(200),
+            },
+        })
+        .unwrap()
+    else {
+        panic!("manual M3 lease absent")
+    };
+    host.command(Command::Output {
+        actuator,
+        at,
+        command: OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(value),
+            unit: Unit::PERCENT,
+            ttl: Duration::from_millis(100),
+        }),
+    })
+    .unwrap();
+    host.command(Command::QueueMetakonOutput {
+        actuator,
+        at,
+        queue_ttl: Duration::from_millis(200),
+        timeout: Duration::from_millis(20),
+    })
+    .unwrap();
+}
+
+#[test]
+fn best_effort_m3_reaches_first_byte_while_sqlite_writer_is_held() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let wire = Rc::new(RefCell::new(M3Wire {
+        write_limits: [7].into_iter().collect(),
+        ..M3Wire::default()
+    }));
+    let mut host = HostCore::virtual_demo().unwrap();
+    let actuator = install_m3_output(
+        &mut host,
+        ResourceId::new(31),
+        InstrumentId::new(731),
+        Rc::clone(&wire),
+    );
+    wire.borrow_mut().write_limits = [1].into_iter().collect();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    host.service(&FakeClock(Duration::ZERO)).unwrap();
+    host.start_recording("BestEffort M3 first byte", Duration::ZERO)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while host.recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        host.service(&FakeClock(Duration::ZERO)).unwrap();
+        std::thread::yield_now();
+    }
+    queue_manual_m3(&mut host, actuator, Duration::from_millis(1), 65.0);
+    while !barrier.reached() {
+        assert!(Instant::now() < deadline, "SQLite fact stage was not held");
+        std::thread::yield_now();
+    }
+    host.command(Command::PollTransports {
+        at: Duration::from_millis(1),
+    })
+    .unwrap();
+    assert_eq!(
+        wire.borrow().written.len(),
+        1,
+        "M3 first byte was blocked by SQLite"
+    );
+    assert!(
+        barrier.reached(),
+        "storage must still be held at the send boundary"
+    );
+    let QueryResult::Transport(resource) =
+        host.query(Query::Transport(ResourceId::new(31))).unwrap()
+    else {
+        panic!("transport query changed kind")
+    };
+    assert_eq!(resource.state, ExecutorState::InFlight);
+    barrier.release();
+    drop(host);
+    remove_after_worker_close(path);
+}
+
+#[test]
+fn required_deadline_safes_virtual_output_but_keeps_partial_m3_recovery_unknown() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let wire = Rc::new(RefCell::new(M3Wire {
+        write_limits: [7].into_iter().collect(),
+        ..M3Wire::default()
+    }));
+    let mut host = HostCore::virtual_demo().unwrap();
+    let m3 = install_m3_output(
+        &mut host,
+        ResourceId::new(32),
+        InstrumentId::new(732),
+        Rc::clone(&wire),
+    );
+    {
+        let mut wire = wire.borrow_mut();
+        wire.write_limits = [2].into_iter().collect();
+        wire.recovery_pending = true;
+    }
+    host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
+        .unwrap();
+    host.service(&FakeClock(Duration::ZERO)).unwrap();
+    host.start_recording("Required multi-output recovery", Duration::ZERO)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while host.recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        host.service(&FakeClock(Duration::ZERO)).unwrap();
+        std::thread::yield_now();
+    }
+    host.command(Command::StartController {
+        controller: host.controller_id(),
+        at: Duration::ZERO,
+    })
+    .unwrap();
+    queue_manual_m3(&mut host, m3, Duration::from_millis(1), 70.0);
+    while !barrier.reached() {
+        assert!(Instant::now() < deadline, "SQLite fact stage was not held");
+        std::thread::yield_now();
+    }
+    host.command(Command::PollTransports {
+        at: Duration::from_millis(1),
+    })
+    .unwrap();
+    assert_eq!(wire.borrow().written.len(), 2);
+
+    host.command(Command::ServiceSafety {
+        at: Duration::from_secs(2),
+    })
+    .unwrap();
+    host.command(Command::ServiceSafety {
+        at: Duration::from_millis(2_001),
+    })
+    .unwrap();
+    let QueryResult::Controller(controller) =
+        host.query(Query::Controller(host.controller_id())).unwrap()
+    else {
+        panic!("controller query changed kind")
+    };
+    assert_eq!(controller.state, ControllerState::Failed);
+    let QueryResult::Output(virtual_output) = host
+        .query(Query::Output(ActuatorId::new(
+            host.plant_id(),
+            lab_core::HEATER_POWER,
+        )))
+        .unwrap()
+    else {
+        panic!("virtual output query changed kind")
+    };
+    assert!(virtual_output.fault_latched);
+    assert!(virtual_output.safe_confirmed);
+    assert!(virtual_output.lease.is_none());
+    let QueryResult::Output(physical_output) = host.query(Query::Output(m3)).unwrap() else {
+        panic!("M3 output query changed kind")
+    };
+    assert!(physical_output.fault_latched);
+    assert!(!physical_output.safe_confirmed);
+    assert!(physical_output.lease.is_none());
+    assert_eq!(
+        wire.borrow().written.len(),
+        2,
+        "partial ordinary bytes were retried"
+    );
+    assert!(wire.borrow().recoveries >= 1);
+    let QueryResult::Transport(resource) =
+        host.query(Query::Transport(ResourceId::new(32))).unwrap()
+    else {
+        panic!("transport query changed kind")
+    };
+    assert_eq!(resource.state, ExecutorState::Recovering);
+    assert!(
+        barrier.reached(),
+        "safety must progress while SQLite remains held"
+    );
+    barrier.release();
+    drop(host);
+    remove_after_worker_close(path);
 }
 
 #[test]
