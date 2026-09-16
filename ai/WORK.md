@@ -1,12 +1,12 @@
-# Current work — M8 physical reconnect review stop
+# Current work — M8 final hardware rerun pending
 
-STATUS: WAITING_FOR_REVIEW
+STATUS: READY_FOR_HARDWARE_RERUN
 
 Current model: SOL_HIGH.
-Current phase: Recorder-corrected physical reconnect failed before generation-2 install.
+Current phase: M8 software corrections complete; final hardware rerun pending.
 M7: externally accepted at `f3ff456`.
-M8 software implementation: complete at `0a42d73`; reviewed corrections complete
-through Recorder FIFO correction commits `fdf8a73` and `2ec104b`.
+M8 software implementation: complete at `0a42d73`; reviewed reconnect
+preparation correction complete at implementation HEAD `6f641e2`.
 M9: not authorized.
 
 ## Authoritative contract
@@ -24,45 +24,59 @@ docs/implementation/MILESTONE_8_DESIGN.md
 docs/implementation/MILESTONE_8_REPORT.md
 ```
 
-## Review checkpoint
+## Completed software correction
 
-The accepted physical run started at HEAD
-`5355963d9e4bb3efa5f5214223a1510cc25619e9` with exact expected TOML and
-definition hashes. Normal COM5 acquisition passed channel type 3 and produced
-165 durable generation-1 Good temperature rows at raw/engineering 29--30 with
-scale 1.0, matching the operator's 29-degree display.
-
-The operator-reported device power-off produced exactly one value-less
-Unavailable/Transport row, finite Offline, generation 1, queue zero and no later
-Good. Required Recorder remained healthy and complete. After the
-operator-reported device power-cycle/reset boundary, exactly one public
-`reconnect_resource(resource=1, expected_binding_generation=1)` was issued. Its
-Accepted and Failed/`invalid_configuration` phases are durable at records 677
-and 678.
-
-The Recorder FIFO correction passed this physical causal chain: there is no
-`fact record reservation mismatch`, `recording_unavailable`, gap or unknown
-tail. However, no generation-2 binding, compatibility measurement or lifecycle
-activation was installed. Resource state remained Offline at generation 1.
-Current evidence therefore places the failure before the replacement crossed
-the rebind fence, without distinguishing old-adapter retirement failure from
-configured COM5 reopen failure. Do not guess between those branches.
-
-No reconnect retry, alternative COM open, register/address probe, configuration
-operation or physical write was attempted. Normal shutdown completed with
-transports closed, Recorder flushed, no unfinished transports/workers and success.
-Final M8 Babashka-independence, live-safe reload and release/rustdoc gates were
-not run after the reconnect failure.
-
-Preserve the sealed evidence archive unchanged:
+The Recorder-corrected physical run is preserved unchanged at:
 
 ```text
 examples/metakon-513-com5-recorder-corrected-history.sqlite
 SHA-256 49c21ab48a22b4c2d0100357686f1b367d0432ce641dd9c8e21eee3184e4c6de
 ```
 
-It has complete coverage, no gaps, zero output events and terminal checkpoint
-through record 849. Preserve every earlier hardware archive as well.
+Deterministic source-level reproduction proved that its reconnect stopped at
+`retire_old_begin`: Host supplied cached monotonic time older than Core's latest
+transport poll, so Core returned `Transport(InvalidTime)` before retirement,
+replacement spawn, actual Windows open or rebind. The correction supplies the
+current owner time explicitly.
 
-Await external review. Do not reopen COM5, retry reconnect, change production
-code, start M9 or perform post-M8 cleanup without explicit authorization.
+The mailbox lost-stop hypothesis is separately confirmed as a latent adapter
+defect, not the physical root cause. Retirement now has persistent coalesced
+intent independent of the fallible ordinary mailbox. Candidate preparation
+waits for actual Windows open and configured-settings readback Ready before Core
+rebind. Bounded stage diagnostics and stable public transport failure mapping
+are implemented. Generation remains old at every pre-rebind failure; Recorder
+health and finite shutdown behavior are covered by named regressions.
+
+Software gates pass: focused Windows COM, configured physical, reconnect
+lifecycle/public error, COM/Recorder shutdown, Recorder Required/FIFO, all Core
+transport/Metakon tests, actual Babashka A/B, complete debug workspace, fmt,
+warning-denied workspace all-target Clippy and diff check. Release-profile and
+warning-denied rustdoc remain reserved for the successful final hardware gate.
+
+## Next authorized work
+
+Only after explicit user authorization and device access, run the final real M8
+read-only hardware rerun. Do not start M9. Do not issue physical writes, retry
+automatically, enumerate alternative ports, probe other registers or reuse any
+existing SQLite evidence archive.
+
+The next archive main/WAL/SHM paths are confirmed absent:
+
+```text
+examples/metakon-513-com5-prepared-reconnect-history.sqlite
+```
+
+Approved hashes:
+
+```text
+runtime TOML  8688bf121b27a6ffc88a73eb35fc23def9c0787330eaf2168899198c41f5186c
+definition    b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb
+```
+
+Launch command:
+
+```powershell
+cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
+```
+
+COM5 was not opened during the software correction.

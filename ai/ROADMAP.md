@@ -26,9 +26,9 @@ complete in docs/implementation/MILESTONE_7_DESIGN.md.
 M7 is externally accepted at f3ff456, including D1-D18 and the recorded 345-test
 debug/release gates. Its reported limitations remain accepted limitations.
 
-STATUS: WAITING_FOR_REVIEW
+STATUS: READY_FOR_HARDWARE_RERUN
 Current model: SOL_HIGH
-Current phase: Recorder-corrected physical reconnect failed before rebind.
+Current phase: M8 software corrections complete; final hardware rerun pending.
 M8 software implementation and the 388-test debug/release completion gates are
 complete at `0a42d73`; details are in `MILESTONE_8_REPORT.md`.
 Do not start M9.
@@ -65,8 +65,12 @@ acquisition, one durable Unavailable, finite Offline and healthy contiguous
 Recorder operation. Its single explicit reconnect nevertheless failed before a
 generation-2 binding or probe was installed. Clean shutdown sealed complete
 evidence with zero outputs. The archive hash and exact facts are in
-`MILESTONE_8_REPORT.md`. External review is required before another COM5 open or
-software correction; M8 is incomplete and M9 is not authorized.
+`MILESTONE_8_REPORT.md`. The pre-rebind failure is now deterministically
+localized to an old Host monotonic timestamp rejected by Core before retirement.
+The correction and bounded reconnect diagnostics pass the full software gate at
+implementation HEAD `6f641e2`; the independent lost-stop audit also corrected a
+latent bounded COM retirement defect. Only the final explicitly authorized
+hardware rerun remains. M8 is incomplete and M9 is not authorized.
 
 First stable release sequence
 M7

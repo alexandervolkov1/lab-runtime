@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `WAITING_FOR_REVIEW`; the Recorder-corrected physical run stopped at a
-new pre-rebind reconnect failure, 2026-09-16.
+Status: `READY_FOR_HARDWARE_RERUN`; software correction of the Recorder-corrected
+physical pre-rebind failure is complete, 2026-09-16. COM5 has not been reopened.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -1077,6 +1077,133 @@ unchanged. Babashka client-independence, live-safe configuration revision and th
 final release/rustdoc gates were not attempted after reconnect failure. No
 production source or test changed during this run.
 
+## Reviewed pre-rebind correction — 2026-09-16
+
+External review authorized this software-only M8 correction and prohibited a
+COM5 open. Source plus deterministic reproduction localize the preceding
+physical failure exactly to `retire_old_begin`, before an old-worker retirement
+attempt, replacement worker spawn, actual Windows port open or Core rebind.
+`HostCore::prepare_configured_transport_replacement()` supplied its cached
+`last_now` to `Runtime::shutdown_transport()`. A preceding owner service turn
+can poll transports at a later `clock.now()` than that cache, so Core correctly
+rejected the backwards timestamp as `Transport(InvalidTime)`. The first
+service-level retirement regression observed `RetireOldFailed` instead of its
+intended timeout branch for precisely this reason. That failure path explains
+the physical generation remaining 1 and proves that asynchronous COM5 reopen
+was never reached.
+
+`reconnect_retirement_uses_current_monotonic_time_after_transport_poll` was
+compile-red because the old Host API accepted no current owner time. The
+correction passes the reconnect turn's current monotonic time explicitly; no
+generic `ResourceExecutor` contract or `lab-core` code changed. The test now
+advances Core transport time ahead of the old Host cache and proves finite clean
+retirement at the nondecreasing time.
+
+The requested lost-stop hypothesis was also audited independently. It is a real
+latent adapter defect but was not the cause of the preserved physical run: the
+old `ComTransport::retire()` changed state to Closing, used fallible
+`try_send(Request::Stop)`, ignored `Full`, and never retried because subsequent
+calls returned early. The tests-first worker regression was compile-red before
+production because there was no persistent stop intent or worker-loop seam.
+`occupied_mailbox_retirement_cannot_lose_stop_or_start_next_data_operation` now
+holds one bounded device call, fills the one ordinary mailbox, proves the Stop
+wake-up hint is Full, releases the call and verifies that persistent coalesced
+retirement prevents the queued read, emits Stopped and finitely exits. Stop is
+checked before the next request and after each bounded OS call; there is still
+one worker, one ordinary slot, no thread kill and no blocking join.
+
+Worker completion is now honest even when the bounded Stopped completion is
+missing or its channel closes: only `JoinHandle::is_finished()` permits Closed,
+covered by `finished_worker_without_stopped_completion_is_honestly_closed` and
+`finished_worker_with_closed_completion_channel_is_honestly_closed`. A held OS
+call remains Pending under the existing
+`c19_stuck_com_worker_shutdown_attempt_is_finite_and_never_block_joins` oracle.
+
+`ComTransport::open_windows()` still deliberately returns after spawning a
+worker in `Opening`; spawn is not OS-open evidence. The new nonblocking
+`open_status()` distinguishes Opening, typed asynchronous failure and Ready.
+Ready means `SerialPortDevice::open()` completed and its configured serial
+settings readback matched. Explicit reconnect now waits through that finite
+preparation before transferring the candidate to Core. Open failure preserves
+generation 1, cancels reserved lifecycle credit, leaves Required Recorder
+healthy and retires the candidate. A still-running open is retained in the one
+quarantined candidate slot, blocks another replacement and participates in
+finite shutdown; it is never silently detached and replaced.
+
+One replace-in-place `ReconnectDiagnostic` records no OS-owned strings and
+retains the resource, current/target generation, exact bounded stage, bounded
+COM state, typed serial error, old-worker completion, replacement spawn,
+actual-open confirmation and Core-rebind fence. Its stages distinguish safe
+barrier, Recorder reservation, old retirement begin/pending/timeout/failure,
+settings, worker spawn, actual Windows opening/failure/readiness, install, Core
+rebind, resource-specific probe enqueue/wait/failure, lifecycle Recorder commit
+and lifecycle durability. Failed public reconnect terminals include this bounded
+detail and remain deduplicatable/reconcilable.
+
+Transport retirement, worker-spawn and actual-open failures now use one stable
+`transport_unavailable` wire code rather than `invalid_configuration`.
+Invalid candidates retain `invalid_configuration`; stale expected generation
+retains `revision_conflict`; Required lifecycle storage failure retains
+`recording_unavailable`. Probe incompatibility remains a configuration/domain
+failure with the precise stage detail rather than being mislabeled as an open
+failure.
+
+New named regression evidence is:
+
+```text
+reconnect_retirement_uses_current_monotonic_time_after_transport_poll
+occupied_mailbox_retirement_cannot_lose_stop_or_start_next_data_operation
+finished_worker_without_stopped_completion_is_honestly_closed
+finished_worker_with_closed_completion_channel_is_honestly_closed
+asynchronous_open_failure_is_distinct_from_ready
+reconnect_retirement_timeout_reports_exact_pre_rebind_stage
+reconnect_worker_spawn_failure_keeps_old_generation_and_recorder_healthy
+stale_expected_generation_is_conflict_without_prior_failure_diagnostics
+asynchronous_candidate_open_failure_never_crosses_generation_fence
+unfinished_candidate_open_is_quarantined_until_worker_finishes
+failed_probe_is_distinct_and_keeps_installed_generation_quiesced
+ready_candidate_installs_once_then_probe_and_lifecycle_release_acquisition
+reconnect_transport_failure_and_stale_generation_keep_distinct_public_codes
+```
+
+The service regressions use a real `ServiceHost`, Required SQLite Recorder and
+the production COM-worker abstraction over deterministic devices without
+opening an OS port. Every pre-rebind failure retains binding generation 1,
+healthy Recorder state and zero configured outputs; every cooperative failure
+shutdown closes and flushes, while the deliberately unfinished old worker
+returns finite unsuccessful shutdown. The successful chain proves old Offline,
+clean retirement, candidate actual-open Ready, one Core rebind to generation 2,
+Good channel type 3, durable lifecycle and only then reconnect release. Existing
+stale-session, probe, FIFO, Required failure and later Good-temperature tests
+remain green.
+
+Focused verification passed the 31-test `lab-runtime` library, all 136 Core
+tests, Windows COM, 13 configured-physical, COM/Recorder shutdown, Runtime
+shutdown, Recorder Required/FIFO/reload-budget and lifecycle/public-operation
+suites. The first complete workspace run had one transient setup failure in
+`reconnect_probe_fact_precedes_durable_activation_and_later_good_temperature`;
+its exact isolated rerun, complete 31-test library rerun and subsequent complete
+workspace rerun all passed without a code change. The latest workspace lists
+427 named tests. Actual Babashka 1.13.220 A/B passed all three process tests.
+Formatting, workspace all-target warning-denied Clippy and diff checks pass.
+As explicitly authorized, release-profile tests and warning-denied rustdoc remain
+for the final successful hardware gate.
+
+Production correction commit is `6f641e2`. The next archive path is
+`examples/metakon-513-com5-prepared-reconnect-history.sqlite`; main, WAL and SHM
+are all absent. Exact runtime TOML SHA-256 is
+`8688bf121b27a6ffc88a73eb35fc23def9c0787330eaf2168899198c41f5186c`.
+The definition bytes are unchanged at SHA-256
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+Both supplied immutable evidence archives retain their recorded hashes. The next
+authorized work is only an explicitly approved read-only hardware rerun using:
+
+```powershell
+cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
+```
+
+COM5 was not opened during this correction. M9 remains unauthorized.
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
@@ -1087,12 +1214,10 @@ actual reconnect still failed and exposed a Recorder reservation failure plus an
 unsealed shutdown. Firmware remains unknown and no independent wire capture
 exists.
 
-M8 is `WAITING_FOR_REVIEW`; it is not ready for acceptance and does not authorize
-M9. Recorder FIFO ordering is corrected, and the latest run reconfirmed normal
-acquisition, finite Offline, durable failure evidence and clean shutdown. The
-explicit physical reconnect nevertheless failed before generation-2 installation
-for a cause not distinguished by current durable diagnostics. Successful
-reconnect, Babashka independence, harmless live-safe reload and final
-release/rustdoc gates remain open. M8 performed no physical actuator write and
-makes no physical-output-safety, power-loss, remote-security, GUI or long-soak
-certification claim.
+M8 is `READY_FOR_HARDWARE_RERUN`, not ready for acceptance and does not authorize
+M9. The prior reconnect failure is localized and corrected in software, with
+bounded stage diagnostics ready for the rerun. Successful physical reconnect,
+Babashka independence during that physical run, harmless live-safe reload and
+the final release/rustdoc gates remain open. M8 performed no physical actuator
+write and makes no physical-output-safety, power-loss, remote-security, GUI or
+long-soak certification claim.

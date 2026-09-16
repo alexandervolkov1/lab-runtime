@@ -10,18 +10,19 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: WAITING_FOR_REVIEW
+STATUS: READY_FOR_HARDWARE_RERUN
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 Recorder-corrected physical reconnect failed before generation-2 install.
+M8 software corrections complete; final read-only hardware rerun pending.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
 externally accepted by the user. M8 design is frozen and its software
-implementation/completion gate is complete at `0a42d73`.
+implementation/completion gate is complete at `0a42d73`. The reviewed
+pre-rebind correction is complete at implementation HEAD `6f641e2`.
 
 Implementation contract:
 docs/implementation/MILESTONE_8_DESIGN.md (after explicit implementation handoff)
@@ -38,9 +39,10 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-Await external review of the pre-rebind reconnect failure. Do not reopen COM5,
-retry reconnect, change production code, reuse prior evidence archives, issue
-physical writes, probe other registers, begin M9 or perform post-M8 cleanup.
+Only the final real M8 hardware rerun after explicit user authorization and
+device access. Do not reopen COM5 before that authorization, reuse prior evidence
+archives, issue physical writes, probe other registers, begin M9 or perform
+post-M8 cleanup.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -48,6 +50,52 @@ The M8 ASTRA_HIGH -> SOL_HIGH implementation gate was crossed explicitly.
 
 Do not start:
 M9 or later work.
+
+M8 software correction ready for hardware rerun — 2026-09-16
+
+Source and deterministic regression localized the preceding physical reconnect
+failure to `retire_old_begin`. Host reconnect preparation passed cached
+`last_now` after the owner had already polled the transport with a later
+monotonic time; Core correctly rejected the backwards timestamp as
+`Transport(InvalidTime)`. The failure was before old-worker retirement,
+replacement spawn, actual Windows port opening and Core rebind. The correction
+passes the reconnect turn's current owner time explicitly.
+
+The lost-stop hypothesis was independently confirmed as a latent COM adapter
+defect, but rejected as the cause of that physical run. Retirement now sets a
+persistent coalesced intent outside the fallible one-slot data mailbox; the Stop
+request is only a wake-up hint. The worker checks the intent after a bounded OS
+call and before another data operation. Only a proven finished worker permits
+honest Closed when its Stopped completion is missing.
+
+`ComTransport::open_windows()` remains spawn-only and returns Opening. New
+bounded preparation diagnostics distinguish worker spawn, actual OS open
+pending, typed open failure, configured-settings readback Ready, install, Core
+rebind, probe and lifecycle durability. Reconnect does not cross the generation
+fence until actual open/readback Ready. Failed or unfinished candidates remain
+bounded, finitely retired or quarantined, and do not trigger automatic retry.
+
+Transport retirement/spawn/open preparation now maps to stable public
+`transport_unavailable`; invalid candidates remain `invalid_configuration`,
+stale generation remains `revision_conflict`, and Required Recorder failure
+remains `recording_unavailable`. Implementation commit is `6f641e2`. The final
+debug workspace, focused reconnect/COM/Recorder/Core suites, actual Babashka A/B,
+fmt, warning-denied all-target Clippy and diff checks pass; exact chronological
+evidence and named regressions are in `MILESTONE_8_REPORT.md`.
+
+The next confirmed-absent archive is
+`examples/metakon-513-com5-prepared-reconnect-history.sqlite`. Runtime TOML
+SHA-256 is
+`8688bf121b27a6ffc88a73eb35fc23def9c0787330eaf2168899198c41f5186c`;
+the unchanged definition SHA-256 is
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+Launch only after explicit hardware authorization:
+
+```powershell
+cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
+```
+
+COM5 was not opened during this correction. M9 remains unauthorized.
 
 M8 corrected reconnect hardware review stop — 2026-09-16
 

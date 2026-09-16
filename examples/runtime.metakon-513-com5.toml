@@ -10,7 +10,7 @@ port = 7420
 
 [recording]
 enabled = true
-path = "metakon-513-com5-recorder-corrected-history.sqlite"
+path = "metakon-513-com5-prepared-reconnect-history.sqlite"
 policy = "required"
 
 [[resources]]
