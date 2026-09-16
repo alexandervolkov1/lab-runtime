@@ -4,9 +4,9 @@
 //! receipt inspection; shutdown requests never join a worker stuck in OS I/O.
 
 use super::{
-    AnnotationRecord, BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord,
-    ProvenanceEntry, ProvenanceObject, RecorderGap, RecordingPolicy, RunsCursor, RunsPage,
-    SqliteStore, StorageError, StorageHealth, TimeAnchor,
+    AnnotationRecord, BoundarySnapshot, ConfigurationLifecycleRecord, HistoryCursor, HistoryFilter,
+    HistoryPage, OperationRecord, ProvenanceEntry, ProvenanceObject, RecorderGap, RecordingPolicy,
+    RunsCursor, RunsPage, SqliteStore, StorageError, StorageHealth, TimeAnchor,
 };
 use crate::host::{Clock, SystemClock};
 use lab_core::{Value, recording::RecordingFact};
@@ -349,7 +349,11 @@ impl Default for Receipt {
 }
 
 enum Message {
-    Activation(Vec<ProvenanceEntry>, Vec<ProvenanceObject>),
+    Activation {
+        entries: Vec<ProvenanceEntry>,
+        objects: Vec<ProvenanceObject>,
+        lifecycle: Option<(ConfigurationLifecycleRecord, usize, u64, u64)>,
+    },
     Start(String, RecordingPolicy, Duration, BoundarySnapshot, u64),
     Facts(Vec<RecordingFact>, usize, Duration, Instant, u64),
     ClockAnchor(u64),
@@ -370,6 +374,12 @@ enum Message {
     },
     Stop(serde_json::Value, Duration, u64),
     Finish(serde_json::Value, Duration, u64),
+}
+
+struct LiveActivationReservation {
+    generation: u64,
+    assigned: u64,
+    bytes: usize,
 }
 
 /// Runtime-owned ingress to one SQLite worker. No method executes disk I/O.
@@ -404,6 +414,7 @@ pub struct RecorderWorker {
     last_periodic: Duration,
     periodic_pending: Option<u64>,
     pending_activation_generation: Option<u64>,
+    live_activation_reservation: Option<LiveActivationReservation>,
     last_owner_submission: Option<Duration>,
     last_accepted_fact: Option<u64>,
     gap_scheduled: bool,
@@ -595,6 +606,7 @@ impl RecorderWorker {
             last_periodic,
             periodic_pending: None,
             pending_activation_generation: None,
+            live_activation_reservation: None,
             last_owner_submission: None,
             last_accepted_fact: None,
             gap_scheduled: false,
@@ -660,33 +672,124 @@ impl RecorderWorker {
                 "activation requires idle unactivated worker".into(),
             ));
         }
-        self.send_control(Message::Activation(entries, objects))?;
+        self.send_control(Message::Activation {
+            entries,
+            objects,
+            lifecycle: None,
+        })?;
         self.pending_activation_generation = Some(1);
         Ok(())
     }
 
-    /// Queue a bounded live activation while preserving the current run/interval.
-    pub fn request_live_activation(
+    /// Reserve one of the unchanged four ordinary ingress groups before a
+    /// configuration owner commit. `None` is bounded backpressure, not failure.
+    pub fn try_reserve_live_activation(
         &mut self,
-        entries: Vec<ProvenanceEntry>,
-        objects: Vec<ProvenanceObject>,
-    ) -> Result<u64, StorageError> {
+        lifecycle: &ConfigurationLifecycleRecord,
+    ) -> Result<Option<u64>, StorageError> {
         let status = self.poll();
         if !matches!(
             status.state,
             RecordingState::Idle | RecordingState::Recording
         ) || status.activation_generation == 0
             || self.pending_activation_generation.is_some()
+            || self.live_activation_reservation.is_some()
+            || !lifecycle.valid()
         {
-            return Err(StorageError("live activation worker busy".into()));
+            return Err(StorageError("live activation reservation invalid".into()));
+        }
+        let bytes = lifecycle
+            .charge()
+            .ok_or_else(|| StorageError("live activation credit arithmetic exhausted".into()))?;
+        if self.charged_groups >= self.limits.groups
+            || self.charged_records >= self.limits.records
+            || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
+        {
+            return Ok(None);
         }
         let generation = status
             .activation_generation
             .checked_add(1)
             .ok_or_else(|| StorageError("activation generation exhausted".into()))?;
-        self.send_control(Message::Activation(entries, objects))?;
+        let assigned = self.planned_range(1)?;
+        self.reserved_through = *assigned.end();
+        self.charged_records += 1;
+        self.charged_bytes += bytes;
+        self.charged_groups += 1;
+        self.last_owner_submission = Some(
+            self.last_owner_submission
+                .map_or(lifecycle.at, |latest| latest.max(lifecycle.at)),
+        );
         self.pending_activation_generation = Some(generation);
-        Ok(generation)
+        self.live_activation_reservation = Some(LiveActivationReservation {
+            generation,
+            assigned: *assigned.start(),
+            bytes,
+        });
+        self.cached.outstanding_records = self.charged_records;
+        self.cached.outstanding_bytes = self.charged_bytes;
+        self.cached.outstanding_groups = self.charged_groups;
+        Ok(Some(generation))
+    }
+
+    /// Fill the previously reserved FIFO identity after the authoritative owner
+    /// commit. Baseline and lifecycle fact commit in one SQLite transaction.
+    pub fn commit_reserved_live_activation(
+        &mut self,
+        generation: u64,
+        entries: Vec<ProvenanceEntry>,
+        objects: Vec<ProvenanceObject>,
+        lifecycle: ConfigurationLifecycleRecord,
+    ) -> Result<(), StorageError> {
+        let reservation = self
+            .live_activation_reservation
+            .as_ref()
+            .ok_or_else(|| StorageError("live activation not reserved".into()))?;
+        let charge = lifecycle
+            .charge()
+            .ok_or_else(|| StorageError("live activation credit arithmetic exhausted".into()))?;
+        if generation != reservation.generation || charge > reservation.bytes || !lifecycle.valid()
+        {
+            return Err(StorageError("live activation reservation mismatch".into()));
+        }
+        let reservation = self
+            .live_activation_reservation
+            .take()
+            .expect("checked above");
+        self.send_control(Message::Activation {
+            entries,
+            objects,
+            lifecycle: Some((
+                lifecycle,
+                reservation.bytes,
+                reservation.assigned,
+                reservation.generation,
+            )),
+        })
+    }
+
+    /// Release an unfilled reservation after a precommit owner rejection.
+    pub fn cancel_live_activation_reservation(
+        &mut self,
+        generation: u64,
+    ) -> Result<(), StorageError> {
+        let reservation = self
+            .live_activation_reservation
+            .take()
+            .ok_or_else(|| StorageError("live activation not reserved".into()))?;
+        if reservation.generation != generation || self.reserved_through != reservation.assigned {
+            self.live_activation_reservation = Some(reservation);
+            return Err(StorageError("live activation reservation mismatch".into()));
+        }
+        self.reserved_through = self.reserved_through.saturating_sub(1);
+        self.charged_records = self.charged_records.saturating_sub(1);
+        self.charged_bytes = self.charged_bytes.saturating_sub(reservation.bytes);
+        self.charged_groups = self.charged_groups.saturating_sub(1);
+        self.pending_activation_generation = None;
+        self.cached.outstanding_records = self.charged_records;
+        self.cached.outstanding_bytes = self.charged_bytes;
+        self.cached.outstanding_groups = self.charged_groups;
+        Ok(())
     }
 
     /// Schedule one indexed archived-run discovery page on the storage worker.
@@ -1350,6 +1453,7 @@ impl RecorderWorker {
 
     fn schedule_periodic(&mut self) {
         if self.periodic_pending.is_some()
+            || self.live_activation_reservation.is_some()
             || self.finish_requested
             || !matches!(
                 self.cached.state,
@@ -1520,7 +1624,7 @@ fn worker_loop(
         };
         if !matches!(
             message,
-            Message::Finish(_, _, _) | Message::Activation(_, _)
+            Message::Finish(_, _, _) | Message::Activation { .. }
         ) && (!matches!(message, Message::Start(_, _, _, _, _))
             || barrier.is_some_and(|barrier| barrier.0.hold_start))
             && !barrier.is_some_and(|barrier| barrier.0.hold_after_fact_commit)
@@ -1538,18 +1642,46 @@ fn worker_loop(
             store.fail_next_checkpoint_for_testing();
         }
         let result = match message {
-            Message::Activation(entries, objects) => store
-                .commit_activation(&entries, &objects)
-                .and_then(|root| {
+            Message::Activation {
+                entries,
+                objects,
+                lifecycle,
+            } => {
+                let root = if let Some((record, _, assigned, generation)) = &lifecycle {
+                    store.commit_activation_lifecycle(
+                        &entries,
+                        &objects,
+                        record,
+                        *generation,
+                        *assigned,
+                    )
+                } else {
+                    store.commit_activation(&entries, &objects)
+                };
+                root.and_then(|root| {
                     let mut receipt = receipt.lock().unwrap_or_else(|p| p.into_inner());
-                    let generation = receipt
+                    let expected = receipt
                         .activation_generation
                         .checked_add(1)
                         .ok_or_else(|| StorageError("activation generation exhausted".into()))?;
+                    if lifecycle
+                        .as_ref()
+                        .is_some_and(|(_, _, _, generation)| *generation != expected)
+                    {
+                        return Err(StorageError("activation generation mismatch".into()));
+                    }
                     receipt.activation_root = Some(root);
-                    receipt.activation_generation = generation;
+                    receipt.activation_generation = expected;
+                    if let Some((record, bytes, assigned, _)) = lifecycle {
+                        receipt.persisted = assigned;
+                        receipt.confirmed_submission = Some(record.at);
+                        receipt.released_records += 1;
+                        receipt.released_bytes += bytes;
+                        receipt.released_groups += 1;
+                    }
                     Ok(())
-                }),
+                })
+            }
             Message::Start(label, policy, submitted_at, boundary, first_record) => {
                 TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()))
                     .and_then(|anchor| {

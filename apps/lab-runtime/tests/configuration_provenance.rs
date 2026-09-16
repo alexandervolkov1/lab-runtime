@@ -86,6 +86,20 @@ poll_period_ms=50
     assert!(stored.iter().any(|bytes| bytes == original.as_bytes()));
     assert!(stored.iter().any(|bytes| bytes == reloaded.as_bytes()));
     drop(statement);
+    let lifecycle: Vec<u8> = connection
+        .query_row(
+            "SELECT payload FROM records WHERE kind='configuration_lifecycle'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let lifecycle: serde_json::Value = serde_json::from_slice(&lifecycle).unwrap();
+    assert_eq!(lifecycle["operation_kind"], "reload_configuration");
+    assert_eq!(lifecycle["base_revision"], "1");
+    assert_eq!(lifecycle["committed_revision"], "2");
+    assert_eq!(lifecycle["activation_generation"], "2");
+    assert_eq!(lifecycle["activation_root"].as_str().unwrap().len(), 64);
+    assert_eq!(lifecycle["runtime_toml_sha256"].as_str().unwrap().len(), 64);
     drop(connection);
     fs::remove_file(config).unwrap();
     fs::remove_file(database).unwrap();

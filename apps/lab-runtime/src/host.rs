@@ -5,9 +5,9 @@
 //! receives one actual-time opportunity, never a replay at an old deadline.
 
 use crate::recorder::{
-    AnnotationRecord, BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord,
-    ProvenanceEntry, ProvenanceObject, RecorderGap, RecorderWorker, RecordingPolicy,
-    RecordingState, RecordingStatus, RunsCursor, RunsPage, StorageError,
+    AnnotationRecord, BoundarySnapshot, ConfigurationLifecycleRecord, HistoryCursor, HistoryFilter,
+    HistoryPage, OperationRecord, ProvenanceEntry, ProvenanceObject, RecorderGap, RecorderWorker,
+    RecordingPolicy, RecordingState, RecordingStatus, RunsCursor, RunsPage, StorageError,
 };
 use crate::{
     configuration::{EvidenceDto, FrozenDeployment, InstrumentDto, ReferenceKindDto},
@@ -353,6 +353,7 @@ pub struct HostCore {
     deployment_provenance: Vec<ProvenanceEntry>,
     model_generations: BTreeMap<InstrumentId, u64>,
     configured_probes: Vec<ConfiguredProbe>,
+    configuration_quiesced: bool,
 }
 impl HostCore {
     /// Construct a validated configured native observation graph without opening
@@ -679,6 +680,7 @@ impl HostCore {
             deployment_provenance,
             model_generations,
             configured_probes,
+            configuration_quiesced: false,
         })
     }
 
@@ -789,6 +791,7 @@ impl HostCore {
             deployment_provenance: Vec::new(),
             model_generations: BTreeMap::from([(PLANT, 1)]),
             configured_probes: Vec::new(),
+            configuration_quiesced: false,
         })
     }
 
@@ -1472,23 +1475,71 @@ impl HostCore {
         was_open
     }
 
+    /// Suspend new acquisition/control production while safety and already
+    /// admitted transport/Recorder work continue to make bounded progress.
+    pub(crate) fn begin_configuration_quiesce(&mut self) {
+        self.configuration_quiesced = true;
+    }
+
+    /// Resume only acquisition scheduling after a confirmed activation outcome.
+    /// Controllers and output authority remain in their post-barrier state.
+    pub(crate) fn end_configuration_quiesce(&mut self) {
+        self.configuration_quiesced = false;
+    }
+
+    /// Drain Core facts and reserve one of the existing Recorder ingress groups.
+    /// Outer `None` means backpressure; inner `None` means recording is disabled.
+    pub(crate) fn try_reserve_configuration_activation(
+        &mut self,
+        lifecycle: &ConfigurationLifecycleRecord,
+        at: Duration,
+    ) -> Result<Option<Option<u64>>, Error> {
+        self.admit_recording_facts(at);
+        self.poll_recorder(at);
+        let Some(worker) = self.recorder.as_mut() else {
+            return Ok(Some(None));
+        };
+        worker
+            .try_reserve_live_activation(lifecycle)
+            .map(|reservation| reservation.map(Some))
+            .map_err(|_| Error::InvalidConfiguration("live activation reservation rejected"))
+    }
+
+    /// Fill the reserved activation only after the owner commit has succeeded.
+    pub(crate) fn commit_reserved_configuration_activation(
+        &mut self,
+        generation: Option<u64>,
+        lifecycle: ConfigurationLifecycleRecord,
+    ) -> Result<(), Error> {
+        let Some(generation) = generation else {
+            return Ok(());
+        };
+        let (entries, objects) = self.frozen_activation_entries()?;
+        self.recorder
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration("recorder reservation lost"))?
+            .commit_reserved_live_activation(generation, entries, objects, lifecycle)
+            .map_err(|_| Error::InvalidConfiguration("live activation rejected"))
+    }
+
+    pub(crate) fn cancel_configuration_activation(
+        &mut self,
+        generation: Option<u64>,
+    ) -> Result<(), Error> {
+        let Some(generation) = generation else {
+            return Ok(());
+        };
+        self.recorder
+            .as_mut()
+            .ok_or(Error::InvalidConfiguration("recorder reservation lost"))?
+            .cancel_live_activation_reservation(generation)
+            .map_err(|_| Error::InvalidConfiguration("live activation cancellation failed"))
+    }
+
     pub(crate) fn configuration_recording_failed(&mut self, at: Duration) {
         if self.recording_policy == Some(RecordingPolicy::Required) {
             self.runtime.recording_failure(at);
         }
-    }
-
-    /// Queue the already committed frozen activation on the existing bounded
-    /// Recorder control path; no hashing or SQL occurs on the owner lane.
-    pub(crate) fn request_live_activation(&mut self) -> Result<Option<u64>, Error> {
-        let (entries, objects) = self.frozen_activation_entries()?;
-        let Some(worker) = self.recorder.as_mut() else {
-            return Ok(None);
-        };
-        worker
-            .request_live_activation(entries, objects)
-            .map(Some)
-            .map_err(|_| Error::InvalidConfiguration("live activation rejected"))
     }
 
     /// Poll a specific live activation receipt and reopen Required admission only
@@ -2912,6 +2963,9 @@ impl HostCore {
             }
         }
         if self.stopping {
+            return Ok(report);
+        }
+        if self.configuration_quiesced {
             return Ok(report);
         }
         for (plant, slot) in &mut self.plan.plants {

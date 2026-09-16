@@ -3,7 +3,9 @@
 //! Entropy failure, malformed CLI or failed safe profile prevents readiness.
 //! The network reactor is a separate adapter added after this host foundation.
 
-use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor};
+use crate::recorder::{
+    ConfigurationLifecycleRecord, RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor,
+};
 use crate::{
     configuration::{FlowControlDto, ParityDto, RecordingPolicyDto, load_runtime_toml},
     deployment::{
@@ -175,6 +177,12 @@ struct LiveApplyPort<'a> {
     active: &'a crate::configuration::FrozenDeployment,
     at: std::time::Duration,
     recording_fence: Option<(bool, std::time::Duration)>,
+    clock: SystemClock,
+    operation_id: u64,
+    operation_kind: &'static str,
+    base_revision: u64,
+    activation_generation: Option<Option<u64>>,
+    postcommit_recording_failure: bool,
 }
 impl LiveApplyPort<'_> {
     fn ensure_recording_fence(&mut self, at: std::time::Duration) {
@@ -200,11 +208,118 @@ impl ApplyPort for LiveApplyPort<'_> {
         &mut self,
         candidate: &crate::configuration::FrozenDeployment,
     ) -> Result<(), ApplyError> {
+        self.at = self.clock.now();
         self.ensure_recording_fence(self.at);
-        self.host
-            .apply_configuration(self.active, candidate, self.at)
-            .map_err(|_| ApplyError::OwnerFailure)
+        self.host.begin_configuration_quiesce();
+        let lifecycle = ConfigurationLifecycleRecord {
+            operation_id: self.operation_id,
+            operation_kind: self.operation_kind,
+            base_revision: self.base_revision,
+            committed_revision: self
+                .base_revision
+                .checked_add(1)
+                .ok_or(ApplyError::OwnerFailure)?,
+            toml_hash: candidate.toml_hash(),
+            affected: configuration_affected(candidate, self.base_revision),
+            reason: None,
+            at: self.at,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let reservation = loop {
+            match self
+                .host
+                .try_reserve_configuration_activation(&lifecycle, self.clock.now())
+                .map_err(|_| ApplyError::OwnerFailure)?
+            {
+                Some(reservation) => break reservation,
+                None if std::time::Instant::now() < deadline => {
+                    self.host
+                        .service(&self.clock)
+                        .map_err(|_| ApplyError::OwnerFailure)?;
+                    std::thread::yield_now();
+                }
+                None => {
+                    self.host.end_configuration_quiesce();
+                    return Err(ApplyError::OwnerFailure);
+                }
+            }
+        };
+        if self
+            .host
+            .apply_configuration(self.active, candidate, self.clock.now())
+            .is_err()
+        {
+            let _ = self.host.cancel_configuration_activation(reservation);
+            self.host.end_configuration_quiesce();
+            return Err(ApplyError::OwnerFailure);
+        }
+        self.activation_generation = Some(reservation);
+        if self
+            .host
+            .commit_reserved_configuration_activation(reservation, lifecycle)
+            .is_err()
+        {
+            self.host.configuration_recording_failed(self.clock.now());
+            self.host.end_configuration_quiesce();
+            self.postcommit_recording_failure = true;
+        } else if reservation.is_none() {
+            self.host.end_configuration_quiesce();
+        }
+        Ok(())
     }
+}
+
+fn configuration_affected(
+    candidate: &crate::configuration::FrozenDeployment,
+    base_revision: u64,
+) -> Vec<String> {
+    let committed = base_revision.saturating_add(1);
+    let dto = &candidate.effective().dto;
+    let mut affected = Vec::with_capacity(
+        dto.resources.len()
+            + dto.instruments.len()
+            + dto.managed_components.len()
+            + dto.references.len()
+            + dto.controllers.len()
+            + dto.safe_profiles.len(),
+    );
+    affected.extend(dto.resources.iter().map(|item| {
+        format!(
+            "resource:{}:deployment:{base_revision}->{committed}",
+            item.id
+        )
+    }));
+    affected.extend(dto.instruments.iter().map(|item| {
+        format!(
+            "instrument:{}:deployment:{base_revision}->{committed}",
+            item.id()
+        )
+    }));
+    affected.extend(dto.managed_components.iter().map(|item| {
+        format!(
+            "component:{}:deployment:{base_revision}->{committed}",
+            item.id
+        )
+    }));
+    affected.extend(dto.references.iter().map(|item| {
+        format!(
+            "reference:{}:deployment:{base_revision}->{committed}",
+            item.id
+        )
+    }));
+    affected.extend(dto.controllers.iter().map(|item| {
+        format!(
+            "controller:{}:deployment:{base_revision}->{committed}",
+            item.id
+        )
+    }));
+    affected.extend(dto.safe_profiles.iter().map(|item| {
+        format!(
+            "actuator:{}:{}:deployment:{base_revision}->{committed}",
+            item.instrument_id, item.parameter_id
+        )
+    }));
+    affected
 }
 impl ServiceHost {
     /// Bind a trusted already-safe host fixture on loopback, without changing its
@@ -547,7 +662,11 @@ impl ServiceHost {
         &mut self,
     ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
         let staged = self.stage_configuration()?;
-        self.apply_staged_configuration(staged.id(), staged.base_revision())
+        self.apply_staged_configuration_kind(
+            staged.id(),
+            staged.base_revision(),
+            "reload_configuration",
+        )
     }
 
     /// Load, validate and retain exactly one immutable candidate without active mutation.
@@ -585,6 +704,15 @@ impl ServiceHost {
         candidate_id: u64,
         expected_revision: u64,
     ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
+        self.apply_staged_configuration_kind(candidate_id, expected_revision, "apply_configuration")
+    }
+
+    fn apply_staged_configuration_kind(
+        &mut self,
+        candidate_id: u64,
+        expected_revision: u64,
+        operation_kind: &'static str,
+    ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
         let active = self
             .deployment
             .as_ref()
@@ -601,20 +729,26 @@ impl ServiceHost {
             active: &active,
             at: apply_at,
             recording_fence: None,
+            clock: self.clock,
+            operation_id: candidate_id,
+            operation_kind,
+            base_revision: expected_revision,
+            activation_generation: None,
+            postcommit_recording_failure: false,
         };
         let applied = lifecycle.apply(candidate_id, expected_revision, self.clock.now(), &mut port);
         let recording_fence = port.recording_fence;
+        let activation_generation = port.activation_generation;
+        let postcommit_recording_failure = port.postcommit_recording_failure;
         match applied {
             Ok(ApplyResult::Applied { revision }) => {
+                if postcommit_recording_failure {
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
                 let (reopen_required, submitted_at) = recording_fence
                     .expect("successful apply crosses the recording fence before commit");
-                let generation = match self.host.request_live_activation() {
-                    Ok(generation) => generation,
-                    Err(_) => {
-                        self.host.configuration_recording_failed(self.clock.now());
-                        return Err(LifecycleOperationError::OwnerFailure);
-                    }
-                };
+                let generation = activation_generation
+                    .expect("successful apply reserves activation before commit");
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 loop {
                     match self.host.live_activation_committed(
@@ -623,13 +757,17 @@ impl ServiceHost {
                         submitted_at,
                         self.clock.now(),
                     ) {
-                        Ok(true) => break,
+                        Ok(true) => {
+                            self.host.end_configuration_quiesce();
+                            break;
+                        }
                         Ok(false) if std::time::Instant::now() < deadline => {
                             let _ = self.host.service(&self.clock);
                             std::thread::yield_now();
                         }
                         _ => {
                             self.host.configuration_recording_failed(self.clock.now());
+                            self.host.end_configuration_quiesce();
                             return Err(LifecycleOperationError::OwnerFailure);
                         }
                     }
@@ -637,6 +775,7 @@ impl ServiceHost {
                 Ok(ReloadConfigurationResult { revision })
             }
             Ok(ApplyResult::FailedBeforeCommit) => {
+                self.host.end_configuration_quiesce();
                 Err(LifecycleOperationError::RequiresSafeBarrier)
             }
             Err(ApplyError::RestartRequired) => Err(LifecycleOperationError::InvalidCandidate),

@@ -101,6 +101,57 @@ pub struct OperationRecord {
     /// Owner monotonic publication time within this boot.
     pub at: Duration,
 }
+
+/// One bounded configuration-activation fact committed with its immutable baseline.
+#[derive(Clone, Debug)]
+pub struct ConfigurationLifecycleRecord {
+    /// Process-local staged candidate or explicit lifecycle operation identity.
+    pub operation_id: u64,
+    /// Stable Runtime operation name, never a caller-defined free-form tag.
+    pub operation_kind: &'static str,
+    /// Active deployment revision against which the candidate was staged.
+    pub base_revision: u64,
+    /// Deployment revision that became authoritative at the owner commit.
+    pub committed_revision: u64,
+    /// Hash of the exact loaded `runtime.toml` bytes retained in provenance.
+    pub toml_hash: [u8; 32],
+    /// Bounded logical identities with their committed generation/revision facts.
+    pub affected: Vec<String>,
+    /// Optional bounded reason for a non-routine activation classification.
+    pub reason: Option<String>,
+    /// Runtime monotonic owner commit time.
+    pub at: Duration,
+}
+impl ConfigurationLifecycleRecord {
+    fn charge(&self) -> Option<usize> {
+        self.affected
+            .iter()
+            .try_fold(1024usize, |total, item| {
+                total.checked_add(item.capacity().checked_add(64)?)
+            })?
+            .checked_add(self.reason.as_ref().map_or(0, String::capacity))
+    }
+
+    fn valid(&self) -> bool {
+        self.operation_id > 0
+            && self.base_revision > 0
+            && self.committed_revision == self.base_revision.checked_add(1).unwrap_or(0)
+            && matches!(
+                self.operation_kind,
+                "reload_configuration" | "apply_configuration"
+            )
+            && self.affected.len() <= 256
+            && self
+                .affected
+                .iter()
+                .all(|item| !item.is_empty() && item.len() <= 128)
+            && self
+                .reason
+                .as_ref()
+                .is_none_or(|reason| reason.len() <= 512)
+            && self.charge().is_some_and(|charge| charge <= 64 * 1024)
+    }
+}
 impl OperationRecord {
     pub(crate) fn charge(&self) -> Option<usize> {
         self.scope
@@ -1092,6 +1143,30 @@ impl SqliteStore {
         entries: &[ProvenanceEntry],
         objects: &[ProvenanceObject],
     ) -> Result<[u8; 32], StorageError> {
+        self.commit_activation_inner(entries, objects, None)
+    }
+
+    pub(crate) fn commit_activation_lifecycle(
+        &mut self,
+        entries: &[ProvenanceEntry],
+        objects: &[ProvenanceObject],
+        lifecycle: &ConfigurationLifecycleRecord,
+        activation_generation: u64,
+        assigned: u64,
+    ) -> Result<[u8; 32], StorageError> {
+        self.commit_activation_inner(
+            entries,
+            objects,
+            Some((lifecycle, activation_generation, assigned)),
+        )
+    }
+
+    fn commit_activation_inner(
+        &mut self,
+        entries: &[ProvenanceEntry],
+        objects: &[ProvenanceObject],
+        lifecycle: Option<(&ConfigurationLifecycleRecord, u64, u64)>,
+    ) -> Result<[u8; 32], StorageError> {
         self.require_main_reserve()?;
         self.require_wal_budget()?;
         if entries.is_empty() || entries.len() > 128 {
@@ -1206,6 +1281,43 @@ impl SqliteStore {
             return Err(StorageError("provenance manifest credit exhausted".into()));
         }
         let root: [u8; 32] = Sha256::digest(&manifest).into();
+        let lifecycle_commit = if let Some((record, generation, assigned)) = lifecycle {
+            if !record.valid()
+                || generation == 0
+                || self.next_record_sequence.checked_add(1) != Some(assigned)
+            {
+                return Err(StorageError(
+                    "invalid configuration lifecycle record".into(),
+                ));
+            }
+            let commit = self
+                .commit_no
+                .checked_add(1)
+                .ok_or_else(|| StorageError("lifecycle commit identity exhausted".into()))?;
+            let payload = serde_json::json!({
+                "encoding_version":1,
+                "operation_id":record.operation_id.to_string(),
+                "operation_kind":record.operation_kind,
+                "phase":"applied",
+                "base_revision":record.base_revision.to_string(),
+                "committed_revision":record.committed_revision.to_string(),
+                "activation_generation":generation.to_string(),
+                "activation_root":hex_hash(&root),
+                "runtime_toml_sha256":hex_hash(&record.toml_hash),
+                "affected":record.affected,
+                "reason":record.reason,
+                "committed_at_ns":record.at.as_nanos().to_string(),
+            })
+            .to_string();
+            if payload.len() > 64 * 1024 {
+                return Err(StorageError(
+                    "configuration lifecycle payload exhausted".into(),
+                ));
+            }
+            Some((record, assigned, commit, payload))
+        } else {
+            None
+        };
         let activation_no = self.next_activation_no;
         let next = activation_no
             .checked_add(1)
@@ -1286,9 +1398,41 @@ impl SqliteStore {
                 ],
             )?;
         }
+        if let Some((record, sequence, commit, payload)) = &lifecycle_commit {
+            let run = self.run_no.map(u64_blob);
+            let interval = self.interval_no.map(u64_blob);
+            let wall_estimate = self.boot_anchor.estimate_us(record.at)?;
+            transaction.execute(
+                "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,\
+                 published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)\
+                 VALUES(?1,?2,?3,?4,'configuration_lifecycle',1,?5,?5,?6,\
+                 'boot_anchor','runtime',?7)",
+                params![
+                    self.boot_id.as_slice(),
+                    u64_blob(*sequence).as_slice(),
+                    run.as_ref().map(|value| value.as_slice()),
+                    interval.as_ref().map(|value| value.as_slice()),
+                    duration_blob(record.at)?.as_slice(),
+                    wall_estimate,
+                    payload.as_bytes(),
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3 WHERE boot_id=?1",
+                params![
+                    self.boot_id.as_slice(),
+                    u64_blob(*commit).as_slice(),
+                    u64_blob(*sequence).as_slice(),
+                ],
+            )?;
+        }
         transaction.commit()?;
         self.next_activation_no = next;
         self.current_activation_no = Some(activation_no);
+        if let Some((_, sequence, commit, _)) = lifecycle_commit {
+            self.next_record_sequence = sequence;
+            self.commit_no = commit;
+        }
         Ok(root)
     }
 

@@ -1165,7 +1165,7 @@ pub(crate) enum InstrumentDto {
 }
 
 impl InstrumentDto {
-    fn id(&self) -> u64 {
+    pub(crate) fn id(&self) -> u64 {
         match self {
             Self::VirtualMeasurement { id, .. }
             | Self::ThermalPlant { id, .. }

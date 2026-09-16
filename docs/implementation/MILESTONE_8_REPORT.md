@@ -12,7 +12,7 @@ are not reported as passing evidence.
 | IDs | Tests-first implementation slice | Evidence status |
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
-| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence durable activation and Required fence green; full safe/rebind apply remains |
+| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence activation reservation, atomic lifecycle provenance and Required fence green; transport-rebind apply remains |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Atomic bounded managed batch and native restart software tests green |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
@@ -258,6 +258,24 @@ are not reported as passing evidence.
     Pause/Stop/Shutdown/reopen oracle pass after the change. Production followed
     the real process red reproduction; the additional deterministic coverage was
     added afterward, and this sequence is recorded honestly.
+26. C20 fixed-ingress coverage was red at compile because Recorder had no live
+    activation reservation or typed configuration lifecycle record. The prior
+    live activation used a control slot and therefore did not count against the
+    accepted four ordinary groups. Recorder now reserves one record/group and
+    its bounded payload bytes from the unchanged 1024-record/4-MiB/four-group
+    credit before the owner commit. At 4/4 it returns bounded backpressure
+    without mutation or failure; after credit releases, the reservation fences
+    later record identities and suppresses periodic record allocation until it
+    is filled or cancelled. The worker commits exact provenance/object baseline
+    and one version-1 `configuration_lifecycle` record in the same SQLite
+    transaction, including candidate operation, base/committed revisions, exact
+    TOML hash, activation root/generation, affected IDs and monotonic commit time.
+    Host quiesces new producers, keeps native safety/transport polling alive,
+    drains prior facts, reserves before domain mutation and resumes acquisition
+    only after the matching receipt. No M7 limit changed. The new held-writer
+    C20 test proves 4/4 rejection, later one-of-four reservation, atomic durable
+    fact and exact credit release. Configuration provenance/reload, the actual
+    configured Babashka A/B process test and warning-denied clippy pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
