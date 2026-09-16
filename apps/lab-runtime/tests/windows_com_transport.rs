@@ -1,11 +1,14 @@
 //! C12-C15 software acceptance for the bounded read-only COM adapter.
 
-use lab_core::transport::{ByteTransport, RecoveryStatus, TransportIoError};
+use lab_core::transport::{ByteTransport, RecoveryStatus, TransportIoError, TransportShutdown};
 use lab_runtime::serial::{ComSettings, ComTransport, SerialDevice, SerialError, SerialParity};
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 #[derive(Default)]
@@ -205,4 +208,93 @@ fn c15_oversize_and_stale_session_work_cannot_cross_rebind_boundary() {
     .unwrap();
     assert_eq!(new.snapshot().resource_id, old.snapshot().resource_id);
     assert_eq!(new.snapshot().binding_generation, 5);
+}
+
+struct DisconnectDevice;
+
+impl SerialDevice for DisconnectDevice {
+    fn write_once(&mut self, _: &[u8]) -> Result<usize, SerialError> {
+        Err(SerialError::Disconnected)
+    }
+
+    fn read_once(&mut self, _: usize) -> Result<Vec<u8>, SerialError> {
+        Err(SerialError::Disconnected)
+    }
+}
+
+#[test]
+fn c19_disconnected_com_worker_retires_cooperatively_without_owner_join() {
+    let mut transport = ComTransport::with_device(settings(), DisconnectDevice).unwrap();
+    assert_eq!(
+        wait_for(|| match transport.try_write(&[1]) {
+            Ok(0) => None,
+            result => Some(result),
+        })
+        .unwrap(),
+        1
+    );
+    let error = wait_for(|| {
+        let mut byte = [0; 1];
+        transport.try_read(&mut byte).err()
+    });
+    assert_eq!(error, TransportIoError::Disconnected);
+    assert_eq!(transport.try_recover().unwrap(), RecoveryStatus::Pending);
+    wait_for(|| (transport.try_shutdown() == TransportShutdown::Complete).then_some(()));
+    assert_eq!(
+        transport.snapshot().state,
+        lab_runtime::serial::ComState::Closed
+    );
+}
+
+struct BlockingReadDevice {
+    entered: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+}
+
+impl SerialDevice for BlockingReadDevice {
+    fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+        Ok(bytes.len())
+    }
+
+    fn read_once(&mut self, _: usize) -> Result<Vec<u8>, SerialError> {
+        self.entered.store(true, Ordering::Release);
+        while !self.release.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn c19_stuck_com_worker_shutdown_attempt_is_finite_and_never_block_joins() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let mut transport = ComTransport::with_device(
+        settings(),
+        BlockingReadDevice {
+            entered: entered.clone(),
+            release: release.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        wait_for(|| match transport.try_write(&[1]) {
+            Ok(0) => None,
+            result => Some(result),
+        })
+        .unwrap(),
+        1
+    );
+    wait_for(|| {
+        let mut byte = [0; 1];
+        let _ = transport.try_read(&mut byte);
+        entered.load(Ordering::Acquire).then_some(())
+    });
+
+    let began = Instant::now();
+    assert_eq!(transport.try_shutdown(), TransportShutdown::Pending);
+    assert!(began.elapsed() < Duration::from_millis(30));
+
+    release.store(true, Ordering::Release);
+    wait_for(|| (transport.try_shutdown() == TransportShutdown::Complete).then_some(()));
 }

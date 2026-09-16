@@ -106,6 +106,8 @@ pub enum TransportError {
     ResourceLimit,
     /// Existing executor or adapter has not reached a replaceable closed boundary.
     ResourceBusy,
+    /// The resource is recovering, offline, closing, or already closed.
+    ResourceUnavailable,
 }
 
 impl From<TransportError> for crate::Error {
@@ -206,13 +208,14 @@ struct Active {
 struct Recovery {
     transaction: Transaction,
     started: bool,
+    deadline: Duration,
 }
 
 enum OwnedState {
     Idle,
     Active(Active),
     Recovering(Recovery),
-    ProtocolRecovery,
+    ProtocolRecovery { deadline: Duration },
     Offline,
 }
 
@@ -223,12 +226,13 @@ pub struct ResourceExecutor {
     queue: VecDeque<Transaction>,
     safe_queue: Option<Transaction>,
     state: OwnedState,
+    recovery_timeout: Duration,
     generation: u64,
     next_transaction: u64,
     last_poll: Duration,
     latest: Option<TransactionRecord>,
     latest_response: Option<Vec<u8>>,
-    event: Option<TransportEvent>,
+    events: VecDeque<TransportEvent>,
     closed: bool,
 }
 
@@ -242,6 +246,14 @@ pub(crate) enum AuthorizationStep {
 
 /// One bounded executor event consumed immediately by Runtime.
 pub(crate) enum TransportEvent {
+    ReadUnavailable {
+        id: TransactionId,
+        binding_generation: u64,
+        mapping_revision: u64,
+    },
+    ReadFenced {
+        id: TransactionId,
+    },
     ReadTerminal {
         record: TransactionRecord,
         response: Option<Vec<u8>>,
@@ -261,27 +273,49 @@ pub(crate) enum TransportEvent {
 }
 
 impl ResourceExecutor {
-    /// Create an idle first-generation owner around one nonblocking adapter.
+    /// Create an idle first-generation owner with the legacy maximum recovery bound.
     pub fn new(id: ResourceId, adapter: Box<dyn ByteTransport>) -> Self {
-        Self {
+        Self::with_recovery_timeout(id, adapter, MAX_TRANSACTION_DURATION)
+            .expect("the built-in recovery timeout is valid")
+    }
+
+    /// Create an owner with one checked monotonic recovery bound.
+    ///
+    /// The host supplies a validated deployment duration without exposing TOML,
+    /// OS handles, or wall-clock time to Core.
+    pub fn with_recovery_timeout(
+        id: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        recovery_timeout: Duration,
+    ) -> Result<Self, TransportError> {
+        if recovery_timeout.is_zero() || recovery_timeout > MAX_TRANSACTION_DURATION {
+            return Err(TransportError::InvalidTransaction);
+        }
+        Ok(Self {
             id,
             adapter,
             queue: VecDeque::new(),
             safe_queue: None,
             state: OwnedState::Idle,
+            recovery_timeout,
             generation: 1,
             next_transaction: 1,
             last_poll: Duration::ZERO,
             latest: None,
             latest_response: None,
-            event: None,
+            events: VecDeque::with_capacity(MAX_QUEUED_TRANSACTIONS + 2),
             closed: false,
-        }
+        })
     }
 
     /// Return this executor's stable resource identity.
     pub const fn id(&self) -> ResourceId {
         self.id
+    }
+
+    /// Return the checked monotonic recovery policy owned by this resource.
+    pub const fn recovery_timeout(&self) -> Duration {
+        self.recovery_timeout
     }
 
     /// Admit one bounded read transaction.
@@ -301,6 +335,16 @@ impl ResourceExecutor {
         binding_generation: u64,
         mapping_revision: u64,
     ) -> Result<TransactionId, TransportError> {
+        if self.closed
+            || matches!(
+                self.state,
+                OwnedState::Recovering(_)
+                    | OwnedState::ProtocolRecovery { .. }
+                    | OwnedState::Offline
+            )
+        {
+            return Err(TransportError::ResourceUnavailable);
+        }
         if self.queue.len() >= MAX_QUEUED_TRANSACTIONS {
             return Err(TransportError::QueueFull);
         }
@@ -355,6 +399,17 @@ impl ResourceExecutor {
         timeout: Duration,
         intent: OutputIntent,
     ) -> Result<TransactionId, TransportError> {
+        if self.closed
+            || (!intent.safe
+                && matches!(
+                    self.state,
+                    OwnedState::Recovering(_)
+                        | OwnedState::ProtocolRecovery { .. }
+                        | OwnedState::Offline
+                ))
+        {
+            return Err(TransportError::ResourceUnavailable);
+        }
         if (!intent.safe && self.queue.len() >= MAX_QUEUED_TRANSACTIONS)
             || (intent.safe && self.safe_queue.is_some())
         {
@@ -408,17 +463,23 @@ impl ResourceExecutor {
             return Err(TransportError::InvalidTime);
         }
         self.last_poll = at;
-        self.event = None;
-
+        // A recovery transition can fence at most the fixed ordinary queue plus
+        // its active transaction. Drain those owner events before progressing
+        // another state transition so this VecDeque cannot accumulate by cycle.
+        if let Some(event) = self.events.pop_front() {
+            return Ok(Some(event));
+        }
         let state = std::mem::replace(&mut self.state, OwnedState::Idle);
         self.state = match state {
             OwnedState::Idle => self.start_or_remain_idle(at, authorizer)?,
-            OwnedState::Active(active) => self.progress_active(active, at, authorizer),
+            OwnedState::Active(active) => self.progress_active(active, at, authorizer)?,
             OwnedState::Recovering(recovery) => self.progress_recovery(recovery, at)?,
-            OwnedState::ProtocolRecovery => self.progress_protocol_recovery()?,
+            OwnedState::ProtocolRecovery { deadline } => {
+                self.progress_protocol_recovery(deadline, at)?
+            }
             OwnedState::Offline => OwnedState::Offline,
         };
-        Ok(self.event.take())
+        Ok(self.events.pop_front())
     }
 
     /// Return a bounded state copy without polling I/O.
@@ -429,7 +490,7 @@ impl ResourceExecutor {
             OwnedState::Recovering(recovery) => {
                 (ExecutorState::Recovering, Some(recovery.transaction.id))
             }
-            OwnedState::ProtocolRecovery => (ExecutorState::Recovering, None),
+            OwnedState::ProtocolRecovery { .. } => (ExecutorState::Recovering, None),
             OwnedState::Offline => (ExecutorState::Offline, None),
         };
         ExecutorSnapshot {
@@ -441,22 +502,44 @@ impl ResourceExecutor {
         }
     }
 
-    /// Retire an idle adapter without waiting for an OS call or worker join.
+    /// Fence owned work and make one nonblocking adapter-retirement attempt.
+    ///
+    /// Retirement starts from every executor state. Already accepted bytes keep
+    /// their honest `started` evidence; this method never waits for or joins an
+    /// unfinished worker.
     pub fn try_shutdown(&mut self) -> TransportShutdown {
-        self.queue.clear();
-        self.safe_queue = None;
-        if !matches!(self.state, OwnedState::Idle | OwnedState::Offline) {
-            return TransportShutdown::Pending;
+        self.fence_ordinary_queue();
+        if let Some(transaction) = self.safe_queue.take() {
+            self.fence_queued_transaction(transaction);
         }
         if self.closed {
             return TransportShutdown::Complete;
         }
+        let state = std::mem::replace(&mut self.state, OwnedState::Offline);
+        match state {
+            OwnedState::Active(active) => self.finish(
+                &active.transaction,
+                TransactionOutcome::Failed,
+                active.write_offset > 0,
+                None,
+            ),
+            OwnedState::Recovering(recovery) => self.finish(
+                &recovery.transaction,
+                TransactionOutcome::Failed,
+                recovery.started,
+                None,
+            ),
+            OwnedState::Idle | OwnedState::ProtocolRecovery { .. } | OwnedState::Offline => {}
+        }
         let status = self.adapter.try_shutdown();
         if status == TransportShutdown::Complete {
             self.closed = true;
-            self.state = OwnedState::Offline;
         }
         status
+    }
+
+    pub(crate) fn take_event(&mut self) -> Option<TransportEvent> {
+        self.events.pop_front()
     }
 
     /// Borrow the last completed response bytes; a later terminal result replaces them.
@@ -465,10 +548,16 @@ impl ResourceExecutor {
     }
 
     /// Require a clean adapter generation after protocol-level response rejection.
-    pub(crate) fn protocol_failure(&mut self) {
+    pub(crate) fn protocol_failure(&mut self) -> Result<(), TransportError> {
         if matches!(self.state, OwnedState::Idle) {
-            self.state = OwnedState::ProtocolRecovery;
+            let deadline = self
+                .last_poll
+                .checked_add(self.recovery_timeout)
+                .ok_or(TransportError::InvalidTransaction)?;
+            self.fence_ordinary_queue();
+            self.state = OwnedState::ProtocolRecovery { deadline };
         }
+        Ok(())
     }
 
     fn start_or_remain_idle(
@@ -487,7 +576,7 @@ impl ResourceExecutor {
             .checked_add(transaction.timeout)
             .ok_or(TransportError::InvalidTransaction)?
             .min(transaction.queue_deadline);
-        Ok(self.progress_active(
+        self.progress_active(
             Active {
                 transaction,
                 write_offset: 0,
@@ -496,7 +585,7 @@ impl ResourceExecutor {
             },
             at,
             authorizer,
-        ))
+        )
     }
 
     fn progress_active(
@@ -504,9 +593,9 @@ impl ResourceExecutor {
         mut active: Active,
         at: Duration,
         authorizer: &mut impl FnMut(OutputIntent, AuthorizationStep) -> Result<Option<DispatchId>, ()>,
-    ) -> OwnedState {
+    ) -> Result<OwnedState, TransportError> {
         if at >= active.execution_deadline {
-            return self.enter_recovery(active);
+            return self.enter_recovery(active, at);
         }
 
         if active.write_offset < active.transaction.request.len() {
@@ -515,7 +604,7 @@ impl ResourceExecutor {
                 && authorizer(output.intent, AuthorizationStep::Validate).is_err()
             {
                 self.finish(&active.transaction, TransactionOutcome::Failed, false, None);
-                return OwnedState::Idle;
+                return Ok(OwnedState::Idle);
             }
             let remaining = &active.transaction.request[active.write_offset..];
             match self.adapter.try_write(remaining) {
@@ -526,13 +615,13 @@ impl ResourceExecutor {
                     {
                         match authorizer(output.intent, AuthorizationStep::Started) {
                             Ok(Some(id)) => output.dispatch = Some(id),
-                            _ => return self.enter_recovery(active),
+                            _ => return self.enter_recovery(active, at),
                         }
                     }
                     active.write_offset += count;
                 }
                 Ok(_) | Err(_) => {
-                    return self.enter_recovery(active);
+                    return self.enter_recovery(active, at);
                 }
             }
         }
@@ -545,7 +634,7 @@ impl ResourceExecutor {
                     active.response.extend_from_slice(&buffer[..count])
                 }
                 Ok(_) | Err(_) => {
-                    return self.enter_recovery(active);
+                    return self.enter_recovery(active, at);
                 }
             }
             if active.response.len() == active.transaction.expected_response {
@@ -555,26 +644,42 @@ impl ResourceExecutor {
                     active.write_offset > 0,
                     Some(active.response),
                 );
-                return OwnedState::Idle;
+                return Ok(OwnedState::Idle);
             }
         }
-        OwnedState::Active(active)
+        Ok(OwnedState::Active(active))
     }
 
-    fn enter_recovery(&mut self, active: Active) -> OwnedState {
+    fn enter_recovery(
+        &mut self,
+        active: Active,
+        at: Duration,
+    ) -> Result<OwnedState, TransportError> {
         let started = active.write_offset > 0;
-        if let TransactionKind::Output(output) = &active.transaction.kind
-            && let Some(dispatch) = output.dispatch
-        {
-            self.event = Some(TransportEvent::OutputUncertain {
-                intent: output.intent,
-                dispatch,
-            });
+        match &active.transaction.kind {
+            TransactionKind::Read => self.events.push_back(TransportEvent::ReadUnavailable {
+                id: active.transaction.id,
+                binding_generation: active.transaction.binding_generation,
+                mapping_revision: active.transaction.mapping_revision,
+            }),
+            TransactionKind::Output(output) => {
+                if let Some(dispatch) = output.dispatch {
+                    self.events.push_back(TransportEvent::OutputUncertain {
+                        intent: output.intent,
+                        dispatch,
+                    });
+                }
+            }
         }
-        OwnedState::Recovering(Recovery {
+        self.fence_ordinary_queue();
+        let deadline = at
+            .checked_add(self.recovery_timeout)
+            .ok_or(TransportError::InvalidTransaction)?;
+        Ok(OwnedState::Recovering(Recovery {
             started,
             transaction: active.transaction,
-        })
+            deadline,
+        }))
     }
 
     fn progress_recovery(
@@ -582,6 +687,15 @@ impl ResourceExecutor {
         mut recovery: Recovery,
         at: Duration,
     ) -> Result<OwnedState, TransportError> {
+        if at >= recovery.deadline {
+            self.finish(
+                &recovery.transaction,
+                TransactionOutcome::Failed,
+                recovery.started,
+                None,
+            );
+            return Ok(OwnedState::Offline);
+        }
         match self.adapter.try_recover() {
             Ok(RecoveryStatus::Pending) => Ok(OwnedState::Recovering(recovery)),
             Ok(RecoveryStatus::Complete) => {
@@ -617,19 +731,27 @@ impl ResourceExecutor {
         }
     }
 
-    fn progress_protocol_recovery(&mut self) -> Result<OwnedState, TransportError> {
+    fn progress_protocol_recovery(
+        &mut self,
+        deadline: Duration,
+        at: Duration,
+    ) -> Result<OwnedState, TransportError> {
+        if at >= deadline {
+            self.events.push_back(TransportEvent::BoundaryFailed);
+            return Ok(OwnedState::Offline);
+        }
         match self.adapter.try_recover() {
-            Ok(RecoveryStatus::Pending) => Ok(OwnedState::ProtocolRecovery),
+            Ok(RecoveryStatus::Pending) => Ok(OwnedState::ProtocolRecovery { deadline }),
             Ok(RecoveryStatus::Complete) => {
                 self.generation = self
                     .generation
                     .checked_add(1)
                     .ok_or(TransportError::CounterExhausted)?;
-                self.event = Some(TransportEvent::BoundaryRecovered);
+                self.events.push_back(TransportEvent::BoundaryRecovered);
                 Ok(OwnedState::Idle)
             }
             Err(_) => {
-                self.event = Some(TransportEvent::BoundaryFailed);
+                self.events.push_back(TransportEvent::BoundaryFailed);
                 Ok(OwnedState::Offline)
             }
         }
@@ -652,7 +774,7 @@ impl ResourceExecutor {
         });
         self.latest_response = response;
         let record = self.latest.expect("record was assigned above");
-        self.event = Some(match &transaction.kind {
+        self.events.push_back(match &transaction.kind {
             TransactionKind::Read => TransportEvent::ReadTerminal {
                 record,
                 response: self.latest_response.clone(),
@@ -664,5 +786,34 @@ impl ResourceExecutor {
                 response: self.latest_response.clone(),
             },
         });
+    }
+
+    fn fence_ordinary_queue(&mut self) {
+        while let Some(transaction) = self.queue.pop_front() {
+            self.fence_queued_transaction(transaction);
+        }
+    }
+
+    fn fence_queued_transaction(&mut self, transaction: Transaction) {
+        match transaction.kind {
+            TransactionKind::Read => self
+                .events
+                .push_back(TransportEvent::ReadFenced { id: transaction.id }),
+            TransactionKind::Output(output) => {
+                self.events.push_back(TransportEvent::OutputTerminal {
+                    intent: output.intent,
+                    dispatch: output.dispatch,
+                    record: TransactionRecord {
+                        id: transaction.id,
+                        outcome: TransactionOutcome::Failed,
+                        started: false,
+                        generation: self.generation,
+                        binding_generation: transaction.binding_generation,
+                        mapping_revision: transaction.mapping_revision,
+                    },
+                    response: None,
+                });
+            }
+        }
     }
 }

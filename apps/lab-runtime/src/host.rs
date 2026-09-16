@@ -379,7 +379,11 @@ impl HostCore {
             let adapter = transports
                 .remove(&id)
                 .ok_or(Error::InvalidConfiguration("configured transport missing"))?;
-            runtime.register_transport(id, adapter)?;
+            runtime.register_transport_with_recovery_timeout(
+                id,
+                adapter,
+                Duration::from_millis(resource.recovery_timeout_ms),
+            )?;
             resources.push(id);
         }
         if !transports.is_empty() {
@@ -971,7 +975,19 @@ impl HostCore {
                 "candidate resource has no instrument",
             ));
         }
-        self.runtime.replace_transport(resource, adapter)?;
+        let recovery_timeout = deployment
+            .effective()
+            .dto
+            .resources
+            .iter()
+            .find(|candidate| candidate.id == resource.get())
+            .ok_or(Error::InvalidConfiguration("candidate resource missing"))?
+            .recovery_timeout_ms;
+        self.runtime.replace_transport_with_recovery_timeout(
+            resource,
+            adapter,
+            Duration::from_millis(recovery_timeout),
+        )?;
         for (instrument, config, old, temperature, channel_type) in replacements {
             self.runtime.command(Command::ReconfigureMetakon {
                 config,
@@ -1006,7 +1022,7 @@ impl HostCore {
         &mut self,
         resource: ResourceId,
     ) -> Result<bool, Error> {
-        Ok(self.runtime.shutdown_transport(resource)?
+        Ok(self.runtime.shutdown_transport(resource, self.last_now)?
             == lab_core::transport::TransportShutdown::Complete)
     }
 
@@ -3085,7 +3101,7 @@ impl HostCore {
                 if self.closed_resources.contains(&resource) {
                     continue;
                 }
-                if self.runtime.shutdown_transport(resource)?
+                if self.runtime.shutdown_transport(resource, clock.now())?
                     == lab_core::transport::TransportShutdown::Complete
                 {
                     self.closed_resources.insert(resource);

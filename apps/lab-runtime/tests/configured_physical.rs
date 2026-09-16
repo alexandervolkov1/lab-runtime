@@ -11,8 +11,10 @@ use lab_runtime::{
     host::{Clock, HostCore},
 };
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, VecDeque},
     path::Path,
+    rc::Rc,
     time::Duration,
 };
 
@@ -88,6 +90,43 @@ impl ByteTransport for ScriptedTransport {
     }
     fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
         Ok(RecoveryStatus::Complete)
+    }
+}
+
+#[derive(Default)]
+struct DisconnectWire {
+    responses: VecDeque<Vec<u8>>,
+    readable: VecDeque<u8>,
+    writes: usize,
+    fail_reads_when_empty: bool,
+}
+
+struct DisconnectingTransport(Rc<RefCell<DisconnectWire>>);
+
+impl ByteTransport for DisconnectingTransport {
+    fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        wire.writes += 1;
+        if let Some(response) = wire.responses.pop_front() {
+            wire.readable.extend(response);
+        }
+        Ok(bytes.len())
+    }
+
+    fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+        let mut wire = self.0.borrow_mut();
+        if wire.readable.is_empty() && wire.fail_reads_when_empty {
+            return Err(TransportIoError::Disconnected);
+        }
+        let count = bytes.len().min(wire.readable.len());
+        for byte in &mut bytes[..count] {
+            *byte = wire.readable.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        Ok(RecoveryStatus::Pending)
     }
 }
 
@@ -271,6 +310,123 @@ fn c14_c15_explicit_rebind_keeps_logical_id_and_fences_old_measurement() {
         panic!()
     };
     assert!((value - 25.1).abs() < 1.0e-9);
+    assert_eq!(host.resource_records()[0]["target"]["id"], "7");
+}
+
+#[test]
+fn c14_periodic_reads_do_not_fill_queue_while_finite_recovery_reaches_offline() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let wire = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([channel_type_response(), temperature_response(280)]),
+        fail_reads_when_empty: true,
+        ..DisconnectWire::default()
+    }));
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(wire.clone())),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    host.begin_configured_probes(clock.now()).unwrap();
+
+    let mut saw_recovery = false;
+    let mut recovery_at = None;
+    let mut offline_at = None;
+    for milliseconds in (0..=700).step_by(10) {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+        let record = &host.resource_records()[0]["data"];
+        if record["state"] == "recovering" || record["state"] == "offline" {
+            saw_recovery = true;
+            assert_eq!(record["queue_len"], 0);
+        }
+        if record["state"] == "recovering" && recovery_at.is_none() {
+            recovery_at = Some(milliseconds);
+        }
+        if record["state"] == "offline" && offline_at.is_none() {
+            offline_at = Some(milliseconds);
+        }
+    }
+
+    assert!(saw_recovery);
+    assert_eq!(offline_at.unwrap() - recovery_at.unwrap(), 500);
+    let record = &host.resource_records()[0]["data"];
+    assert_eq!(record["state"], "offline");
+    assert_eq!(record["generation"], "1");
+    assert_eq!(wire.borrow().writes, 3);
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(sample.quality(), lab_core::SampleQuality::Unavailable);
+    assert_eq!(sample.value(), None);
+}
+
+#[test]
+fn c14_explicit_rebind_after_offline_fences_old_session_and_resumes_new_generation() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let old_wire = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([channel_type_response(), temperature_response(280)]),
+        fail_reads_when_empty: true,
+        ..DisconnectWire::default()
+    }));
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(old_wire.clone())),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    host.begin_configured_probes(clock.now()).unwrap();
+    for milliseconds in (0..=700).step_by(10) {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert_eq!(host.resource_records()[0]["data"]["state"], "offline");
+    assert_eq!(host.configured_binding_generation(11), Some(1));
+
+    old_wire
+        .borrow_mut()
+        .readable
+        .extend(temperature_response(999));
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([channel_type_response(), temperature_response(251)]),
+            ..ScriptedTransport::default()
+        }),
+        Duration::from_millis(710),
+    )
+    .unwrap();
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    host.begin_configured_probes(Duration::from_millis(710))
+        .unwrap();
+    for milliseconds in [711, 720, 730, 800, 810] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(sample.value(), Some(&lab_core::Value::Float(25.1)));
+    assert_eq!(sample.quality(), lab_core::SampleQuality::Good);
     assert_eq!(host.resource_records()[0]["target"]["id"], "7");
 }
 

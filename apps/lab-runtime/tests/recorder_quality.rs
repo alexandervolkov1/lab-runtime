@@ -77,6 +77,9 @@ fn same_publication_time_failure_preserves_both_original_facts_after_reopen() {
 struct SensorWire {
     responses: VecDeque<Vec<u8>>,
     readable: VecDeque<u8>,
+    fail_reads_after: Option<usize>,
+    reads: usize,
+    recovery_status: Option<RecoveryStatus>,
 }
 struct SensorFake(Rc<RefCell<SensorWire>>);
 impl ByteTransport for SensorFake {
@@ -89,6 +92,13 @@ impl ByteTransport for SensorFake {
     }
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
         let mut wire = self.0.borrow_mut();
+        wire.reads += 1;
+        if wire
+            .fail_reads_after
+            .is_some_and(|limit| wire.reads > limit)
+        {
+            return Err(TransportIoError::Disconnected);
+        }
         let count = bytes.len().min(wire.readable.len());
         for slot in &mut bytes[..count] {
             *slot = wire.readable.pop_front().unwrap();
@@ -97,7 +107,11 @@ impl ByteTransport for SensorFake {
     }
     fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
         self.0.borrow_mut().readable.clear();
-        Ok(RecoveryStatus::Complete)
+        Ok(self
+            .0
+            .borrow()
+            .recovery_status
+            .unwrap_or(RecoveryStatus::Complete))
     }
 }
 fn sensor_response(raw: i16) -> Vec<u8> {
@@ -105,6 +119,43 @@ fn sensor_response(raw: i16) -> Vec<u8> {
     let mut bytes = vec![1, 0, 1, 0, 0x44, low, high];
     bytes.push(lab_core::metakon::crc(&bytes));
     bytes
+}
+
+fn config_for_recorded_temperature(
+    instrument: InstrumentId,
+    resource: ResourceId,
+    parameter: ParameterId,
+) -> MetakonInstrumentConfig {
+    MetakonInstrumentConfig {
+        definition: DataInstrumentDefinition {
+            schema_version: 1,
+            id: instrument,
+            name: "native sensor fault archive".into(),
+            parameters: vec![DataParameterDefinition {
+                id: parameter,
+                name: "temperature".into(),
+                value_spec: ValueSpec::Float {
+                    min: -99.9,
+                    max: 999.9,
+                },
+                unit: Unit::CELSIUS,
+                access: AccessMode::ReadOnly,
+                role: ParameterRole::Measurement,
+                write_effect: WriteEffect::None,
+                operation: KnownOperation::Temperature,
+                scale: 0.1,
+            }],
+        },
+        binding: MetakonBinding {
+            resource,
+            device: 1,
+            channel: 0,
+            binding_generation: 1,
+            mapping_revision: 1,
+            expected_output_unit: None,
+        },
+        history_capacity: 1,
+    }
 }
 
 #[test]
@@ -122,36 +173,9 @@ fn native_sensor_sentinel_reopens_as_unavailable_without_reusing_previous_good()
         .register_transport(resource, Box::new(SensorFake(wire)))
         .unwrap();
     runtime
-        .command(Command::RegisterMetakon(MetakonInstrumentConfig {
-            definition: DataInstrumentDefinition {
-                schema_version: 1,
-                id: instrument,
-                name: "native sensor fault archive".into(),
-                parameters: vec![DataParameterDefinition {
-                    id: parameter,
-                    name: "temperature".into(),
-                    value_spec: ValueSpec::Float {
-                        min: -99.9,
-                        max: 999.9,
-                    },
-                    unit: Unit::CELSIUS,
-                    access: AccessMode::ReadOnly,
-                    role: ParameterRole::Measurement,
-                    write_effect: WriteEffect::None,
-                    operation: KnownOperation::Temperature,
-                    scale: 0.1,
-                }],
-            },
-            binding: MetakonBinding {
-                resource,
-                device: 1,
-                channel: 0,
-                binding_generation: 1,
-                mapping_revision: 1,
-                expected_output_unit: None,
-            },
-            history_capacity: 1,
-        }))
+        .command(Command::RegisterMetakon(config_for_recorded_temperature(
+            instrument, resource, parameter,
+        )))
         .unwrap();
     runtime.enable_recording_facts();
     let mut store = SqliteStore::open(&path).unwrap();
@@ -182,6 +206,79 @@ fn native_sensor_sentinel_reopens_as_unavailable_without_reusing_previous_good()
     assert_eq!(rows[1].failure.as_deref(), Some("SensorFault"));
     assert_eq!(rows[1].value, None);
     assert!(rows[0].record_sequence < rows[1].record_sequence);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn physical_read_failure_records_one_unavailable_without_fabricated_good() {
+    let path = temporary_database();
+    let instrument = InstrumentId::new(821);
+    let parameter = ParameterId::new(1);
+    let resource = ResourceId::new(7);
+    let wire = Rc::new(RefCell::new(SensorWire {
+        responses: VecDeque::from([sensor_response(280), sensor_response(999)]),
+        fail_reads_after: Some(1),
+        recovery_status: Some(RecoveryStatus::Pending),
+        ..SensorWire::default()
+    }));
+    let mut runtime = Runtime::new();
+    runtime
+        .register_transport_with_recovery_timeout(
+            resource,
+            Box::new(SensorFake(wire)),
+            Duration::from_millis(5),
+        )
+        .unwrap();
+    runtime
+        .command(Command::RegisterMetakon(config_for_recorded_temperature(
+            instrument, resource, parameter,
+        )))
+        .unwrap();
+    runtime.enable_recording_facts();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("physical disconnect quality").unwrap();
+
+    for milliseconds in [1, 2] {
+        let at = Duration::from_millis(milliseconds);
+        runtime
+            .command(Command::QueueMetakonRead {
+                instrument,
+                parameter,
+                at,
+                queue_ttl: Duration::from_millis(50),
+                timeout: Duration::from_millis(20),
+            })
+            .unwrap();
+        runtime.command(Command::PollTransports { at }).unwrap();
+        let facts = runtime.take_recording_facts();
+        if !facts.is_empty() {
+            store.append_facts(&facts).unwrap();
+        }
+    }
+    for milliseconds in [3, 6, 7, 8] {
+        runtime
+            .command(Command::PollTransports {
+                at: Duration::from_millis(milliseconds),
+            })
+            .unwrap();
+        let facts = runtime.take_recording_facts();
+        if !facts.is_empty() {
+            store.append_facts(&facts).unwrap();
+        }
+    }
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_millis(9)).unwrap();
+    store.close().unwrap();
+
+    let archive = SqliteStore::open(&path).unwrap();
+    let rows = archive.read_measurements(instrument, parameter, 8).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].quality, "good");
+    assert_eq!(rows[0].value, Some(Value::Float(28.0)));
+    assert_eq!(rows[1].quality, "unavailable");
+    assert_eq!(rows[1].value, None);
+    assert_eq!(rows[1].failure.as_deref(), Some("Transport"));
     drop(archive);
     std::fs::remove_file(path).unwrap();
 }

@@ -30,8 +30,9 @@ use crate::reference::{
     RuntimeReference,
 };
 use crate::transport::{
-    AuthorizationStep, ByteTransport, ExecutorSnapshot, ResourceExecutor, ResourceId,
-    TransactionId, TransactionOutcome, TransportError, TransportEvent, TransportShutdown,
+    AuthorizationStep, ByteTransport, ExecutorSnapshot, MAX_QUEUED_TRANSACTIONS, ResourceExecutor,
+    ResourceId, TransactionId, TransactionOutcome, TransportError, TransportEvent,
+    TransportShutdown,
 };
 use crate::{
     Error, InstrumentDescriptor, InstrumentId, ParameterId, ParameterRole, Sample, SampleQuality,
@@ -468,6 +469,7 @@ pub struct Runtime {
     required_recording: crate::recording::RequiredGate,
 }
 
+#[derive(Clone)]
 struct PendingRead {
     instrument: InstrumentId,
     parameter: ParameterId,
@@ -476,6 +478,7 @@ struct PendingRead {
     scale: f64,
     binding_generation: u64,
     mapping_revision: u64,
+    failure_published: bool,
 }
 
 struct ManagedInstance {
@@ -736,14 +739,28 @@ impl Runtime {
         id: ResourceId,
         adapter: Box<dyn ByteTransport>,
     ) -> Result<(), Error> {
+        self.register_transport_with_recovery_timeout(
+            id,
+            adapter,
+            crate::transport::MAX_TRANSACTION_DURATION,
+        )
+    }
+
+    /// Install one bounded byte adapter with an explicit monotonic recovery bound.
+    pub fn register_transport_with_recovery_timeout(
+        &mut self,
+        id: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        recovery_timeout: Duration,
+    ) -> Result<(), Error> {
         if self.resources.contains_key(&id) {
             return Err(TransportError::DuplicateResource.into());
         }
         if self.resources.len() >= MAX_TRANSPORT_RESOURCES {
             return Err(TransportError::ResourceLimit.into());
         }
-        self.resources
-            .insert(id, ResourceExecutor::new(id, adapter));
+        let executor = ResourceExecutor::with_recovery_timeout(id, adapter, recovery_timeout)?;
+        self.resources.insert(id, executor);
         Ok(())
     }
 
@@ -757,15 +774,26 @@ impl Runtime {
         id: ResourceId,
         adapter: Box<dyn ByteTransport>,
     ) -> Result<(), Error> {
-        let current = self
+        let recovery_timeout = self
             .resources
-            .get_mut(&id)
-            .ok_or(TransportError::UnknownResource)?;
-        if current.try_shutdown() != TransportShutdown::Complete {
+            .get(&id)
+            .ok_or(TransportError::UnknownResource)?
+            .recovery_timeout();
+        self.replace_transport_with_recovery_timeout(id, adapter, recovery_timeout)
+    }
+
+    /// Replace a closed adapter and atomically install its new recovery policy.
+    pub fn replace_transport_with_recovery_timeout(
+        &mut self,
+        id: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        recovery_timeout: Duration,
+    ) -> Result<(), Error> {
+        if self.shutdown_transport(id, self.transport_time)? != TransportShutdown::Complete {
             return Err(TransportError::ResourceBusy.into());
         }
-        self.resources
-            .insert(id, ResourceExecutor::new(id, adapter));
+        let replacement = ResourceExecutor::with_recovery_timeout(id, adapter, recovery_timeout)?;
+        self.resources.insert(id, replacement);
         Ok(())
     }
 
@@ -1457,6 +1485,7 @@ impl Runtime {
                         scale: definition.scale,
                         binding_generation: binding.binding_generation,
                         mapping_revision: binding.mapping_revision,
+                        failure_published: false,
                     },
                 );
                 Ok(CommandResult::TransportQueued(transaction))
@@ -2811,12 +2840,27 @@ impl Runtime {
         Ok(())
     }
 
-    /// Make one nonblocking retirement attempt for an existing byte resource.
-    pub fn shutdown_transport(&mut self, resource: ResourceId) -> Result<TransportShutdown, Error> {
-        self.resources
-            .get_mut(&resource)
-            .map(ResourceExecutor::try_shutdown)
-            .ok_or(TransportError::UnknownResource.into())
+    /// Fence resource work and make one nonblocking retirement attempt.
+    pub fn shutdown_transport(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<TransportShutdown, Error> {
+        self.check_transport_time(at)?;
+        let mut executor = self
+            .resources
+            .remove(&resource)
+            .ok_or(TransportError::UnknownResource)?;
+        let status = executor.try_shutdown();
+        let mut events = Vec::with_capacity(MAX_QUEUED_TRANSACTIONS + 2);
+        while let Some(event) = executor.take_event() {
+            events.push(event);
+        }
+        self.resources.insert(resource, executor);
+        for event in events {
+            self.handle_transport_event(resource, event, at)?;
+        }
+        Ok(status)
     }
 
     fn commit_prepared_components(
@@ -3819,6 +3863,35 @@ impl Runtime {
         at: Duration,
     ) -> Result<(), Error> {
         match event {
+            TransportEvent::ReadUnavailable {
+                id,
+                binding_generation,
+                mapping_revision,
+            } => {
+                let Some(pending) = self.pending_reads.get(&(resource, id)).cloned() else {
+                    return Ok(());
+                };
+                let generation_matches = pending.binding_generation == binding_generation
+                    && pending.mapping_revision == mapping_revision
+                    && self
+                        .metakon_instruments
+                        .get(&pending.instrument)
+                        .is_some_and(|instrument| {
+                            instrument.binding.resource == resource
+                                && instrument.binding.binding_generation == binding_generation
+                                && instrument.binding.mapping_revision == mapping_revision
+                        });
+                if generation_matches {
+                    self.push_transport_failure(&pending, at)?;
+                    self.record_pending_sample_at(&pending, at);
+                    if let Some(current) = self.pending_reads.get_mut(&(resource, id)) {
+                        current.failure_published = true;
+                    }
+                }
+            }
+            TransportEvent::ReadFenced { id } => {
+                self.pending_reads.remove(&(resource, id));
+            }
             TransportEvent::ReadTerminal { record, response } => {
                 let Some(pending) = self.pending_reads.remove(&(resource, record.id)) else {
                     return Ok(());
@@ -3844,28 +3917,13 @@ impl Runtime {
                             self.resources
                                 .get_mut(&resource)
                                 .expect("executor reinserted before event handling")
-                                .protocol_failure();
+                                .protocol_failure()?;
                         }
                     }
-                } else {
+                } else if !pending.failure_published {
                     self.push_transport_failure(&pending, at)?;
                 }
-                if let Some(instrument) = self.metakon_instruments.get(&pending.instrument)
-                    && let Some(descriptor) = instrument.descriptor.parameter(pending.parameter)
-                    && let Some(signal) = descriptor.signal
-                    && let Some(sample) = instrument
-                        .signals
-                        .get(&signal)
-                        .and_then(|buffer| buffer.latest())
-                        .cloned()
-                    && sample.at() == at
-                {
-                    self.recording_facts.measurement(
-                        sample,
-                        instrument.binding.binding_generation,
-                        instrument.binding.mapping_revision,
-                    );
-                }
+                self.record_pending_sample_at(&pending, at);
             }
             TransportEvent::OutputUncertain { intent, dispatch } => {
                 if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
@@ -3942,7 +4000,7 @@ impl Runtime {
                         self.resources
                             .get_mut(&resource)
                             .expect("executor reinserted before event handling")
-                            .protocol_failure();
+                            .protocol_failure()?;
                     }
                 } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                     authority.complete_transport(
@@ -4074,6 +4132,25 @@ impl Runtime {
                 ))?;
         }
         Ok(())
+    }
+
+    fn record_pending_sample_at(&mut self, pending: &PendingRead, at: Duration) {
+        if let Some(instrument) = self.metakon_instruments.get(&pending.instrument)
+            && let Some(descriptor) = instrument.descriptor.parameter(pending.parameter)
+            && let Some(signal) = descriptor.signal
+            && let Some(sample) = instrument
+                .signals
+                .get(&signal)
+                .and_then(|buffer| buffer.latest())
+                .cloned()
+            && sample.at() == at
+        {
+            self.recording_facts.measurement(
+                sample,
+                instrument.binding.binding_generation,
+                instrument.binding.mapping_revision,
+            );
+        }
     }
 
     fn contains_instrument(&self, id: InstrumentId) -> bool {
