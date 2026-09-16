@@ -304,6 +304,201 @@ fn proposal_expired_at_exclusive_deadline_has_no_send_or_dispatch_fact() {
 }
 
 #[test]
+fn revoking_a_queued_proposal_records_its_original_attempt_before_new_safe_intent() {
+    let mut runtime = fixture();
+    let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+    runtime.enable_recording_facts();
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(19),
+                lifetime: Duration::from_secs(1),
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap()
+    else {
+        panic!("fixture did not grant lease")
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(31.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(100),
+            }),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::RequestSafe,
+            at: Duration::from_millis(1),
+        })
+        .unwrap();
+    let output: Vec<_> = runtime
+        .take_recording_facts()
+        .into_iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage,
+                attempt_id,
+                dispatch_id,
+                authority_epoch,
+                ..
+            } => Some((stage, attempt_id, dispatch_id, authority_epoch)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(output.len(), 4);
+    assert_eq!(output[0].0, OutputStage::Requested);
+    assert_eq!(output[1].0, OutputStage::SupersededBeforeSend);
+    assert_eq!(output[2].0, OutputStage::Revoked);
+    assert_eq!(output[3].0, OutputStage::SafeRequested);
+    assert_eq!(output[0].1, output[1].1);
+    assert_ne!(output[1].1, output[3].1);
+    assert_eq!(output[0].3, Some(lease.epoch()));
+    assert_eq!(output[1].3, Some(lease.epoch()));
+    assert!(output[3].3.unwrap() > lease.epoch());
+    assert!(output.iter().all(|fact| fact.2.is_none()));
+}
+
+#[test]
+fn manual_release_records_displaced_intent_and_distinct_safe_attempt() {
+    let mut runtime = fixture();
+    let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+    runtime.enable_recording_facts();
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(20),
+                lifetime: Duration::from_secs(1),
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap()
+    else {
+        panic!("fixture did not grant lease")
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(32.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(100),
+            }),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Release(lease),
+            at: Duration::from_millis(1),
+        })
+        .unwrap();
+    let output: Vec<_> = runtime
+        .take_recording_facts()
+        .into_iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage,
+                attempt_id,
+                authority_epoch,
+                ..
+            } => Some((stage, attempt_id, authority_epoch)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        output.iter().map(|fact| fact.0).collect::<Vec<_>>(),
+        [
+            OutputStage::Requested,
+            OutputStage::SupersededBeforeSend,
+            OutputStage::Revoked,
+            OutputStage::SafeRequested
+        ]
+    );
+    assert_eq!(output[0].1, output[1].1);
+    assert_ne!(output[0].1, output[3].1);
+    assert_eq!(output[0].2, Some(lease.epoch()));
+    assert_eq!(output[1].2, Some(lease.epoch()));
+    assert!(output[3].2.unwrap() > lease.epoch());
+}
+
+#[test]
+fn lease_watchdog_expiry_records_old_pending_attempt_and_new_safe_epoch() {
+    let mut runtime = fixture();
+    let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+    runtime.enable_recording_facts();
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(21),
+                lifetime: Duration::from_millis(50),
+            },
+            at: Duration::ZERO,
+        })
+        .unwrap()
+    else {
+        panic!("fixture did not grant lease")
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(34.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(100),
+            }),
+            at: Duration::ZERO,
+        })
+        .unwrap();
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Tick,
+            at: Duration::from_millis(50),
+        })
+        .unwrap();
+    let output: Vec<_> = runtime
+        .take_recording_facts()
+        .into_iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage,
+                attempt_id,
+                authority_epoch,
+                ..
+            } => Some((stage, attempt_id, authority_epoch)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        output.iter().map(|fact| fact.0).collect::<Vec<_>>(),
+        [
+            OutputStage::Requested,
+            OutputStage::ExpiredBeforeSend,
+            OutputStage::Revoked,
+            OutputStage::SafeRequested
+        ]
+    );
+    assert_eq!(output[0].1, output[1].1);
+    assert_ne!(output[0].1, output[3].1);
+    assert_eq!(output[1].2, Some(lease.epoch()));
+    assert!(output[3].2.unwrap() > lease.epoch());
+}
+
+#[test]
 fn required_outbox_overflow_closes_authority_before_the_next_ordinary_send() {
     let mut runtime = fixture();
     let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);

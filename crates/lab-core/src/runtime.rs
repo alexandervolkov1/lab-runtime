@@ -731,9 +731,7 @@ impl Runtime {
                 // A client therefore cannot keep another expired owner alive by
                 // submitting invalid proposals instead of explicit Tick commands.
                 self.output_time = at;
-                for authority in self.outputs.values_mut() {
-                    authority.tick(at)?;
-                }
+                self.tick_output_watchdogs(at)?;
                 if self.warming_on(actuator) {
                     match command {
                         OutputCommand::RequestSafe => {
@@ -750,13 +748,12 @@ impl Runtime {
                     }
                 }
                 let issued = command.clone();
-                let proposed_attempt = if matches!(
-                    issued,
-                    OutputCommand::Propose(_) | OutputCommand::RequestSafe
-                ) {
-                    Some(self.allocate_output_attempt()?)
-                } else {
-                    None
+                let proposed_attempt = match &issued {
+                    OutputCommand::Propose(_) => Some(self.allocate_output_attempt()?),
+                    OutputCommand::RequestSafe
+                    | OutputCommand::Release(_)
+                    | OutputCommand::Trip => self.allocate_safe_output_attempt(),
+                    _ => None,
                 };
                 let was_safe_completion = self
                     .outputs
@@ -767,6 +764,15 @@ impl Runtime {
                     .outputs
                     .get(&actuator)
                     .and_then(|authority| authority.snapshot().requested);
+                let pending_before = self
+                    .outputs
+                    .get(&actuator)
+                    .is_some_and(|authority| authority.snapshot().pending);
+                let prior_attempt = self.output_attempts.get(&actuator).copied();
+                let prior_epoch = self
+                    .outputs
+                    .get(&actuator)
+                    .map(|authority| authority.snapshot().epoch);
                 let result = self
                     .outputs
                     .get_mut(&actuator)
@@ -818,7 +824,31 @@ impl Runtime {
                         .insert(actuator, (dispatch.id(), attempt_id));
                 }
                 match (&issued, &result) {
-                    (OutputCommand::RequestSafe, OutputResult::Updated) => {
+                    (
+                        OutputCommand::RequestSafe
+                        | OutputCommand::Release(_)
+                        | OutputCommand::Trip,
+                        OutputResult::Updated,
+                    ) => {
+                        if pending_before {
+                            self.recording_facts.output_displaced(
+                                actuator,
+                                crate::recording::OutputStage::SupersededBeforeSend,
+                                requested_before,
+                                at,
+                                prior_attempt,
+                                prior_epoch.expect("accepted output has an authority epoch"),
+                            );
+                        }
+                        self.recording_facts.output_correlated(
+                            actuator,
+                            crate::recording::OutputStage::Revoked,
+                            None,
+                            at,
+                            crate::recording::OutputEvidenceSource::None,
+                            attempt_id,
+                            None,
+                        );
                         self.recording_facts.output_correlated(
                             actuator,
                             crate::recording::OutputStage::SafeRequested,
@@ -827,14 +857,6 @@ impl Runtime {
                             crate::recording::OutputEvidenceSource::None,
                             attempt_id,
                             None,
-                        );
-                    }
-                    (OutputCommand::Trip, OutputResult::Updated) => {
-                        self.recording_facts.output(
-                            actuator,
-                            crate::recording::OutputStage::Revoked,
-                            None,
-                            at,
                         );
                     }
                     (OutputCommand::Propose(proposal), OutputResult::Queued) => {
@@ -2927,6 +2949,18 @@ impl Runtime {
         Ok(self.next_output_attempt)
     }
 
+    // Safe control is allowed to proceed when audit correlation identities
+    // exhaust; the outbox records an honest first loss and Required fails closed.
+    fn allocate_safe_output_attempt(&mut self) -> Option<u64> {
+        match self.allocate_output_attempt() {
+            Ok(attempt) => Some(attempt),
+            Err(_) => {
+                self.recording_facts.lose_correlation();
+                None
+            }
+        }
+    }
+
     fn complete_simulated_safe(&mut self, actuator: ActuatorId, at: Duration) -> Result<(), Error> {
         let dispatch = match self
             .outputs
@@ -3007,8 +3041,66 @@ impl Runtime {
             return Err(OutputError::InvalidTime.into());
         }
         self.output_time = at;
-        for authority in self.outputs.values_mut() {
-            authority.tick(at)?;
+        self.tick_output_watchdogs(at)
+    }
+
+    // Capture each watchdog transition immediately after its authoritative
+    // state mutation. A later failed command must not erase an earlier expiry.
+    fn tick_output_watchdogs(&mut self, at: Duration) -> Result<(), Error> {
+        let actuators: Vec<_> = self.outputs.keys().copied().collect();
+        for actuator in actuators {
+            let before = self
+                .outputs
+                .get(&actuator)
+                .expect("enumerated output")
+                .snapshot();
+            self.outputs
+                .get_mut(&actuator)
+                .expect("enumerated output")
+                .tick(at)?;
+            let after_epoch = self
+                .outputs
+                .get(&actuator)
+                .expect("enumerated output")
+                .snapshot()
+                .epoch;
+            if after_epoch == before.epoch {
+                continue;
+            }
+            let prior_attempt = self.output_attempts.get(&actuator).copied();
+            self.sync_recording_output_context(actuator);
+            if before.pending {
+                self.recording_facts.output_displaced(
+                    actuator,
+                    crate::recording::OutputStage::ExpiredBeforeSend,
+                    before.requested,
+                    at,
+                    prior_attempt,
+                    before.epoch,
+                );
+            }
+            let safe_attempt = self.allocate_safe_output_attempt();
+            if let Some(attempt) = safe_attempt {
+                self.output_attempts.insert(actuator, attempt);
+            }
+            self.recording_facts.output_correlated(
+                actuator,
+                crate::recording::OutputStage::Revoked,
+                None,
+                at,
+                crate::recording::OutputEvidenceSource::None,
+                safe_attempt,
+                None,
+            );
+            self.recording_facts.output_correlated(
+                actuator,
+                crate::recording::OutputStage::SafeRequested,
+                None,
+                at,
+                crate::recording::OutputEvidenceSource::None,
+                safe_attempt,
+                None,
+            );
         }
         Ok(())
     }
@@ -3597,5 +3689,73 @@ mod managed_identity_tests {
         );
         assert!(runtime.staged.is_none());
         assert_eq!(runtime.managed.get(&id).unwrap().generation, u64::MAX);
+    }
+}
+
+#[cfg(test)]
+mod safe_recording_tests {
+    use super::*;
+    use crate::output::{EvidenceLevel, OutputState, SafeProfile};
+
+    #[test]
+    fn exhausted_output_attempt_counter_marks_a_gap_but_cannot_block_safe_dispatch() {
+        let mut runtime = Runtime::new();
+        let instrument = InstrumentId::new(901);
+        runtime
+            .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+                id: instrument,
+                name: "safe counter exhaustion".into(),
+                history_capacity: 1,
+                base_temperature: 20.0,
+                measurement_enabled: true,
+            }))
+            .unwrap();
+        let actuator = ActuatorId::new(instrument, crate::HEATER_POWER);
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::BindProfile(SafeProfile {
+                    min: 0.0,
+                    max: 100.0,
+                    safe_value: 0.0,
+                    max_lease: Duration::from_secs(1),
+                    max_proposal_ttl: Duration::from_millis(100),
+                    required_evidence: EvidenceLevel::Readback,
+                }),
+            })
+            .unwrap();
+        runtime.enable_recording_facts();
+        runtime.next_output_attempt = u64::MAX;
+        assert!(
+            runtime
+                .command(Command::Output {
+                    actuator,
+                    at: Duration::ZERO,
+                    command: OutputCommand::RequestSafe,
+                })
+                .is_ok()
+        );
+        assert!(runtime.recording_facts_overflowed());
+        assert_eq!(runtime.recording_facts.first_lost_sequence(), Some(1));
+        assert_eq!(
+            runtime.outputs.get(&actuator).unwrap().snapshot().state,
+            OutputState::SafePending
+        );
+        let CommandResult::Output(OutputResult::Dispatched(safe)) = runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::BeginDispatch,
+            })
+            .unwrap()
+        else {
+            panic!("safe dispatch was blocked")
+        };
+        assert!(safe.is_safe());
+        assert!(
+            runtime.take_recording_facts().is_empty(),
+            "failed audit cannot fabricate safe evidence"
+        );
     }
 }

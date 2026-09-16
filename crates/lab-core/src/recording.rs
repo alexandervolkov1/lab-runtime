@@ -59,6 +59,8 @@ pub(crate) struct ReferenceDetails {
 /// Distinct stages of an output attempt. A requested value is never delivery evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputStage {
+    /// An earlier queued intent was displaced by a Rust-owned safe transition.
+    SupersededBeforeSend,
     /// Admission rejected the candidate before a dispatch identity or send exists.
     RejectedBeforeSend,
     /// Accepted proposal reached its exclusive deadline before any send.
@@ -243,6 +245,22 @@ impl FactOutbox {
         self.first_lost_sequence
     }
 
+    /// Mark a missing trusted correlation as one lost fact without blocking
+    /// the reserved safe transition that exposed it.
+    pub(crate) fn lose_correlation(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let Some(sequence) = self.next_sequence.checked_add(1) else {
+            self.overflowed = true;
+            self.suppressed_count_unknown = true;
+            return;
+        };
+        self.next_sequence = sequence;
+        self.overflowed = true;
+        self.suppress(sequence);
+    }
+
     pub(crate) fn suppressed_facts(&self) -> Option<u64> {
         (!self.suppressed_count_unknown).then_some(self.suppressed_facts)
     }
@@ -307,6 +325,7 @@ impl FactOutbox {
             attempt_id,
             dispatch_id,
             None,
+            None,
         );
     }
 
@@ -329,6 +348,34 @@ impl FactOutbox {
             attempt_id,
             None,
             Some(proposed_unit),
+            None,
+        );
+    }
+
+    /// Record a displaced or expired proposal in its original authority epoch.
+    pub(crate) fn output_displaced(
+        &mut self,
+        actuator: ActuatorId,
+        stage: OutputStage,
+        value: Option<f64>,
+        at: Duration,
+        attempt_id: Option<u64>,
+        original_epoch: u64,
+    ) {
+        debug_assert!(matches!(
+            stage,
+            OutputStage::SupersededBeforeSend | OutputStage::ExpiredBeforeSend
+        ));
+        self.output_with_unit(
+            actuator,
+            stage,
+            value,
+            at,
+            OutputEvidenceSource::None,
+            attempt_id,
+            None,
+            None,
+            Some(original_epoch),
         );
     }
 
@@ -346,6 +393,7 @@ impl FactOutbox {
         attempt_id: Option<u64>,
         dispatch_id: Option<DispatchId>,
         proposed_unit: Option<Unit>,
+        original_epoch: Option<u64>,
     ) {
         let context = self
             .output_contexts
@@ -358,7 +406,7 @@ impl FactOutbox {
             attempt_id,
             dispatch_id,
             unit: proposed_unit.or(context.unit),
-            authority_epoch: context.authority_epoch,
+            authority_epoch: original_epoch.or(context.authority_epoch),
             resource: context.resource,
             binding_generation: context.binding_generation,
             mapping_revision: context.mapping_revision,

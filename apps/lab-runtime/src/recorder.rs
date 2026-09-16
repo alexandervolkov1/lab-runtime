@@ -1627,6 +1627,7 @@ impl SqliteStore {
                         ..
                     } => {
                         let stage = match stage {
+                            OutputStage::SupersededBeforeSend => "superseded_before_send",
                             OutputStage::RejectedBeforeSend => "rejected_before_send",
                             OutputStage::ExpiredBeforeSend => "expired_before_send",
                             OutputStage::Requested => "requested",

@@ -775,6 +775,130 @@ fn real_m3_ack_reopens_with_original_unit_epoch_resource_and_binding_revision() 
 }
 
 #[test]
+fn queued_virtual_attempt_reopens_as_superseded_before_distinct_safe_epoch() {
+    let path = temporary_database();
+    let mut runtime = Runtime::new();
+    let instrument = InstrumentId::new(778);
+    let actuator = ActuatorId::new(instrument, lab_core::HEATER_POWER);
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "superseded archive".into(),
+            history_capacity: 2,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    let output = |runtime: &mut Runtime, at, command| {
+        runtime.command(Command::Output {
+            actuator,
+            at,
+            command,
+        })
+    };
+    output(
+        &mut runtime,
+        Duration::ZERO,
+        OutputCommand::BindProfile(SafeProfile {
+            min: 0.0,
+            max: 100.0,
+            safe_value: 0.0,
+            max_lease: Duration::from_secs(2),
+            max_proposal_ttl: Duration::from_millis(100),
+            required_evidence: EvidenceLevel::Readback,
+        }),
+    )
+    .unwrap();
+    output(&mut runtime, Duration::ZERO, OutputCommand::RequestSafe).unwrap();
+    let CommandResult::Output(OutputResult::Dispatched(safe)) =
+        output(&mut runtime, Duration::ZERO, OutputCommand::BeginDispatch).unwrap()
+    else {
+        panic!("safe dispatch missing")
+    };
+    output(
+        &mut runtime,
+        Duration::ZERO,
+        OutputCommand::Complete {
+            dispatch_id: safe.id(),
+            outcome: DispatchOutcome::ReadbackVerified,
+        },
+    )
+    .unwrap();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("superseded identity").unwrap();
+    runtime.enable_recording_facts();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = output(
+        &mut runtime,
+        at,
+        OutputCommand::Acquire {
+            owner: OutputOwner::Manual(778),
+            lifetime: Duration::from_secs(1),
+        },
+    )
+    .unwrap() else {
+        panic!("manual lease missing")
+    };
+    output(
+        &mut runtime,
+        at,
+        OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(37.0),
+            unit: Unit::PERCENT,
+            ttl: Duration::from_millis(100),
+        }),
+    )
+    .unwrap();
+    output(
+        &mut runtime,
+        at + Duration::from_millis(1),
+        OutputCommand::RequestSafe,
+    )
+    .unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    store.stop_run().unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    type StageRow = (String, Option<Vec<u8>>, Option<Vec<u8>>, Option<String>);
+    let mut statement = db.prepare(
+        "SELECT stage,attempt_id,authority_epoch,unit_key FROM output_events ORDER BY record_seq",
+    ).unwrap();
+    let rows: Vec<StageRow> = statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        [
+            "requested",
+            "superseded_before_send",
+            "revoked",
+            "safe_requested"
+        ]
+    );
+    assert_eq!(rows[0].1, rows[1].1);
+    assert_ne!(rows[1].1, rows[3].1);
+    assert_eq!(rows[2].1, rows[3].1);
+    assert_eq!(rows[0].2, Some(lease.epoch().to_be_bytes().to_vec()));
+    assert_eq!(rows[1].2, rows[0].2);
+    assert!(
+        u64::from_be_bytes(rows[3].2.as_ref().unwrap().as_slice().try_into().unwrap())
+            > lease.epoch()
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.3.as_deref() == Some(Unit::PERCENT.id()))
+    );
+    drop(statement);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn one_virtual_attempt_reopens_with_one_boot_scoped_attempt_and_dispatch_correlation() {
     let path = temporary_database();
     let instrument = InstrumentId::new(777);
