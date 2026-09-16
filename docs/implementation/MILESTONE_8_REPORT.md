@@ -11,7 +11,7 @@ are not reported as passing evidence.
 
 | IDs | Tests-first implementation slice | Evidence status |
 | --- | --- | --- |
-| C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Pending |
+| C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
 | C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Pending |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | Pending |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Pending |
@@ -29,6 +29,18 @@ are not reported as passing evidence.
    The donor path `D:\rust\com_port_reader` is unavailable on this computer;
    no donor file was modified. Committed the documentation-only design checkpoint
    as `443fa4e`.
+3. C1-C4 first acceptance test compile was red because
+   `lab_runtime::configuration` did not exist. An unrelated fixture byte-string
+   encoding error was corrected and red was repeated, leaving only the missing
+   API. Added the host-only parser and exact-byte bundle with `toml` 1.1.6,
+   structural checks before artifact reads, strict unknown/duplicate rejection,
+   cross-reference limits, read-only definition safety validation and fixed
+   aggregate source limits. Targeted run: four tests green. The first green C4
+   fixture accidentally made the diagnostic parameter invalid while constructing
+   an output definition; it was corrected to a valid output-only M3 definition,
+   after which the intended read-only rejection and duplicate COM tests passed.
+   Targeted clippy passed. The initial fmt check reported formatting diffs only;
+   formatting was then applied before commit.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

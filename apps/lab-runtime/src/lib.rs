@@ -3,6 +3,8 @@
 //! M3 keeps JSON parsing here so Core does not depend on a serialization format.
 
 pub mod application;
+/// Strict bounded declarative deployment loading and validation.
+pub mod configuration;
 pub mod definition;
 pub mod events;
 /// Explicit monotonic scheduling and trusted virtual host composition.
