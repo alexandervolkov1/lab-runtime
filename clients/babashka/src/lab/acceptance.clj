@@ -1,5 +1,5 @@
 (ns lab.acceptance
-  "Actual A/B process checkpoints for the M6 virtual loopback slice."
+  "Actual A/B process checkpoints for M6 and the recorded M7 variant."
   (:require [cheshire.core :as json]
             [lab.client :as client]))
 
@@ -18,6 +18,18 @@
 
 (defn- output! [connection actuator]
   (client/query! connection "output" {:actuator actuator}))
+
+(defn- recording-credit! [connection max-groups]
+  (until! 3000
+          #(do (client/drain-buffered! connection)
+               (let [status (client/query! connection "recording_status" {})]
+             (when (= (:state status) "failed")
+               (throw (ex-info "required_recorder_failed" {:recording status})))
+                 (if (and (= (:state status) "recording")
+                          (<= (:outstanding_groups status) max-groups)
+                          (<= (:outstanding_bytes status) 524288))
+                   status
+                   (do (Thread/sleep 10) nil))))))
 
 (defn- controller! [connection controller]
   (client/query! connection "controller" {:controller controller}))
@@ -38,7 +50,7 @@
                :actuator {:instrument (:id descriptor) :parameter (:id actuator)}})))
         (:instruments discovery)))
 
-(defn- run-a [port]
+(defn- run-a [port recording?]
   (let [connection (client/connect! port)]
     (try
       (let [discovery (client/discover! connection)
@@ -54,6 +66,11 @@
             starting-sample (until! 3000 #(let [sample (client/latest! connection signal)]
                                             (when (= (:quality sample) "good") sample)))
             starting-temp (:value starting-sample)
+            _ (when recording?
+                (require-completed
+                 (client/command! connection "recording_start"
+                                  {:label "recorded Babashka A/B"})))
+            _ (when recording? (recording-credit! connection 0))
             snapshot (client/snapshot! connection)
             _ (client/subscribe! connection (:cursor snapshot))
             ramp (reference! connection reference)
@@ -61,14 +78,17 @@
                      (client/command! connection "reference_retune"
                                       {:reference reference :expected_revision (:revision ramp)
                                        :target 60.0 :rate 5.0}))
+            _ (when recording? (recording-credit! connection 0))
             _ (client/drain-buffered! connection)
             pid (require-completed
                  (client/command! connection "controller_configure_pid"
                                   {:controller controller :expected_revision (:revision initially)
                                    :pid {:kp 4.0 :ki 0.5 :kd 0.0 :output_min 0.0 :output_max 100.0}}))
+            _ (when recording? (recording-credit! connection 0))
             _ (client/drain-buffered! connection)
             warming (require-completed
                      (client/command! connection "controller_start" {:controller controller}))
+            _ (when recording? (recording-credit! connection 0))
             _ (when (not= (:state warming) "warming")
                 (throw (ex-info "start_did_not_commit_warming" {})))
             running (until! 6000 #(do (client/drain-buffered! connection)
@@ -82,7 +102,10 @@
                                                     (= (:state output) "armed_auto")
                                                     (some? (:readback output)))
                                            {:sample sample :output output}))))
+            _ (when recording? (recording-credit! connection 0))
             before-retune (reference! connection reference)
+            _ (when recording? (recording-credit! connection 0))
+            continuous-seq (str @(:next-seq connection))
             continuous (require-completed
                         (client/command! connection "reference_retune"
                                          {:reference reference :expected_revision (:revision before-retune)
@@ -98,10 +121,14 @@
             _ (when (or (not= (:state controller-after) "running")
                         (not= (:revision controller-after) (:revision pid))
                         (not (<= 0.0 (:latest_output controller-after) 100.0)))
-                (throw (ex-info "pid_changed_or_stopped_on_ramp_retune" {})))
+                (throw (ex-info "pid_changed_or_stopped_on_ramp_retune"
+                                {:controller controller-after
+                                 :recording (when recording?
+                                              (client/query! connection "recording_status" {}))})))
             _ (client/drain-buffered! connection)
             lease (:output movement)
-            checkpoint {:checkpoint "a" :boot_id @(:boot-id connection)
+            recording-status (when recording? (client/query! connection "recording_status" {}))
+            checkpoint (cond-> {:checkpoint "a" :boot_id @(:boot-id connection)
                         :scope @(:scope connection) :cursor (or @(:cursor connection) (:cursor snapshot))
                         :controller controller :reference reference :signal signal :actuator actuator
                         :controller_state (:state running) :sample_quality (get-in movement [:sample :quality])
@@ -109,10 +136,14 @@
                         :sent_value (get-in lease [:sent :value])
                         :instance (:instance lease) :owner (:owner lease) :epoch (:epoch lease)
                         :lease_expires_at (:lease_expires_at lease)
-                        :retune_request_id {:scope @(:scope connection) :seq "4"}
+                        :retune_request_id {:scope @(:scope connection) :seq continuous-seq}
                         :next_seq (str @(:next-seq connection))
                         :retune_value (:value continuous) :retune_at (:committed_at continuous)
-                        :ramp_revision (:revision retuned) :pid_revision (:revision pid)}]
+                        :ramp_revision (:revision retuned) :pid_revision (:revision pid)}
+                         recording? (assoc :run_id (:run_id recording-status)
+                                           :database_id (:database_id recording-status)
+                                           :recording_state (:state recording-status)
+                                           :recording_prefix (:persisted_through_seq recording-status)))]
         (println (json/generate-string checkpoint))
         (flush)
         ;; The Rust harness kills A without pause; this socket stays open until then.
@@ -122,7 +153,7 @@
                (recur)))
       (finally (client/close! connection)))))
 
-(defn- run-b [port checkpoint-text]
+(defn- run-b [port checkpoint-text recording?]
   (let [checkpoint (json/parse-string checkpoint-text true)
         connection (client/connect! port (:scope checkpoint))]
     (try
@@ -150,6 +181,12 @@
               before (controller! connection controller)
               output-before (output! connection actuator)
               latest (client/latest! connection signal)
+              recording-before (when recording? (client/query! connection "recording_status" {}))
+              _ (when (and recording?
+                           (or (not= (:state recording-before) "recording")
+                               (not= (:run_id recording-before) (:run_id checkpoint))))
+                  (throw (ex-info "recorded_run_changed_on_disconnect"
+                                  {:recording recording-before :checkpoint checkpoint})))
               _ (when (not= (:state before) "running")
                   (throw (ex-info "native_owner_stopped_on_client_disconnect" {})))
               _ (when (not= (:quality latest) "good")
@@ -159,18 +196,37 @@
               _ (when (not= (:instance output-before) (:instance checkpoint))
                   (throw (ex-info "authority_instance_changed" {})))
               before-ref (reference! connection reference)
+              _ (when recording? (recording-credit! connection 0))
               paused (require-completed
                       (client/command! connection "controller_pause" {:controller controller}))
               _ (when (not= (:state paused) "paused")
                   (throw (ex-info "pause_failed" {})))
-              safe (output! connection actuator)
+              safe (if recording?
+                     (until! 2000 #(let [output (output! connection actuator)]
+                                     (when (and (:safe_confirmed output)
+                                                (not (:pending output))
+                                                (not (:in_flight output))
+                                                (nil? (:lease_expires_at output)))
+                                       output)))
+                     (output! connection actuator))
               _ (when (or (not (:safe_confirmed safe)) (some? (:owner safe)))
                   (throw (ex-info "rust_safe_evidence_missing" {})))
               after-ref (until! 1000 #(let [now (reference! connection reference)]
                                         (when (not= (:last_at now) (:last_at before-ref)) now)))
+              _ (when recording? (recording-credit! connection 0))
+              _ (when recording?
+                  (let [reply (client/command! connection "recording_stop"
+                                               {:run_id (:run_id checkpoint)})]
+                    (when (not= (:state reply) "completed")
+                      (throw (ex-info "recording_stop_failed"
+                                      {:reply reply
+                                       :recording (client/query! connection "recording_status" {})
+                                       :output (output! connection actuator)
+                                       :controller (controller! connection controller)})))))
+              recording-after (when recording? (client/query! connection "recording_status" {}))
               terminal (require-completed
                         (client/command! connection "runtime_shutdown" {}))
-              final {:checkpoint "b" :boot_id @(:boot-id connection)
+              final (cond-> {:checkpoint "b" :boot_id @(:boot-id connection)
                      :resumed_scope @(:scope connection)
                      :replay_seq (:seq replay)
                      :state_before_pause (:state before)
@@ -180,13 +236,18 @@
                      :lease_after_pause (:lease_expires_at safe)
                      :reference_paused_last_at (:last_at after-ref)
                      :shutdown_safe (:safe_confirmed terminal)
-                     :shutdown_cleanup (:cleanup_complete terminal)}]
+                     :shutdown_cleanup (:cleanup_complete terminal)}
+                      recording? (assoc :recording_state_before_pause (:state recording-before)
+                                        :recording_prefix (:persisted_through_seq recording-before)
+                                        :recording_state_after_stop (:state recording-after)))]
           (println (json/generate-string final)) (flush)))
       (finally (client/close! connection)))))
 
 (defn -main [mode port & [checkpoint]]
   (let [port (Integer/parseInt port)]
     (case mode
-      "a" (run-a port)
-      "b" (run-b port checkpoint)
+      "a" (run-a port false)
+      "b" (run-b port checkpoint false)
+      "record-a" (run-a port true)
+      "record-b" (run-b port checkpoint true)
       (throw (ex-info "unknown_acceptance_mode" {:mode mode})))))
