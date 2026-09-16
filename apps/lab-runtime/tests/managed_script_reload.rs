@@ -4,16 +4,127 @@ use lab_core::{
     Query, QueryResult,
     managed::{ComponentId, ComponentState},
 };
+use lab_runtime::host::Clock;
+use lab_runtime::recorder::RecordingState;
 use lab_runtime::service::{ServiceHost, ServiceOptions};
 use std::{
     fs,
     path::PathBuf,
     sync::{Mutex, MutexGuard, OnceLock},
+    time::{Duration, Instant},
 };
 
 fn lua_slots() -> MutexGuard<'static, ()> {
     static SLOTS: OnceLock<Mutex<()>> = OnceLock::new();
     SLOTS.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+#[test]
+fn c9_c11_script_reload_and_model_restart_commit_distinct_durable_activations() {
+    let _slots = lua_slots();
+    let config = temporary_path("managed-recorded", "toml");
+    let script = temporary_path("managed-recorded", "lua");
+    let database = temporary_path("managed-recorded", "sqlite");
+    fs::write(&script, source("generation one")).unwrap();
+    let declared = script.to_string_lossy().replace('\\', "\\\\");
+    let database_path = database.to_string_lossy().replace('\\', "\\\\");
+    let toml = format!(
+        r#"schema_version=1
+[runtime]
+key="managed-recorded"
+display_name="Managed recorded"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=true
+path="{database_path}"
+policy="required"
+[[managed_components]]
+id=201
+instrument_id=201
+key="source"
+display_name="Configured source"
+source="{declared}"
+period_ms=100
+"#
+    );
+    fs::write(&config, &toml).unwrap();
+    let arg = config.to_string_lossy().into_owned();
+    let mut service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .unwrap();
+    let original_hash = service.loaded_configuration().unwrap().active().toml_hash();
+    let now = service.clock().now();
+    service
+        .owner_mut()
+        .start_recording("managed lifecycle", now)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+
+    fs::write(&script, source("generation two")).unwrap();
+    service.reload_managed_scripts().unwrap();
+    assert_eq!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .activation_generation,
+        2
+    );
+    assert_eq!(
+        service.loaded_configuration().unwrap().active().toml_hash(),
+        original_hash
+    );
+    fs::write(&script, "this mutable path is no longer valid Lua").unwrap();
+    assert_eq!(service.restart_virtual_models().unwrap().models, 1);
+    assert_eq!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .activation_generation,
+        3
+    );
+    let QueryResult::Component(component) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(201)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(component.generation, 3);
+    assert_eq!(
+        service.loaded_configuration().unwrap().active().toml_hash(),
+        original_hash
+    );
+
+    service.request_shutdown().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while service.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(service);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let lifecycle_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE kind='configuration_lifecycle'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lifecycle_count, 2);
+    drop(connection);
+    fs::remove_file(config).unwrap();
+    fs::remove_file(script).unwrap();
+    fs::remove_file(database).unwrap();
 }
 
 fn temporary_path(label: &str, extension: &str) -> PathBuf {

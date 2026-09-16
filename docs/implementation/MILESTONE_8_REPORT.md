@@ -294,6 +294,24 @@ are not reported as passing evidence.
     restores old authority. Configured physical, lifecycle, full Core and
     warning-denied workspace clippy suites pass. This is software evidence only;
     no real COM port was opened.
+28. C9/C11 recorded-lifecycle acceptance was red after a successful managed
+    source reload because Recorder activation generation remained one. Script
+    reload, model restart and explicit reconnect now use the same global
+    Required fence, producer quiescence, unchanged four-group reservation and
+    atomic activation/lifecycle receipt as configuration apply, while retaining
+    their distinct operation kinds and unchanged deployment revision. Managed
+    restart prepares every component from the active frozen bytes, commits the
+    batch generation together, resets schedules/warm-up and never rereads the
+    mutable source path. The red test records Required history, reloads source
+    generation 1->2, corrupts the pathname, restarts successfully to generation
+    3 from frozen bytes, observes activation generations 2 and 3, unchanged TOML
+    hash, two durable lifecycle facts and clean SQLite shutdown. Restart now
+    includes configured managed models as well as native thermal models and
+    crosses the safe barrier without rearming controllers. Explicit reconnect
+    reserves the same durable lifecycle boundary before retiring the old handle
+    and releases Required only after the compatibility probe and matching
+    activation receipt. Four managed tests, lifecycle regressions, Recorder
+    budget coverage and warning-denied workspace clippy pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

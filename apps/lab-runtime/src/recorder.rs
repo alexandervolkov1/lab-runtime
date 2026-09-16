@@ -133,13 +133,18 @@ impl ConfigurationLifecycleRecord {
     }
 
     fn valid(&self) -> bool {
+        let revision_valid = match self.operation_kind {
+            "reload_configuration" | "apply_configuration" => {
+                self.committed_revision == self.base_revision.checked_add(1).unwrap_or(0)
+            }
+            "reload_managed_scripts" | "restart_virtual_models" | "reconnect_resource" => {
+                self.committed_revision == self.base_revision
+            }
+            _ => false,
+        };
         self.operation_id > 0
             && self.base_revision > 0
-            && self.committed_revision == self.base_revision.checked_add(1).unwrap_or(0)
-            && matches!(
-                self.operation_kind,
-                "reload_configuration" | "apply_configuration"
-            )
+            && revision_valid
             && self.affected.len() <= 256
             && self
                 .affected

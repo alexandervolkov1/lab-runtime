@@ -128,6 +128,7 @@ pub struct ServiceHost {
     fatal: bool,
     deployment: Option<DeploymentLifecycle>,
     configuration_path: Option<PathBuf>,
+    next_lifecycle_operation: u64,
 }
 
 /// Bounded lifecycle-operation failure exposed without leaking filesystem details.
@@ -170,6 +171,13 @@ pub struct ReconnectResourceResult {
     pub resource_id: u64,
     /// New physical binding generation fencing all old bytes/results.
     pub binding_generation: u64,
+}
+
+struct PendingRecordedLifecycle {
+    record: ConfigurationLifecycleRecord,
+    generation: Option<u64>,
+    reopen_required: bool,
+    submitted_at: std::time::Duration,
 }
 
 struct LiveApplyPort<'a> {
@@ -291,7 +299,11 @@ impl ApplyPort for LiveApplyPort<'_> {
                 .checked_add(1)
                 .ok_or(ApplyError::OwnerFailure)?,
             toml_hash: candidate.toml_hash(),
-            affected: configuration_affected(candidate, self.base_revision),
+            affected: configuration_affected(
+                candidate,
+                self.base_revision,
+                self.base_revision.saturating_add(1),
+            ),
             reason: None,
             at: self.at,
         };
@@ -370,8 +382,8 @@ impl ApplyPort for LiveApplyPort<'_> {
 fn configuration_affected(
     candidate: &crate::configuration::FrozenDeployment,
     base_revision: u64,
+    committed: u64,
 ) -> Vec<String> {
-    let committed = base_revision.saturating_add(1);
     let dto = &candidate.effective().dto;
     let mut affected = Vec::with_capacity(
         dto.resources.len()
@@ -466,6 +478,7 @@ impl ServiceHost {
             fatal: false,
             deployment: None,
             configuration_path: None,
+            next_lifecycle_operation: 1,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
@@ -652,6 +665,7 @@ impl ServiceHost {
             fatal: false,
             deployment: loaded.map(DeploymentLifecycle::new),
             configuration_path,
+            next_lifecycle_operation: 1,
         })
     }
 
@@ -885,6 +899,122 @@ impl ServiceHost {
         }
     }
 
+    fn begin_recorded_lifecycle(
+        &mut self,
+        operation_kind: &'static str,
+        deployment: &crate::configuration::FrozenDeployment,
+    ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
+        let operation_id = self.next_lifecycle_operation;
+        self.next_lifecycle_operation = operation_id
+            .checked_add(1)
+            .ok_or(LifecycleOperationError::Conflict)?;
+        let revision = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .revision();
+        let at = self.clock.now();
+        if !self
+            .host
+            .enter_configuration_safe_barrier(at)
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?
+        {
+            return Err(LifecycleOperationError::RequiresSafeBarrier);
+        }
+        let reopen_required = self.host.begin_configuration_recording_fence(at);
+        self.host.begin_configuration_quiesce();
+        let record = ConfigurationLifecycleRecord {
+            operation_id,
+            operation_kind,
+            base_revision: revision,
+            committed_revision: revision,
+            toml_hash: deployment.toml_hash(),
+            affected: configuration_affected(deployment, revision, revision),
+            reason: None,
+            at,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let generation = loop {
+            let reservation = self
+                .host
+                .try_reserve_configuration_activation(&record, self.clock.now())
+                .map_err(|_| LifecycleOperationError::OwnerFailure);
+            match reservation {
+                Err(error) => {
+                    self.host.end_configuration_quiesce();
+                    return Err(error);
+                }
+                Ok(Some(generation)) => break generation,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    if self.host.service(&self.clock).is_err() {
+                        self.host.end_configuration_quiesce();
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                Ok(None) => {
+                    self.host.end_configuration_quiesce();
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+            }
+        };
+        Ok(PendingRecordedLifecycle {
+            record,
+            generation,
+            reopen_required,
+            submitted_at: at,
+        })
+    }
+
+    fn cancel_recorded_lifecycle(&mut self, pending: PendingRecordedLifecycle) {
+        let _ = self
+            .host
+            .cancel_configuration_activation(pending.generation);
+        self.host.end_configuration_quiesce();
+    }
+
+    fn finish_recorded_lifecycle(
+        &mut self,
+        pending: PendingRecordedLifecycle,
+    ) -> Result<(), LifecycleOperationError> {
+        if self
+            .host
+            .commit_reserved_configuration_activation(pending.generation, pending.record)
+            .is_err()
+        {
+            self.host.configuration_recording_failed(self.clock.now());
+            self.host.end_configuration_quiesce();
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match self.host.live_activation_committed(
+                pending.generation,
+                pending.reopen_required,
+                pending.submitted_at,
+                self.clock.now(),
+            ) {
+                Ok(true) => {
+                    self.host.end_configuration_quiesce();
+                    return Ok(());
+                }
+                Ok(false) if std::time::Instant::now() < deadline => {
+                    if self.host.service(&self.clock).is_err() {
+                        self.host.configuration_recording_failed(self.clock.now());
+                        self.host.end_configuration_quiesce();
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                _ => {
+                    self.host.configuration_recording_failed(self.clock.now());
+                    self.host.end_configuration_quiesce();
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+            }
+        }
+    }
+
     /// Reload managed sources independently of deployment and model restart.
     pub fn reload_managed_scripts(&mut self) -> Result<(), LifecycleOperationError> {
         let candidate = self
@@ -920,18 +1050,30 @@ impl ServiceHost {
             }
             prepared.push(id);
         }
-        self.host
+        let pending = self.begin_recorded_lifecycle("reload_managed_scripts", &candidate)?;
+        if self
+            .host
             .commit_prepared_components(prepared, self.clock.now())
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
-        self.host
-            .activate_configured_components(&candidate, self.clock.now())
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
-        self.deployment
+            .is_err()
+            || self
+                .host
+                .activate_configured_components(&candidate, self.clock.now())
+                .is_err()
+        {
+            self.cancel_recorded_lifecycle(pending);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        if self
+            .deployment
             .as_mut()
             .expect("checked above")
             .commit_managed_sources(candidate)
-            .map_err(|_| LifecycleOperationError::Conflict)?;
-        Ok(())
+            .is_err()
+        {
+            self.cancel_recorded_lifecycle(pending);
+            return Err(LifecycleOperationError::Conflict);
+        }
+        self.finish_recorded_lifecycle(pending)
     }
 
     /// Restart configured native models without rereading TOML or managed sources.
@@ -944,10 +1086,85 @@ impl ServiceHost {
             .ok_or(LifecycleOperationError::ConfigurationDisabled)?
             .active()
             .clone();
-        let (models, generation) = self
-            .host
-            .restart_configured_models(&active, self.clock.now())
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        let managed = active.effective().dto.managed_components.len();
+        let native = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .filter(|instrument| {
+                matches!(
+                    instrument,
+                    crate::configuration::InstrumentDto::ThermalPlant { .. }
+                )
+            })
+            .count();
+        if native == 0 && managed == 0 {
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        let mut prepared = Vec::with_capacity(managed);
+        if managed != 0 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            for index in 0..managed {
+                let id = self
+                    .host
+                    .stage_configured_component(&active, index, true, self.clock.now())
+                    .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+                while !self.host.component_prepared(id) {
+                    if std::time::Instant::now() >= deadline
+                        || self.host.service(&self.clock).is_err()
+                        || (!self.host.component_prepare_pending()
+                            && !self.host.component_prepared(id))
+                    {
+                        self.host.discard_prepared_components();
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                prepared.push(id);
+            }
+        }
+        let pending = self.begin_recorded_lifecycle("restart_virtual_models", &active)?;
+        let mut models = 0usize;
+        let mut generation = 0u64;
+        if native != 0 {
+            match self
+                .host
+                .restart_configured_models(&active, self.clock.now())
+            {
+                Ok((count, latest)) => {
+                    models += count;
+                    generation = generation.max(latest);
+                }
+                Err(_) => {
+                    self.cancel_recorded_lifecycle(pending);
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+            }
+        }
+        if managed != 0 {
+            if self
+                .host
+                .commit_prepared_components(prepared, self.clock.now())
+                .is_err()
+                || self
+                    .host
+                    .activate_configured_components(&active, self.clock.now())
+                    .is_err()
+            {
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::OwnerFailure);
+            }
+            models += managed;
+            for component in &active.effective().dto.managed_components {
+                if let Ok(lab_core::QueryResult::Component(snapshot)) = self.host.query(
+                    lab_core::Query::Component(lab_core::managed::ComponentId::new(component.id)),
+                ) {
+                    generation = generation.max(snapshot.generation);
+                }
+            }
+        }
+        self.finish_recorded_lifecycle(pending)?;
         Ok(RestartModelsResult { models, generation })
     }
 
@@ -962,7 +1179,8 @@ impl ServiceHost {
             .deployment
             .as_ref()
             .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-            .active();
+            .active()
+            .clone();
         let resource = active
             .effective()
             .dto
@@ -995,48 +1213,79 @@ impl ServiceHost {
         let generation = current
             .checked_add(1)
             .ok_or(LifecycleOperationError::Conflict)?;
-        let at = self.clock.now();
-        if !self
-            .host
-            .enter_configuration_safe_barrier(at)
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?
-        {
-            return Err(LifecycleOperationError::RequiresSafeBarrier);
+        let pending = self.begin_recorded_lifecycle("reconnect_resource", &active)?;
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(resource.recovery_timeout_ms);
+        loop {
+            match self
+                .host
+                .prepare_configured_transport_replacement(ResourceId::new(resource_id))
+            {
+                Ok(true) => break,
+                Ok(false) if std::time::Instant::now() < deadline => {
+                    if self.host.service(&self.clock).is_err() {
+                        self.cancel_recorded_lifecycle(pending);
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                _ => {
+                    self.cancel_recorded_lifecycle(pending);
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+            }
         }
-        if !self
-            .host
-            .prepare_configured_transport_replacement(ResourceId::new(resource_id))
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?
-        {
+        let settings = match com_settings(&resource, generation) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.cancel_recorded_lifecycle(pending);
+                return Err(error);
+            }
+        };
+        let adapter =
+            ComTransport::open_windows(settings).map_err(|_| LifecycleOperationError::OwnerFailure);
+        let Ok(adapter) = adapter else {
+            self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
-        }
-        let adapter = ComTransport::open_windows(com_settings(&resource, generation)?)
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
-        self.host
+        };
+        if self
+            .host
             .rebind_configured_transport(
                 ResourceId::new(resource_id),
                 Box::new(adapter),
                 self.clock.now(),
             )
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
-        self.host
-            .begin_configured_probes(self.clock.now())
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+            .is_err()
+        {
+            self.cancel_recorded_lifecycle(pending);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        if self.host.begin_configured_probes(self.clock.now()).is_err() {
+            self.cancel_recorded_lifecycle(pending);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_millis(resource.recovery_timeout_ms);
-        while !self
-            .host
-            .configured_probes_ready()
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?
-        {
+        loop {
+            match self.host.configured_probes_ready() {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(_) => {
+                    self.cancel_recorded_lifecycle(pending);
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+            }
             if std::time::Instant::now() >= deadline {
+                self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
-            self.host
-                .service(&self.clock)
-                .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+            if self.host.service(&self.clock).is_err() {
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::OwnerFailure);
+            }
             std::thread::yield_now();
         }
+        self.finish_recorded_lifecycle(pending)?;
         Ok(ReconnectResourceResult {
             resource_id,
             binding_generation: generation,
