@@ -131,6 +131,80 @@ fn shutdown_seals_active_interval_and_closes_worker_before_reporting_flush_succe
 }
 
 #[test]
+fn fatal_owner_time_fault_still_seals_healthy_recorder_before_nonzero_terminal() {
+    let path = temporary_database();
+    let worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    service
+        .owner_mut()
+        .start_recording("fatal owner recorder", clock.now())
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let boot = service.boot_id().to_owned();
+    service
+        .owner_mut()
+        .command(Command::ServiceSafety {
+            at: Duration::from_secs(100),
+        })
+        .unwrap();
+
+    assert!(
+        service.request_shutdown().is_err(),
+        "regressed owner time must enter the fatal shutdown path"
+    );
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(
+            Instant::now() < deadline + Duration::from_secs(2),
+            "fatal Recorder shutdown exceeded its finite safety/flush budget"
+        );
+        std::thread::yield_now();
+    };
+    assert!(terminal.fatal_error);
+    assert!(terminal.safe_confirmed);
+    assert!(terminal.recorder_flushed);
+    assert!(!terminal.recorder_error);
+    assert!(!terminal.recorder_unfinished);
+    assert!(!terminal.exit_success);
+    drop(service);
+
+    let boot_bytes: Vec<u8> = boot
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let archived: (String, i64, i64) = db
+        .query_row(
+            "SELECT b.state,
+                    (SELECT COUNT(*) FROM records r WHERE r.boot_id=b.boot_id AND r.kind='shutdown'),
+                    (SELECT COUNT(*) FROM recording_intervals i
+                     WHERE i.boot_id=b.boot_id AND i.state='sealed')
+             FROM runtime_boots b WHERE b.boot_id=?1",
+            [boot_bytes],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(archived, ("sealed".into(), 1, 1));
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn two_host_runs_and_active_shutdown_reopen_with_distinct_fifo_seals() {
     let path = temporary_database();
     let text = path.to_string_lossy();

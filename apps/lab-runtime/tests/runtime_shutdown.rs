@@ -17,15 +17,24 @@ use lab_core::{
     managed::{ComponentCompletion, ComponentError, ComponentExecutor, Correlation, Invocation},
 };
 use lab_runtime::host::{Clock, HostCore};
+use lab_runtime::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState};
 use lab_runtime::service::{ServiceHost, ServiceOptions};
 use std::{
     cell::Cell,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+fn temporary_database() -> PathBuf {
+    let mut entropy = [0u8; 16];
+    getrandom::fill(&mut entropy).unwrap();
+    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+    std::env::temp_dir().join(format!("lab-runtime-m7-runtime-shutdown-{suffix}.sqlite"))
+}
 
 struct TestClock(Cell<Duration>);
 impl TestClock {
@@ -198,17 +207,35 @@ impl ByteTransport for NeverClean {
 }
 
 #[test]
-fn failed_m3_recovery_and_two_stalled_workers_expire_grace_with_unconfirmed_safe_evidence() {
+fn failed_m3_recovery_and_two_stalled_workers_still_flush_honest_recorder_evidence() {
+    let path = temporary_database();
     let mut host = HostCore::virtual_demo().unwrap();
     host.install_component_executor(Box::new(TwoStalledWorkers(Arc::new(AtomicBool::new(
         false,
     )))))
+    .unwrap();
+    host.attach_recorder(
+        RecorderWorker::open(&path, RecorderLimits::default()).unwrap(),
+        RecordingPolicy::BestEffort,
+        Duration::ZERO,
+    )
     .unwrap();
     let mut service = ServiceHost::startup_from_trusted_host(
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
         host,
     )
     .unwrap();
+    let clock = service.clock_copy();
+    service
+        .owner_mut()
+        .start_recording("failed recovery shutdown", clock.now())
+        .unwrap();
+    let recording_deadline = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < recording_deadline);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
     let resource = ResourceId::new(9);
     let instrument = InstrumentId::new(90);
     let parameter = ParameterId::new(6);
@@ -316,6 +343,9 @@ fn failed_m3_recovery_and_two_stalled_workers_expire_grace_with_unconfirmed_safe
     };
     assert!(!terminal.safe_confirmed);
     assert_eq!(terminal.unfinished_workers, 2);
+    assert!(terminal.recorder_flushed, "{terminal:?}");
+    assert!(!terminal.recorder_error, "{terminal:?}");
+    assert!(!terminal.recorder_unfinished, "{terminal:?}");
     assert!(!terminal.exit_success);
     let outputs = service.owner().output_safe_records();
     assert!(
@@ -339,6 +369,44 @@ fn failed_m3_recovery_and_two_stalled_workers_expire_grace_with_unconfirmed_safe
         snapshot.state,
         ExecutorState::Recovering | ExecutorState::Offline
     ));
+    drop(service);
+
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (state, exit_summary, intervals, shutdown_records): (String, String, i64, i64) = db
+        .query_row(
+            "SELECT state,exit_summary,
+                    (SELECT COUNT(*) FROM recording_intervals WHERE state='sealed'),
+                    (SELECT COUNT(*) FROM records WHERE kind='shutdown')
+             FROM runtime_boots",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "sealed");
+    assert_eq!(intervals, 1);
+    assert_eq!(shutdown_records, 1);
+    let evidence: serde_json::Value = serde_json::from_str(&exit_summary).unwrap();
+    assert_eq!(evidence["unfinished_managed_workers"], 2);
+    assert!(
+        evidence["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|output| output["instrument"] == "90" && output["safe_confirmed"] == false),
+        "{evidence}"
+    );
+    assert!(
+        evidence["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| {
+                resource["data"]["state"] == "recovering" || resource["data"]["state"] == "offline"
+            }),
+        "{evidence}"
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
