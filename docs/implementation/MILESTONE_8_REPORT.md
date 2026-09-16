@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `WAITING_FOR_REVIEW` after a real-hardware protocol-value discrepancy;
-software implementation remains complete under SOL_HIGH, 2026-09-16.
+Status: `M8_HARDWARE_ACCEPTANCE_PENDING`; the reviewed software corrections are
+complete under SOL_HIGH and COM5 has not been reopened, 2026-09-16.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -27,9 +27,9 @@ are not reported as passing evidence.
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
 | C14 | `windows_com_transport`, `configured_physical` | Software pass; real disconnect pending |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | **Blocked:** strict reads decode as 2.3–2.4 °C while display is about 21 °C |
-| C17 | Actual observations, public history and SQLite reopen | Partial durable evidence retained; semantic value discrepancy blocks acceptance |
-| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; actual clients disconnected/reconnected while acquisition continued, but invalid value blocks bench acceptance |
+| C16 | Actual Windows COM + Metakon read-only bench | Correction software pass; corrected physical rerun pending |
+| C17 | Actual observations, public history and SQLite reopen | First durable evidence retained separately; corrected physical evidence pending |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; corrected hardware continuation pending |
 | C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Actual clean COM/Recorder close passed; physical disconnect/reconnect subcase not run |
 | C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
 
@@ -423,20 +423,84 @@ required. C16/C17 cannot pass until the accepted Metakon 513 register/scaling
 knowledge is reviewed against authoritative device documentation or read-only
 donor evidence; no speculative scale or register change is authorized.
 
-Red/green test names, commands, defects and resolved dependency versions will be
-added after each logical slice.
+## Reviewed bench corrections — 2026-09-16
+
+External review accepted the stop and localized the discrepancy to
+engineering-value interpretation, without requiring an architecture redesign.
+The supplied official protocol conclusion is that Metakon measurement registers
+carry raw values without one universal decimal-point position; the polling
+application must apply the configured device/sensor interpretation. The strict
+frame decoder and signed I16 raw semantics were therefore preserved unchanged.
+
+The configured donor path `D:\rust\com_port_reader` was checked and is absent on
+this computer (`Test-Path` returned `False`). Consequently no donor source,
+profile, commit or test could be inspected, and no donor file was modified. The
+correction relies only on the reviewed protocol conclusion and the real bench
+evidence: valid register-1 raw I16 values 23/24 for this Metakon 513
+thermocouple deployment must represent 23/24 °C, not 2.3/2.4 °C.
+
+Correction A began with red acceptance
+`c16_metakon_513_thermocouple_scale_preserves_raw_degree_values`. The actual
+bench TOML and strict responses produced `Some(Float(2.3000000000000003))`
+instead of `Some(Float(23.0))`. Production Core and the codec did not change.
+A new explicit `metakon-513-thermocouple.json` profile applies scale 1.0 only to
+this verified deployment. The earlier scale-0.1 definition was renamed
+`metakon-temperature-tenths-fixture.json` and its name now states that it is a
+fixture-specific tenths profile, not a universal Metakon fact. The targeted C16
+test and all five `configured_physical` tests pass. Commit: `27080b2`.
+
+Correction B began with red acceptance
+`c1_relative_and_absolute_config_paths_resolve_the_same_recorder_database`.
+Relative invocation failed before equivalent startup with `storage path must be
+a local absolute path`. The loader now lexically makes the supplied TOML path
+absolute once and resolves deployment-owned relative paths from that file's
+absolute parent. It does not canonicalize away `..`; the additional
+`c3_relative_deployment_resolution_does_not_admit_parent_traversal` test proves
+parent traversal still rejects before artifact reads. Relative and absolute
+invocation now retain identical exact TOML bytes/hash and resolve the same
+Recorder database. All four `configuration_startup` and ten
+`configuration_validation` tests pass. Commit: `d330020`.
+
+The original evidence database remains unchanged at
+`metakon-513-com5-history.sqlite`, SHA-256
+`91b1da3f76222389ab77d0f4355f5da6ed8b2f0dbb2271ada2a3532b54fb1eec`.
+It still honestly contains the first attempt's 2.3/2.4 values. The corrected
+TOML uses the new, not-yet-created
+`metakon-513-com5-corrected-history.sqlite`, so a rerun cannot rewrite or append
+to the first archive. Commit: `867f985`.
+
+Corrected exact source identities are:
+
+```text
+runtime.metakon-513-com5.toml:
+  fd47daf2cac9f8200a6b1ce5d212b9d872572bb006b16c045816577e712bd815
+metakon-513-thermocouple.json:
+  b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb
+metakon-temperature-tenths-fixture.json:
+  c4bb74ac28dcfd8dc7825b0d7e78a6acca60166232f3eabf09e855fef8671610
+```
+
+Final correction verification found 391 named Rust tests. Debug and optimized
+release workspace suites pass, as do formatting, all-target Clippy with warnings
+denied and rustdoc with warnings denied. `git diff --check` passes. The first
+debug workspace attempt had one transient timing failure in the pre-existing M7
+Recorder test
+`start_acceptance_commits_before_held_terminal_then_pause_from_new_client_reopens_once`;
+its exact isolated rerun, complete test binary and a second full debug workspace
+run all passed. No default test was skipped and COM5 was not opened during these
+corrections.
 
 ## Current limitations
 
-The actual COM5 open/settings/compatibility probe, repeated syntactically valid
+The first COM5 open/settings/compatibility probe, repeated syntactically valid
 reads, Required durability, client independence and clean COM/Recorder close are
-real hardware evidence. They do not satisfy C16/C17 because the decoded values
-contradict the physical display. The physical disconnect/reconnect portion of
-C14/C16/C17/C19 was deliberately not started. Firmware remains unknown and no
-independent wire capture exists. The donor path remains absent on this computer
-and no donor content was changed.
+retained real hardware evidence, but the values remain evidence of the old
+incorrect profile. The corrected profile has not yet opened COM5. Corrected
+temperature, physical disconnect/reconnect and final public-history/provenance
+evidence for C14/C16/C17/C19 remain pending. Firmware remains unknown and no
+independent wire capture exists.
 
-M8 stops at `WAITING_FOR_REVIEW`; it is not ready for external review and does
-not authorize M9. M8 performed no physical actuator write and makes no
-physical-output-safety, power-loss, remote-security, GUI or long-soak
+M8 stops at `M8_HARDWARE_ACCEPTANCE_PENDING`; it is not ready for external
+review and does not authorize M9. M8 performed no physical actuator write and
+makes no physical-output-safety, power-loss, remote-security, GUI or long-soak
 certification claim.

@@ -10,13 +10,13 @@ AGENTS.md
 PROJECT_BRIEF.md
 docs/implementation/RELEASE_PLAN_M7_TO_V0_1.md
 Current state
-STATUS: WAITING_FOR_REVIEW
+STATUS: M8_HARDWARE_ACCEPTANCE_PENDING
 
 Current model:
 SOL_HIGH
 
 Current phase:
-M8 actual Metakon protocol-value discrepancy review; physical testing stopped.
+M8 corrected read-only Metakon hardware acceptance; awaiting explicit rerun.
 
 Completed work:
 M7 Recorder/SQLite architecture, implementation and D1-D18 acceptance contract,
@@ -38,9 +38,9 @@ hardware, physical-output, power-loss, remote-security and long-soak limitations
 remain limitations, not new claims of acceptance in those areas.
 
 Authorized work:
-No further physical protocol experiment until review of the actual Metakon 513
-value discrepancy. Do not change scale/register/address speculatively, resume
-the disconnect test, or start M9.
+After explicit user continuation, rerun only the frozen read-only Metakon 513
+checklist on COM5 with the corrected definition and separate Required SQLite
+archive. Do not add registers, issue writes/resets, or start M9.
 
 Model gate:
 The earlier ASTRA_HIGH -> SOL_HIGH gate applied to M7 and was crossed.
@@ -118,12 +118,40 @@ The adapter does not retain independent raw-frame logs. Strict-decoder frame
 reconstructions, public snapshots, SQLite rows and shutdown results are in the
 report. Review authoritative Metakon 513 documentation or existing read-only
 donor evidence before authorizing any mapping change. Do not guess a scale or
-probe another register. STATUS remains `WAITING_FOR_REVIEW`.
+probe another register. At that review stop, STATUS was `WAITING_FOR_REVIEW`;
+the reviewed correction checkpoint below supersedes it.
 
 Documentation only: no production code, tests or dependencies changed; no COM
 opened; no accepted M7 test gate rerun or new hardware evidence claimed. The
 donor path was unavailable on this computer and was not modified. No unrelated
 cleanup or ai/project_snapshot.txt changes were made.
+
+M8 reviewed correction checkpoint — 2026-09-16
+
+External review approved a small SOL_HIGH correction phase. The strict decoder
+and raw signed-I16 semantics remain unchanged. Tests-first correction commit
+`27080b2` gives the actual Metakon 513 thermocouple deployment an explicit
+whole-degree scale while retaining the old 0.1 behavior under a clearly named
+fixture-only profile. Commit `d330020` resolves relative deployment-owned paths
+from the absolute runtime.toml parent while preserving exact loaded bytes and
+parent-traversal rejection. Commit `867f985` directs the corrected Required run
+to a fresh SQLite file, preserving the original bench archive unchanged.
+
+The donor path `D:\rust\com_port_reader` was absent (`Test-Path False`), so no
+donor evidence could be inspected. The accepted correction basis is the official
+protocol conclusion supplied in review plus the first bench's strict raw 23/24
+evidence. Final correction gates pass with 391 named tests in debug and release,
+fmt, all-target warning-denied Clippy, warning-denied rustdoc and diff check. The
+report records one transient old Recorder timing-test failure and its passing
+isolated, binary and complete-workspace reruns. COM5 was not reopened.
+
+The corrected TOML hash is
+`fd47daf2cac9f8200a6b1ce5d212b9d872572bb006b16c045816577e712bd815`;
+the actual profile hash is
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+STATUS is `M8_HARDWARE_ACCEPTANCE_PENDING`. Await explicit user continuation,
+then use the existing read-only command and stop again after corrected readings
+before physical disconnect. Do not begin M9.
 
 Design validation passed: exactly 20 distinct C1-C20 matrix rows, resolving local
 design links, balanced Markdown fences, no trailing whitespace in all five
