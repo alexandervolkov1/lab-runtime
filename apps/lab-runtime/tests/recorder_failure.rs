@@ -1,9 +1,12 @@
 //! BestEffort ingress loss leaves a durable gap without inventing lost effects.
 
 use lab_core::{Command, InstrumentId, Runtime, VirtualInstrumentConfig};
+use lab_runtime::host::Clock;
 use lab_runtime::recorder::{
     RecorderLimits, RecorderWorker, RecordingState, SqliteStore, WriterBarrier,
 };
+use lab_runtime::service::{ServiceHost, ServiceOptions};
+use serde_json::json;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -14,6 +17,73 @@ fn temporary_database() -> PathBuf {
     getrandom::fill(&mut entropy).unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-m7-gap-{suffix}.sqlite"))
+}
+
+#[test]
+fn transient_client_event_ring_overrun_does_not_create_a_durable_recorder_gap() {
+    let path = temporary_database();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let started_at = service.clock_copy().now();
+    service
+        .owner_mut()
+        .start_recording("ring independent of history", started_at)
+        .unwrap();
+    let clock = service.clock_copy();
+    let by = Instant::now() + Duration::from_secs(2);
+    while service.owner_mut().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let initial = service.owner().event_log().oldest_cursor();
+    for ordinal in 1..=lab_runtime::events::EVENT_RING_LIMIT + 10 {
+        service
+            .owner_mut()
+            .event_log_mut()
+            .host_state(started_at, "client_only", json!({"ordinal":ordinal}))
+            .unwrap();
+    }
+    assert!(service.owner().event_log().oldest_cursor() > initial);
+    assert!(service.owner().event_log().scan_after(initial, 1).is_err());
+    service.owner_mut().service(&clock).unwrap();
+    let status = service.owner_mut().recording_status().unwrap();
+    assert_eq!(status.state, RecordingState::Recording);
+    assert_eq!(status.coverage, "complete");
+    assert_eq!(status.first_missing_fact, None);
+    let stopped_at = service.clock_copy().now();
+    service.owner_mut().stop_recording_at(stopped_at).unwrap();
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    while service.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    }
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (coverage, gaps): (String, i64) = db
+        .query_row(
+            "SELECT intervals.coverage,(SELECT COUNT(*) FROM gaps) FROM recording_intervals AS intervals \
+             JOIN runs ON runs.boot_id=intervals.boot_id AND runs.run_no=intervals.run_no \
+             WHERE runs.label='ring independent of history'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(coverage, "complete");
+    assert_eq!(gaps, 0);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
