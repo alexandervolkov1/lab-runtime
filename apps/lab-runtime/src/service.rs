@@ -3,8 +3,12 @@
 //! Entropy failure, malformed CLI or failed safe profile prevents readiness.
 //! The network reactor is a separate adapter added after this host foundation.
 
-use crate::host::{Clock, HostCore, ShutdownStatus, SystemClock};
 use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor};
+use crate::{
+    configuration::{RecordingPolicyDto, load_runtime_toml},
+    deployment::DeploymentLifecycle,
+    host::{Clock, HostCore, ShutdownStatus, SystemClock},
+};
 use lab_core::Error as DomainError;
 use lab_core::managed::ComponentError;
 use std::{
@@ -28,10 +32,21 @@ pub struct RecordingOptions {
 pub struct ServiceOptions {
     port: u16,
     recording: Option<RecordingOptions>,
+    config: Option<PathBuf>,
 }
 impl ServiceOptions {
     /// Accept the fixed virtual profile, loopback port, and optional local Recorder.
     pub fn parse(args: &[&str]) -> Result<Self, String> {
+        if args.len() == 3 && args[0] == "--serve" && args[1] == "--config" {
+            if args[2].is_empty() {
+                return Err("configuration path must not be empty".into());
+            }
+            return Ok(Self {
+                port: 0,
+                recording: None,
+                config: Some(PathBuf::from(args[2])),
+            });
+        }
         if !matches!(args.len(), 5 | 7 | 9)
             || args[0] != "--serve"
             || args[1] != "--profile"
@@ -67,7 +82,11 @@ impl ServiceOptions {
         } else {
             None
         };
-        Ok(Self { port, recording })
+        Ok(Self {
+            port,
+            recording,
+            config: None,
+        })
     }
 
     /// Requested loopback TCP port; zero delegates selection to the OS.
@@ -78,6 +97,11 @@ impl ServiceOptions {
     /// Selected Recorder path/policy, if durability is enabled for this host.
     pub fn recording(&self) -> Option<&RecordingOptions> {
         self.recording.as_ref()
+    }
+
+    /// Selected declarative deployment path, if profile startup is not used.
+    pub fn configuration_path(&self) -> Option<&std::path::Path> {
+        self.config.as_deref()
     }
 }
 
@@ -93,6 +117,7 @@ pub struct ServiceHost {
     recorder_flush_since: Option<std::time::Instant>,
     terminal: Option<ShutdownStatus>,
     fatal: bool,
+    deployment: Option<DeploymentLifecycle>,
 }
 impl ServiceHost {
     /// Bind a trusted already-safe host fixture on loopback, without changing its
@@ -139,10 +164,32 @@ impl ServiceHost {
             recorder_flush_since: None,
             terminal: None,
             fatal: false,
+            deployment: None,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
     pub fn startup(options: ServiceOptions) -> Result<Self, Box<dyn Error>> {
+        let loaded = options
+            .configuration_path()
+            .map(load_runtime_toml)
+            .transpose()?;
+        let (port, configured_recording) = if let Some(deployment) = loaded.as_ref() {
+            let dto = &deployment.effective().dto;
+            let recording = if dto.recording.enabled {
+                Some(RecordingOptions {
+                    path: deployment.resolved_path(&dto.recording.path)?,
+                    policy: match dto.recording.policy {
+                        RecordingPolicyDto::BestEffort => RecordingPolicy::BestEffort,
+                        RecordingPolicyDto::Required => RecordingPolicy::Required,
+                    },
+                })
+            } else {
+                None
+            };
+            (dto.server.port, recording)
+        } else {
+            (options.port(), options.recording().cloned())
+        };
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes)
             .map_err(|error| io::Error::other(format!("OS boot entropy unavailable: {error}")))?;
@@ -152,7 +199,7 @@ impl ServiceHost {
             write!(&mut boot_id, "{byte:02x}")?;
         }
         let clock = SystemClock::new();
-        let boot_anchor = if options.recording().is_some() {
+        let boot_anchor = if configured_recording.is_some() {
             Some(TimeAnchor::capture(
                 || clock.now(),
                 || Ok(std::time::SystemTime::now()),
@@ -160,44 +207,50 @@ impl ServiceHost {
         } else {
             None
         };
-        let mut host = HostCore::virtual_demo()?;
+        let mut host = if let Some(deployment) = loaded.as_ref() {
+            HostCore::configured_native(deployment)?
+        } else {
+            HostCore::virtual_demo()?
+        };
         host.set_boot_id(&boot_id);
         if !host.shutdown_status().safe_confirmed {
             return Err(io::Error::other("startup safe evidence unavailable").into());
         }
-        let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let supervisor = loop {
-            match lab_lua::LuaSupervisor::new() {
-                Ok(supervisor) => break supervisor,
-                Err(ComponentError::Busy) if std::time::Instant::now() < init_deadline => {
-                    std::thread::yield_now()
+        if loaded.is_none() {
+            let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let supervisor = loop {
+                match lab_lua::LuaSupervisor::new() {
+                    Ok(supervisor) => break supervisor,
+                    Err(ComponentError::Busy) if std::time::Instant::now() < init_deadline => {
+                        std::thread::yield_now()
+                    }
+                    Err(error) => return Err(DomainError::from(error).into()),
                 }
-                Err(error) => return Err(DomainError::from(error).into()),
+            };
+            host.install_component_executor(Box::new(supervisor))?;
+            host.stage_standard_lua(clock.now())?;
+            while !host.source_lua_initialized() {
+                if std::time::Instant::now() >= init_deadline {
+                    let _ = host.begin_shutdown(&clock);
+                    return Err(io::Error::other("managed Source init deadline").into());
+                }
+                host.service(&clock)?;
+                std::thread::yield_now();
             }
-        };
-        host.install_component_executor(Box::new(supervisor))?;
-        host.stage_standard_lua(clock.now())?;
-        while !host.source_lua_initialized() {
-            if std::time::Instant::now() >= init_deadline {
-                let _ = host.begin_shutdown(&clock);
-                return Err(io::Error::other("managed Source init deadline").into());
+            host.stage_standard_filter(clock.now())?;
+            while !host.standard_lua_initialized() {
+                if std::time::Instant::now() >= init_deadline {
+                    let _ = host.begin_shutdown(&clock);
+                    return Err(io::Error::other("managed startup init deadline").into());
+                }
+                host.service(&clock)?;
+                std::thread::yield_now();
             }
-            host.service(&clock)?;
-            std::thread::yield_now();
+            host.activate_standard_lua(clock.now())?;
         }
-        host.stage_standard_filter(clock.now())?;
-        while !host.standard_lua_initialized() {
-            if std::time::Instant::now() >= init_deadline {
-                let _ = host.begin_shutdown(&clock);
-                return Err(io::Error::other("managed startup init deadline").into());
-            }
-            host.service(&clock)?;
-            std::thread::yield_now();
-        }
-        host.activate_standard_lua(clock.now())?;
-        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
         listener.set_nonblocking(true)?;
-        if let Some(recording) = options.recording() {
+        if let Some(recording) = configured_recording.as_ref() {
             let worker = RecorderWorker::open_with_boot_clock(
                 &recording.path,
                 RecorderLimits::default(),
@@ -220,6 +273,7 @@ impl ServiceHost {
             recorder_flush_since: None,
             terminal: None,
             fatal: false,
+            deployment: loaded.map(DeploymentLifecycle::new),
         })
     }
 
@@ -317,6 +371,10 @@ impl ServiceHost {
     /// Borrow the owner mutably only from the serialized service loop.
     pub fn owner_mut(&mut self) -> &mut HostCore {
         &mut self.host
+    }
+    /// Current immutable loaded deployment, absent for the legacy virtual profile.
+    pub const fn loaded_configuration(&self) -> Option<&DeploymentLifecycle> {
+        self.deployment.as_ref()
     }
     /// Return the one monotonic process clock used by the owner.
     pub const fn clock(&self) -> &SystemClock {

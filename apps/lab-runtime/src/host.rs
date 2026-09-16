@@ -4,11 +4,14 @@
 //! infer a cadence from a native controller's failure threshold. A skipped slot
 //! receives one actual-time opportunity, never a replay at an old deadline.
 
-use crate::events::{EventError, EventLog};
 use crate::recorder::{
     AnnotationRecord, BoundarySnapshot, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord,
     ProvenanceEntry, ProvenanceObject, RecorderGap, RecorderWorker, RecordingPolicy,
     RecordingState, RecordingStatus, RunsCursor, RunsPage, StorageError,
+};
+use crate::{
+    configuration::{FrozenDeployment, InstrumentDto},
+    events::{EventError, EventLog},
 };
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
@@ -288,8 +291,121 @@ pub struct HostCore {
     last_recording_submission: Option<Duration>,
     recorder_finish_requested: bool,
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
+    deployment_provenance: Vec<ProvenanceEntry>,
 }
 impl HostCore {
+    /// Construct a validated configured native observation graph without opening
+    /// storage, listeners, Lua or physical resources.
+    pub fn configured_native(deployment: &FrozenDeployment) -> Result<Self, Error> {
+        let dto = &deployment.effective().dto;
+        if !dto.resources.is_empty()
+            || !dto.managed_components.is_empty()
+            || !dto.references.is_empty()
+            || !dto.controllers.is_empty()
+            || !dto.safe_profiles.is_empty()
+            || dto
+                .instruments
+                .iter()
+                .any(|instrument| matches!(instrument, InstrumentDto::Metakon { .. }))
+        {
+            return Err(Error::InvalidConfiguration(
+                "configured graph capability not initialized",
+            ));
+        }
+        let mut runtime = Runtime::new();
+        let mut measurements = Vec::with_capacity(dto.instruments.len());
+        for instrument in &dto.instruments {
+            match instrument {
+                InstrumentDto::VirtualMeasurement {
+                    id,
+                    display_name,
+                    history_capacity,
+                    base_temperature,
+                    measurement_enabled,
+                    poll_period_ms,
+                    ..
+                } => {
+                    runtime.command(Command::RegisterVirtual(
+                        lab_core::VirtualInstrumentConfig {
+                            id: InstrumentId::new(*id),
+                            name: display_name.clone(),
+                            history_capacity: *history_capacity,
+                            base_temperature: *base_temperature,
+                            measurement_enabled: *measurement_enabled,
+                        },
+                    ))?;
+                    measurements.push((
+                        InstrumentId::new(*id),
+                        Periodic::new(Duration::from_millis(*poll_period_ms)),
+                    ));
+                }
+                InstrumentDto::ThermalPlant {
+                    id,
+                    display_name,
+                    history_capacity,
+                    ambient_temperature,
+                    initial_temperature,
+                    gain_per_percent,
+                    time_constant_ms,
+                    poll_period_ms,
+                    ..
+                } => {
+                    runtime.command(Command::RegisterThermalPlant(ThermalPlantConfig {
+                        id: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                        history_capacity: *history_capacity,
+                        ambient_temperature: *ambient_temperature,
+                        initial_temperature: *initial_temperature,
+                        gain_per_percent: *gain_per_percent,
+                        time_constant: Duration::from_millis(*time_constant_ms),
+                    }))?;
+                    measurements.push((
+                        InstrumentId::new(*id),
+                        Periodic::new(Duration::from_millis(*poll_period_ms)),
+                    ));
+                }
+                InstrumentDto::Metakon { .. } => unreachable!("rejected above"),
+            }
+        }
+        let events = EventLog::new(&runtime, &[], &[], "00000000000000000000000000000000");
+        let deployment_provenance = deployment
+            .provenance_entries()
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        Ok(Self {
+            runtime,
+            events,
+            plan: SchedulePlan {
+                safety: Periodic::new(Duration::from_millis(10)),
+                plants: measurements,
+                references: Vec::new(),
+                controllers: Vec::new(),
+                sources: Vec::new(),
+                transforms: Vec::new(),
+            },
+            consumed: BTreeMap::new(),
+            consumed_managed: BTreeMap::new(),
+            components: Vec::new(),
+            outputs: Vec::new(),
+            active_safety_profiles: Vec::new(),
+            resources: Vec::new(),
+            last_now: Duration::ZERO,
+            stopping: false,
+            recorder: None,
+            recording_policy: None,
+            recording_status: None,
+            last_recording_submission: None,
+            recorder_finish_requested: false,
+            pending_operations: BTreeMap::new(),
+            deployment_provenance,
+        })
+    }
+
     /// Construct the bounded trusted native virtual slice in safe Ready state.
     pub fn virtual_demo() -> Result<Self, Error> {
         let mut runtime = Runtime::new();
@@ -393,6 +509,7 @@ impl HostCore {
             last_recording_submission: None,
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
+            deployment_provenance: Vec::new(),
         })
     }
 
@@ -449,7 +566,8 @@ impl HostCore {
     fn frozen_activation_entries(
         &self,
     ) -> Result<(Vec<ProvenanceEntry>, Vec<ProvenanceObject>), Error> {
-        let mut entries = Vec::with_capacity(8);
+        let mut entries = self.deployment_provenance.clone();
+        entries.reserve(8);
         let push =
             |entries: &mut Vec<ProvenanceEntry>, kind: &str, encoding: &str, content: Vec<u8>| {
                 entries.push(ProvenanceEntry {

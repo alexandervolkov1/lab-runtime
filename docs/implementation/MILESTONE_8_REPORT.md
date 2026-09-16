@@ -59,6 +59,14 @@ are not reported as passing evidence.
    no timeout write retry, disconnect recovery proof, oversize rejection and
    binding-generation replacement. Concrete open reads settings back and rejects
    driver substitution. This is software evidence only, not C16/C17/C19 hardware.
+6. C1/C2 configured-startup acceptance compile was red because
+   `ServiceHost::loaded_configuration` and configuration-driven composition did
+   not exist. Added the exclusive `--serve --config <path>` form, completed all
+   parsing and artifact freezing before entropy/listener/Recorder side effects,
+   constructed the explicit native observation graph, retained exact loaded
+   provenance, and bound the listener only after a safe/disarmed owner existed.
+   Both targeted tests pass. This slice intentionally does not yet claim managed
+   component, controller, or physical-resource startup composition.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

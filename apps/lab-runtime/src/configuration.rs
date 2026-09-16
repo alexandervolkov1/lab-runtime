@@ -146,7 +146,7 @@ enum ArtifactKind {
 /// instance. Stable read-only accessors are added only where composition needs it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectiveDeployment {
-    dto: DeploymentDto,
+    pub(crate) dto: DeploymentDto,
 }
 
 impl EffectiveDeployment {
@@ -174,6 +174,7 @@ impl EffectiveDeployment {
 /// Exact loaded source set plus its validated effective meaning.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrozenDeployment {
+    base: PathBuf,
     toml_bytes: Arc<[u8]>,
     toml_hash: [u8; 32],
     effective: EffectiveDeployment,
@@ -199,6 +200,31 @@ impl FrozenDeployment {
     /// Referenced definitions and sources frozen during validation.
     pub fn artifacts(&self) -> &[FrozenArtifact] {
         &self.artifacts
+    }
+
+    pub(crate) fn resolved_path(&self, declared: &Path) -> Result<PathBuf, ConfigurationError> {
+        resolve_artifact(&self.base, declared)
+    }
+
+    pub(crate) fn provenance_entries(&self) -> Vec<(String, String, Vec<u8>)> {
+        let mut entries = Vec::with_capacity(self.artifacts.len() + 1);
+        entries.push((
+            "runtime_toml".into(),
+            "utf8".into(),
+            self.toml_bytes.to_vec(),
+        ));
+        entries.extend(self.artifacts.iter().map(|artifact| {
+            (
+                match artifact.kind {
+                    ArtifactKind::InstrumentDefinition => "instrument_definition",
+                    ArtifactKind::ManagedLuaSource => "managed_lua_source",
+                }
+                .into(),
+                "utf8".into(),
+                artifact.bytes.to_vec(),
+            )
+        }));
+        entries
     }
 
     pub(crate) fn changes_from(&self, active: &Self) -> DeploymentChanges {
@@ -336,6 +362,7 @@ pub fn parse_runtime_toml(
         return Err(ConfigurationError::TooLarge);
     }
     Ok(FrozenDeployment {
+        base: base.to_path_buf(),
         toml_bytes: Arc::from(bytes),
         toml_hash: Sha256::digest(bytes).into(),
         effective: EffectiveDeployment { dto },
@@ -770,82 +797,82 @@ fn bounded_message(message: &str) -> String {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct DeploymentDto {
-    schema_version: u16,
-    runtime: RuntimeDto,
-    server: ServerDto,
-    recording: RecordingDto,
+pub(crate) struct DeploymentDto {
+    pub(crate) schema_version: u16,
+    pub(crate) runtime: RuntimeDto,
+    pub(crate) server: ServerDto,
+    pub(crate) recording: RecordingDto,
     #[serde(default)]
-    resources: Vec<ResourceDto>,
+    pub(crate) resources: Vec<ResourceDto>,
     #[serde(default)]
-    instruments: Vec<InstrumentDto>,
+    pub(crate) instruments: Vec<InstrumentDto>,
     #[serde(default)]
-    managed_components: Vec<ManagedComponentDto>,
+    pub(crate) managed_components: Vec<ManagedComponentDto>,
     #[serde(default)]
-    references: Vec<ReferenceDto>,
+    pub(crate) references: Vec<ReferenceDto>,
     #[serde(default)]
-    controllers: Vec<ControllerDto>,
+    pub(crate) controllers: Vec<ControllerDto>,
     #[serde(default)]
-    safe_profiles: Vec<SafeProfileDto>,
+    pub(crate) safe_profiles: Vec<SafeProfileDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct RuntimeDto {
-    key: String,
-    display_name: String,
+pub(crate) struct RuntimeDto {
+    pub(crate) key: String,
+    pub(crate) display_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ServerDto {
-    host: String,
-    port: u16,
+pub(crate) struct ServerDto {
+    pub(crate) host: String,
+    pub(crate) port: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct RecordingDto {
-    enabled: bool,
+pub(crate) struct RecordingDto {
+    pub(crate) enabled: bool,
     #[serde(default)]
-    path: PathBuf,
-    policy: RecordingPolicyDto,
+    pub(crate) path: PathBuf,
+    pub(crate) policy: RecordingPolicyDto,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum RecordingPolicyDto {
+pub(crate) enum RecordingPolicyDto {
     BestEffort,
     Required,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ResourceDto {
-    id: u64,
-    key: String,
-    kind: ResourceKindDto,
-    port: String,
-    baud_rate: u32,
-    data_bits: u8,
-    parity: ParityDto,
-    stop_bits: u8,
-    flow_control: FlowControlDto,
-    read_timeout_ms: u64,
-    write_timeout_ms: u64,
-    open_timeout_ms: u64,
-    recovery_timeout_ms: u64,
+pub(crate) struct ResourceDto {
+    pub(crate) id: u64,
+    pub(crate) key: String,
+    pub(crate) kind: ResourceKindDto,
+    pub(crate) port: String,
+    pub(crate) baud_rate: u32,
+    pub(crate) data_bits: u8,
+    pub(crate) parity: ParityDto,
+    pub(crate) stop_bits: u8,
+    pub(crate) flow_control: FlowControlDto,
+    pub(crate) read_timeout_ms: u64,
+    pub(crate) write_timeout_ms: u64,
+    pub(crate) open_timeout_ms: u64,
+    pub(crate) recovery_timeout_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ResourceKindDto {
+pub(crate) enum ResourceKindDto {
     WindowsComReadOnly,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ParityDto {
+pub(crate) enum ParityDto {
     None,
     Odd,
     Even,
@@ -853,7 +880,7 @@ enum ParityDto {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum FlowControlDto {
+pub(crate) enum FlowControlDto {
     None,
     Software,
     Hardware,
@@ -861,7 +888,7 @@ enum FlowControlDto {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum InstrumentDto {
+pub(crate) enum InstrumentDto {
     VirtualMeasurement {
         id: u64,
         key: String,
@@ -974,62 +1001,62 @@ impl InstrumentDto {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ManagedComponentDto {
-    id: u64,
-    instrument_id: u64,
-    key: String,
-    display_name: String,
-    source: PathBuf,
+pub(crate) struct ManagedComponentDto {
+    pub(crate) id: u64,
+    pub(crate) instrument_id: u64,
+    pub(crate) key: String,
+    pub(crate) display_name: String,
+    pub(crate) source: PathBuf,
     #[serde(default)]
-    input_instrument_id: Option<u64>,
-    period_ms: u64,
+    pub(crate) input_instrument_id: Option<u64>,
+    pub(crate) period_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ReferenceDto {
-    id: u64,
-    kind: ReferenceKindDto,
-    value: f64,
-    unit_id: String,
-    unit_symbol: String,
+pub(crate) struct ReferenceDto {
+    pub(crate) id: u64,
+    pub(crate) kind: ReferenceKindDto,
+    pub(crate) value: f64,
+    pub(crate) unit_id: String,
+    pub(crate) unit_symbol: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ReferenceKindDto {
+pub(crate) enum ReferenceKindDto {
     Fixed,
     Ramp,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct ControllerDto {
-    id: u64,
-    input_instrument_id: u64,
-    input_parameter_id: u64,
-    output_instrument_id: u64,
-    output_parameter_id: u64,
-    reference_id: u64,
-    period_ms: u64,
+pub(crate) struct ControllerDto {
+    pub(crate) id: u64,
+    pub(crate) input_instrument_id: u64,
+    pub(crate) input_parameter_id: u64,
+    pub(crate) output_instrument_id: u64,
+    pub(crate) output_parameter_id: u64,
+    pub(crate) reference_id: u64,
+    pub(crate) period_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct SafeProfileDto {
-    instrument_id: u64,
-    parameter_id: u64,
-    min: f64,
-    max: f64,
-    safe_value: f64,
-    max_lease_ms: u64,
-    max_proposal_ttl_ms: u64,
-    required_evidence: EvidenceDto,
+pub(crate) struct SafeProfileDto {
+    pub(crate) instrument_id: u64,
+    pub(crate) parameter_id: u64,
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) safe_value: f64,
+    pub(crate) max_lease_ms: u64,
+    pub(crate) max_proposal_ttl_ms: u64,
+    pub(crate) required_evidence: EvidenceDto,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum EvidenceDto {
+pub(crate) enum EvidenceDto {
     Ack,
     Readback,
 }
