@@ -9,6 +9,8 @@ use lab_runtime::{
 };
 use serde_json::json;
 use std::{
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -86,6 +88,107 @@ fn database_option_defaults_to_required_and_invalid_candidates_do_not_start() {
         std::thread::yield_now();
     }
     assert!(!path.exists());
+}
+
+#[test]
+fn explicit_unopenable_storage_fails_startup_before_readiness_for_both_policies() {
+    let parent = temporary_database().with_extension("missing-parent");
+    assert!(!parent.exists());
+    let path = parent.join("recording.sqlite");
+    let text = path.to_string_lossy();
+    for policy in ["required", "best-effort"] {
+        let options = ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            text.as_ref(),
+            "--record-policy",
+            policy,
+        ])
+        .unwrap();
+        let error = match ServiceHost::startup(options) {
+            Ok(_) => panic!("missing storage parent must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("sqlite")
+                || error.to_string().contains("open")
+                || error.to_string().contains("storage"),
+            "unexpected startup error: {error}"
+        );
+        assert!(!path.exists());
+    }
+
+    std::fs::create_dir(&parent).unwrap();
+    let directory_text = parent.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        directory_text.as_ref(),
+    ])
+    .unwrap();
+    assert!(
+        ServiceHost::startup(options).is_err(),
+        "a directory cannot become an implicit replacement database"
+    );
+    std::fs::remove_dir(parent).unwrap();
+}
+
+#[test]
+fn oversized_existing_archive_is_rejected_without_startup_mutation() {
+    let path = temporary_database();
+    let mut store = lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "00000000000000000000000000000a01",
+    )
+    .unwrap();
+    store.finish_boot(Duration::ZERO).unwrap();
+    let (page_size, _, _) = store.storage_pages().unwrap();
+    store.close().unwrap();
+
+    let oversized_pages = (1024u64 * 1024 * 1024) / page_size + 1;
+    let oversized_len = oversized_pages.checked_mul(page_size).unwrap();
+    let page_count = u32::try_from(oversized_pages).unwrap();
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.seek(SeekFrom::Start(28)).unwrap();
+    file.write_all(&page_count.to_be_bytes()).unwrap();
+    file.set_len(oversized_len).unwrap();
+    file.flush().unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let mut header_before = [0u8; 100];
+    file.read_exact(&mut header_before).unwrap();
+    drop(file);
+
+    let error = match lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "00000000000000000000000000000a02",
+    ) {
+        Ok(_) => panic!("archive above the fixed one-GiB logical cap must fail startup"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("exceeds one GiB"),
+        "unexpected quota error: {error}"
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), oversized_len);
+    let mut file = OpenOptions::new().read(true).open(&path).unwrap();
+    let mut header_after = [0u8; 100];
+    file.read_exact(&mut header_after).unwrap();
+    assert_eq!(header_after, header_before);
+    drop(file);
+    assert!(!path.with_extension("sqlite-wal").exists());
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
