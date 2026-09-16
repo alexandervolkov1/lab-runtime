@@ -5,12 +5,15 @@ use lab_core::{
     control::ControllerState,
 };
 use lab_runtime::{
+    application::Application,
     host::{Clock, HostCore},
     recorder::{
         RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, SqliteStore, WriterBarrier,
     },
     service::{ServiceHost, ServiceOptions},
+    wire::{decode_frame, encode_frame},
 };
+use serde_json::json;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -444,6 +447,115 @@ fn running_controller_shutdown_drains_held_measurement_before_final_safe_seal() 
     assert!(measurement_record < safe_record);
     assert!(safe_record < interval_seal);
     assert!(interval_seal < shutdown_record);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn public_shutdown_operation_waits_for_held_recorder_prefix_then_reports_durable_flush() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    service
+        .owner_mut()
+        .start_recording("public held shutdown", clock.now())
+        .unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let plant = service.owner().plant_id();
+    service
+        .owner_mut()
+        .command(Command::RefreshMeasurement {
+            instrument: plant,
+            parameter: lab_core::TEMPERATURE,
+            at: clock.now(),
+        })
+        .unwrap();
+    let held_by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < held_by);
+        std::thread::yield_now();
+    }
+    let frame = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = app.handle(
+        &mut service,
+        1,
+        frame(json!({"v":1,"msg_id":"public-hello","op":"hello","args":{"scope":null}})),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap();
+    let accepted = app.handle(
+        &mut service,
+        1,
+        frame(
+            json!({"v":1,"msg_id":"public-shutdown","op":"runtime_shutdown",
+            "request_id":{"scope":scope,"seq":"1"},"args":{}}),
+        ),
+    );
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0]["state"], "accepted");
+    assert!(service.shutdown_step().unwrap().is_none());
+    barrier.release();
+    let finished_by = Instant::now() + Duration::from_secs(4);
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < finished_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.safe_confirmed);
+    assert!(terminal.recorder_flushed, "{terminal:?}");
+    let reply = app.finish_shutdown(&mut service, terminal);
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].1["state"], "completed");
+    assert_eq!(reply[0].1["result"]["recorder_flushed"], true);
+    drop(app);
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let measurements: i64 = db
+        .query_row("SELECT COUNT(*) FROM measurements", [], |row| row.get(0))
+        .unwrap();
+    assert!(measurements >= 1);
+    let accepted_operation: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM operation_events WHERE command='shutdown' AND phase='accepted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(accepted_operation, 1);
+    let (accepted_record, final_record): (Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT (SELECT record_seq FROM operation_events WHERE command='shutdown' AND phase='accepted'),
+                    (SELECT record_seq FROM records WHERE kind='shutdown')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(accepted_record < final_record);
+    let seals: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_boots WHERE state='sealed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seals, 1);
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
