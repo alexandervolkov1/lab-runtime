@@ -608,6 +608,7 @@ fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
         )
         .unwrap();
     assert_eq!(first.rows.len(), 8);
+    assert_eq!(first.selected_rows, 9, "one lookahead row bounds keyset selection");
     assert_eq!(first.rows[0].published_at, Duration::from_secs(19_990));
     let second = store
         .read_history_measurements_with_budget(
@@ -618,6 +619,7 @@ fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
         )
         .unwrap();
     assert_eq!(second.rows.len(), 3);
+    assert_eq!(second.selected_rows, 3, "terminal page selects only matching rows");
     assert!(second.next_cursor.is_none());
     let ids = first
         .rows

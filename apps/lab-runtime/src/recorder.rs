@@ -384,6 +384,9 @@ impl HistoryCursor {
 pub struct HistoryPage {
     /// Matching committed rows, with Unavailable preserved as a raw row.
     pub rows: Vec<MeasurementRow>,
+    /// Rows decoded by this indexed selection, including at most one lookahead.
+    /// This worker-side diagnostic is bounded by `rows.len() + 1`.
+    pub selected_rows: usize,
     /// Durable record checkpoint frozen on the first page.
     pub watermark: u64,
     /// Continuation only if more matching rows existed at that checkpoint.
@@ -2555,6 +2558,7 @@ impl SqliteStore {
         let Some(upper) = upper else {
             return Ok(HistoryPage {
                 rows: Vec::new(),
+                selected_rows: 0,
                 watermark,
                 next_cursor: None,
                 coverage,
@@ -2595,10 +2599,12 @@ impl SqliteStore {
             decode_measurement_row,
         )?;
         let mut rows = Vec::with_capacity(limit);
+        let mut selected_rows = 0usize;
         let mut page_bytes = 0usize;
         let mut has_more = false;
         for selected_row in selected {
             let row = selected_row?;
+            selected_rows += 1;
             // UTF-8 control bytes can become six JSON bytes (e.g. `\u0000`).
             // Leave room for the page envelope and cursor before app encoding.
             let escaped = |value: &str| value.len().saturating_mul(6);
@@ -2638,6 +2644,7 @@ impl SqliteStore {
         };
         Ok(HistoryPage {
             rows,
+            selected_rows,
             watermark,
             next_cursor,
             coverage,

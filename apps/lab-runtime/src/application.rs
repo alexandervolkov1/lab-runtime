@@ -80,7 +80,7 @@ enum RetainedHistoryCursor {
     Runs(RunsCursor),
 }
 enum CompletedHistory {
-    Measurements(HistoryPage),
+    Measurements(Box<HistoryPage>),
     Runs(RunsPage),
 }
 
@@ -340,7 +340,7 @@ impl Application {
                     .try_take_history(pending.job)
                     .map(|result| {
                         result
-                            .map(CompletedHistory::Measurements)
+                            .map(|page| CompletedHistory::Measurements(Box::new(page)))
                             .map_err(|_| "history_failed")
                     })
             };
