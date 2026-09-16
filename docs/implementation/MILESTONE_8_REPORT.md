@@ -39,9 +39,10 @@ are not reported as passing evidence.
    ancestor. The only incoming changes were the expected uncommitted Astra design
    and coordination documents. `git diff --check` passed.
 2. Read all required coordination, project, release-plan and M8-design files.
-   The donor path `D:\rust\com_port_reader` is unavailable on this computer;
-   no donor file was modified. Committed the documentation-only design checkpoint
-   as `443fa4e`.
+   The initially supplied donor path `D:\rust\com_port_reader` was unavailable;
+   the actual machine-local path was provided and inspected read-only during the
+   later correction review recorded below. Committed the documentation-only
+   design checkpoint as `443fa4e`.
 3. C1-C4 first acceptance test compile was red because
    `lab_runtime::configuration` did not exist. An unrelated fixture byte-string
    encoding error was corrected and red was repeated, leaving only the missing
@@ -432,12 +433,59 @@ carry raw values without one universal decimal-point position; the polling
 application must apply the configured device/sensor interpretation. The strict
 frame decoder and signed I16 raw semantics were therefore preserved unchanged.
 
-The configured donor path `D:\rust\com_port_reader` was checked and is absent on
-this computer (`Test-Path` returned `False`). Consequently no donor source,
-profile, commit or test could be inspected, and no donor file was modified. The
-correction relies only on the reviewed protocol conclusion and the real bench
-evidence: valid register-1 raw I16 values 23/24 for this Metakon 513
-thermocouple deployment must represent 23/24 °C, not 2.3/2.4 °C.
+The initially supplied donor path `D:\rust\com_port_reader` was wrong for this
+machine. The user later supplied the actual path
+`D:\rust_projects\com_port_reader`. Read-only verification found a clean
+`feature/rust-core-api` checkout at
+`8226aecafaecbb243d21d0a10e8653a7564ad484`, described as
+`v0.1.0-33-g8226aec`. No donor file was modified and donor tests were not run,
+because doing so would write build artifacts into the read-only repository.
+
+The donor protocol path is direct and does not contain an implicit decimal-point
+rule. `src/protocol/metakon.rs` uses `ReadRegisterRequest::encode`,
+`decode_response`, `calculate_crc` and `parse_register_value`; type code 4 is
+decoded as little-endian signed I16. `src/instrument/metakon_5x3.rs` uses
+`Metakon5x3::verify_channel_type` to require register 0 U8 value 3, maps
+`Measurement` to register 1 with `RegisterDataType::Int`, and passes an external
+`process_value_scale` through `Metakon5x3Register::engineering_scale`.
+`src/lua_api/metakon.rs` obtains that explicit deployment scale from
+`app.metakon`, defaulting through `DEFAULT_METAKON_SCALE`; the default in
+`src/data/series.rs` is 1.0. Finally,
+`SerialCommandSource::read_instrument_value` and `scale_instrument_value` in
+`src/acquisition/serial_command_source.rs` compute engineering value as raw times
+that supplied scale. Register 0 does not select the scale, and this driver does
+not read a separate decimal-position register.
+
+The relevant donor tests are
+`matches_single_byte_reference_values`, `encodes_device_one_read_request`,
+`encodes_device_two_read_request`, `parses_positive_int_response`,
+`parses_negative_int_response`, `rejects_corrupted_crc`,
+`describes_all_channel_registers`, `creates_read_request`,
+`adds_metakon_series_by_parameter_key`, `reads_metakon_parameter_from_lua` and
+`exposes_metakon_parameter_descriptors`. Together they fix CRC/framing, raw I16
+decode, register/type mapping and explicit caller-selected scaling. The 0.1 test
+cases verify that a caller-selected tenths profile is propagated; they do not
+make 0.1 a universal Metakon temperature scale.
+
+More importantly, the donor Git history contains the actual physical deployment.
+Immediately before deletion commit `ca25185`, tree
+`ecd5fc8cce1b6bf21602703cab2b02824f07c7a9` tracked
+`profiles/three_metakon.lua` with COM5/9600/8N1/no-flow and
+`lua_scripts/three_metakon_control.lua` with addresses 1, 2 and 5, channel 0,
+explicit `scale = 1.0`, and a periodic `measurement` series. Machine-local
+ignored logs provide direct execution evidence: `logs/application 2026-08-17.log`
+records the profile on COM5 and device 5 measurement reads of 24, 26, 27 and 28
+with `scale 1`; line 311 specifically records device 5/register-1 engineering
+measurement 24. This explains why the old application displayed a value near the
+front panel: raw I16 24 was multiplied by 1.0. The packaged ignored copy in
+`dist/com_port_reader-0.1.0-windows-x86_64` retains the same COM5/address-5/
+scale-1 deployment, but is supporting machine-local evidence rather than a file
+tracked at current HEAD.
+
+The donor therefore independently confirms the reviewed correction: valid
+register-1 raw I16 values 23/24 for this Metakon 513 thermocouple deployment are
+23/24 °C, not 2.3/2.4 °C. No further software or profile-representation change is
+required before the corrected read-only rerun.
 
 Correction A began with red acceptance
 `c16_metakon_513_thermocouple_scale_preserves_raw_degree_values`. The actual

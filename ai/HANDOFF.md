@@ -90,8 +90,8 @@ No real Metakon was connected, no operator-confirmed COM port or recovery bounda
 was provided, and no real port or physical operation was attempted. C16, C17 and
 the hardware subgate of C19 therefore remain open, along with the bench portions
 of C12/C14/C18. Deterministic transports are only software evidence. No actuator
-write or physical-output safety claim was made. The donor path was unavailable
-and was not modified.
+write or physical-output safety claim was made. The initially supplied donor
+path was unavailable; the actual path was inspected later as recorded below.
 
 M8 real Metakon review stop — 2026-09-16
 
@@ -123,8 +123,9 @@ the reviewed correction checkpoint below supersedes it.
 
 Documentation only: no production code, tests or dependencies changed; no COM
 opened; no accepted M7 test gate rerun or new hardware evidence claimed. The
-donor path was unavailable on this computer and was not modified. No unrelated
-cleanup or ai/project_snapshot.txt changes were made.
+initially supplied donor path was unavailable on this computer. The later actual
+donor verification below supersedes that path finding. No unrelated cleanup or
+ai/project_snapshot.txt changes were made.
 
 M8 reviewed correction checkpoint — 2026-09-16
 
@@ -137,11 +138,18 @@ from the absolute runtime.toml parent while preserving exact loaded bytes and
 parent-traversal rejection. Commit `867f985` directs the corrected Required run
 to a fresh SQLite file, preserving the original bench archive unchanged.
 
-The donor path `D:\rust\com_port_reader` was absent (`Test-Path False`), so no
-donor evidence could be inspected. The accepted correction basis is the official
-protocol conclusion supplied in review plus the first bench's strict raw 23/24
-evidence. Final correction gates pass with 391 named tests in debug and release,
-fmt, all-target warning-denied Clippy, warning-denied rustdoc and diff check. The
+The actual donor at `D:\rust_projects\com_port_reader` was subsequently inspected
+read-only: clean HEAD `8226aecafaecbb243d21d0a10e8653a7564ad484`, describe
+`v0.1.0-33-g8226aec`. Its codec decodes register 1 as raw little-endian I16 and
+applies an explicit caller-selected engineering scale; register 0 only validates
+channel type 3. Historical tracked COM5 configuration includes address 5 with
+`scale = 1.0`, and ignored machine-local execution logs record device 5
+measurements 24/26/27/28 with scale 1. This independently confirms the M8
+whole-degree profile; no further software change is required. Exact symbols,
+tests and provenance are in `MILESTONE_8_REPORT.md`. No donor file was modified.
+
+Final correction gates pass with 391 named tests in debug and release, fmt,
+all-target warning-denied Clippy, warning-denied rustdoc and diff check. The
 report records one transient old Recorder timing-test failure and its passing
 isolated, binary and complete-workspace reruns. COM5 was not reopened.
 
