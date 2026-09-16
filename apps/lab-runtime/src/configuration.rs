@@ -417,11 +417,26 @@ pub(crate) struct DeploymentChanges {
 
 /// Read and validate one main file with its parent as the immutable path base.
 pub fn load_runtime_toml(path: &Path) -> Result<FrozenDeployment, ConfigurationError> {
-    let parent = path
+    // Freeze the deployment location once, before parsing. Relative paths inside
+    // runtime.toml are then owned by that file rather than by a later process
+    // working directory. This is lexical absolutization, not canonicalization:
+    // the existing parent-traversal rejection remains authoritative.
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                ConfigurationError::artifact_text(&format!(
+                    "configuration working directory: {error}"
+                ))
+            })?
+            .join(path)
+    };
+    let parent = absolute
         .parent()
         .ok_or_else(|| ConfigurationError::invalid("runtime.toml has no parent"))?;
     let mut reader = FileArtifactReader;
-    let bytes = reader.read(path, MAX_RUNTIME_TOML_BYTES)?;
+    let bytes = reader.read(&absolute, MAX_RUNTIME_TOML_BYTES)?;
     parse_runtime_toml(&bytes, parent, &mut reader)
 }
 

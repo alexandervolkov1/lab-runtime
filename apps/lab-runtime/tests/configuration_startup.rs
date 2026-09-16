@@ -7,7 +7,11 @@ use lab_core::{
     reference::{ReferenceId, ReferenceSnapshot},
 };
 use lab_runtime::service::{ServiceHost, ServiceOptions};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 fn temporary_path(label: &str, extension: &str) -> PathBuf {
     let mut entropy = [0u8; 12];
@@ -106,6 +110,40 @@ proposal_ttl_ms=200
     )
 }
 
+fn recorded_virtual_toml() -> String {
+    virtual_toml("Relative path", 0).replace(
+        "enabled=false\npolicy=\"best_effort\"",
+        "enabled=true\npath=\"history.sqlite\"\npolicy=\"required\"",
+    )
+}
+
+fn shutdown(mut service: ServiceHost) {
+    service.request_shutdown().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        if service.shutdown_step().unwrap().is_some() {
+            return;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+}
+
+fn remove_relative_fixture(directory: &Path) {
+    for name in [
+        "history.sqlite-shm",
+        "history.sqlite-wal",
+        "history.sqlite",
+        "runtime.toml",
+    ] {
+        let path = directory.join(name);
+        if path.exists() {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    fs::remove_dir(directory).unwrap();
+}
+
 #[test]
 fn c1_configured_startup_uses_explicit_graph_and_remains_disarmed() {
     let path = temporary_path("startup", "toml");
@@ -132,6 +170,71 @@ fn c1_configured_startup_uses_explicit_graph_and_remains_disarmed() {
     );
     drop(service);
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn c1_relative_and_absolute_config_paths_resolve_the_same_recorder_database() {
+    let mut entropy = [0u8; 12];
+    getrandom::fill(&mut entropy).unwrap();
+    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+    let current = std::env::current_dir().unwrap();
+    let directory = current.join(format!(".lab-runtime-m8-relative-{suffix}"));
+    fs::create_dir(&directory).unwrap();
+    let absolute = directory.join("runtime.toml");
+    let bytes = recorded_virtual_toml();
+    fs::write(&absolute, &bytes).unwrap();
+    let relative = absolute.strip_prefix(&current).unwrap();
+
+    let relative_text = relative.to_string_lossy().into_owned();
+    let relative_result = ServiceHost::startup(
+        ServiceOptions::parse(&["--serve", "--config", &relative_text]).unwrap(),
+    );
+    let relative_service = match relative_result {
+        Ok(service) => service,
+        Err(error) => {
+            remove_relative_fixture(&directory);
+            panic!("relative deployment path failed before equivalent startup: {error}")
+        }
+    };
+    let relative_hash = relative_service
+        .loaded_configuration()
+        .unwrap()
+        .active()
+        .toml_hash();
+    let database_id = relative_service
+        .owner()
+        .recording_database_id()
+        .unwrap()
+        .to_owned();
+    shutdown(relative_service);
+
+    let absolute_text = absolute.to_string_lossy().into_owned();
+    let absolute_service = ServiceHost::startup(
+        ServiceOptions::parse(&["--serve", "--config", &absolute_text]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        absolute_service
+            .loaded_configuration()
+            .unwrap()
+            .active()
+            .toml_hash(),
+        relative_hash
+    );
+    assert_eq!(
+        absolute_service.owner().recording_database_id(),
+        Some(database_id.as_str())
+    );
+    assert_eq!(
+        absolute_service
+            .loaded_configuration()
+            .unwrap()
+            .active()
+            .toml_bytes(),
+        bytes.as_bytes()
+    );
+    shutdown(absolute_service);
+    remove_relative_fixture(&directory);
 }
 
 #[test]

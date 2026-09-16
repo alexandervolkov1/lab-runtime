@@ -420,6 +420,20 @@ recovery_timeout_ms = 2000
 }
 
 #[test]
+fn c3_relative_deployment_resolution_does_not_admit_parent_traversal() {
+    let base = Path::new("C:/lab/config");
+    let mut reader = MemoryReader::default();
+    let error = parse_runtime_toml(
+        &physical_config("../definitions/metakon.json"),
+        base,
+        &mut reader,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("parent traversal"));
+    assert_eq!(reader.reads, 0);
+}
+
+#[test]
 fn c4_native_graph_unit_and_output_role_mismatches_reject_before_artifact_reads() {
     let base = Path::new("C:/lab/config");
     for bytes in [
