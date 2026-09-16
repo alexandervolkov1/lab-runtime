@@ -1,6 +1,6 @@
 //! SQLite version-one storage on a dedicated host worker, outside `lab-core`.
 //!
-//! [`SqliteStore`] is deliberately synchronous: only the storage worker or an
+//! [`SqliteStore`](crate::recorder::SqliteStore) is deliberately synchronous: only the storage worker or an
 //! offline test may own it. The Runtime owner must hand groups to a bounded
 //! nonblocking ingress rather than call these methods on its safety lane.
 
