@@ -98,6 +98,7 @@ struct DisconnectWire {
     responses: VecDeque<Vec<u8>>,
     readable: VecDeque<u8>,
     writes: usize,
+    requests: Vec<Vec<u8>>,
     fail_reads_when_empty: bool,
 }
 
@@ -107,6 +108,7 @@ impl ByteTransport for DisconnectingTransport {
     fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
         let mut wire = self.0.borrow_mut();
         wire.writes += 1;
+        wire.requests.push(bytes.to_vec());
         if let Some(response) = wire.responses.pop_front() {
             wire.readable.extend(response);
         }
@@ -156,6 +158,54 @@ fn response_for(address: u8, flag: u8, payload: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(payload);
     bytes.push(crc(&bytes));
     bytes
+}
+
+struct MultiReader;
+impl ArtifactReader for MultiReader {
+    fn read(&mut self, path: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+        let id = if path.to_string_lossy().contains("metakon-12") {
+            12
+        } else {
+            11
+        };
+        Ok(std::str::from_utf8(DEFINITION)
+            .unwrap()
+            .replacen("\"id\":11", &format!("\"id\":{id}"), 1)
+            .into_bytes())
+    }
+}
+
+fn two_resource_config() -> Vec<u8> {
+    let mut text = std::str::from_utf8(CONFIG).unwrap().to_owned();
+    text.push_str(
+        r#"
+[[resources]]
+id=8
+key="second-bus"
+kind="windows_com_read_only"
+port="COM4"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=50
+write_timeout_ms=50
+open_timeout_ms=500
+recovery_timeout_ms=500
+[[instruments]]
+id=12
+key="second-temperature"
+kind="metakon"
+definition="metakon-12.json"
+resource_id=8
+address=2
+poll_period_ms=100
+queue_timeout_ms=50
+transaction_timeout_ms=50
+"#,
+    );
+    text.into_bytes()
 }
 
 #[test]
@@ -428,6 +478,355 @@ fn c14_explicit_rebind_after_offline_fences_old_session_and_resumes_new_generati
     assert_eq!(sample.value(), Some(&lab_core::Value::Float(25.1)));
     assert_eq!(sample.quality(), lab_core::SampleQuality::Good);
     assert_eq!(host.resource_records()[0]["target"]["id"], "7");
+}
+
+#[test]
+fn c14_reconnect_replacement_stays_quiesced_until_probe_and_lifecycle_activation() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(7),
+        Box::new(ScriptedTransport {
+            responses: VecDeque::from([channel_type_response(), temperature_response(200)]),
+            ..ScriptedTransport::default()
+        }),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    host.begin_configured_probes(clock.now()).unwrap();
+    for milliseconds in [0, 10, 20, 30] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(host.configured_probes_ready().unwrap());
+
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+    let replacement = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([channel_type_response(), temperature_response(251)]),
+        ..DisconnectWire::default()
+    }));
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(replacement.clone())),
+        Duration::from_millis(40),
+    )
+    .unwrap();
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    host.begin_configured_probes_for_resource(ResourceId::new(7), Duration::from_millis(40))
+        .unwrap();
+    assert_eq!(
+        host.configured_probes_ready_for_resource(ResourceId::new(7)),
+        Ok(false),
+        "the rebind fence is a probe baseline, not an immediate probe failure"
+    );
+
+    for milliseconds in [41, 50, 60, 100, 110, 120, 200] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(
+        host.configured_probes_ready_for_resource(ResourceId::new(7))
+            .unwrap()
+    );
+    assert_eq!(replacement.borrow().writes, 1, "only the probe may run");
+    let temperature = SignalId::new(
+        lab_core::InstrumentId::new(11),
+        lab_core::ParameterId::new(2),
+    );
+    let QueryResult::Latest(Some(fenced)) =
+        host.query(Query::GetLatestSignal(temperature)).unwrap()
+    else {
+        panic!("rebind must leave an explicit unavailable observation")
+    };
+    assert_eq!(fenced.quality(), lab_core::SampleQuality::Unavailable);
+    assert_eq!(fenced.value(), None);
+
+    host.activate_configured_resource_after_reconnect(
+        ResourceId::new(7),
+        Duration::from_millis(200),
+    )
+    .unwrap();
+    assert!(!host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
+    clock.0 = Duration::from_millis(299);
+    host.service(&clock).unwrap();
+    assert_eq!(replacement.borrow().writes, 1);
+    for milliseconds in [300, 310, 320] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert_eq!(replacement.borrow().writes, 2);
+    let QueryResult::Latest(Some(sample)) =
+        host.query(Query::GetLatestSignal(temperature)).unwrap()
+    else {
+        panic!("ordinary acquisition did not resume after activation")
+    };
+    assert_eq!(sample.quality(), lab_core::SampleQuality::Good);
+    assert_eq!(sample.value(), Some(&lab_core::Value::Float(25.1)));
+}
+
+#[test]
+fn c14_failed_post_install_probe_keeps_new_generation_quiesced_and_offline() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(ResourceId::new(7), Box::new(ScriptedTransport::default()));
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+
+    let wrong_probe = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([response_for(1, 0x41, &[2]), temperature_response(999)]),
+        ..DisconnectWire::default()
+    }));
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(wrong_probe.clone())),
+        Duration::from_millis(10),
+    )
+    .unwrap();
+    host.begin_configured_probes_for_resource(ResourceId::new(7), Duration::from_millis(10))
+        .unwrap();
+    let mut clock = TestClock::default();
+    for milliseconds in [11, 20, 30, 100, 200] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(
+        host.configured_probes_ready_for_resource(ResourceId::new(7))
+            .is_err()
+    );
+    assert!(
+        host.activate_configured_resource_after_reconnect(
+            ResourceId::new(7),
+            Duration::from_millis(200),
+        )
+        .is_err(),
+        "failed compatibility cannot create an acquisition-ready resource"
+    );
+    assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
+    assert_eq!(
+        wrong_probe.borrow().writes,
+        1,
+        "temperature must stay gated"
+    );
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    assert!(
+        host.retire_failed_configured_reconnect(ResourceId::new(7), clock.now())
+            .unwrap()
+    );
+    assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
+    assert_eq!(host.resource_records()[0]["data"]["state"], "offline");
+    clock.0 = Duration::from_millis(1000);
+    host.service(&clock).unwrap();
+    assert_eq!(wrong_probe.borrow().writes, 1);
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!("failed replacement must retain fenced temperature")
+    };
+    assert_eq!(sample.quality(), lab_core::SampleQuality::Unavailable);
+    assert_eq!(sample.value(), None);
+
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+    let next = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([channel_type_response(), temperature_response(252)]),
+        ..DisconnectWire::default()
+    }));
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(next.clone())),
+        Duration::from_millis(1010),
+    )
+    .unwrap();
+    assert_eq!(host.configured_binding_generation(11), Some(3));
+    host.begin_configured_probes_for_resource(ResourceId::new(7), Duration::from_millis(1010))
+        .unwrap();
+    for milliseconds in [1011, 1020, 1030] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(
+        host.configured_probes_ready_for_resource(ResourceId::new(7))
+            .unwrap()
+    );
+    assert_eq!(next.borrow().writes, 1);
+}
+
+#[test]
+fn c14_probe_timeout_never_releases_ordinary_reconnect_acquisition() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(ResourceId::new(7), Box::new(ScriptedTransport::default()));
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+    let silent = Rc::new(RefCell::new(DisconnectWire::default()));
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(silent.clone())),
+        Duration::from_millis(10),
+    )
+    .unwrap();
+    host.begin_configured_probes_for_resource(ResourceId::new(7), Duration::from_millis(10))
+        .unwrap();
+    let mut clock = TestClock::default();
+    for milliseconds in (11..=700).step_by(10) {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(
+        host.configured_probes_ready_for_resource(ResourceId::new(7))
+            .is_err()
+    );
+    assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
+    assert!(
+        silent.borrow().writes <= 2,
+        "only the bounded probe retry is allowed"
+    );
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    let QueryResult::Latest(Some(sample)) = host
+        .query(Query::GetLatestSignal(SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        )))
+        .unwrap()
+    else {
+        panic!("probe timeout must preserve an unavailable temperature")
+    };
+    assert_eq!(sample.quality(), lab_core::SampleQuality::Unavailable);
+    assert_eq!(sample.value(), None);
+}
+
+#[test]
+fn c14_reconnect_probe_is_resource_scoped_while_unrelated_resource_continues() {
+    let config = two_resource_config();
+    let deployment = parse_runtime_toml(&config, Path::new("C:/bench"), &mut MultiReader).unwrap();
+    let first = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([channel_type_response(), temperature_response(200)]),
+        ..DisconnectWire::default()
+    }));
+    let second = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([
+            response_for(2, 0x41, &[3]),
+            response_for(2, 0x44, &210i16.to_le_bytes()),
+            response_for(2, 0x44, &211i16.to_le_bytes()),
+        ]),
+        ..DisconnectWire::default()
+    }));
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(first.clone())),
+    );
+    transports.insert(
+        ResourceId::new(8),
+        Box::new(DisconnectingTransport(second.clone())),
+    );
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    let mut clock = TestClock::default();
+    host.begin_configured_probes(clock.now()).unwrap();
+    for milliseconds in [0, 10, 20, 30] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    assert!(host.configured_probes_ready().unwrap());
+
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+    let replacement = Rc::new(RefCell::new(DisconnectWire {
+        responses: VecDeque::from([channel_type_response(), temperature_response(999)]),
+        ..DisconnectWire::default()
+    }));
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(DisconnectingTransport(replacement.clone())),
+        Duration::from_millis(40),
+    )
+    .unwrap();
+    first.borrow_mut().requests.clear();
+    second.borrow_mut().requests.clear();
+    host.begin_configured_probes_for_resource(ResourceId::new(7), Duration::from_millis(40))
+        .unwrap();
+    for milliseconds in [41, 50, 60, 100, 110, 120] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+
+    let replacement = replacement.borrow();
+    assert_eq!(replacement.requests.len(), 1);
+    assert_eq!(
+        replacement.requests[0][2], 0,
+        "target receives only register 0 probe"
+    );
+    let second = second.borrow();
+    assert!(
+        second.requests.iter().any(|request| request[2] == 1),
+        "unrelated resource must continue ordinary temperature acquisition"
+    );
+    assert!(
+        second.requests.iter().all(|request| request[2] == 1),
+        "targeted reconnect must not reprobe an unrelated resource"
+    );
+}
+
+#[test]
+fn c19_shutdown_during_reconnect_probe_fences_work_and_closes_finitely() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(ResourceId::new(7), Box::new(ScriptedTransport::default()));
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(
+        host.prepare_configured_transport_replacement(ResourceId::new(7))
+            .unwrap()
+    );
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(ScriptedTransport::default()),
+        Duration::from_millis(10),
+    )
+    .unwrap();
+    host.begin_configured_probes_for_resource(ResourceId::new(7), Duration::from_millis(10))
+        .unwrap();
+    let mut clock = TestClock(Duration::from_millis(11));
+    host.service(&clock).unwrap();
+
+    host.begin_shutdown(&clock).unwrap();
+    for milliseconds in [12, 20, 30, 40] {
+        clock.0 = Duration::from_millis(milliseconds);
+        host.service(&clock).unwrap();
+    }
+    let status = host.shutdown_status();
+    assert!(status.transports_closed);
+    assert_eq!(status.unfinished_transports, 0);
+    assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
 }
 
 #[test]

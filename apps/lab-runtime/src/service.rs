@@ -178,6 +178,7 @@ struct PendingRecordedLifecycle {
     generation: Option<u64>,
     reopen_required: bool,
     submitted_at: std::time::Duration,
+    global_quiesced: bool,
 }
 
 struct LiveApplyPort<'a> {
@@ -904,6 +905,23 @@ impl ServiceHost {
         operation_kind: &'static str,
         deployment: &crate::configuration::FrozenDeployment,
     ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
+        self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, true)
+    }
+
+    fn begin_resource_recorded_lifecycle(
+        &mut self,
+        operation_kind: &'static str,
+        deployment: &crate::configuration::FrozenDeployment,
+    ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
+        self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, false)
+    }
+
+    fn begin_recorded_lifecycle_with_scope(
+        &mut self,
+        operation_kind: &'static str,
+        deployment: &crate::configuration::FrozenDeployment,
+        global_quiesced: bool,
+    ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
         let operation_id = self.next_lifecycle_operation;
         self.next_lifecycle_operation = operation_id
             .checked_add(1)
@@ -914,15 +932,20 @@ impl ServiceHost {
             .ok_or(LifecycleOperationError::ConfigurationDisabled)?
             .revision();
         let at = self.clock.now();
-        if !self
-            .host
-            .enter_configuration_safe_barrier(at)
-            .map_err(|_| LifecycleOperationError::OwnerFailure)?
-        {
-            return Err(LifecycleOperationError::RequiresSafeBarrier);
-        }
-        let reopen_required = self.host.begin_configuration_recording_fence(at);
-        self.host.begin_configuration_quiesce();
+        let reopen_required = if global_quiesced {
+            if !self
+                .host
+                .enter_configuration_safe_barrier(at)
+                .map_err(|_| LifecycleOperationError::OwnerFailure)?
+            {
+                return Err(LifecycleOperationError::RequiresSafeBarrier);
+            }
+            let reopen_required = self.host.begin_configuration_recording_fence(at);
+            self.host.begin_configuration_quiesce();
+            reopen_required
+        } else {
+            false
+        };
         let record = ConfigurationLifecycleRecord {
             operation_id,
             operation_kind,
@@ -941,19 +964,25 @@ impl ServiceHost {
                 .map_err(|_| LifecycleOperationError::OwnerFailure);
             match reservation {
                 Err(error) => {
-                    self.host.end_configuration_quiesce();
+                    if global_quiesced {
+                        self.host.end_configuration_quiesce();
+                    }
                     return Err(error);
                 }
                 Ok(Some(generation)) => break generation,
                 Ok(None) if std::time::Instant::now() < deadline => {
                     if self.host.service(&self.clock).is_err() {
-                        self.host.end_configuration_quiesce();
+                        if global_quiesced {
+                            self.host.end_configuration_quiesce();
+                        }
                         return Err(LifecycleOperationError::OwnerFailure);
                     }
                     std::thread::yield_now();
                 }
                 Ok(None) => {
-                    self.host.end_configuration_quiesce();
+                    if global_quiesced {
+                        self.host.end_configuration_quiesce();
+                    }
                     return Err(LifecycleOperationError::OwnerFailure);
                 }
             }
@@ -963,6 +992,7 @@ impl ServiceHost {
             generation,
             reopen_required,
             submitted_at: at,
+            global_quiesced,
         })
     }
 
@@ -970,7 +1000,9 @@ impl ServiceHost {
         let _ = self
             .host
             .cancel_configuration_activation(pending.generation);
-        self.host.end_configuration_quiesce();
+        if pending.global_quiesced {
+            self.host.end_configuration_quiesce();
+        }
     }
 
     fn finish_recorded_lifecycle(
@@ -983,7 +1015,9 @@ impl ServiceHost {
             .is_err()
         {
             self.host.configuration_recording_failed(self.clock.now());
-            self.host.end_configuration_quiesce();
+            if pending.global_quiesced {
+                self.host.end_configuration_quiesce();
+            }
             return Err(LifecycleOperationError::OwnerFailure);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -995,20 +1029,26 @@ impl ServiceHost {
                 self.clock.now(),
             ) {
                 Ok(true) => {
-                    self.host.end_configuration_quiesce();
+                    if pending.global_quiesced {
+                        self.host.end_configuration_quiesce();
+                    }
                     return Ok(());
                 }
                 Ok(false) if std::time::Instant::now() < deadline => {
                     if self.host.service(&self.clock).is_err() {
                         self.host.configuration_recording_failed(self.clock.now());
-                        self.host.end_configuration_quiesce();
+                        if pending.global_quiesced {
+                            self.host.end_configuration_quiesce();
+                        }
                         return Err(LifecycleOperationError::OwnerFailure);
                     }
                     std::thread::yield_now();
                 }
                 _ => {
                     self.host.configuration_recording_failed(self.clock.now());
-                    self.host.end_configuration_quiesce();
+                    if pending.global_quiesced {
+                        self.host.end_configuration_quiesce();
+                    }
                     return Err(LifecycleOperationError::OwnerFailure);
                 }
             }
@@ -1213,13 +1253,22 @@ impl ServiceHost {
         let generation = current
             .checked_add(1)
             .ok_or(LifecycleOperationError::Conflict)?;
-        let pending = self.begin_recorded_lifecycle("reconnect_resource", &active)?;
+        let pending = self.begin_resource_recorded_lifecycle("reconnect_resource", &active)?;
+        let resource_key = ResourceId::new(resource_id);
+        if self
+            .host
+            .begin_configured_resource_reconnect(resource_key)
+            .is_err()
+        {
+            self.cancel_recorded_lifecycle(pending);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_millis(resource.recovery_timeout_ms);
         loop {
             match self
                 .host
-                .prepare_configured_transport_replacement(ResourceId::new(resource_id))
+                .prepare_configured_transport_replacement(resource_key)
             {
                 Ok(true) => break,
                 Ok(false) if std::time::Instant::now() < deadline => {
@@ -1250,46 +1299,86 @@ impl ServiceHost {
         };
         if self
             .host
-            .rebind_configured_transport(
-                ResourceId::new(resource_id),
-                Box::new(adapter),
-                self.clock.now(),
-            )
+            .rebind_configured_transport(resource_key, Box::new(adapter), self.clock.now())
             .is_err()
         {
+            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
-        if self.host.begin_configured_probes(self.clock.now()).is_err() {
+        if self
+            .host
+            .begin_configured_probes_for_resource(resource_key, self.clock.now())
+            .is_err()
+        {
+            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_millis(resource.recovery_timeout_ms);
         loop {
-            match self.host.configured_probes_ready() {
+            match self.host.configured_probes_ready_for_resource(resource_key) {
                 Ok(true) => break,
                 Ok(false) => {}
                 Err(_) => {
+                    let _ =
+                        self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                     self.cancel_recorded_lifecycle(pending);
                     return Err(LifecycleOperationError::OwnerFailure);
                 }
             }
             if std::time::Instant::now() >= deadline {
+                let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
             if self.host.service(&self.clock).is_err() {
+                let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
             std::thread::yield_now();
         }
-        self.finish_recorded_lifecycle(pending)?;
+        if self.finish_recorded_lifecycle(pending).is_err() {
+            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        if self
+            .host
+            .activate_configured_resource_after_reconnect(resource_key, self.clock.now())
+            .is_err()
+        {
+            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
         Ok(ReconnectResourceResult {
             resource_id,
             binding_generation: generation,
         })
+    }
+
+    fn retire_failed_reconnect(
+        &mut self,
+        resource: ResourceId,
+        timeout_ms: u64,
+    ) -> Result<(), LifecycleOperationError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            match self
+                .host
+                .retire_failed_configured_reconnect(resource, self.clock.now())
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) if std::time::Instant::now() < deadline => {
+                    if self.host.service(&self.clock).is_err() {
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                _ => return Err(LifecycleOperationError::OwnerFailure),
+            }
+        }
     }
     /// Return the one monotonic process clock used by the owner.
     pub const fn clock(&self) -> &SystemClock {

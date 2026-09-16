@@ -212,6 +212,7 @@ struct ConfiguredProbe {
     queue_ttl: Duration,
     timeout: Duration,
     queued: bool,
+    baseline: Option<Sample>,
 }
 
 fn thermal_configuration_changed(old: &InstrumentDto, new: &InstrumentDto) -> bool {
@@ -354,6 +355,7 @@ pub struct HostCore {
     model_generations: BTreeMap<InstrumentId, u64>,
     configured_probes: Vec<ConfiguredProbe>,
     configuration_quiesced: bool,
+    reconnect_quiesced_resources: BTreeSet<ResourceId>,
 }
 impl HostCore {
     /// Construct a validated configured native observation graph without opening
@@ -507,6 +509,7 @@ impl HostCore {
                         queue_ttl: Duration::from_millis(*queue_timeout_ms),
                         timeout: Duration::from_millis(*transaction_timeout_ms),
                         queued: false,
+                        baseline: None,
                     });
                 }
             }
@@ -685,6 +688,7 @@ impl HostCore {
             model_generations,
             configured_probes,
             configuration_quiesced: false,
+            reconnect_quiesced_resources: BTreeSet::new(),
         })
     }
 
@@ -796,6 +800,7 @@ impl HostCore {
             model_generations: BTreeMap::from([(PLANT, 1)]),
             configured_probes: Vec::new(),
             configuration_quiesced: false,
+            reconnect_quiesced_resources: BTreeSet::new(),
         })
     }
 
@@ -805,6 +810,17 @@ impl HostCore {
             if probe.queued {
                 continue;
             }
+            probe.baseline = match self.runtime.query(Query::GetLatestSignal(SignalId::new(
+                probe.instrument,
+                probe.parameter,
+            )))? {
+                QueryResult::Latest(sample) => sample,
+                _ => {
+                    return Err(Error::InvalidConfiguration(
+                        "configured probe query mismatch",
+                    ));
+                }
+            };
             self.runtime.command(Command::QueueMetakonRead {
                 instrument: probe.instrument,
                 parameter: probe.parameter,
@@ -813,6 +829,71 @@ impl HostCore {
                 timeout: probe.timeout,
             })?;
             probe.queued = true;
+        }
+        Ok(())
+    }
+
+    /// Quiesce ordinary acquisition for one explicit reconnect without pausing
+    /// unrelated resources, Recorder progress, recovery or native safety work.
+    pub fn begin_configured_resource_reconnect(
+        &mut self,
+        resource: ResourceId,
+    ) -> Result<(), Error> {
+        if !self.resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration("configured resource missing"));
+        }
+        self.reconnect_quiesced_resources.insert(resource);
+        Ok(())
+    }
+
+    /// Report the resource-scoped reconnect gate for diagnostics and acceptance.
+    pub fn configured_resource_reconnect_quiesced(&self, resource: ResourceId) -> bool {
+        self.reconnect_quiesced_resources.contains(&resource)
+    }
+
+    /// Queue only the trusted compatibility probes bound to one replacement.
+    pub fn begin_configured_probes_for_resource(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let mut found = false;
+        for probe in &mut self.configured_probes {
+            let bound = self
+                .runtime
+                .metakon_binding(probe.instrument)
+                .is_some_and(|binding| binding.resource == resource);
+            if !bound {
+                continue;
+            }
+            found = true;
+            if probe.queued {
+                continue;
+            }
+            probe.baseline = match self.runtime.query(Query::GetLatestSignal(SignalId::new(
+                probe.instrument,
+                probe.parameter,
+            )))? {
+                QueryResult::Latest(sample) => sample,
+                _ => {
+                    return Err(Error::InvalidConfiguration(
+                        "configured probe query mismatch",
+                    ));
+                }
+            };
+            self.runtime.command(Command::QueueMetakonRead {
+                instrument: probe.instrument,
+                parameter: probe.parameter,
+                at,
+                queue_ttl: probe.queue_ttl,
+                timeout: probe.timeout,
+            })?;
+            probe.queued = true;
+        }
+        if !found {
+            return Err(Error::InvalidConfiguration(
+                "configured resource has no compatibility probe",
+            ));
         }
         Ok(())
     }
@@ -879,6 +960,7 @@ impl HostCore {
                 .is_some_and(|binding| binding.resource == resource)
             {
                 probe.queued = false;
+                probe.baseline = None;
             }
         }
         self.closed_resources.remove(&resource);
@@ -1011,6 +1093,7 @@ impl HostCore {
                 .ok_or(Error::InvalidConfiguration("configured probe missing"))?;
             probe.parameter = channel_type;
             probe.queued = false;
+            probe.baseline = None;
         }
         self.closed_resources.remove(&resource);
         self.observe(at, None)
@@ -1053,6 +1136,9 @@ impl HostCore {
             else {
                 return Ok(false);
             };
+            if probe.baseline.as_ref() == Some(&sample) {
+                return Ok(false);
+            }
             if sample.quality() != SampleQuality::Good
                 || sample.value() != Some(&lab_core::Value::Integer(3))
             {
@@ -1062,6 +1148,100 @@ impl HostCore {
             }
         }
         Ok(true)
+    }
+
+    /// Inspect only the compatibility probes bound to one reconnecting resource.
+    /// The rebind-generated Unavailable baseline is pending, not probe failure.
+    pub fn configured_probes_ready_for_resource(
+        &self,
+        resource: ResourceId,
+    ) -> Result<bool, Error> {
+        let mut found = false;
+        for probe in &self.configured_probes {
+            let bound = self
+                .runtime
+                .metakon_binding(probe.instrument)
+                .is_some_and(|binding| binding.resource == resource);
+            if !bound {
+                continue;
+            }
+            found = true;
+            if !probe.queued {
+                return Ok(false);
+            }
+            let QueryResult::Latest(Some(sample)) = self.runtime.query(Query::GetLatestSignal(
+                SignalId::new(probe.instrument, probe.parameter),
+            ))?
+            else {
+                return Ok(false);
+            };
+            if probe.baseline.as_ref() == Some(&sample) {
+                return Ok(false);
+            }
+            if sample.quality() != SampleQuality::Good
+                || sample.value() != Some(&lab_core::Value::Integer(3))
+            {
+                return Err(Error::InvalidConfiguration(
+                    "Metakon channel compatibility probe failed",
+                ));
+            }
+        }
+        if !found {
+            return Err(Error::InvalidConfiguration(
+                "configured resource has no compatibility probe",
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Release one replacement only after its trusted probe and durable lifecycle
+    /// have succeeded. The fresh deadline prevents a reconnect catch-up burst.
+    pub fn activate_configured_resource_after_reconnect(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.reconnect_quiesced_resources.contains(&resource)
+            || !self.configured_probes_ready_for_resource(resource)?
+        {
+            return Err(Error::InvalidConfiguration(
+                "configured resource reconnect is not ready",
+            ));
+        }
+        for read in &mut self.plan.metakon_reads {
+            if self
+                .runtime
+                .metakon_binding(read.instrument)
+                .is_some_and(|binding| binding.resource == resource)
+            {
+                read.slot.next_due = at
+                    .checked_add(read.slot.period)
+                    .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+            }
+        }
+        self.reconnect_quiesced_resources.remove(&resource);
+        Ok(())
+    }
+
+    /// Retire a replacement that crossed the generation fence but failed its
+    /// compatibility gate. The new generation remains authoritative and gated.
+    pub fn retire_failed_configured_reconnect(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<bool, Error> {
+        if !self.reconnect_quiesced_resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration(
+                "configured resource reconnect is not quiesced",
+            ));
+        }
+        let complete = self.runtime.shutdown_transport(resource, at)?
+            == lab_core::transport::TransportShutdown::Complete;
+        self.observe(at, None)?;
+        if complete {
+            self.closed_resources.insert(resource);
+        }
+        Ok(complete)
     }
 
     /// Apply display/cadence-only fields at one owner commit without replacing
@@ -3141,6 +3321,16 @@ impl HostCore {
             let now = clock.now();
             if self.plan.safety.due(now) {
                 return Ok(report);
+            }
+            if self
+                .runtime
+                .metakon_binding(read.instrument)
+                .is_some_and(|binding| {
+                    self.reconnect_quiesced_resources
+                        .contains(&binding.resource)
+                })
+            {
+                continue;
             }
             if let Some(skipped) = read.slot.take(now)? {
                 let outcome = self.runtime.command(Command::QueueMetakonRead {
