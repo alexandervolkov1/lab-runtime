@@ -140,6 +140,15 @@ are not reported as passing evidence.
     indefinitely stalled transports plus concurrent active Recorder close and
     successful SQLite reopen. Two targeted tests and warning-free clippy pass;
     actual hardware close remains C19-pending.
+15. Configured physical readiness coverage was red because Host had no explicit
+    compatibility-probe operation. Each Metakon definition must now contain the
+    trusted read-only channel-type primitive; Host queues it once through the
+    normal M3 executor and requires a validated integer value 3. Production
+    startup services that bounded probe up to the configured open deadline before
+    binding the listener. Temperature acquisition remains a separate scheduled
+    read and cannot substitute for compatibility. The first test response used
+    the I16 flag for a U8 value and correctly failed; the oracle was fixed to the
+    protocol's U8 flag. Physical composition/startup regressions and clippy pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

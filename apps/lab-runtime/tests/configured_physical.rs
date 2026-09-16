@@ -105,6 +105,12 @@ fn temperature_response(raw: i16) -> Vec<u8> {
     bytes
 }
 
+fn channel_type_response() -> Vec<u8> {
+    let mut bytes = vec![1, 0, 0, 0, 0x41, 3];
+    bytes.push(crc(&bytes));
+    bytes
+}
+
 #[test]
 fn c12_c17_configured_metakon_publishes_normal_signal_with_binding_identity() {
     let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
@@ -112,16 +118,18 @@ fn c12_c17_configured_metakon_publishes_normal_signal_with_binding_identity() {
     transports.insert(
         ResourceId::new(7),
         Box::new(ScriptedTransport {
-            responses: VecDeque::from([temperature_response(234)]),
+            responses: VecDeque::from([channel_type_response(), temperature_response(234)]),
             ..ScriptedTransport::default()
         }),
     );
     let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
     let mut clock = TestClock::default();
-    for milliseconds in [0, 10, 20] {
+    host.begin_configured_probes(clock.now()).unwrap();
+    for milliseconds in [0, 10, 20, 30] {
         clock.0 = Duration::from_millis(milliseconds);
         host.service(&clock).unwrap();
     }
+    assert!(host.configured_probes_ready().unwrap());
 
     let QueryResult::Latest(Some(sample)) = host
         .query(Query::GetLatestSignal(SignalId::new(

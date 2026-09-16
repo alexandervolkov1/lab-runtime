@@ -305,6 +305,28 @@ impl ServiceHost {
             return Err(io::Error::other("startup safe evidence unavailable").into());
         }
         if let Some(deployment) = loaded.as_ref()
+            && !deployment.effective().dto.resources.is_empty()
+        {
+            host.begin_configured_probes(clock.now())?;
+            let maximum_ms = deployment
+                .effective()
+                .dto
+                .resources
+                .iter()
+                .map(|resource| resource.open_timeout_ms)
+                .max()
+                .unwrap_or(1);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(maximum_ms);
+            while !host.configured_probes_ready()? {
+                if std::time::Instant::now() >= deadline {
+                    let _ = host.begin_shutdown(&clock);
+                    return Err(io::Error::other("configured COM probe deadline").into());
+                }
+                host.service(&clock)?;
+                std::thread::yield_now();
+            }
+        }
+        if let Some(deployment) = loaded.as_ref()
             && !deployment.effective().dto.managed_components.is_empty()
         {
             let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

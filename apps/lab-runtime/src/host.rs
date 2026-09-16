@@ -205,6 +205,14 @@ struct MetakonReadSchedule {
     queue_ttl: Duration,
     timeout: Duration,
 }
+
+struct ConfiguredProbe {
+    instrument: InstrumentId,
+    parameter: lab_core::ParameterId,
+    queue_ttl: Duration,
+    timeout: Duration,
+    queued: bool,
+}
 impl SchedulePlan {
     fn virtual_demo() -> Self {
         Self {
@@ -311,6 +319,7 @@ pub struct HostCore {
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
     deployment_provenance: Vec<ProvenanceEntry>,
     model_generations: BTreeMap<InstrumentId, u64>,
+    configured_probes: Vec<ConfiguredProbe>,
 }
 impl HostCore {
     /// Construct a validated configured native observation graph without opening
@@ -353,6 +362,7 @@ impl HostCore {
             ));
         }
         let mut metakon_reads = Vec::new();
+        let mut configured_probes = Vec::new();
         for instrument in &dto.instruments {
             match instrument {
                 InstrumentDto::VirtualMeasurement {
@@ -434,6 +444,14 @@ impl HostCore {
                             "read-only Metakon definition lacks temperature",
                         ))?
                         .id;
+                    let channel_type = definition
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.operation == KnownOperation::ChannelType)
+                        .ok_or(Error::InvalidConfiguration(
+                            "read-only Metakon definition lacks compatibility probe",
+                        ))?
+                        .id;
                     runtime.command(Command::RegisterMetakon(MetakonInstrumentConfig {
                         definition,
                         binding: MetakonBinding {
@@ -452,6 +470,13 @@ impl HostCore {
                         slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
                         queue_ttl: Duration::from_millis(*queue_timeout_ms),
                         timeout: Duration::from_millis(*transaction_timeout_ms),
+                    });
+                    configured_probes.push(ConfiguredProbe {
+                        instrument: InstrumentId::new(*id),
+                        parameter: channel_type,
+                        queue_ttl: Duration::from_millis(*queue_timeout_ms),
+                        timeout: Duration::from_millis(*transaction_timeout_ms),
+                        queued: false,
                     });
                 }
             }
@@ -495,6 +520,7 @@ impl HostCore {
             pending_operations: BTreeMap::new(),
             deployment_provenance,
             model_generations,
+            configured_probes,
         })
     }
 
@@ -604,7 +630,46 @@ impl HostCore {
             pending_operations: BTreeMap::new(),
             deployment_provenance: Vec::new(),
             model_generations: BTreeMap::from([(PLANT, 1)]),
+            configured_probes: Vec::new(),
         })
+    }
+
+    /// Queue each configured read-only compatibility probe exactly once.
+    pub fn begin_configured_probes(&mut self, at: Duration) -> Result<(), Error> {
+        for probe in &mut self.configured_probes {
+            if probe.queued {
+                continue;
+            }
+            self.runtime.command(Command::QueueMetakonRead {
+                instrument: probe.instrument,
+                parameter: probe.parameter,
+                at,
+                queue_ttl: probe.queue_ttl,
+                timeout: probe.timeout,
+            })?;
+            probe.queued = true;
+        }
+        Ok(())
+    }
+
+    /// Check frozen channel-type observations without polling or hidden I/O.
+    pub fn configured_probes_ready(&self) -> Result<bool, Error> {
+        for probe in &self.configured_probes {
+            let QueryResult::Latest(Some(sample)) = self.runtime.query(Query::GetLatestSignal(
+                SignalId::new(probe.instrument, probe.parameter),
+            ))?
+            else {
+                return Ok(false);
+            };
+            if sample.quality() != SampleQuality::Good
+                || sample.value() != Some(&lab_core::Value::Integer(3))
+            {
+                return Err(Error::InvalidConfiguration(
+                    "Metakon channel compatibility probe failed",
+                ));
+            }
+        }
+        Ok(true)
     }
 
     /// Apply display/cadence-only fields at one owner commit without replacing
