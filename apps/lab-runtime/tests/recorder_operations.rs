@@ -25,6 +25,175 @@ fn temporary_database() -> PathBuf {
 }
 
 #[test]
+fn start_acceptance_commits_before_held_terminal_then_pause_from_new_client_reopens_once() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held_terminal_operation_after_acceptance();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    service
+        .owner_mut()
+        .start_recording("start/pause operation", clock.now())
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < deadline);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let prefix = service
+        .owner()
+        .recording_status()
+        .unwrap()
+        .persisted_through_sequence;
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let scope_a = app.handle(
+        &mut service,
+        1,
+        frame(json!({
+            "v":1,"msg_id":"h-a","op":"hello","args":{"scope":null}
+        })),
+    )[0]["result"]["scope"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let start = json!({"v":1,"msg_id":"start","op":"controller_start",
+        "request_id":{"scope":scope_a,"seq":"1"},"args":{"controller":"1"}});
+    let replies = app.handle(&mut service, 1, frame(start));
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[0]["state"], "accepted");
+    assert_eq!(replies[1]["state"], "completed");
+    assert_eq!(replies[1]["result"]["state"], "warming");
+    let by = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < by, "terminal SQL did not reach held stage");
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    assert!(
+        service
+            .owner()
+            .recording_status()
+            .unwrap()
+            .persisted_through_sequence
+            > prefix,
+        "accepted command must commit before held terminal"
+    );
+    app.detach(&service, 1);
+    barrier.release();
+    let receipt_by = Instant::now() + Duration::from_secs(2);
+    while service
+        .owner()
+        .recording_status()
+        .unwrap()
+        .outstanding_records
+        != 0
+    {
+        assert!(Instant::now() < receipt_by);
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let scope_b = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"h-b","op":"hello","args":{"scope":null}
+        })),
+    )[0]["result"]["scope"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(scope_a, scope_b);
+    let pause = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"pause","op":"controller_pause",
+            "request_id":{"scope":scope_b,"seq":"1"},"args":{"controller":"1"}
+        })),
+    );
+    assert_eq!(pause.len(), 2);
+    assert_eq!(pause[0]["state"], "accepted");
+    assert_eq!(pause[1]["state"], "completed");
+    let duplicate = app.handle(
+        &mut service,
+        2,
+        frame(json!({
+            "v":1,"msg_id":"pause-retry","op":"controller_pause",
+            "request_id":{"scope":scope_b,"seq":"1"},"args":{"controller":"1"}
+        })),
+    );
+    assert_eq!(duplicate.len(), 1);
+    assert_eq!(duplicate[0]["state"], "completed");
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    let terminal = loop {
+        if let Some(result) = service.shutdown_step().unwrap() {
+            break result;
+        }
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    };
+    assert!(terminal.recorder_flushed);
+    drop(app);
+    drop(service);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let mut statement = db
+        .prepare(
+            "SELECT request_scope,request_seq,command,phase FROM operation_events
+         WHERE command IN ('controller_start','controller_pause') ORDER BY record_seq",
+        )
+        .unwrap();
+    let rows: Vec<(String, String, String, String)> = statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                scope_a.clone(),
+                "1".into(),
+                "controller_start".into(),
+                "accepted".into()
+            ),
+            (
+                scope_a,
+                "1".into(),
+                "controller_start".into(),
+                "completed".into()
+            ),
+            (
+                scope_b.clone(),
+                "1".into(),
+                "controller_pause".into(),
+                "accepted".into()
+            ),
+            (
+                scope_b,
+                "1".into(),
+                "controller_pause".into(),
+                "completed".into()
+            ),
+        ]
+    );
+    drop(statement);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn annotation_completion_reports_pending_ingress_before_a_held_sqlite_commit() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();
