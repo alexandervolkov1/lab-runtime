@@ -765,6 +765,130 @@ fn direct_output_ack_has_separate_requested_authorized_send_and_ack_facts() {
 }
 
 #[test]
+fn late_old_dispatch_evidence_cannot_confirm_a_new_safe_epoch() {
+    let mut runtime = fixture();
+    runtime.enable_recording_facts();
+    let actuator = ActuatorId::new(PLANT, lab_core::HEATER_POWER);
+    let at = Duration::from_millis(100);
+    let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(78),
+                lifetime: Duration::from_secs(1),
+            },
+            at,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::Propose(OutputProposal {
+                lease,
+                value: Value::Float(37.0),
+                unit: Unit::PERCENT,
+                ttl: Duration::from_millis(200),
+            }),
+            at,
+        })
+        .unwrap();
+    let CommandResult::Output(OutputResult::Dispatched(old)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::BeginDispatch,
+            at,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::RequestSafe,
+            at: Duration::from_millis(101),
+        })
+        .unwrap();
+    for outcome in [
+        DispatchOutcome::Acknowledged,
+        DispatchOutcome::ReadbackVerified,
+    ] {
+        let _ = runtime.command(Command::Output {
+            actuator,
+            command: OutputCommand::Complete {
+                dispatch_id: old.id(),
+                outcome,
+            },
+            at: Duration::from_millis(102),
+        });
+        let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator)).unwrap() else {
+            panic!()
+        };
+        assert_eq!(snapshot.state, OutputState::SafePending);
+        assert!(!snapshot.safe_confirmed);
+        assert!(snapshot.epoch > lease.epoch());
+    }
+    let CommandResult::Output(OutputResult::Dispatched(safe)) = runtime
+        .command(Command::Output {
+            actuator,
+            command: OutputCommand::BeginDispatch,
+            at: Duration::from_millis(103),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(safe.is_safe());
+    assert!(safe.epoch() > old.epoch());
+    assert!(
+        runtime
+            .command(Command::Output {
+                actuator,
+                command: OutputCommand::Complete {
+                    dispatch_id: old.id(),
+                    outcome: DispatchOutcome::ReadbackVerified,
+                },
+                at: Duration::from_millis(104),
+            })
+            .is_err()
+    );
+    let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator)).unwrap() else {
+        panic!()
+    };
+    assert_eq!(snapshot.state, OutputState::SafePending);
+    assert!(!snapshot.safe_confirmed);
+    assert!(snapshot.acknowledged.is_none());
+    assert!(snapshot.readback.is_none());
+    let evidence: Vec<_> = runtime
+        .take_recording_facts()
+        .iter()
+        .filter_map(|fact| match fact {
+            RecordingFact::Output {
+                stage,
+                authority_epoch,
+                dispatch_id,
+                ..
+            } => Some((*stage, *authority_epoch, *dispatch_id)),
+            _ => None,
+        })
+        .collect();
+    assert!(evidence.iter().any(|row| {
+        row.0 == OutputStage::Acknowledged
+            && row.1 == Some(lease.epoch())
+            && row.2 == Some(old.id())
+    }));
+    assert!(
+        evidence
+            .iter()
+            .all(|row| row.0 != OutputStage::SafeAcknowledged
+                && row.0 != OutputStage::SafeReadbackVerified)
+    );
+}
+
+#[test]
 fn delayed_required_failure_notification_still_revokes_a_newer_manual_lease() {
     let mut runtime = fixture();
     runtime.require_recording(Duration::ZERO);

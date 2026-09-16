@@ -188,6 +188,10 @@ impl Dispatch {
     pub fn is_safe(self) -> bool {
         self.safe
     }
+    /// Authority epoch frozen when this dispatch was authorized.
+    pub fn epoch(self) -> u64 {
+        self.epoch
+    }
 }
 
 /// Completion correlation scoped to a unique process-local authority instance.

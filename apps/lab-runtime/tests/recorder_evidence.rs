@@ -12,6 +12,7 @@ use lab_core::{
         ActuatorId, EvidenceLevel, OutputCommand, OutputOwner, OutputProposal, OutputResult,
         SafeProfile,
     },
+    plant::ThermalPlantConfig,
     transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::recorder::SqliteStore;
@@ -281,6 +282,134 @@ fn partial_m3_attempt_reopens_as_old_epoch_ambiguous_before_distinct_safe_ack() 
     assert_eq!(rows[8].7, "transport_protocol");
     assert!(!stages.contains(&"acknowledged"));
     assert!(!stages.contains(&"readback_verified"));
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn late_virtual_ack_reopens_under_its_old_epoch_without_safe_evidence() {
+    let path = temporary_database();
+    let mut runtime = Runtime::new();
+    let instrument = InstrumentId::new(713);
+    let actuator = ActuatorId::new(instrument, lab_core::HEATER_POWER);
+    runtime
+        .command(Command::RegisterThermalPlant(ThermalPlantConfig {
+            id: instrument,
+            name: "late virtual ACK".into(),
+            history_capacity: 2,
+            ambient_temperature: 20.0,
+            initial_temperature: 20.0,
+            gain_per_percent: 0.8,
+            time_constant: Duration::from_secs(8),
+        }))
+        .unwrap();
+    let output = |runtime: &mut Runtime, command, at| {
+        runtime.command(Command::Output {
+            actuator,
+            command,
+            at,
+        })
+    };
+    output(
+        &mut runtime,
+        OutputCommand::BindProfile(SafeProfile {
+            min: 0.0,
+            max: 100.0,
+            safe_value: 0.0,
+            max_lease: Duration::from_secs(5),
+            max_proposal_ttl: Duration::from_secs(1),
+            required_evidence: EvidenceLevel::Readback,
+        }),
+        Duration::ZERO,
+    )
+    .unwrap();
+    output(&mut runtime, OutputCommand::RequestSafe, Duration::ZERO).unwrap();
+    let CommandResult::Output(OutputResult::Dispatched(initial_safe)) =
+        output(&mut runtime, OutputCommand::BeginDispatch, Duration::ZERO).unwrap()
+    else {
+        panic!()
+    };
+    output(
+        &mut runtime,
+        OutputCommand::Complete {
+            dispatch_id: initial_safe.id(),
+            outcome: lab_core::output::DispatchOutcome::ReadbackVerified,
+        },
+        Duration::ZERO,
+    )
+    .unwrap();
+    runtime.enable_recording_facts();
+    let at = Duration::from_millis(1);
+    let CommandResult::Output(OutputResult::Lease(lease)) = output(
+        &mut runtime,
+        OutputCommand::Acquire {
+            owner: OutputOwner::Manual(713),
+            lifetime: Duration::from_secs(1),
+        },
+        at,
+    )
+    .unwrap() else {
+        panic!()
+    };
+    output(
+        &mut runtime,
+        OutputCommand::Propose(OutputProposal {
+            lease,
+            value: Value::Float(37.0),
+            unit: Unit::PERCENT,
+            ttl: Duration::from_millis(200),
+        }),
+        at,
+    )
+    .unwrap();
+    let CommandResult::Output(OutputResult::Dispatched(old)) =
+        output(&mut runtime, OutputCommand::BeginDispatch, at).unwrap()
+    else {
+        panic!()
+    };
+    output(
+        &mut runtime,
+        OutputCommand::RequestSafe,
+        Duration::from_millis(2),
+    )
+    .unwrap();
+    output(
+        &mut runtime,
+        OutputCommand::Complete {
+            dispatch_id: old.id(),
+            outcome: lab_core::output::DispatchOutcome::Acknowledged,
+        },
+        Duration::from_millis(3),
+    )
+    .unwrap();
+    let mut store = SqliteStore::open(&path).unwrap();
+    store.start_run("late virtual ACK archive").unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    store.stop_run().unwrap();
+    store.finish_boot(Duration::from_millis(4)).unwrap();
+    store.close().unwrap();
+    let archive = SqliteStore::open(&path).unwrap();
+    archive.close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (epoch, dispatch): (Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT authority_epoch,dispatch_id FROM output_events WHERE stage='acknowledged'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(epoch, lease.epoch().to_be_bytes());
+    let (instance, sequence) = old.id().diagnostic_parts();
+    let expected_dispatch = [instance.to_be_bytes(), sequence.to_be_bytes()].concat();
+    assert_eq!(dispatch, expected_dispatch);
+    let safe_evidence: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM output_events WHERE stage IN ('safe_acknowledged','safe_readback_verified')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(safe_evidence, 0);
     drop(db);
     std::fs::remove_file(path).unwrap();
 }

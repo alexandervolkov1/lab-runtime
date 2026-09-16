@@ -359,6 +359,36 @@ impl FactOutbox {
         );
     }
 
+    /// Keep a late trusted completion in the dispatch's original epoch.
+    /// The current safe authority may already be in a newer epoch.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit trusted completion correlation"
+    )]
+    pub(crate) fn output_completion(
+        &mut self,
+        actuator: ActuatorId,
+        stage: OutputStage,
+        value: Option<f64>,
+        at: Duration,
+        source: OutputEvidenceSource,
+        attempt_id: Option<u64>,
+        dispatch_id: DispatchId,
+        original_epoch: u64,
+    ) {
+        self.output_with_unit(
+            actuator,
+            stage,
+            value,
+            at,
+            source,
+            attempt_id,
+            Some(dispatch_id),
+            None,
+            Some(original_epoch),
+        );
+    }
+
     /// Freeze the queued M3 intent's original authority and binding identity.
     /// A late terminal/recovery event may arrive after today's epoch or mapping
     /// changes; it must still describe the bytes attempted under this intent.

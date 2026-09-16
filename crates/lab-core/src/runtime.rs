@@ -755,11 +755,12 @@ impl Runtime {
                     | OutputCommand::Trip => self.allocate_safe_output_attempt(),
                     _ => None,
                 };
-                let was_safe_completion = self
+                let original_dispatch = self
                     .outputs
                     .get(&actuator)
-                    .and_then(|authority| authority.snapshot().in_flight)
-                    .is_some_and(|dispatch| dispatch.is_safe());
+                    .and_then(|authority| authority.snapshot().in_flight);
+                let was_safe_completion =
+                    original_dispatch.is_some_and(|dispatch| dispatch.is_safe());
                 let requested_before = self
                     .outputs
                     .get(&actuator)
@@ -927,12 +928,12 @@ impl Runtime {
                                 crate::recording::OutputStage::Ambiguous
                             }
                         };
-                        self.recording_facts.output_correlated(
+                        let dispatch = original_dispatch
+                            .expect("successful completion had an in-flight dispatch");
+                        self.recording_facts.output_completion(
                             actuator,
                             stage,
-                            self.outputs.get(&actuator).and_then(|authority| {
-                                authority.snapshot().sent.map(|sent| sent.value)
-                            }),
+                            Some(dispatch.value()),
                             at,
                             crate::recording::OutputEvidenceSource::VirtualSimulation,
                             match &issued {
@@ -943,10 +944,8 @@ impl Runtime {
                                 }
                                 _ => None,
                             },
-                            match &issued {
-                                OutputCommand::Complete { dispatch_id, .. } => Some(*dispatch_id),
-                                _ => None,
-                            },
+                            dispatch.id(),
+                            dispatch.epoch(),
                         );
                     }
                     _ => {}
