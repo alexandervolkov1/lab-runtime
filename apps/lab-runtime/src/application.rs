@@ -8,7 +8,7 @@ use crate::recorder::{
 };
 use crate::{
     host::Clock,
-    service::ServiceHost,
+    service::{LifecycleOperationError, ServiceHost},
     sessions::{Admission, Mutation, OperationState, SessionError, SessionStore},
     wire::{WireRequest, WireRequestId, decimal_u64},
 };
@@ -1652,13 +1652,13 @@ fn dispatch(
             return service
                 .apply_staged_configuration(candidate_id, expected_revision)
                 .map(|result| json!({"revision":result.revision.to_string()}))
-                .map_err(|_| Error::InvalidConfiguration("configuration apply failed"));
+                .map_err(lifecycle_domain_error);
         }
         Mutation::ReloadManagedScripts => {
             return service
                 .reload_managed_scripts()
                 .map(|()| json!({"reloaded":true}))
-                .map_err(|_| Error::InvalidConfiguration("managed script reload failed"));
+                .map_err(lifecycle_domain_error);
         }
         Mutation::RestartVirtualModels => {
             return service
@@ -1667,7 +1667,7 @@ fn dispatch(
                     json!({"models":result.models.to_string(),
                     "generation":result.generation.to_string()})
                 })
-                .map_err(|_| Error::InvalidConfiguration("virtual model restart failed"));
+                .map_err(lifecycle_domain_error);
         }
         Mutation::ReconnectResource {
             resource,
@@ -1679,7 +1679,7 @@ fn dispatch(
                     json!({"resource":result.resource_id.to_string(),
                         "binding_generation":result.binding_generation.to_string()})
                 })
-                .map_err(|_| Error::InvalidConfiguration("resource reconnect failed"));
+                .map_err(lifecycle_domain_error);
         }
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }
@@ -1891,6 +1891,12 @@ fn domain_code(e: Error) -> &'static str {
         _ => "domain_rejected",
     }
 }
+fn lifecycle_domain_error(error: LifecycleOperationError) -> Error {
+    match error {
+        LifecycleOperationError::RecordingUnavailable => Error::RecordingUnavailable,
+        _ => Error::InvalidConfiguration("lifecycle operation failed"),
+    }
+}
 fn lower_hex_id(value: &str) -> bool {
     value.len() == 32
         && value
@@ -2006,4 +2012,25 @@ fn runs_page_json(page: &RunsPage, cursor_token: Option<&str>) -> Value {
         .collect();
     json!({"runs":runs,"next_cursor":cursor_token,
         "has_more":cursor_token.is_some(),"mode":"runs"})
+}
+
+#[cfg(test)]
+mod lifecycle_error_tests {
+    use super::*;
+
+    #[test]
+    fn recorder_lifecycle_failure_uses_existing_recording_unavailable_wire_code() {
+        assert_eq!(
+            domain_code(lifecycle_domain_error(
+                LifecycleOperationError::RecordingUnavailable
+            )),
+            "recording_unavailable"
+        );
+        assert_eq!(
+            domain_code(lifecycle_domain_error(
+                LifecycleOperationError::InvalidCandidate
+            )),
+            "invalid_configuration"
+        );
+    }
 }

@@ -378,7 +378,6 @@ enum Message {
 
 struct LiveActivationReservation {
     generation: u64,
-    assigned: u64,
     bytes: usize,
 }
 
@@ -711,29 +710,22 @@ impl RecorderWorker {
             .activation_generation
             .checked_add(1)
             .ok_or_else(|| StorageError("activation generation exhausted".into()))?;
-        let assigned = self.planned_range(1)?;
-        self.reserved_through = *assigned.end();
         self.charged_records += 1;
         self.charged_bytes += bytes;
         self.charged_groups += 1;
-        self.last_owner_submission = Some(
-            self.last_owner_submission
-                .map_or(lifecycle.at, |latest| latest.max(lifecycle.at)),
-        );
         self.pending_activation_generation = Some(generation);
-        self.live_activation_reservation = Some(LiveActivationReservation {
-            generation,
-            assigned: *assigned.start(),
-            bytes,
-        });
+        self.live_activation_reservation = Some(LiveActivationReservation { generation, bytes });
         self.cached.outstanding_records = self.charged_records;
         self.cached.outstanding_bytes = self.charged_bytes;
         self.cached.outstanding_groups = self.charged_groups;
         Ok(Some(generation))
     }
 
-    /// Fill the previously reserved FIFO identity after the authoritative owner
-    /// commit. Baseline and lifecycle fact commit in one SQLite transaction.
+    /// Assign and immediately enqueue the lifecycle identity after owner commit.
+    ///
+    /// Capacity, bytes and generation were reserved before side effects, but no
+    /// record identity was. Ordinary facts may therefore remain FIFO-contiguous
+    /// while a resource-scoped compatibility probe is in progress.
     pub fn commit_reserved_live_activation(
         &mut self,
         generation: u64,
@@ -752,23 +744,36 @@ impl RecorderWorker {
         {
             return Err(StorageError("live activation reservation mismatch".into()));
         }
-        let reservation = self
-            .live_activation_reservation
-            .take()
-            .expect("checked above");
-        self.send_control(Message::Activation {
+        let reserved_bytes = reservation.bytes;
+        let reserved_generation = reservation.generation;
+        let assigned = *self.planned_range(1)?.start();
+        let submitted_at = lifecycle.at;
+        let message = Message::Activation {
             entries,
             objects,
-            lifecycle: Some((
-                lifecycle,
-                reservation.bytes,
-                reservation.assigned,
-                reservation.generation,
-            )),
-        })
+            lifecycle: Some((lifecycle, reserved_bytes, assigned, reserved_generation)),
+        };
+        match self.sender.try_send(message) {
+            Ok(()) => {
+                // Runtime-owner mutation is serialized. Advancing the tail only
+                // after this exact message enters the single FIFO cannot leave a
+                // future identity hole or interleave another owner admission.
+                self.reserved_through = assigned;
+                self.last_owner_submission = Some(
+                    self.last_owner_submission
+                        .map_or(submitted_at, |latest| latest.max(submitted_at)),
+                );
+                self.live_activation_reservation = None;
+                Ok(())
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                self.fail("recorder lifecycle slot unavailable");
+                Err(StorageError("recorder lifecycle slot unavailable".into()))
+            }
+        }
     }
 
-    /// Release an unfilled reservation after a precommit owner rejection.
+    /// Release capacity after a precommit owner rejection without editing IDs.
     pub fn cancel_live_activation_reservation(
         &mut self,
         generation: u64,
@@ -777,11 +782,10 @@ impl RecorderWorker {
             .live_activation_reservation
             .take()
             .ok_or_else(|| StorageError("live activation not reserved".into()))?;
-        if reservation.generation != generation || self.reserved_through != reservation.assigned {
+        if reservation.generation != generation {
             self.live_activation_reservation = Some(reservation);
             return Err(StorageError("live activation reservation mismatch".into()));
         }
-        self.reserved_through = self.reserved_through.saturating_sub(1);
         self.charged_records = self.charged_records.saturating_sub(1);
         self.charged_bytes = self.charged_bytes.saturating_sub(reservation.bytes);
         self.charged_groups = self.charged_groups.saturating_sub(1);
@@ -1453,7 +1457,6 @@ impl RecorderWorker {
 
     fn schedule_periodic(&mut self) {
         if self.periodic_pending.is_some()
-            || self.live_activation_reservation.is_some()
             || self.finish_requested
             || !matches!(
                 self.cached.state,
@@ -1674,7 +1677,15 @@ fn worker_loop(
                     receipt.activation_generation = expected;
                     if let Some((record, bytes, assigned, _)) = lifecycle {
                         receipt.persisted = assigned;
-                        receipt.confirmed_submission = Some(record.at);
+                        // Resource-scoped activation may follow probe facts whose
+                        // owner submission time is later than the lifecycle's
+                        // original start. A later FIFO commit must not move the
+                        // Required progress receipt backward.
+                        receipt.confirmed_submission = Some(
+                            receipt
+                                .confirmed_submission
+                                .map_or(record.at, |confirmed| confirmed.max(record.at)),
+                        );
                         receipt.released_records += 1;
                         receipt.released_bytes += bytes;
                         receipt.released_groups += 1;

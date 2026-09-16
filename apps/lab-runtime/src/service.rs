@@ -146,6 +146,8 @@ pub enum LifecycleOperationError {
     NoManagedComponents,
     /// The authoritative owner rejected the model transition.
     OwnerFailure,
+    /// Required lifecycle provenance could not be admitted or confirmed.
+    RecordingUnavailable,
 }
 
 /// Successful configuration activation identity.
@@ -961,7 +963,7 @@ impl ServiceHost {
             let reservation = self
                 .host
                 .try_reserve_configuration_activation(&record, self.clock.now())
-                .map_err(|_| LifecycleOperationError::OwnerFailure);
+                .map_err(|_| LifecycleOperationError::RecordingUnavailable);
             match reservation {
                 Err(error) => {
                     if global_quiesced {
@@ -1018,7 +1020,7 @@ impl ServiceHost {
             if pending.global_quiesced {
                 self.host.end_configuration_quiesce();
             }
-            return Err(LifecycleOperationError::OwnerFailure);
+            return Err(LifecycleOperationError::RecordingUnavailable);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -1040,7 +1042,7 @@ impl ServiceHost {
                         if pending.global_quiesced {
                             self.host.end_configuration_quiesce();
                         }
-                        return Err(LifecycleOperationError::OwnerFailure);
+                        return Err(LifecycleOperationError::RecordingUnavailable);
                     }
                     std::thread::yield_now();
                 }
@@ -1049,7 +1051,7 @@ impl ServiceHost {
                     if pending.global_quiesced {
                         self.host.end_configuration_quiesce();
                     }
-                    return Err(LifecycleOperationError::OwnerFailure);
+                    return Err(LifecycleOperationError::RecordingUnavailable);
                 }
             }
         }

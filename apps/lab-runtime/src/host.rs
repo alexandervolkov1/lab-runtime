@@ -3689,3 +3689,6 @@ mod recorder_outbox_host_tests {
         TestClock(now)
     }
 }
+
+#[cfg(test)]
+mod reconnect_recorder_ordering_tests;
