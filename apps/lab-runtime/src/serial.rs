@@ -14,7 +14,11 @@ use lab_core::{
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    },
     thread::JoinHandle,
     time::Duration,
 };
@@ -160,6 +164,21 @@ pub enum ComState {
     Closed,
 }
 
+/// Nonblocking result of preparing a newly spawned COM candidate.
+///
+/// `Ready` means that the worker completed the actual OS open and accepted the
+/// configured settings readback. Constructing [`ComTransport`] proves only that
+/// the bounded worker thread was spawned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComOpenStatus {
+    /// The worker exists, but the actual OS open/readback has not completed.
+    Opening,
+    /// The OS handle was opened and the configured settings readback matched.
+    Ready,
+    /// The asynchronous open or settings readback failed with this typed class.
+    Failed(SerialError),
+}
+
 /// Bounded resource diagnostics; no handle or authority is exposed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComSnapshot {
@@ -175,6 +194,14 @@ pub struct ComSnapshot {
     pub last_error: Option<SerialError>,
     /// Whether one fixed request is currently owned by the worker.
     pub request_pending: bool,
+    /// The bounded worker thread was successfully spawned.
+    pub worker_spawned: bool,
+    /// The worker thread has returned; only this permits a completion-loss close.
+    pub worker_finished: bool,
+    /// The worker confirmed the actual OS open and settings readback.
+    pub os_port_open_confirmed: bool,
+    /// Persistent retirement intent visible independently of mailbox capacity.
+    pub stop_requested: bool,
 }
 
 enum Request {
@@ -191,6 +218,23 @@ enum Completion {
     Stopped,
 }
 
+#[derive(Clone)]
+struct StopIntent(Arc<AtomicBool>);
+
+impl StopIntent {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn requested(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// Nonblocking M3 adapter backed by one bounded blocking worker.
 pub struct ComTransport {
     settings: ComSettings,
@@ -202,6 +246,8 @@ pub struct ComTransport {
     state: ComState,
     fault: Option<SerialError>,
     clean_boundary: bool,
+    stop: StopIntent,
+    open_confirmed: bool,
 }
 
 impl ComTransport {
@@ -225,15 +271,29 @@ impl ComTransport {
         Self::spawn(settings, move || Ok(Box::new(device)))
     }
 
+    /// Spawn from a deterministic device factory for trusted in-process tests.
+    ///
+    /// Unlike [`Self::with_device`], the factory runs on the worker so tests can
+    /// reproduce an asynchronous open failure without touching a real COM port.
+    #[cfg(test)]
+    pub(crate) fn with_device_factory(
+        settings: ComSettings,
+        factory: impl FnOnce() -> Result<Box<dyn SerialDevice>, SerialError> + Send + 'static,
+    ) -> Result<Self, SerialError> {
+        Self::spawn(settings, factory)
+    }
+
     fn spawn(
         settings: ComSettings,
         factory: impl FnOnce() -> Result<Box<dyn SerialDevice>, SerialError> + Send + 'static,
     ) -> Result<Self, SerialError> {
         let (request_tx, request_rx) = mpsc::sync_channel(1);
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        let stop = StopIntent::new();
+        let worker_stop = stop.clone();
         let worker = std::thread::Builder::new()
             .name(format!("lab-com-{}", settings.resource_id))
-            .spawn(move || worker_main(factory, request_rx, completion_tx))
+            .spawn(move || worker_main(factory, request_rx, completion_tx, worker_stop))
             .map_err(|_| SerialError::Other)?;
         Ok(Self {
             settings,
@@ -245,7 +305,21 @@ impl ComTransport {
             state: ComState::Opening,
             fault: None,
             clean_boundary: false,
+            stop,
+            open_confirmed: false,
         })
+    }
+
+    /// Poll asynchronous OS-open preparation without blocking the Runtime owner.
+    pub fn open_status(&mut self) -> ComOpenStatus {
+        self.drain_completion();
+        match self.state {
+            ComState::Online if self.open_confirmed => ComOpenStatus::Ready,
+            ComState::Offline | ComState::Closing | ComState::Closed => {
+                ComOpenStatus::Failed(self.fault.unwrap_or(SerialError::Other))
+            }
+            ComState::Opening | ComState::Online => ComOpenStatus::Opening,
+        }
     }
 
     /// Copy current bounded diagnostics after draining at most one completion.
@@ -257,6 +331,13 @@ impl ComTransport {
             state: self.state,
             last_error: self.fault,
             request_pending: self.pending,
+            worker_spawned: true,
+            worker_finished: self
+                .worker
+                .as_ref()
+                .is_none_or(|worker| worker.is_finished()),
+            os_port_open_confirmed: self.open_confirmed,
+            stop_requested: self.stop.requested(),
         }
     }
 
@@ -275,27 +356,38 @@ impl ComTransport {
 
     /// Fence this session and request handle retirement without joining the worker.
     pub fn retire(&mut self) {
-        if matches!(self.state, ComState::Closing | ComState::Closed) {
+        self.stop.request();
+        if self.state == ComState::Closed {
             return;
         }
         self.state = ComState::Closing;
         self.fault = Some(SerialError::Disconnected);
+        // This is only a wake-up hint. The persistent intent above is the
+        // authority, so a full ordinary mailbox cannot lose retirement.
         let _ = self.requests.try_send(Request::Stop);
     }
 
     fn drain_completion(&mut self) {
         match self.completions.try_recv() {
-            Ok(Completion::Opened) => self.state = ComState::Online,
+            Ok(Completion::Opened) if self.state != ComState::Closing => {
+                self.open_confirmed = true;
+                self.state = ComState::Online;
+            }
+            Ok(Completion::Opened) => self.open_confirmed = true,
             Ok(Completion::Written) => self.pending = false,
             Ok(Completion::Read(bytes)) => {
                 self.pending = false;
-                self.received
-                    .extend(bytes.into_iter().take(MAX_FRAME_BYTES));
+                if self.state != ComState::Closing {
+                    self.received
+                        .extend(bytes.into_iter().take(MAX_FRAME_BYTES));
+                }
             }
             Ok(Completion::Failed(error)) => {
                 self.pending = false;
                 self.fault = Some(error);
-                self.state = ComState::Offline;
+                if self.state != ComState::Closing {
+                    self.state = ComState::Offline;
+                }
             }
             Ok(Completion::Stopped) => {
                 self.pending = false;
@@ -303,12 +395,23 @@ impl ComTransport {
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                if self.state != ComState::Closed {
+                if !matches!(self.state, ComState::Closing | ComState::Closed) {
                     self.pending = false;
                     self.fault.get_or_insert(SerialError::Disconnected);
                     self.state = ComState::Offline;
                 }
             }
+        }
+        if self.state == ComState::Closing
+            && self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.is_finished())
+        {
+            // A finished JoinHandle proves that the worker released its owned
+            // device even if the bounded Stopped completion could not be sent.
+            self.pending = false;
+            self.state = ComState::Closed;
         }
     }
 
@@ -423,9 +526,14 @@ fn worker_main(
     factory: impl FnOnce() -> Result<Box<dyn SerialDevice>, SerialError>,
     requests: Receiver<Request>,
     completions: SyncSender<Completion>,
+    stop: StopIntent,
 ) {
-    let mut device = match factory() {
+    let device = match factory() {
         Ok(device) => {
+            if stop.requested() {
+                let _ = completions.send(Completion::Stopped);
+                return;
+            }
             if completions.send(Completion::Opened).is_err() {
                 return;
             }
@@ -436,11 +544,32 @@ fn worker_main(
             return;
         }
     };
+    worker_request_loop(device, requests, completions, stop);
+}
+
+fn worker_request_loop(
+    mut device: Box<dyn SerialDevice>,
+    requests: Receiver<Request>,
+    completions: SyncSender<Completion>,
+    stop: StopIntent,
+) {
+    // Stop is coalesced state, not an ordinary queued command. Checking before
+    // and after every bounded OS call prevents queued data from crossing the
+    // retirement fence even when the one-slot mailbox was full at retirement.
+    if stop.requested() {
+        let _ = completions.send(Completion::Stopped);
+        return;
+    }
     while let Ok(request) = requests.recv() {
+        if stop.requested() {
+            let _ = completions.send(Completion::Stopped);
+            return;
+        }
         let completion = match request {
             Request::Write(bytes) => write_same_frame(device.as_mut(), &bytes),
             Request::Read(maximum) => device.read_once(maximum).map(Completion::Read),
             Request::Stop => {
+                stop.request();
                 let _ = completions.send(Completion::Stopped);
                 return;
             }
@@ -450,6 +579,10 @@ fn worker_main(
             Err(error) => Completion::Failed(error),
         };
         if completions.send(completion).is_err() {
+            return;
+        }
+        if stop.requested() {
+            let _ = completions.send(Completion::Stopped);
             return;
         }
     }
@@ -594,4 +727,171 @@ fn normalize_port(port: &str) -> Result<String, SerialError> {
         return Err(SerialError::InvalidSettings);
     }
     Ok(format!("COM{number}"))
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    struct HeldDevice {
+        entered: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl SerialDevice for HeldDevice {
+        fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+            self.entered.store(true, Ordering::Release);
+            while !self.release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            Ok(bytes.len())
+        }
+
+        fn read_once(&mut self, _: usize) -> Result<Vec<u8>, SerialError> {
+            self.reads.fetch_add(1, Ordering::AcqRel);
+            Ok(Vec::new())
+        }
+    }
+
+    fn wait_until(mut predicate: impl FnMut() -> bool) {
+        for _ in 0..100_000 {
+            if predicate() {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("bounded worker did not make progress");
+    }
+
+    #[test]
+    fn occupied_mailbox_retirement_cannot_lose_stop_or_start_next_data_operation() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let stop = StopIntent::new();
+        let (request_tx, request_rx) = mpsc::sync_channel(1);
+        let (completion_tx, completion_rx) = mpsc::sync_channel(2);
+        let worker_stop = stop.clone();
+        let worker = std::thread::spawn({
+            let entered = entered.clone();
+            let release = release.clone();
+            let reads = reads.clone();
+            move || {
+                worker_request_loop(
+                    Box::new(HeldDevice {
+                        entered,
+                        release,
+                        reads,
+                    }),
+                    request_rx,
+                    completion_tx,
+                    worker_stop,
+                )
+            }
+        });
+
+        request_tx.send(Request::Write(vec![1])).unwrap();
+        wait_until(|| entered.load(Ordering::Acquire));
+        request_tx.send(Request::Read(1)).unwrap();
+        stop.request();
+        assert!(matches!(
+            request_tx.try_send(Request::Stop),
+            Err(TrySendError::Full(_))
+        ));
+        release.store(true, Ordering::Release);
+
+        worker.join().unwrap();
+        assert_eq!(reads.load(Ordering::Acquire), 0);
+        assert!(matches!(completion_rx.recv().unwrap(), Completion::Written));
+        assert!(matches!(completion_rx.recv().unwrap(), Completion::Stopped));
+    }
+
+    #[test]
+    fn finished_worker_without_stopped_completion_is_honestly_closed() {
+        let mut transport = ComTransport::spawn(test_settings(), || Err(SerialError::Other))
+            .expect("worker thread should spawn");
+        wait_until(|| {
+            transport
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.is_finished())
+        });
+
+        assert_eq!(transport.try_shutdown(), TransportShutdown::Complete);
+        assert_eq!(transport.snapshot().state, ComState::Closed);
+    }
+
+    #[test]
+    fn finished_worker_with_closed_completion_channel_is_honestly_closed() {
+        let mut transport = ComTransport::spawn(test_settings(), || {
+            panic!("deterministic worker exit before completion")
+        })
+        .expect("worker thread should spawn");
+        wait_until(|| {
+            transport
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.is_finished())
+        });
+
+        assert_eq!(transport.try_shutdown(), TransportShutdown::Complete);
+        assert_eq!(transport.snapshot().state, ComState::Closed);
+    }
+
+    #[test]
+    fn asynchronous_open_failure_is_distinct_from_ready() {
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+        let mut failed = ComTransport::spawn(test_settings(), move || {
+            while !worker_release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            Err(SerialError::Disconnected)
+        })
+        .expect("worker thread should spawn");
+        assert_eq!(failed.open_status(), ComOpenStatus::Opening);
+        release.store(true, Ordering::Release);
+        wait_until(|| failed.open_status() != ComOpenStatus::Opening);
+        assert_eq!(
+            failed.open_status(),
+            ComOpenStatus::Failed(SerialError::Disconnected)
+        );
+
+        let mut ready = ComTransport::with_device(test_settings(), ReadyDevice)
+            .expect("worker thread should spawn");
+        wait_until(|| ready.open_status() != ComOpenStatus::Opening);
+        assert_eq!(ready.open_status(), ComOpenStatus::Ready);
+    }
+
+    struct ReadyDevice;
+
+    impl SerialDevice for ReadyDevice {
+        fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+            Ok(bytes.len())
+        }
+
+        fn read_once(&mut self, _: usize) -> Result<Vec<u8>, SerialError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn test_settings() -> ComSettings {
+        ComSettings::new_read_only(
+            7,
+            "COM3",
+            9600,
+            8,
+            SerialParity::None,
+            1,
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            4,
+        )
+        .unwrap()
+    }
 }

@@ -1104,8 +1104,9 @@ impl HostCore {
     pub fn prepare_configured_transport_replacement(
         &mut self,
         resource: ResourceId,
+        at: Duration,
     ) -> Result<bool, Error> {
-        Ok(self.runtime.shutdown_transport(resource, self.last_now)?
+        Ok(self.runtime.shutdown_transport(resource, at)?
             == lab_core::transport::TransportShutdown::Complete)
     }
 
@@ -1125,6 +1126,17 @@ impl HostCore {
             .filter(|binding| binding.resource == resource)
             .map(|binding| binding.binding_generation)
             .max()
+    }
+
+    /// Copy the authoritative executor state for bounded reconnect diagnostics.
+    pub(crate) fn configured_resource_executor_state(
+        &self,
+        resource: ResourceId,
+    ) -> Option<ExecutorState> {
+        match self.runtime.query(Query::Transport(resource)).ok()? {
+            QueryResult::Transport(snapshot) => Some(snapshot.state),
+            _ => None,
+        }
     }
 
     /// Check frozen channel-type observations without polling or hidden I/O.

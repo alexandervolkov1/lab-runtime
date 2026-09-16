@@ -202,7 +202,7 @@ fn install_replacement(host: &mut HostCore, wire: Rc<RefCell<Wire>>, at: Duratio
     host.begin_configured_resource_reconnect(ResourceId::new(7))
         .unwrap();
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
+        host.prepare_configured_transport_replacement(ResourceId::new(7), at)
             .unwrap()
     );
     host.rebind_configured_transport(ResourceId::new(7), Box::new(Transport(wire)), at)

@@ -12,12 +12,15 @@ use crate::{
         ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
     },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
-    serial::{ComSettings, ComTransport, SerialFlowControl, SerialParity},
+    serial::{
+        ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
+        SerialParity,
+    },
 };
 use lab_core::managed::ComponentError;
 use lab_core::{
     Error as DomainError,
-    transport::{ByteTransport, ResourceId},
+    transport::{ByteTransport, ExecutorState, ResourceId},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -129,6 +132,8 @@ pub struct ServiceHost {
     deployment: Option<DeploymentLifecycle>,
     configuration_path: Option<PathBuf>,
     next_lifecycle_operation: u64,
+    reconnect_diagnostic: Option<ReconnectDiagnostic>,
+    quarantined_reconnect_candidate: Option<(ResourceId, ComTransport)>,
 }
 
 /// Bounded lifecycle-operation failure exposed without leaking filesystem details.
@@ -148,6 +153,147 @@ pub enum LifecycleOperationError {
     OwnerFailure,
     /// Required lifecycle provenance could not be admitted or confirmed.
     RecordingUnavailable,
+    /// A bounded transport retire/open/prepare step could not establish a replacement.
+    TransportUnavailable,
+}
+
+/// Bounded stages of one explicit configured-resource reconnect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconnectStage {
+    /// A safety barrier was evaluated; resource-only read reconnect requires none.
+    SafeBarrier,
+    /// Recorder lifecycle capacity and activation generation are being reserved.
+    RecorderReservation,
+    /// Retirement was requested from the old executor/worker.
+    RetireOldBegin,
+    /// The old executor has not yet proved worker/handle completion.
+    RetireOldPending,
+    /// The finite old-retirement deadline expired.
+    RetireOldTimeout,
+    /// The old executor rejected retirement progress before its deadline.
+    RetireOldFailed,
+    /// Candidate serial settings are being validated and frozen.
+    ReplacementSettings,
+    /// The bounded replacement worker is being spawned.
+    ReplacementWorkerSpawn,
+    /// The worker exists and the actual Windows port open/readback is pending.
+    ActualPortOpening,
+    /// The actual Windows port open/readback failed or timed out.
+    ReplacementPortOpenFailed,
+    /// The actual OS port open and configured-settings readback were confirmed.
+    ReplacementPortReady,
+    /// The ready candidate is being transferred to the authoritative owner.
+    ReplacementInstall,
+    /// Core rebind/generation fencing has been crossed.
+    CoreRebind,
+    /// The resource-specific compatibility probe is being enqueued.
+    CompatibilityProbeEnqueue,
+    /// The resource-specific compatibility probe is pending.
+    ProbeWaiting,
+    /// The resource-specific compatibility probe failed or timed out.
+    ProbeFailed,
+    /// The applied lifecycle is being enqueued to Recorder.
+    LifecycleRecorderCommit,
+    /// The exact lifecycle receipt is awaiting durable confirmation.
+    LifecycleDurability,
+    /// Probe, lifecycle durability and ordinary-acquisition release completed.
+    Complete,
+}
+
+impl ReconnectStage {
+    /// Stable lower-snake-case representation used by public diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SafeBarrier => "safe_barrier",
+            Self::RecorderReservation => "recorder_reservation",
+            Self::RetireOldBegin => "retire_old_begin",
+            Self::RetireOldPending => "retire_old_pending",
+            Self::RetireOldTimeout => "retire_old_timeout",
+            Self::RetireOldFailed => "retire_old_failed",
+            Self::ReplacementSettings => "replacement_settings",
+            Self::ReplacementWorkerSpawn => "replacement_worker_spawn",
+            Self::ActualPortOpening => "actual_windows_port_opening",
+            Self::ReplacementPortOpenFailed => "replacement_port_open_failed",
+            Self::ReplacementPortReady => "replacement_port_ready",
+            Self::ReplacementInstall => "replacement_install",
+            Self::CoreRebind => "core_rebind",
+            Self::CompatibilityProbeEnqueue => "compatibility_probe_enqueue",
+            Self::ProbeWaiting => "probe_waiting",
+            Self::ProbeFailed => "probe_failed_or_timeout",
+            Self::LifecycleRecorderCommit => "lifecycle_recorder_commit",
+            Self::LifecycleDurability => "lifecycle_durability",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+/// One replace-in-place diagnostic; no OS error string or unbounded history is retained.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconnectDiagnostic {
+    /// Stable logical resource identity.
+    pub resource_id: u64,
+    /// Binding generation visible before the reconnect.
+    pub current_generation: u64,
+    /// Checked generation intended for the replacement.
+    pub target_generation: u64,
+    /// Latest reached or failed bounded stage.
+    pub stage: ReconnectStage,
+    /// Latest bounded COM worker state when a candidate existed.
+    pub com_state: Option<ComState>,
+    /// Latest typed serial error class, without an OS-owned string.
+    pub serial_error: Option<SerialError>,
+    /// Whether the old worker/adapter retirement boundary completed.
+    pub old_worker_finished: bool,
+    /// Whether the replacement worker thread was spawned.
+    pub replacement_worker_spawned: bool,
+    /// Whether actual OS port open plus configured settings readback completed.
+    pub os_port_open_confirmed: bool,
+    /// Whether Core installed the replacement and crossed the generation fence.
+    pub core_rebind_crossed: bool,
+}
+
+impl ReconnectDiagnostic {
+    /// Return a bounded wire/storage summary with stable enum spellings.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "resource": self.resource_id.to_string(),
+            "current_generation": self.current_generation.to_string(),
+            "target_generation": self.target_generation.to_string(),
+            "stage": self.stage.as_str(),
+            "com_state": self.com_state.map(com_state_name),
+            "serial_error": self.serial_error.map(serial_error_name),
+            "old_worker_finished": self.old_worker_finished,
+            "replacement_worker_spawned": self.replacement_worker_spawned,
+            "os_port_open_confirmed": self.os_port_open_confirmed,
+            "core_rebind_crossed": self.core_rebind_crossed,
+        })
+    }
+}
+
+const fn com_state_name(state: ComState) -> &'static str {
+    match state {
+        ComState::Opening => "opening",
+        ComState::Online => "online",
+        ComState::Offline => "offline",
+        ComState::Closing => "closing",
+        ComState::Closed => "closed",
+    }
+}
+
+const fn serial_error_name(error: SerialError) -> &'static str {
+    match error {
+        SerialError::InvalidSettings => "invalid_settings",
+        SerialError::Disconnected => "disconnected",
+        SerialError::Timeout => "timeout",
+        SerialError::Other => "other",
+    }
+}
+
+const fn executor_com_state(state: ExecutorState) -> ComState {
+    match state {
+        ExecutorState::Idle | ExecutorState::InFlight => ComState::Online,
+        ExecutorState::Recovering | ExecutorState::Offline => ComState::Offline,
+    }
 }
 
 /// Successful configuration activation identity.
@@ -181,6 +327,12 @@ struct PendingRecordedLifecycle {
     reopen_required: bool,
     submitted_at: std::time::Duration,
     global_quiesced: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordedLifecycleFailureStage {
+    Commit,
+    Durability,
 }
 
 struct LiveApplyPort<'a> {
@@ -253,7 +405,7 @@ impl ApplyPort for LiveApplyPort<'_> {
                 loop {
                     match self
                         .host
-                        .prepare_configured_transport_replacement(resource_id)
+                        .prepare_configured_transport_replacement(resource_id, self.clock.now())
                     {
                         Ok(true) => break,
                         Ok(false) if std::time::Instant::now() < deadline => {
@@ -482,6 +634,8 @@ impl ServiceHost {
             deployment: None,
             configuration_path: None,
             next_lifecycle_operation: 1,
+            reconnect_diagnostic: None,
+            quarantined_reconnect_candidate: None,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
@@ -669,6 +823,8 @@ impl ServiceHost {
             deployment: loaded.map(DeploymentLifecycle::new),
             configuration_path,
             next_lifecycle_operation: 1,
+            reconnect_diagnostic: None,
+            quarantined_reconnect_candidate: None,
         })
     }
 
@@ -678,6 +834,9 @@ impl ServiceHost {
             return Ok(());
         }
         self.stopping_since = Some(std::time::Instant::now());
+        if let Some((_, candidate)) = self.quarantined_reconnect_candidate.as_mut() {
+            candidate.retire();
+        }
         let clock = self.clock;
         if let Err(error) = self.host.begin_shutdown(&clock) {
             self.fatal = true;
@@ -717,7 +876,23 @@ impl ServiceHost {
         if self.host.service(&clock).is_err() {
             self.fatal = true;
         }
+        let candidate_pending =
+            if let Some((_, candidate)) = self.quarantined_reconnect_candidate.as_mut() {
+                if candidate.try_shutdown() == lab_core::transport::TransportShutdown::Complete {
+                    self.quarantined_reconnect_candidate = None;
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
         let mut status = self.host.shutdown_status();
+        if candidate_pending {
+            status.unfinished_transports = status.unfinished_transports.saturating_add(1);
+            status.transports_closed = false;
+            status.exit_success = false;
+        }
         status.fatal_error = self.fatal;
         status.exit_success &= !self.fatal;
         let now = std::time::Instant::now();
@@ -734,6 +909,11 @@ impl ServiceHost {
             self.recorder_flush_since.get_or_insert(now);
             self.host.shutdown_recorder_step(self.clock.now());
             status = self.host.shutdown_status();
+            if self.quarantined_reconnect_candidate.is_some() {
+                status.unfinished_transports = status.unfinished_transports.saturating_add(1);
+                status.transports_closed = false;
+                status.exit_success = false;
+            }
             status.fatal_error = self.fatal;
             status.exit_success &= !self.fatal;
             let flush_expired = self
@@ -770,6 +950,11 @@ impl ServiceHost {
     /// Current immutable loaded deployment, absent for the legacy virtual profile.
     pub const fn loaded_configuration(&self) -> Option<&DeploymentLifecycle> {
         self.deployment.as_ref()
+    }
+
+    /// Latest bounded reconnect stage for post-failure reconciliation.
+    pub const fn reconnect_diagnostic(&self) -> Option<&ReconnectDiagnostic> {
+        self.reconnect_diagnostic.as_ref()
     }
 
     /// Reload, validate, stage and atomically commit a live-safe deployment diff.
@@ -1011,6 +1196,14 @@ impl ServiceHost {
         &mut self,
         pending: PendingRecordedLifecycle,
     ) -> Result<(), LifecycleOperationError> {
+        self.finish_recorded_lifecycle_detailed(pending)
+            .map_err(|_| LifecycleOperationError::RecordingUnavailable)
+    }
+
+    fn finish_recorded_lifecycle_detailed(
+        &mut self,
+        pending: PendingRecordedLifecycle,
+    ) -> Result<(), RecordedLifecycleFailureStage> {
         if self
             .host
             .commit_reserved_configuration_activation(pending.generation, pending.record)
@@ -1020,7 +1213,7 @@ impl ServiceHost {
             if pending.global_quiesced {
                 self.host.end_configuration_quiesce();
             }
-            return Err(LifecycleOperationError::RecordingUnavailable);
+            return Err(RecordedLifecycleFailureStage::Commit);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -1042,7 +1235,7 @@ impl ServiceHost {
                         if pending.global_quiesced {
                             self.host.end_configuration_quiesce();
                         }
-                        return Err(LifecycleOperationError::RecordingUnavailable);
+                        return Err(RecordedLifecycleFailureStage::Durability);
                     }
                     std::thread::yield_now();
                 }
@@ -1051,7 +1244,7 @@ impl ServiceHost {
                     if pending.global_quiesced {
                         self.host.end_configuration_quiesce();
                     }
-                    return Err(LifecycleOperationError::RecordingUnavailable);
+                    return Err(RecordedLifecycleFailureStage::Durability);
                 }
             }
         }
@@ -1217,6 +1410,20 @@ impl ServiceHost {
         resource_id: u64,
         expected_binding_generation: u64,
     ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
+        self.reconnect_resource_with_factory(
+            resource_id,
+            expected_binding_generation,
+            ComTransport::open_windows,
+        )
+    }
+
+    fn reconnect_resource_with_factory(
+        &mut self,
+        resource_id: u64,
+        expected_binding_generation: u64,
+        factory: impl FnOnce(ComSettings) -> Result<ComTransport, SerialError>,
+    ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
+        self.reconnect_diagnostic = None;
         let active = self
             .deployment
             .as_ref()
@@ -1255,8 +1462,47 @@ impl ServiceHost {
         let generation = current
             .checked_add(1)
             .ok_or(LifecycleOperationError::Conflict)?;
-        let pending = self.begin_resource_recorded_lifecycle("reconnect_resource", &active)?;
         let resource_key = ResourceId::new(resource_id);
+        self.reconnect_diagnostic = Some(ReconnectDiagnostic {
+            resource_id,
+            current_generation: current,
+            target_generation: generation,
+            stage: ReconnectStage::SafeBarrier,
+            com_state: self
+                .host
+                .configured_resource_executor_state(resource_key)
+                .map(executor_com_state),
+            serial_error: None,
+            old_worker_finished: false,
+            replacement_worker_spawned: false,
+            os_port_open_confirmed: false,
+            core_rebind_crossed: false,
+        });
+        if let Some((quarantined_resource, candidate)) =
+            self.quarantined_reconnect_candidate.as_mut()
+        {
+            if candidate.try_shutdown() == lab_core::transport::TransportShutdown::Complete {
+                self.quarantined_reconnect_candidate = None;
+            } else {
+                if let Some(diagnostic) = self.reconnect_diagnostic.as_mut() {
+                    diagnostic.stage = ReconnectStage::ReplacementPortOpenFailed;
+                    diagnostic.com_state = Some(candidate.snapshot().state);
+                    diagnostic.serial_error = candidate.snapshot().last_error;
+                    diagnostic.replacement_worker_spawned = true;
+                }
+                let _ = quarantined_resource;
+                return Err(LifecycleOperationError::TransportUnavailable);
+            }
+        }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::RecorderReservation;
+        let pending = self.begin_resource_recorded_lifecycle("reconnect_resource", &active)?;
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::RetireOldBegin;
         if self
             .host
             .begin_configured_resource_reconnect(resource_key)
@@ -1270,35 +1516,161 @@ impl ServiceHost {
         loop {
             match self
                 .host
-                .prepare_configured_transport_replacement(resource_key)
+                .prepare_configured_transport_replacement(resource_key, self.clock.now())
             {
-                Ok(true) => break,
+                Ok(true) => {
+                    let diagnostic = self
+                        .reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized");
+                    diagnostic.old_worker_finished = true;
+                    diagnostic.com_state = Some(ComState::Closed);
+                    break;
+                }
                 Ok(false) if std::time::Instant::now() < deadline => {
+                    let diagnostic = self
+                        .reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized");
+                    diagnostic.stage = ReconnectStage::RetireOldPending;
+                    diagnostic.com_state = Some(ComState::Closing);
                     if self.host.service(&self.clock).is_err() {
+                        self.reconnect_diagnostic
+                            .as_mut()
+                            .expect("diagnostic initialized")
+                            .stage = ReconnectStage::RetireOldFailed;
                         self.cancel_recorded_lifecycle(pending);
-                        return Err(LifecycleOperationError::OwnerFailure);
+                        return Err(LifecycleOperationError::TransportUnavailable);
                     }
                     std::thread::yield_now();
                 }
-                _ => {
+                Ok(false) => {
+                    let diagnostic = self
+                        .reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized");
+                    diagnostic.stage = ReconnectStage::RetireOldTimeout;
+                    diagnostic.com_state = Some(ComState::Closing);
                     self.cancel_recorded_lifecycle(pending);
-                    return Err(LifecycleOperationError::OwnerFailure);
+                    return Err(LifecycleOperationError::TransportUnavailable);
+                }
+                Err(_) => {
+                    self.reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized")
+                        .stage = ReconnectStage::RetireOldFailed;
+                    self.cancel_recorded_lifecycle(pending);
+                    return Err(LifecycleOperationError::TransportUnavailable);
                 }
             }
         }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::ReplacementSettings;
         let settings = match com_settings(&resource, generation) {
             Ok(settings) => settings,
             Err(error) => {
+                self.reconnect_diagnostic
+                    .as_mut()
+                    .expect("diagnostic initialized")
+                    .serial_error = Some(SerialError::InvalidSettings);
                 self.cancel_recorded_lifecycle(pending);
                 return Err(error);
             }
         };
-        let adapter =
-            ComTransport::open_windows(settings).map_err(|_| LifecycleOperationError::OwnerFailure);
-        let Ok(adapter) = adapter else {
-            self.cancel_recorded_lifecycle(pending);
-            return Err(LifecycleOperationError::OwnerFailure);
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::ReplacementWorkerSpawn;
+        let mut adapter = match factory(settings) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                let diagnostic = self
+                    .reconnect_diagnostic
+                    .as_mut()
+                    .expect("diagnostic initialized");
+                diagnostic.serial_error = Some(error);
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::TransportUnavailable);
+            }
         };
+        {
+            let snapshot = adapter.snapshot();
+            let diagnostic = self
+                .reconnect_diagnostic
+                .as_mut()
+                .expect("diagnostic initialized");
+            diagnostic.stage = ReconnectStage::ActualPortOpening;
+            diagnostic.com_state = Some(snapshot.state);
+            diagnostic.replacement_worker_spawned = snapshot.worker_spawned;
+        }
+        let open_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(resource.open_timeout_ms);
+        loop {
+            match adapter.open_status() {
+                ComOpenStatus::Ready => {
+                    let snapshot = adapter.snapshot();
+                    let diagnostic = self
+                        .reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized");
+                    diagnostic.stage = ReconnectStage::ReplacementPortReady;
+                    diagnostic.com_state = Some(snapshot.state);
+                    diagnostic.os_port_open_confirmed = snapshot.os_port_open_confirmed;
+                    break;
+                }
+                ComOpenStatus::Failed(error) => {
+                    let snapshot = adapter.snapshot();
+                    let diagnostic = self
+                        .reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized");
+                    diagnostic.stage = ReconnectStage::ReplacementPortOpenFailed;
+                    diagnostic.com_state = Some(snapshot.state);
+                    diagnostic.serial_error = Some(error);
+                    self.cancel_recorded_lifecycle(pending);
+                    self.retire_uninstalled_reconnect_candidate(
+                        resource_key,
+                        adapter,
+                        resource.recovery_timeout_ms,
+                    );
+                    return Err(LifecycleOperationError::TransportUnavailable);
+                }
+                ComOpenStatus::Opening if std::time::Instant::now() < open_deadline => {
+                    if self.host.service(&self.clock).is_err() {
+                        self.cancel_recorded_lifecycle(pending);
+                        self.retire_uninstalled_reconnect_candidate(
+                            resource_key,
+                            adapter,
+                            resource.recovery_timeout_ms,
+                        );
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                ComOpenStatus::Opening => {
+                    let diagnostic = self
+                        .reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized");
+                    diagnostic.stage = ReconnectStage::ReplacementPortOpenFailed;
+                    diagnostic.com_state = Some(adapter.snapshot().state);
+                    diagnostic.serial_error = Some(SerialError::Timeout);
+                    self.cancel_recorded_lifecycle(pending);
+                    self.retire_uninstalled_reconnect_candidate(
+                        resource_key,
+                        adapter,
+                        resource.recovery_timeout_ms,
+                    );
+                    return Err(LifecycleOperationError::TransportUnavailable);
+                }
+            }
+        }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::ReplacementInstall;
         if self
             .host
             .rebind_configured_transport(resource_key, Box::new(adapter), self.clock.now())
@@ -1308,6 +1680,18 @@ impl ServiceHost {
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
+        {
+            let diagnostic = self
+                .reconnect_diagnostic
+                .as_mut()
+                .expect("diagnostic initialized");
+            diagnostic.stage = ReconnectStage::CoreRebind;
+            diagnostic.core_rebind_crossed = true;
+        }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::CompatibilityProbeEnqueue;
         if self
             .host
             .begin_configured_probes_for_resource(resource_key, self.clock.now())
@@ -1319,11 +1703,19 @@ impl ServiceHost {
         }
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_millis(resource.recovery_timeout_ms);
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::ProbeWaiting;
         loop {
             match self.host.configured_probes_ready_for_resource(resource_key) {
                 Ok(true) => break,
                 Ok(false) => {}
                 Err(_) => {
+                    self.reconnect_diagnostic
+                        .as_mut()
+                        .expect("diagnostic initialized")
+                        .stage = ReconnectStage::ProbeFailed;
                     let _ =
                         self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                     self.cancel_recorded_lifecycle(pending);
@@ -1331,21 +1723,44 @@ impl ServiceHost {
                 }
             }
             if std::time::Instant::now() >= deadline {
+                self.reconnect_diagnostic
+                    .as_mut()
+                    .expect("diagnostic initialized")
+                    .stage = ReconnectStage::ProbeFailed;
                 let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
             if self.host.service(&self.clock).is_err() {
+                self.reconnect_diagnostic
+                    .as_mut()
+                    .expect("diagnostic initialized")
+                    .stage = ReconnectStage::ProbeFailed;
                 let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
             std::thread::yield_now();
         }
-        if self.finish_recorded_lifecycle(pending).is_err() {
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::LifecycleRecorderCommit;
+        if let Err(stage) = self.finish_recorded_lifecycle_detailed(pending) {
+            self.reconnect_diagnostic
+                .as_mut()
+                .expect("diagnostic initialized")
+                .stage = match stage {
+                RecordedLifecycleFailureStage::Commit => ReconnectStage::LifecycleRecorderCommit,
+                RecordedLifecycleFailureStage::Durability => ReconnectStage::LifecycleDurability,
+            };
             let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
-            return Err(LifecycleOperationError::OwnerFailure);
+            return Err(LifecycleOperationError::RecordingUnavailable);
         }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::LifecycleDurability;
         if self
             .host
             .activate_configured_resource_after_reconnect(resource_key, self.clock.now())
@@ -1354,10 +1769,40 @@ impl ServiceHost {
             let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
             return Err(LifecycleOperationError::OwnerFailure);
         }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("diagnostic initialized")
+            .stage = ReconnectStage::Complete;
         Ok(ReconnectResourceResult {
             resource_id,
             binding_generation: generation,
         })
+    }
+
+    fn retire_uninstalled_reconnect_candidate(
+        &mut self,
+        resource: ResourceId,
+        mut candidate: ComTransport,
+        timeout_ms: u64,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            if candidate.try_shutdown() == lab_core::transport::TransportShutdown::Complete {
+                if let Some(diagnostic) = self.reconnect_diagnostic.as_mut() {
+                    diagnostic.com_state = Some(ComState::Closed);
+                }
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                if let Some(diagnostic) = self.reconnect_diagnostic.as_mut() {
+                    diagnostic.com_state = Some(candidate.snapshot().state);
+                }
+                self.quarantined_reconnect_candidate = Some((resource, candidate));
+                return;
+            }
+            let _ = self.host.service(&self.clock);
+            std::thread::yield_now();
+        }
     }
 
     fn retire_failed_reconnect(
@@ -1436,5 +1881,408 @@ fn await_recorder_activation(host: &mut HostCore) -> Result<(), Box<dyn Error>> 
             return Err(io::Error::other("recorder activation startup deadline").into());
         }
         std::thread::yield_now();
+    }
+}
+
+#[cfg(test)]
+mod reconnect_preparation_tests {
+    use super::*;
+    use crate::{
+        configuration::{ArtifactReader, ConfigurationError, parse_runtime_toml},
+        recorder::RecordingState,
+        serial::SerialDevice,
+    };
+    use lab_core::{
+        metakon::crc,
+        transport::{RecoveryStatus, TransportIoError, TransportShutdown},
+    };
+    use std::{
+        collections::{BTreeMap, VecDeque},
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+    };
+
+    const DEFINITION: &[u8] = br#"{
+ "schema_version":1,"profile":"metakon-5x3-v1","id":11,"name":"Metakon",
+ "parameters":[
+  {"id":1,"name":"channel_type","value_type":"integer","unit":{"id":"1","symbol":"1"},"min":0,"max":255,"role":"diagnostic","access":"read_only","operation":"channel_type","scale":1,"write_effect":"none"},
+  {"id":2,"name":"temperature","value_type":"float","unit":{"id":"degC","symbol":"C"},"min":-99.9,"max":999.9,"role":"measurement","access":"read_only","operation":"temperature","scale":0.1,"write_effect":"none"}
+ ]}"#;
+
+    const CONFIG: &[u8] = br#"schema_version=1
+[runtime]
+key="bench"
+display_name="Bench"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=true
+path="history.sqlite"
+policy="required"
+[[resources]]
+id=7
+key="bus"
+kind="windows_com_read_only"
+port="COM3"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=1
+write_timeout_ms=1
+open_timeout_ms=100
+recovery_timeout_ms=100
+[[instruments]]
+id=11
+key="temperature"
+kind="metakon"
+definition="metakon.json"
+resource_id=7
+address=1
+poll_period_ms=100
+queue_timeout_ms=50
+transaction_timeout_ms=50
+"#;
+
+    struct Reader;
+
+    impl ArtifactReader for Reader {
+        fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+            Ok(DEFINITION.to_vec())
+        }
+    }
+
+    struct OldTransport {
+        shutdown_calls: Arc<AtomicUsize>,
+        never_finishes: bool,
+    }
+
+    impl ByteTransport for OldTransport {
+        fn try_write(&mut self, _: &[u8]) -> Result<usize, TransportIoError> {
+            Err(TransportIoError::Disconnected)
+        }
+
+        fn try_read(&mut self, _: &mut [u8]) -> Result<usize, TransportIoError> {
+            Ok(0)
+        }
+
+        fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+            Ok(RecoveryStatus::Pending)
+        }
+
+        fn try_shutdown(&mut self) -> TransportShutdown {
+            self.shutdown_calls.fetch_add(1, Ordering::AcqRel);
+            if self.never_finishes {
+                TransportShutdown::Pending
+            } else {
+                TransportShutdown::Complete
+            }
+        }
+    }
+
+    struct ProbeDevice {
+        readable: VecDeque<u8>,
+        channel_type: u8,
+    }
+
+    impl SerialDevice for ProbeDevice {
+        fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+            let mut response = vec![1, 0, 0, 0, 0x41, self.channel_type];
+            response.push(crc(&response));
+            self.readable.extend(response);
+            Ok(bytes.len())
+        }
+
+        fn read_once(&mut self, maximum: usize) -> Result<Vec<u8>, SerialError> {
+            let count = maximum.min(self.readable.len());
+            Ok(self.readable.drain(..count).collect())
+        }
+    }
+
+    fn temporary_database() -> PathBuf {
+        let mut entropy = [0u8; 12];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        std::env::temp_dir().join(format!("lab-runtime-m8-reconnect-{suffix}.sqlite"))
+    }
+
+    fn service_with_old_transport(never_finishes: bool) -> (ServiceHost, PathBuf) {
+        let deployment = parse_runtime_toml(CONFIG, Path::new("C:\\m8-test"), &mut Reader)
+            .expect("test deployment");
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(OldTransport {
+                shutdown_calls,
+                never_finishes,
+            }),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        let boot_id = "0123456789abcdef0123456789abcdef".to_owned();
+        host.set_boot_id(&boot_id);
+        let clock = SystemClock::new();
+        host.begin_configured_probes(clock.now()).unwrap();
+        loop {
+            host.service(&clock).unwrap();
+            if host.resource_records()[0]["data"]["state"] == "offline" {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let database = temporary_database();
+        let anchor =
+            TimeAnchor::capture(|| clock.now(), || Ok(std::time::SystemTime::now())).unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            &boot_id,
+            anchor,
+            clock,
+        )
+        .unwrap();
+        host.attach_recorder(recorder, RecordingPolicy::Required, clock.now())
+            .unwrap();
+        await_recorder_activation(&mut host).unwrap();
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bound = listener.local_addr().unwrap();
+        (
+            ServiceHost {
+                host,
+                clock,
+                listener,
+                bound,
+                boot_id,
+                stopping_since: None,
+                safe_since: None,
+                recorder_flush_since: None,
+                terminal: None,
+                fatal: false,
+                deployment: Some(DeploymentLifecycle::new(deployment)),
+                configuration_path: None,
+                next_lifecycle_operation: 1,
+                reconnect_diagnostic: None,
+                quarantined_reconnect_candidate: None,
+            },
+            database,
+        )
+    }
+
+    fn assert_required_healthy_and_no_outputs(service: &ServiceHost) {
+        let status = service.owner().recording_status().unwrap();
+        assert_ne!(status.state, RecordingState::Failed);
+        assert!(status.first_error.is_none());
+        assert!(service.owner().output_safe_records().is_empty());
+    }
+
+    fn shutdown_and_remove(mut service: ServiceHost, database: PathBuf) -> ShutdownStatus {
+        service.request_shutdown().unwrap();
+        let status = loop {
+            if let Some(status) = service.shutdown_step().unwrap() {
+                break status;
+            }
+            std::thread::yield_now();
+        };
+        drop(service);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(database.with_extension("sqlite-shm"));
+        status
+    }
+
+    #[test]
+    fn reconnect_retirement_timeout_reports_exact_pre_rebind_stage() {
+        let (mut service, database) = service_with_old_transport(true);
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |_| Err(SerialError::Other)),
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::RetireOldTimeout);
+        assert!(!diagnostic.old_worker_finished);
+        assert!(!diagnostic.replacement_worker_spawned);
+        assert!(!diagnostic.os_port_open_confirmed);
+        assert!(!diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(1));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(!status.transports_closed);
+        assert!(!status.exit_success);
+    }
+
+    #[test]
+    fn reconnect_worker_spawn_failure_keeps_old_generation_and_recorder_healthy() {
+        let (mut service, database) = service_with_old_transport(false);
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |_| Err(SerialError::Other)),
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ReplacementWorkerSpawn);
+        assert_eq!(diagnostic.serial_error, Some(SerialError::Other));
+        assert!(diagnostic.old_worker_finished);
+        assert!(!diagnostic.replacement_worker_spawned);
+        assert!(!diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(1));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+    }
+
+    #[test]
+    fn stale_expected_generation_is_conflict_without_prior_failure_diagnostics() {
+        let (mut service, database) = service_with_old_transport(false);
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |_| Err(SerialError::Other)),
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+        assert!(service.reconnect_diagnostic().is_some());
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 99, |_| Err(SerialError::Other)),
+            Err(LifecycleOperationError::Conflict)
+        );
+        assert!(service.reconnect_diagnostic().is_none());
+        assert_eq!(service.owner().configured_binding_generation(11), Some(1));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+    }
+
+    #[test]
+    fn asynchronous_candidate_open_failure_never_crosses_generation_fence() {
+        let (mut service, database) = service_with_old_transport(false);
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |settings| {
+                ComTransport::with_device_factory(settings, || Err(SerialError::Disconnected))
+            }),
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ReplacementPortOpenFailed);
+        assert_eq!(diagnostic.serial_error, Some(SerialError::Disconnected));
+        assert!(diagnostic.replacement_worker_spawned);
+        assert!(!diagnostic.os_port_open_confirmed);
+        assert!(!diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(1));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+    }
+
+    #[test]
+    fn unfinished_candidate_open_is_quarantined_until_worker_finishes() {
+        let (mut service, database) = service_with_old_transport(false);
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, move |settings| {
+                ComTransport::with_device_factory(settings, move || {
+                    while !worker_release.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                    Ok(Box::new(ProbeDevice {
+                        readable: VecDeque::new(),
+                        channel_type: 3,
+                    }))
+                })
+            }),
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ReplacementPortOpenFailed);
+        assert_eq!(diagnostic.serial_error, Some(SerialError::Timeout));
+        assert!(diagnostic.replacement_worker_spawned);
+        assert!(!diagnostic.os_port_open_confirmed);
+        assert!(!diagnostic.core_rebind_crossed);
+        assert!(service.quarantined_reconnect_candidate.is_some());
+        assert_eq!(service.owner().configured_binding_generation(11), Some(1));
+        assert_required_healthy_and_no_outputs(&service);
+
+        release.store(true, Ordering::Release);
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+        assert!(status.exit_success);
+    }
+
+    #[test]
+    fn failed_probe_is_distinct_and_keeps_installed_generation_quiesced() {
+        let (mut service, database) = service_with_old_transport(false);
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |settings| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(ProbeDevice {
+                        readable: VecDeque::new(),
+                        channel_type: 2,
+                    }))
+                })
+            }),
+            Err(LifecycleOperationError::OwnerFailure)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ProbeFailed);
+        assert!(diagnostic.os_port_open_confirmed);
+        assert!(diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(2));
+        assert!(
+            service
+                .owner()
+                .configured_resource_reconnect_quiesced(ResourceId::new(7))
+        );
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+        assert!(status.exit_success);
+    }
+
+    #[test]
+    fn ready_candidate_installs_once_then_probe_and_lifecycle_release_acquisition() {
+        let (mut service, database) = service_with_old_transport(false);
+
+        let result = service
+            .reconnect_resource_with_factory(7, 1, |settings| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(ProbeDevice {
+                        readable: VecDeque::new(),
+                        channel_type: 3,
+                    }))
+                })
+            })
+            .unwrap_or_else(|error| panic!("{error:?}: {:?}", service.reconnect_diagnostic()));
+        assert_eq!(result.binding_generation, 2);
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::Complete);
+        assert!(diagnostic.old_worker_finished);
+        assert!(diagnostic.replacement_worker_spawned);
+        assert!(diagnostic.os_port_open_confirmed);
+        assert!(diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(2));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+        assert!(status.exit_success);
     }
 }

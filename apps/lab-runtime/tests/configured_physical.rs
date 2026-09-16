@@ -209,6 +209,26 @@ transaction_timeout_ms=50
 }
 
 #[test]
+fn reconnect_retirement_uses_current_monotonic_time_after_transport_poll() {
+    let deployment = parse_runtime_toml(CONFIG, Path::new("C:\\bench"), &mut Reader).unwrap();
+    let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+    transports.insert(ResourceId::new(7), Box::new(ScriptedTransport::default()));
+    let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+    host.command(lab_core::Command::PollTransports {
+        at: Duration::from_millis(10),
+    })
+    .unwrap();
+
+    assert!(
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(10)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
 fn c16_metakon_513_thermocouple_scale_preserves_raw_degree_values() {
     let path = std::fs::canonicalize(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtime.metakon-513-com5.toml"),
@@ -446,8 +466,11 @@ fn c14_explicit_rebind_after_offline_fences_old_session_and_resumes_new_generati
         .readable
         .extend(temperature_response(999));
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(710),
+        )
+        .unwrap()
     );
     host.rebind_configured_transport(
         ResourceId::new(7),
@@ -504,8 +527,11 @@ fn c14_reconnect_replacement_stays_quiesced_until_probe_and_lifecycle_activation
         .unwrap();
     assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(40),
+        )
+        .unwrap()
     );
     let replacement = Rc::new(RefCell::new(DisconnectWire {
         responses: VecDeque::from([channel_type_response(), temperature_response(251)]),
@@ -579,8 +605,11 @@ fn c14_failed_post_install_probe_keeps_new_generation_quiesced_and_offline() {
     host.begin_configured_resource_reconnect(ResourceId::new(7))
         .unwrap();
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(10),
+        )
+        .unwrap()
     );
 
     let wrong_probe = Rc::new(RefCell::new(DisconnectWire {
@@ -643,8 +672,11 @@ fn c14_failed_post_install_probe_keeps_new_generation_quiesced_and_offline() {
     host.begin_configured_resource_reconnect(ResourceId::new(7))
         .unwrap();
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(1010),
+        )
+        .unwrap()
     );
     let next = Rc::new(RefCell::new(DisconnectWire {
         responses: VecDeque::from([channel_type_response(), temperature_response(252)]),
@@ -679,8 +711,11 @@ fn c14_probe_timeout_never_releases_ordinary_reconnect_acquisition() {
     host.begin_configured_resource_reconnect(ResourceId::new(7))
         .unwrap();
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(10),
+        )
+        .unwrap()
     );
     let silent = Rc::new(RefCell::new(DisconnectWire::default()));
     host.rebind_configured_transport(
@@ -756,8 +791,11 @@ fn c14_reconnect_probe_is_resource_scoped_while_unrelated_resource_continues() {
     host.begin_configured_resource_reconnect(ResourceId::new(7))
         .unwrap();
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(40),
+        )
+        .unwrap()
     );
     let replacement = Rc::new(RefCell::new(DisconnectWire {
         responses: VecDeque::from([channel_type_response(), temperature_response(999)]),
@@ -804,8 +842,11 @@ fn c19_shutdown_during_reconnect_probe_fences_work_and_closes_finitely() {
     host.begin_configured_resource_reconnect(ResourceId::new(7))
         .unwrap();
     assert!(
-        host.prepare_configured_transport_replacement(ResourceId::new(7))
-            .unwrap()
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(10),
+        )
+        .unwrap()
     );
     host.rebind_configured_transport(
         ResourceId::new(7),

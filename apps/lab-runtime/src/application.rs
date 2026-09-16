@@ -1269,8 +1269,19 @@ impl Application {
             }
         }
         let recorded_command = recorded_intent(&payload).map(|(command, _)| command);
+        let reconnect_operation = matches!(&payload, Mutation::ReconnectResource { .. });
         let outcome = dispatch(service, payload, &rid).map_or_else(
-            |error| OperationState::Failed(domain_code(error).into()),
+            |error| {
+                let code = domain_code(error);
+                if reconnect_operation && let Some(diagnostic) = service.reconnect_diagnostic() {
+                    OperationState::FailedWithResult {
+                        code: code.into(),
+                        detail: diagnostic.to_json().to_string(),
+                    }
+                } else {
+                    OperationState::Failed(code.into())
+                }
+            },
             |value| OperationState::Completed(value.to_string()),
         );
         // The terminal record is committed even if the connection closes before delivery.
@@ -1886,6 +1897,7 @@ fn domain_code(e: Error) -> &'static str {
         Error::UnknownInstrument(_) => "unknown_instrument",
         Error::UnknownParameter { .. } => "unknown_parameter",
         Error::UnknownSignal(_) => "unknown_signal",
+        Error::Transport(_) => "transport_unavailable",
         Error::InvalidConfiguration(_) => "invalid_configuration",
         Error::RecordingUnavailable => "recording_unavailable",
         _ => "domain_rejected",
@@ -1894,6 +1906,10 @@ fn domain_code(e: Error) -> &'static str {
 fn lifecycle_domain_error(error: LifecycleOperationError) -> Error {
     match error {
         LifecycleOperationError::RecordingUnavailable => Error::RecordingUnavailable,
+        LifecycleOperationError::TransportUnavailable => {
+            Error::Transport(lab_core::transport::TransportError::ResourceUnavailable)
+        }
+        LifecycleOperationError::Conflict => Error::Controller(ControllerError::RevisionConflict),
         _ => Error::InvalidConfiguration("lifecycle operation failed"),
     }
 }
@@ -2031,6 +2047,20 @@ mod lifecycle_error_tests {
                 LifecycleOperationError::InvalidCandidate
             )),
             "invalid_configuration"
+        );
+    }
+
+    #[test]
+    fn reconnect_transport_failure_and_stale_generation_keep_distinct_public_codes() {
+        assert_eq!(
+            domain_code(lifecycle_domain_error(
+                LifecycleOperationError::TransportUnavailable
+            )),
+            "transport_unavailable"
+        );
+        assert_eq!(
+            domain_code(lifecycle_domain_error(LifecycleOperationError::Conflict)),
+            "revision_conflict"
         );
     }
 }
