@@ -713,6 +713,67 @@ The next explicitly authorized bench launch remains:
 cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5.toml
 ```
 
+## Actual reconnect lifecycle contradiction — 2026-09-16
+
+The post-recovery-correction bench used boot
+`a7bcb055e144ec70b1e071701241a3e5`, exact runtime TOML hash
+`5fec1c546f81b8a29f7a21360deb33575fe98a87c987fbbd1a28094bd8e01def`
+and unchanged definition hash
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+Only the approved COM5/9600/8N1/no-flow, address-5, channel-0 channel-type and
+temperature reads were used. Startup compatibility succeeded with channel type
+3. Real pre-disconnect temperature observations were 23--25 degrees Celsius with
+`Good` quality and explicit scale 1.0; the operator reported 25 degrees Celsius
+on the front panel. Resource generation was 1 and the ordinary queue was empty.
+
+After the operator physically removed the USB-RS485 adapter, the first failed
+read published exactly one durable `Unavailable` temperature observation at
+record 758 with `failure=Transport` and no value. The previous Good rows remained
+in history. The resource reached Offline by the configured 2,000-ms recovery
+deadline, transaction 431 became terminal Failed, generation remained 1 and the
+queue remained zero. Repeated public snapshots showed the same Unavailable
+timestamp and no fabricated Good. Required recording retained complete coverage
+and no error.
+
+After the operator physically reconnected the same adapter, the public operation
+`reconnect_resource(resource=1, expected_binding_generation=1)` was durably
+recorded as accepted at record 1002 and failed with
+`invalid_configuration` at record 1003. No second reconnect, configuration
+operation, alternate probe or write was attempted. Contrary to that terminal
+result, the replacement executor continued ordinary acquisition. Public state
+became idle with an empty queue and new real Good observations appeared. Durable
+measurement rows after the failed operation carry generation 2/revision 2 and
+contain 26--27 degrees Celsius; the replacement executor correlation counter was
+distinct from the retired session. This establishes a real failed-lifecycle /
+acquisition-ready contradiction rather than stale-value replay.
+
+Source inspection confirmed the exact sequence. `ServiceHost::reconnect_resource`
+retires the old resource, opens the replacement `ComTransport`, calls
+`rebind_configured_transport()` (installing the new executor and advancing its
+binding/mapping identity), then calls the global `begin_configured_probes()` and
+waits in `configured_probes_ready()`. Normal host scheduling is already able to
+admit periodic temperature reads after rebind. On probe error or deadline,
+`cancel_recorded_lifecycle()` records failure but does not quiesce or retire the
+installed replacement. The old session was not restored; the defect was that
+ordinary acquisition became usable before compatibility and lifecycle success.
+
+Before any production correction, a final public snapshot showed real Good
+27.0 degrees Celsius, an idle resource, zero queue and healthy Required recording
+with complete coverage. Normal `runtime_shutdown` then completed successfully:
+`transports_closed=true`, `recorder_flushed=true`, zero unfinished transports or
+workers, `cleanup_complete=true` and `exit_success=true`. The sealed boot reports
+complete coverage; the output event count is zero. Offline read-only SQLite
+inspection independently confirmed the Unavailable boundary, the accepted and
+failed reconnect records, generation-2/revision-2 Good rows after failure, exact
+loaded provenance hashes and zero outputs.
+
+This evidence is preserved at
+`examples/metakon-513-com5-recovery-corrected-history.sqlite`, final SHA-256
+`6afe7924e64326a0dedc37b3d860428a4a351c8f35803c56d51ba271f8caa0e4`.
+It must not be reopened for a later bench run. External review authorized a
+narrow resource-scoped reconnect-quiescing correction; the next bench must use a
+new archive.
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
