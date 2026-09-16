@@ -59,6 +59,7 @@ struct BarrierState {
     fail_periodic_wall_read: AtomicBool,
     low_wal_threshold: Option<u64>,
     fail_checkpoint_once: AtomicBool,
+    fail_close_after_seal: bool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -77,6 +78,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -92,6 +94,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Hold after a real fact transaction commits but before its owner receipt.
@@ -108,6 +111,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Hold only a terminal operation before SQL, after earlier acceptance commits.
@@ -124,6 +128,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Terminate the storage thread before one fact transaction for fault tests.
@@ -139,6 +144,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Hold only Finish before SQL, after its owner FIFO admission.
@@ -154,6 +160,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Inject one failed later UTC read on the SQLite worker's periodic path.
@@ -170,6 +177,7 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(true),
             low_wal_threshold: None,
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Use a smaller real WAL checkpoint threshold in the storage fault harness.
@@ -185,11 +193,21 @@ impl WriterBarrier {
             fail_periodic_wall_read: AtomicBool::new(false),
             low_wal_threshold: Some(bytes),
             fail_checkpoint_once: AtomicBool::new(false),
+            fail_close_after_seal: false,
         }))
     }
     /// Arm exactly one fault at the next fact's worker-only WAL threshold gate.
     pub fn fail_next_checkpoint(&self) {
         self.0.fail_checkpoint_once.store(true, Ordering::Release);
+    }
+    /// Simulate a storage close error after the real terminal SQL seal commits.
+    /// This fault seam is confined to the worker; it never changes Runtime safety.
+    pub fn fail_close_after_seal() -> Self {
+        let mut barrier = Self::low_wal_threshold_for_testing(16 * 1024 * 1024);
+        Arc::get_mut(&mut barrier.0)
+            .expect("fresh fault barrier")
+            .fail_close_after_seal = true;
+        barrier
     }
     /// Release any worker held at a deterministic storage stage.
     pub fn release(&self) {
@@ -1652,6 +1670,14 @@ fn worker_loop(
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .terminal_seal_committed = true;
+                }
+                if barrier.is_some_and(|fault| fault.0.fail_close_after_seal) {
+                    let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                    status.state = RecordingState::Failed;
+                    status.first_error.get_or_insert_with(|| {
+                        "injected sqlite close failure after terminal seal".into()
+                    });
+                    return false;
                 }
                 if let Err(error) = store.close() {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());

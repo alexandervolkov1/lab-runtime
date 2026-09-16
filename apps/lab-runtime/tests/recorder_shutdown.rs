@@ -531,3 +531,60 @@ fn terminal_sqlite_insert_failure_rolls_back_boot_seal_and_keeps_safe_outcome_ho
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn committed_terminal_seal_with_close_error_does_not_report_a_successful_flush() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::fail_close_after_seal();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier).unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let boot = service.boot_id().to_owned();
+    service.request_shutdown().unwrap();
+    let by = Instant::now() + Duration::from_secs(3);
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(Instant::now() < by, "close fault exceeded finite grace");
+        std::thread::yield_now();
+    };
+    let status = service.owner().recording_status().unwrap();
+    assert!(terminal.safe_confirmed);
+    assert!(
+        status.terminal_seal_committed,
+        "SQL seal must have committed"
+    );
+    assert!(status.worker_closed);
+    assert_eq!(status.state, RecordingState::Failed);
+    assert!(
+        status
+            .first_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("close")
+    );
+    assert!(!terminal.recorder_flushed);
+    assert!(terminal.recorder_error);
+    assert!(!terminal.exit_success);
+    drop(service);
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_ne!(reopened.boot_id(), boot);
+    drop(reopened);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let seals: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_boots WHERE state='sealed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seals, 1, "close failure cannot erase a committed seal");
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
