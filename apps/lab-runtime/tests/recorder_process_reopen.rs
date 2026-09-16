@@ -4,7 +4,8 @@ use lab_core::{
     Command as DomainCommand, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig,
 };
 use lab_runtime::recorder::{
-    HistoryFilter, RecorderLimits, RecorderWorker, RecordingState, SqliteStore, WriterBarrier,
+    HistoryFilter, RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, SqliteStore,
+    WriterBarrier,
 };
 use lab_runtime::{
     application::Application,
@@ -449,6 +450,151 @@ fn killed_commit_before_receipt_is_readable_via_public_history_without_control_r
     drop(app);
     drop(b);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn killed_active_native_authority_reopens_ready_without_restoring_lease_or_replaying_output() {
+    let path = temporary_database();
+    let (old_boot, database_id) = kill_selected_child(
+        &path,
+        "child_holds_active_native_authority_after_fact_commit",
+        "LAB_M7_ACTIVE_AUTHORITY_DB",
+        None,
+        "M7_ACTIVE_AUTHORITY_REACHED ",
+    );
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut b = ServiceHost::startup(options).unwrap();
+    assert_ne!(b.boot_id(), old_boot);
+    assert_eq!(
+        b.owner().recording_database_id(),
+        Some(database_id.as_str())
+    );
+    let QueryResult::Controller(controller) = b
+        .owner()
+        .query(Query::Controller(b.owner().controller_id()))
+        .unwrap()
+    else {
+        panic!("B controller unavailable")
+    };
+    assert_eq!(controller.state, lab_core::control::ControllerState::Ready);
+    let QueryResult::Output(output) = b
+        .owner()
+        .query(Query::Output(lab_core::output::ActuatorId::new(
+            b.owner().plant_id(),
+            lab_core::HEATER_POWER,
+        )))
+        .unwrap()
+    else {
+        panic!("B output unavailable")
+    };
+    assert!(output.lease.is_none());
+    assert!(!output.pending);
+    assert!(output.in_flight.is_none());
+    assert_eq!(
+        b.owner().recording_status().unwrap().state,
+        RecordingState::Idle
+    );
+    b.request_shutdown().unwrap();
+    let by = Instant::now() + Duration::from_secs(3);
+    while b.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < by);
+        thread::yield_now();
+    }
+    drop(b);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let old_state: (String, String) = db
+        .query_row(
+            "SELECT state,coverage FROM runs WHERE boot_id=?1",
+            [boot_bytes(&old_boot)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(old_state, ("interrupted".into(), "unknown_tail".into()));
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn child_holds_active_native_authority_after_fact_commit() {
+    let Some(path) = std::env::var_os("LAB_M7_ACTIVE_AUTHORITY_DB") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let barrier = WriterBarrier::held_after_fact_commit();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let clock = service.clock_copy();
+    service.owner_mut().service(&clock).unwrap();
+    service
+        .owner_mut()
+        .start_recording("active authority process A", clock.now())
+        .unwrap();
+    let by = Instant::now() + Duration::from_secs(3);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by, "A Start did not commit");
+        service.owner_mut().service(&clock).unwrap();
+        thread::yield_now();
+    }
+    let controller = service.owner().controller_id();
+    service
+        .owner_mut()
+        .command(DomainCommand::StartController {
+            controller,
+            at: clock.now(),
+        })
+        .unwrap();
+    let actuator =
+        lab_core::output::ActuatorId::new(service.owner().plant_id(), lab_core::HEATER_POWER);
+    loop {
+        service.owner_mut().service(&clock).unwrap();
+        let QueryResult::Controller(state) = service
+            .owner()
+            .query(Query::Controller(controller))
+            .unwrap()
+        else {
+            panic!("A controller unavailable")
+        };
+        let QueryResult::Output(output) = service.owner().query(Query::Output(actuator)).unwrap()
+        else {
+            panic!("A output unavailable")
+        };
+        if state.state == lab_core::control::ControllerState::Running
+            && output.lease.is_some()
+            && barrier.reached()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < by,
+            "A did not hold active output with a committed fact"
+        );
+        thread::yield_now();
+    }
+    println!(
+        "M7_ACTIVE_AUTHORITY_REACHED {} {}",
+        service.boot_id(),
+        service.owner().recording_database_id().unwrap()
+    );
+    std::io::stdout().flush().unwrap();
+    thread::sleep(Duration::from_secs(10));
+    panic!("parent did not kill the active output owner");
 }
 
 fn kill_held_child(path: &PathBuf, stage: &str, marker: &str) -> (String, String) {
