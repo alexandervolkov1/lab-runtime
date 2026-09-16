@@ -159,10 +159,17 @@ pub struct RestartModelsResult {
     pub generation: u64,
 }
 
-struct LiveApplyPort<'a>(&'a mut HostCore);
+struct LiveApplyPort<'a> {
+    host: &'a mut HostCore,
+    active: &'a crate::configuration::FrozenDeployment,
+    at: std::time::Duration,
+}
 impl ApplyPort for LiveApplyPort<'_> {
-    fn enter_safe_barrier(&mut self, _: std::time::Duration) -> Result<bool, ApplyError> {
-        Ok(false)
+    fn enter_safe_barrier(&mut self, at: std::time::Duration) -> Result<bool, ApplyError> {
+        self.at = at;
+        self.host
+            .enter_configuration_safe_barrier(at)
+            .map_err(|_| ApplyError::OwnerFailure)
     }
 
     fn prepare_bindings(&mut self) -> Result<(), ApplyError> {
@@ -173,8 +180,8 @@ impl ApplyPort for LiveApplyPort<'_> {
         &mut self,
         candidate: &crate::configuration::FrozenDeployment,
     ) -> Result<(), ApplyError> {
-        self.0
-            .apply_live_configuration(candidate)
+        self.host
+            .apply_configuration(self.active, candidate, self.at)
             .map_err(|_| ApplyError::OwnerFailure)
     }
 }
@@ -531,6 +538,12 @@ impl ServiceHost {
                     .active(),
             )
             .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let active = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .active()
+            .clone();
         let lifecycle = self
             .deployment
             .as_mut()
@@ -544,7 +557,12 @@ impl ServiceHost {
             })?;
         let submitted_at = self.clock.now();
         let reopen_required = self.host.begin_configuration_recording_fence(submitted_at);
-        let mut port = LiveApplyPort(&mut self.host);
+        let apply_at = self.clock.now();
+        let mut port = LiveApplyPort {
+            host: &mut self.host,
+            active: &active,
+            at: apply_at,
+        };
         let applied = lifecycle.apply(
             staged.id(),
             staged.base_revision(),

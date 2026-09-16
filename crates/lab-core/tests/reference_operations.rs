@@ -159,3 +159,47 @@ fn fixed_reference_can_be_evaluated_but_not_retuned() {
     assert_eq!(value, 40.0);
     assert_eq!(revision, 1);
 }
+
+#[test]
+fn complete_reference_reconfiguration_advances_once_without_progress_side_effects() {
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterReference(ReferenceConfig::Fixed {
+            id: ID,
+            value: 10.0,
+            unit: Unit::CELSIUS,
+        }))
+        .unwrap();
+    let result = runtime
+        .command(Command::ReconfigureReference {
+            reference: ID,
+            config: ReferenceConfig::Ramp {
+                id: ID,
+                start: 10.0,
+                target: 30.0,
+                rate: 2.0,
+                unit: Unit::CELSIUS,
+                at: Duration::from_secs(5),
+            },
+            expected_revision: 1,
+        })
+        .unwrap();
+    let CommandResult::ReferenceConfigured(ReferenceSnapshot::Ramp {
+        state: committed,
+        revision,
+        ..
+    }) = result
+    else {
+        panic!()
+    };
+    assert_eq!(revision, 2);
+    assert_eq!(committed.current, 10.0);
+    let QueryResult::Reference(ReferenceSnapshot::Ramp {
+        state, revision, ..
+    }) = runtime.query(Query::Reference(ID)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(revision, 2);
+    assert_eq!(state.last_at, Duration::from_secs(5));
+}

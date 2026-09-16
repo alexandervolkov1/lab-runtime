@@ -178,6 +178,20 @@ are not reported as passing evidence.
     measurement parameter disguised as an output; both now reject before any
     artifact read. Three startup tests, five validation tests and warning-free
     targeted clippy pass. No controller is started or armed by configuration.
+19. C6 Host integration was red because the accepted lifecycle seam always
+    returned `RequiresSafeBarrier`. Core first gained checked complete Reference
+    and controller replacement commands; their red tests prove one revision
+    advance, reset algorithm/progress state and no authority acquisition. Host
+    now pauses Warming/Running controllers, revokes manual/native authority,
+    proves safe under the old profile, and only then installs changed model,
+    Reference, safe-profile and full PID/EMA/timing values in one serialized
+    owner turn. A first manual-owner green attempt exposed that the commit time
+    had been captured just before the barrier time, correctly triggering Core's
+    monotonic `Output(InvalidTime)` guard; commit now uses the barrier timestamp.
+    Host tests prove Warming control becomes Paused and a stale manual lease is
+    rejected after reload; both remain safe/disarmed without implicit rearm.
+    Full Core, targeted lifecycle/provenance suites and workspace all-target
+    warning-denied clippy pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

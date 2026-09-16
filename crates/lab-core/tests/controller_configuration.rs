@@ -123,6 +123,25 @@ fn setup_with_warmup(warmup_samples: usize) -> Runtime {
     runtime
 }
 
+fn replacement() -> NativeControllerConfig {
+    NativeControllerConfig {
+        id: CONTROLLER,
+        input: SignalId::new(PLANT, lab_core::TEMPERATURE),
+        output: actuator(),
+        reference: REFERENCE,
+        ema: EmaConfig {
+            time_constant: Duration::from_millis(250),
+            warmup_samples: 4,
+            unit: Unit::CELSIUS,
+        },
+        pid: candidate(),
+        max_input_age: Duration::from_millis(900),
+        max_tick_gap: Duration::from_millis(800),
+        lease_lifetime: Duration::from_millis(1500),
+        proposal_ttl: Duration::from_millis(100),
+    }
+}
+
 fn controller(runtime: &Runtime) -> (lab_core::control::ControllerSnapshot, PidConfig) {
     let QueryResult::Controller(snapshot) = runtime.query(Query::Controller(CONTROLLER)).unwrap()
     else {
@@ -134,6 +153,34 @@ fn controller(runtime: &Runtime) -> (lab_core::control::ControllerSnapshot, PidC
         panic!()
     };
     (snapshot, config.pid)
+}
+
+#[test]
+fn complete_ready_reconfiguration_is_atomic_and_never_starts_authority() {
+    let mut runtime = setup();
+    let CommandResult::ControllerUpdated(snapshot) = runtime
+        .command(Command::ReconfigureController {
+            controller: CONTROLLER,
+            config: replacement(),
+            expected_revision: 1,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(snapshot.state, ControllerState::Ready);
+    assert_eq!(snapshot.config_revision, 2);
+    assert!(snapshot.lease.is_none());
+    let QueryResult::ControllerConfig(config) =
+        runtime.query(Query::ControllerConfig(CONTROLLER)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(config, replacement());
+    let QueryResult::Output(output) = runtime.query(Query::Output(actuator())).unwrap() else {
+        panic!()
+    };
+    assert!(output.lease.is_none());
 }
 
 #[test]

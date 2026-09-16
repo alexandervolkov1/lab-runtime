@@ -1,6 +1,10 @@
 //! C5/C8/C11 acceptance for three distinct Runtime lifecycle operations.
 
-use lab_core::{Query, QueryResult, SignalId, TEMPERATURE};
+use lab_core::{
+    Command, Query, QueryResult, SignalId, TEMPERATURE,
+    control::{ControllerId, ControllerState},
+    output::{ActuatorId, OutputCommand, OutputOwner, OutputResult, OutputState},
+};
 use lab_runtime::service::{LifecycleOperationError, ServiceHost, ServiceOptions};
 use lab_runtime::{
     application::Application,
@@ -39,6 +43,69 @@ initial_temperature={initial}
 gain_per_percent=0.8
 time_constant_ms=8000
 poll_period_ms={period}
+"#
+    )
+}
+
+fn controlled_deployment(kp: f64) -> String {
+    format!(
+        r#"schema_version=1
+[runtime]
+key="controlled"
+display_name="Controlled"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[instruments]]
+id=51
+key="plant"
+kind="thermal_plant"
+display_name="Plant"
+history_capacity=16
+ambient_temperature=20.0
+initial_temperature=20.0
+gain_per_percent=0.8
+time_constant_ms=8000
+poll_period_ms=100
+[[references]]
+id=52
+key="setpoint"
+kind="fixed"
+value=40.0
+unit_id="degC"
+unit_symbol="°C"
+[[safe_profiles]]
+instrument_id=51
+parameter_id=2
+min=0.0
+max=100.0
+safe_value=0.0
+max_lease_ms=2000
+max_proposal_ttl_ms=200
+required_evidence="readback"
+[[controllers]]
+id=53
+key="pid"
+input_instrument_id=51
+input_parameter_id=1
+output_instrument_id=51
+output_parameter_id=2
+reference_id=52
+period_ms=100
+ema_time_constant_ms=200
+ema_warmup_samples=3
+kp={kp}
+ki=0.4
+kd=0.2
+output_min=0.0
+output_max=100.0
+max_input_age_ms=500
+max_tick_gap_ms=500
+lease_lifetime_ms=2000
+proposal_ttl_ms=200
 "#
     )
 }
@@ -141,5 +208,113 @@ fn c8_public_api_exposes_three_separate_deduplicated_operations() {
     );
     assert_eq!(known.len(), 1);
     assert_eq!(known[0]["result"]["generation"], "2");
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn c6_pid_reload_pauses_warming_control_proves_safe_and_never_rearms() {
+    let path = temporary_path();
+    fs::write(&path, controlled_deployment(3.0)).unwrap();
+    let arg = path.to_string_lossy().into_owned();
+    let mut service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .unwrap();
+    service
+        .owner_mut()
+        .command(Command::RefreshMeasurement {
+            instrument: lab_core::InstrumentId::new(51),
+            parameter: TEMPERATURE,
+            at: std::time::Duration::from_millis(1),
+        })
+        .unwrap();
+    service
+        .owner_mut()
+        .command(Command::StartController {
+            controller: ControllerId::new(53),
+            at: std::time::Duration::from_millis(1),
+        })
+        .unwrap();
+    fs::write(&path, controlled_deployment(4.5)).unwrap();
+
+    assert_eq!(service.reload_configuration().unwrap().revision, 2);
+    let QueryResult::Controller(controller) = service
+        .owner()
+        .query(Query::Controller(ControllerId::new(53)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(controller.state, ControllerState::Paused);
+    assert!(controller.lease.is_none());
+    let QueryResult::ControllerConfig(config) = service
+        .owner()
+        .query(Query::ControllerConfig(ControllerId::new(53)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(config.pid.kp, 4.5);
+    let QueryResult::Output(output) = service
+        .owner()
+        .query(Query::Output(ActuatorId::new(
+            lab_core::InstrumentId::new(51),
+            lab_core::HEATER_POWER,
+        )))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(output.state, OutputState::Disarmed);
+    assert!(output.safe_confirmed);
+    assert!(output.lease.is_none());
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn c6_safe_profile_reload_revokes_manual_authority_without_rollback_rearm() {
+    let path = temporary_path();
+    fs::write(&path, controlled_deployment(3.0)).unwrap();
+    let arg = path.to_string_lossy().into_owned();
+    let mut service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .unwrap();
+    let actuator = ActuatorId::new(lab_core::InstrumentId::new(51), lab_core::HEATER_POWER);
+    let lab_core::CommandResult::Output(OutputResult::Lease(old_lease)) = service
+        .owner_mut()
+        .command(Command::Output {
+            actuator,
+            at: std::time::Duration::ZERO,
+            command: OutputCommand::Acquire {
+                owner: OutputOwner::Manual(77),
+                lifetime: std::time::Duration::from_millis(1000),
+            },
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let replacement = controlled_deployment(3.0)
+        .replace("max_lease_ms=2000", "max_lease_ms=1900")
+        .replace("lease_lifetime_ms=2000", "lease_lifetime_ms=1800");
+    fs::write(&path, replacement).unwrap();
+
+    assert_eq!(service.reload_configuration().unwrap().revision, 2);
+    let QueryResult::Output(output) = service.owner().query(Query::Output(actuator)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(output.state, OutputState::Disarmed);
+    assert!(output.safe_confirmed);
+    assert!(output.lease.is_none());
+    assert!(
+        service
+            .owner_mut()
+            .command(Command::Output {
+                actuator,
+                at: std::time::Duration::from_millis(1),
+                command: OutputCommand::Release(old_lease),
+            })
+            .is_err()
+    );
     fs::remove_file(path).unwrap();
 }

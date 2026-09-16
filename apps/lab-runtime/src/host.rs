@@ -213,6 +213,37 @@ struct ConfiguredProbe {
     timeout: Duration,
     queued: bool,
 }
+
+fn thermal_configuration_changed(old: &InstrumentDto, new: &InstrumentDto) -> bool {
+    match (old, new) {
+        (
+            InstrumentDto::ThermalPlant {
+                history_capacity: old_history,
+                ambient_temperature: old_ambient,
+                initial_temperature: old_initial,
+                gain_per_percent: old_gain,
+                time_constant_ms: old_time_constant,
+                ..
+            },
+            InstrumentDto::ThermalPlant {
+                history_capacity: new_history,
+                ambient_temperature: new_ambient,
+                initial_temperature: new_initial,
+                gain_per_percent: new_gain,
+                time_constant_ms: new_time_constant,
+                ..
+            },
+        ) => {
+            old_history != new_history
+                || old_ambient != new_ambient
+                || old_initial != new_initial
+                || old_gain != new_gain
+                || old_time_constant != new_time_constant
+        }
+        _ => false,
+    }
+}
+
 impl SchedulePlan {
     fn virtual_demo() -> Self {
         Self {
@@ -868,6 +899,232 @@ impl HostCore {
             })
             .collect();
         Ok(())
+    }
+
+    /// Revoke every configured authority and prove the existing virtual safe
+    /// policy before configuration replacement. This method exposes no rearm.
+    pub(crate) fn enter_configuration_safe_barrier(&mut self, at: Duration) -> Result<bool, Error> {
+        let controllers: Vec<_> = self.plan.controllers.iter().map(|(id, _, _)| *id).collect();
+        for controller in controllers {
+            let QueryResult::Controller(snapshot) =
+                self.runtime.query(Query::Controller(controller))?
+            else {
+                return Err(Error::InvalidConfiguration("configured controller missing"));
+            };
+            if matches!(
+                snapshot.state,
+                ControllerState::Warming | ControllerState::Running
+            ) {
+                self.runtime
+                    .command(Command::PauseController { controller, at })?;
+            }
+        }
+        for actuator in self.outputs.clone() {
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::RequestSafe,
+            })?;
+            let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
+                self.runtime.command(Command::Output {
+                    actuator,
+                    at,
+                    command: OutputCommand::BeginDispatch,
+                })?
+            else {
+                return Ok(false);
+            };
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::Complete {
+                    dispatch_id: dispatch.id(),
+                    outcome: DispatchOutcome::ReadbackVerified,
+                },
+            })?;
+        }
+        self.observe(at, None)?;
+        Ok(self.outputs.iter().all(|actuator| {
+            matches!(self.runtime.query(Query::Output(*actuator)),
+                Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed && snapshot.lease.is_none())
+        }))
+    }
+
+    /// Commit a fixed-topology candidate after its safe barrier. All mutations
+    /// occur in this serialized owner turn; controllers remain Ready/Paused and
+    /// no output authority is acquired.
+    pub(crate) fn apply_configuration(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let old = &active.effective().dto;
+        let new = &candidate.effective().dto;
+
+        if old
+            .instruments
+            .iter()
+            .zip(&new.instruments)
+            .any(|(old, new)| thermal_configuration_changed(old, new))
+        {
+            self.restart_configured_models(candidate, at)?;
+        }
+
+        for (old_reference, reference) in old.references.iter().zip(&new.references) {
+            if old_reference == reference {
+                continue;
+            }
+            let id = ReferenceId::new(reference.id);
+            let revision = match self.runtime.query(Query::Reference(id))? {
+                QueryResult::Reference(ReferenceSnapshot::Fixed { revision, .. })
+                | QueryResult::Reference(ReferenceSnapshot::Ramp { revision, .. }) => revision,
+                _ => return Err(Error::InvalidConfiguration("configured Reference missing")),
+            };
+            let unit = Unit::new(&reference.unit_id, &reference.unit_symbol)?;
+            let config = match reference.kind {
+                ReferenceKindDto::Fixed => ReferenceConfig::Fixed {
+                    id,
+                    value: reference.value,
+                    unit,
+                },
+                ReferenceKindDto::Ramp => ReferenceConfig::Ramp {
+                    id,
+                    start: reference.value,
+                    target: reference
+                        .target
+                        .ok_or(Error::InvalidConfiguration("ramp target missing"))?,
+                    rate: reference
+                        .rate
+                        .ok_or(Error::InvalidConfiguration("ramp rate missing"))?,
+                    unit,
+                    at,
+                },
+            };
+            self.runtime.command(Command::ReconfigureReference {
+                reference: id,
+                config,
+                expected_revision: revision,
+            })?;
+        }
+
+        for (old_safe, safe) in old.safe_profiles.iter().zip(&new.safe_profiles) {
+            if old_safe == safe {
+                continue;
+            }
+            let actuator = ActuatorId::new(
+                InstrumentId::new(safe.instrument_id),
+                lab_core::ParameterId::new(safe.parameter_id),
+            );
+            let profile = SafeProfile {
+                min: safe.min,
+                max: safe.max,
+                safe_value: safe.safe_value,
+                max_lease: Duration::from_millis(safe.max_lease_ms),
+                max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                required_evidence: match safe.required_evidence {
+                    EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                    EvidenceDto::Readback => EvidenceLevel::Readback,
+                },
+            };
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::BindProfile(profile.clone()),
+            })?;
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::RequestSafe,
+            })?;
+            let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
+                self.runtime.command(Command::Output {
+                    actuator,
+                    at,
+                    command: OutputCommand::BeginDispatch,
+                })?
+            else {
+                return Err(Error::InvalidConfiguration("new safe dispatch absent"));
+            };
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::Complete {
+                    dispatch_id: dispatch.id(),
+                    outcome: DispatchOutcome::ReadbackVerified,
+                },
+            })?;
+            if let Some((_, current)) = self
+                .active_safety_profiles
+                .iter_mut()
+                .find(|(current, _)| *current == actuator)
+            {
+                *current = profile;
+            }
+        }
+
+        for (old_controller, controller) in old.controllers.iter().zip(&new.controllers) {
+            let id = ControllerId::new(controller.id);
+            if old_controller != controller {
+                let QueryResult::Controller(snapshot) =
+                    self.runtime.query(Query::Controller(id))?
+                else {
+                    return Err(Error::InvalidConfiguration("configured controller missing"));
+                };
+                let reference = ReferenceId::new(controller.reference_id);
+                let unit = match self.runtime.query(Query::Reference(reference))? {
+                    QueryResult::Reference(ReferenceSnapshot::Fixed { unit, .. }) => unit,
+                    QueryResult::Reference(ReferenceSnapshot::Ramp { state, .. }) => state.unit,
+                    _ => {
+                        return Err(Error::InvalidConfiguration("configured Reference missing"));
+                    }
+                };
+                self.runtime.command(Command::ReconfigureController {
+                    controller: id,
+                    config: NativeControllerConfig {
+                        id,
+                        input: SignalId::new(
+                            InstrumentId::new(controller.input_instrument_id),
+                            lab_core::ParameterId::new(controller.input_parameter_id),
+                        ),
+                        output: ActuatorId::new(
+                            InstrumentId::new(controller.output_instrument_id),
+                            lab_core::ParameterId::new(controller.output_parameter_id),
+                        ),
+                        reference,
+                        ema: EmaConfig {
+                            time_constant: Duration::from_millis(controller.ema_time_constant_ms),
+                            warmup_samples: controller.ema_warmup_samples,
+                            unit,
+                        },
+                        pid: PidConfig {
+                            kp: controller.kp,
+                            ki: controller.ki,
+                            kd: controller.kd,
+                            output_min: controller.output_min,
+                            output_max: controller.output_max,
+                        },
+                        max_input_age: Duration::from_millis(controller.max_input_age_ms),
+                        max_tick_gap: Duration::from_millis(controller.max_tick_gap_ms),
+                        lease_lifetime: Duration::from_millis(controller.lease_lifetime_ms),
+                        proposal_ttl: Duration::from_millis(controller.proposal_ttl_ms),
+                    },
+                    expected_revision: snapshot.config_revision,
+                })?;
+            }
+            let (_, _, slot) = self
+                .plan
+                .controllers
+                .iter_mut()
+                .find(|(current, _, _)| *current == id)
+                .ok_or(Error::InvalidConfiguration("controller schedule missing"))?;
+            slot.period = Duration::from_millis(controller.period_ms);
+            slot.next_due = at
+                .checked_add(slot.period)
+                .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+        }
+        self.apply_live_configuration(candidate)?;
+        self.observe(at, None)
     }
 
     /// Restart every configured native thermal model under its generation fence.

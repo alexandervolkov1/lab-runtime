@@ -148,6 +148,15 @@ pub enum Command {
         /// Trusted nondecreasing Runtime mutation time.
         at: Duration,
     },
+    /// Replace one complete Reference policy under a checked revision fence.
+    ReconfigureReference {
+        /// Existing Reference identity retained by the replacement.
+        reference: ReferenceId,
+        /// Complete finite Fixed or Ramp candidate.
+        config: ReferenceConfig,
+        /// Revision observed before staging the candidate.
+        expected_revision: u64,
+    },
     /// Register controller data without acquiring output authority.
     RegisterController(NativeControllerConfig),
     /// Atomically configure gains/limits in Ready or safely Paused without output.
@@ -157,6 +166,15 @@ pub enum Command {
         /// Full finite five-field replacement value.
         pid: PidConfig,
         /// Revision read from a pure controller snapshot.
+        expected_revision: u64,
+    },
+    /// Replace the complete data-only policy of a stopped controller atomically.
+    ReconfigureController {
+        /// Existing controller identity retained by the replacement.
+        controller: ControllerId,
+        /// Complete validated configuration with unchanged graph bindings.
+        config: NativeControllerConfig,
+        /// Revision read before staging the replacement.
         expected_revision: u64,
     },
     /// Check a Created controller against current descriptors and Reference units.
@@ -309,6 +327,8 @@ pub enum CommandResult {
     ReferenceEvaluated(ReferenceValue),
     /// Full committed continuous Ramp state and advanced configuration revision.
     ReferenceRetuned(RetunedRamp),
+    /// Complete Reference policy replacement committed without evaluating it.
+    ReferenceConfigured(ReferenceSnapshot),
     /// A native controller registration or lifecycle transition completed.
     ControllerUpdated(ControllerSnapshot),
     /// The display name changed without replacing the instance.
@@ -1189,6 +1209,40 @@ impl Runtime {
                 }
                 result
             }
+            Command::ReconfigureReference {
+                reference,
+                config,
+                expected_revision,
+            } => {
+                let current = self
+                    .references
+                    .get(&reference)
+                    .ok_or(ControllerError::UnknownReference)?;
+                let candidate_unit = match config {
+                    ReferenceConfig::Fixed { unit, .. } | ReferenceConfig::Ramp { unit, .. } => {
+                        unit
+                    }
+                };
+                if current.unit() != candidate_unit
+                    || self.controllers.values().any(|controller| {
+                        controller.config.reference == reference
+                            && matches!(
+                                controller.state,
+                                ControllerState::Warming | ControllerState::Running
+                            )
+                    })
+                {
+                    return Err(ControllerError::InvalidConfiguration.into());
+                }
+                let snapshot = self
+                    .references
+                    .get_mut(&reference)
+                    .expect("checked above")
+                    .reconfigure(config, expected_revision)
+                    .map_err(map_reference_error)?;
+                self.capture_reference_fact(reference, self.output_time);
+                Ok(CommandResult::ReferenceConfigured(snapshot))
+            }
             Command::RegisterController(config) => {
                 let id = config.id;
                 if self.controllers.contains_key(&id) {
@@ -1214,6 +1268,11 @@ impl Runtime {
                 pid,
                 expected_revision,
             } => self.configure_controller_pid(controller, pid, expected_revision),
+            Command::ReconfigureController {
+                controller,
+                config,
+                expected_revision,
+            } => self.reconfigure_controller(controller, config, expected_revision),
             Command::PrepareController(id) => {
                 let result = self.prepare_controller(id);
                 if result.is_ok() {
@@ -1733,6 +1792,55 @@ impl Runtime {
         Ok(CommandResult::ControllerUpdated(controller.snapshot()))
     }
 
+    /// Validate all replacement state before exchanging the stopped controller.
+    /// The graph bindings remain fixed in M8 and no lease can be transferred.
+    fn reconfigure_controller(
+        &mut self,
+        id: ControllerId,
+        config: NativeControllerConfig,
+        expected_revision: u64,
+    ) -> Result<CommandResult, Error> {
+        let current = self
+            .controllers
+            .get(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        if current.config_revision != expected_revision {
+            return Err(ControllerError::RevisionConflict.into());
+        }
+        if config.id != id
+            || config.input != current.config.input
+            || config.output != current.config.output
+            || config.reference != current.config.reference
+            || !matches!(
+                current.state,
+                ControllerState::Ready | ControllerState::Paused
+            )
+            || current.lease.is_some()
+            || self.warming_on(current.config.output)
+        {
+            return Err(ControllerError::InvalidState.into());
+        }
+        let next = current
+            .config_revision
+            .checked_add(1)
+            .ok_or(ControllerError::RevisionExhausted)?;
+        let state = current.state;
+        let mut candidate = NativeController::new(config)?;
+        self.validate_controller_config(config)?;
+        candidate.state = state;
+        candidate.config_revision = next;
+        let snapshot = candidate.snapshot();
+        self.controllers.insert(id, candidate);
+        self.recording_facts.controller(
+            id,
+            snapshot.state,
+            snapshot.config_revision,
+            Some(config.pid),
+            self.output_time,
+        );
+        Ok(CommandResult::ControllerUpdated(snapshot))
+    }
+
     fn prepare_controller(&mut self, id: ControllerId) -> Result<CommandResult, Error> {
         let config = self
             .controllers
@@ -1743,6 +1851,14 @@ impl Runtime {
             return Err(ControllerError::InvalidState.into());
         }
 
+        self.validate_controller_config(config)?;
+
+        let controller = self.controllers.get_mut(&id).expect("validated above");
+        controller.state = ControllerState::Ready;
+        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+    }
+
+    fn validate_controller_config(&self, config: NativeControllerConfig) -> Result<(), Error> {
         let input = self
             .descriptor(config.input.instrument())?
             .parameter(config.input.parameter())
@@ -1789,9 +1905,7 @@ impl Runtime {
             return Err(ControllerError::InvalidConfiguration.into());
         }
 
-        let controller = self.controllers.get_mut(&id).expect("validated above");
-        controller.state = ControllerState::Ready;
-        Ok(CommandResult::ControllerUpdated(controller.snapshot()))
+        Ok(())
     }
 
     /// Validate the manifest and topology before sending disposable init work to a worker.

@@ -215,6 +215,35 @@ impl RuntimeReference {
         }
     }
 
+    pub(crate) const fn revision(&self) -> u64 {
+        match self {
+            Self::Fixed { revision, .. } | Self::Ramp { revision, .. } => *revision,
+        }
+    }
+
+    /// Replace a complete stopped-graph Reference without carrying progress.
+    pub(crate) fn reconfigure(
+        &mut self,
+        config: ReferenceConfig,
+        expected_revision: u64,
+    ) -> Result<ReferenceSnapshot, ReferenceError> {
+        let current_id = match self {
+            Self::Fixed { id, .. } | Self::Ramp { id, .. } => *id,
+        };
+        if config.id() != current_id || self.revision() != expected_revision {
+            return Err(ReferenceError::RevisionConflict);
+        }
+        let next = expected_revision
+            .checked_add(1)
+            .ok_or(ReferenceError::RevisionExhausted)?;
+        let mut candidate = Self::new(config)?;
+        match &mut candidate {
+            Self::Fixed { revision, .. } | Self::Ramp { revision, .. } => *revision = next,
+        }
+        *self = candidate;
+        Ok(self.snapshot())
+    }
+
     pub(crate) fn value_at(&mut self, at: Duration) -> Result<ReferenceValue, ReferenceError> {
         match self {
             Self::Fixed { reference, .. } => reference.value_at(at),
