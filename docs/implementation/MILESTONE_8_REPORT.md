@@ -95,6 +95,12 @@ are not reported as passing evidence.
    Managed reload currently reports an explicit failure when components exist;
    C9/C10 implementation remains. Safe-barrier and transport-rebind diffs are not
    falsely treated as live apply.
+10. The configuration-provenance acceptance test was added after the frozen-byte
+    production path already existed in the configured-startup slice, so no red
+    result is claimed. The process test starts with SQLite enabled, mutates the
+    TOML pathname after readiness, shuts down cleanly, reopens the database and
+    verifies the `runtime_toml` provenance content is byte-for-byte the originally
+    loaded candidate. The targeted test passed.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
