@@ -114,6 +114,12 @@ pub enum Mutation {
         /// One connection-retained continuation token, if any.
         cursor: Option<String>,
     },
+    /// Reload and apply the configured deployment through its classified lifecycle.
+    ReloadConfiguration,
+    /// Reload only managed script sources; TOML and native models are unchanged.
+    ReloadManagedScripts,
+    /// Restart only configured virtual models; sources and TOML are not reread.
+    RestartVirtualModels,
     /// Initiate host process shutdown; safe evidence is the later terminal result.
     Shutdown,
 }

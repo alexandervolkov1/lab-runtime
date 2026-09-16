@@ -305,6 +305,7 @@ pub struct HostCore {
     recorder_finish_requested: bool,
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
     deployment_provenance: Vec<ProvenanceEntry>,
+    model_generations: BTreeMap<InstrumentId, u64>,
 }
 impl HostCore {
     /// Construct a validated configured native observation graph without opening
@@ -332,6 +333,7 @@ impl HostCore {
         }
         let mut runtime = Runtime::new();
         let mut measurements = Vec::with_capacity(dto.instruments.len());
+        let mut model_generations = BTreeMap::new();
         let mut resources = Vec::with_capacity(dto.resources.len());
         for resource in &dto.resources {
             let id = ResourceId::new(resource.id);
@@ -392,6 +394,7 @@ impl HostCore {
                         gain_per_percent: *gain_per_percent,
                         time_constant: Duration::from_millis(*time_constant_ms),
                     }))?;
+                    model_generations.insert(InstrumentId::new(*id), 1);
                     measurements.push((
                         InstrumentId::new(*id),
                         Periodic::new(Duration::from_millis(*poll_period_ms)),
@@ -486,6 +489,7 @@ impl HostCore {
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
             deployment_provenance,
+            model_generations,
         })
     }
 
@@ -593,7 +597,136 @@ impl HostCore {
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
             deployment_provenance: Vec::new(),
+            model_generations: BTreeMap::from([(PLANT, 1)]),
         })
+    }
+
+    /// Apply display/cadence-only fields at one owner commit without replacing
+    /// instruments, observations, authority or generations.
+    pub(crate) fn apply_live_configuration(
+        &mut self,
+        candidate: &FrozenDeployment,
+    ) -> Result<(), Error> {
+        for instrument in &candidate.effective().dto.instruments {
+            match instrument {
+                InstrumentDto::VirtualMeasurement {
+                    id,
+                    display_name,
+                    poll_period_ms,
+                    ..
+                }
+                | InstrumentDto::ThermalPlant {
+                    id,
+                    display_name,
+                    poll_period_ms,
+                    ..
+                } => {
+                    self.runtime.command(Command::RenameInstrument {
+                        instrument: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                    })?;
+                    let (_, slot) = self
+                        .plan
+                        .plants
+                        .iter_mut()
+                        .find(|(instrument, _)| instrument.get() == *id)
+                        .ok_or(Error::InvalidConfiguration("configured schedule missing"))?;
+                    slot.period = Duration::from_millis(*poll_period_ms);
+                    slot.next_due = self
+                        .last_now
+                        .checked_add(slot.period)
+                        .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+                }
+                InstrumentDto::Metakon {
+                    id,
+                    poll_period_ms,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } => {
+                    let read = self
+                        .plan
+                        .metakon_reads
+                        .iter_mut()
+                        .find(|read| read.instrument.get() == *id)
+                        .ok_or(Error::InvalidConfiguration(
+                            "configured read schedule missing",
+                        ))?;
+                    read.slot.period = Duration::from_millis(*poll_period_ms);
+                    read.slot.next_due = self
+                        .last_now
+                        .checked_add(read.slot.period)
+                        .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+                    read.queue_ttl = Duration::from_millis(*queue_timeout_ms);
+                    read.timeout = Duration::from_millis(*transaction_timeout_ms);
+                }
+            }
+        }
+        self.deployment_provenance = candidate
+            .provenance_entries()
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Restart every configured native thermal model under its generation fence.
+    pub(crate) fn restart_configured_models(
+        &mut self,
+        deployment: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<(usize, u64), Error> {
+        let mut count = 0usize;
+        let mut latest_generation = 0u64;
+        for instrument in &deployment.effective().dto.instruments {
+            if let InstrumentDto::ThermalPlant {
+                id,
+                display_name,
+                history_capacity,
+                ambient_temperature,
+                initial_temperature,
+                gain_per_percent,
+                time_constant_ms,
+                ..
+            } = instrument
+            {
+                let id = InstrumentId::new(*id);
+                let expected = *self
+                    .model_generations
+                    .get(&id)
+                    .ok_or(Error::InvalidConfiguration("model generation missing"))?;
+                let CommandResult::ModelRestarted { generation, .. } =
+                    self.runtime.command(Command::RestartThermalPlant {
+                        instrument: id,
+                        config: ThermalPlantConfig {
+                            id,
+                            name: display_name.clone(),
+                            history_capacity: *history_capacity,
+                            ambient_temperature: *ambient_temperature,
+                            initial_temperature: *initial_temperature,
+                            gain_per_percent: *gain_per_percent,
+                            time_constant: Duration::from_millis(*time_constant_ms),
+                        },
+                        expected_generation: expected,
+                        at,
+                    })?
+                else {
+                    return Err(Error::InvalidConfiguration("unexpected restart result"));
+                };
+                self.model_generations.insert(id, generation);
+                latest_generation = generation;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return Err(Error::InvalidConfiguration("no configured native models"));
+        }
+        self.observe(at, None)?;
+        Ok((count, latest_generation))
     }
 
     /// Attach one already-open worker under trusted host composition.

@@ -12,7 +12,7 @@ are not reported as passing evidence.
 | IDs | Tests-first implementation slice | Evidence status |
 | --- | --- | --- |
 | C1-C4 | Strict bounded TOML loader, immutable artifact bundle, schema/cross-reference/safety validation and zero-side-effect rejection | Initial slice green; broader graph/startup cases remain |
-| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Initial lifecycle slice green; Runtime/Recorder integration remains |
+| C5-C8 | Staged diff, atomic owner apply, safe barrier, Required durability fence and no rearm | Live/cadence Host apply and public operation green; safe/Required integration remains |
 | C9-C11 | Separate managed-source reload and virtual-model restart with generation fencing | C11 Core restart primitive green; C9-C10 and public operation remain |
 | C12-C15 | Bounded read-only Windows COM worker, M3 adapter semantics, disconnect/reconnect/rebind fencing | Software adapter and configured Host acquisition green; reconnect/rebind Host lifecycle remains |
 | C16-C17 | Actual Windows COM + Metakon read-only acquisition and durable SQLite inspection | Hardware pending |
@@ -85,6 +85,16 @@ are not reported as passing evidence.
    production service now creates concrete COM workers before listener binding.
    This is deterministic software evidence only; no actual COM port or Metakon
    was opened and C16/C17 hardware remain pending.
+9. C5/C8/C11 lifecycle-operation acceptance was red because Service exposed no
+   distinct reload/restart API. Added live-safe configuration reload from the
+   original path into one frozen candidate, checked staging/revision apply,
+   display/cadence commit without catch-up or graph replacement, and native model
+   restart without rereading TOML or managed sources. Added three separate,
+   deduplicated wire operations. Three targeted tests pass, including retained
+   configuration revision across model restart and no stale current observation.
+   Managed reload currently reports an explicit failure when components exist;
+   C9/C10 implementation remains. Safe-barrier and transport-rebind diffs are not
+   falsely treated as live apply.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.

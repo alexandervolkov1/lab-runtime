@@ -325,6 +325,7 @@ fn operation_keys(op: &str) -> Option<(bool, &'static [&'static str])> {
         "reference_retune" => (true, &["reference", "expected_revision", "target", "rate"]),
         "controller_configure_pid" => (true, &["controller", "expected_revision", "pid"]),
         "runtime_shutdown" => (true, &[]),
+        "reload_configuration" | "reload_managed_scripts" | "restart_virtual_models" => (true, &[]),
         "recording_status" => (false, &[]),
         "recording_start" => (true, &["label"]),
         "recording_stop" => (true, &["run_id"]),

@@ -483,7 +483,8 @@ impl Application {
                                 "reference","component","output","runtime_snapshot","operation_status",
                                 "snapshot_page","snapshot_release","subscribe","unsubscribe","reference_retune",
                                 "controller_configure_pid","controller_start","controller_pause",
-                                "controller_resume","runtime_shutdown"];
+                                "controller_resume","reload_configuration","reload_managed_scripts",
+                                "restart_virtual_models","runtime_shutdown"];
                             if service.owner().recording_status().is_some() {
                                 capabilities.push("recorder_sqlite_v1");
                                 capabilities.push("history_raw_paged_v1");
@@ -1341,6 +1342,9 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
             "controller_resume",
             json!({"controller":controller.to_string()}),
         ),
+        Mutation::ReloadConfiguration => ("reload_configuration", json!({})),
+        Mutation::ReloadManagedScripts => ("reload_managed_scripts", json!({})),
+        Mutation::RestartVirtualModels => ("restart_virtual_models", json!({})),
         Mutation::Shutdown => ("shutdown", json!({})),
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }
@@ -1525,6 +1529,9 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
             }
         }
         "runtime_shutdown" => Mutation::Shutdown,
+        "reload_configuration" => Mutation::ReloadConfiguration,
+        "reload_managed_scripts" => Mutation::ReloadManagedScripts,
+        "restart_virtual_models" => Mutation::RestartVirtualModels,
         _ => return Err("unsupported_operation"),
     })
 }
@@ -1586,6 +1593,27 @@ fn dispatch(
             return Err(Error::InvalidConfiguration(
                 "shutdown dispatch is host-only",
             ));
+        }
+        Mutation::ReloadConfiguration => {
+            return service
+                .reload_configuration()
+                .map(|result| json!({"revision":result.revision.to_string()}))
+                .map_err(|_| Error::InvalidConfiguration("configuration reload failed"));
+        }
+        Mutation::ReloadManagedScripts => {
+            return service
+                .reload_managed_scripts()
+                .map(|()| json!({"reloaded":true}))
+                .map_err(|_| Error::InvalidConfiguration("managed script reload failed"));
+        }
+        Mutation::RestartVirtualModels => {
+            return service
+                .restart_virtual_models()
+                .map(|result| {
+                    json!({"models":result.models.to_string(),
+                    "generation":result.generation.to_string()})
+                })
+                .map_err(|_| Error::InvalidConfiguration("virtual model restart failed"));
         }
         Mutation::RecordingStart { .. }
         | Mutation::RecordingStop { .. }

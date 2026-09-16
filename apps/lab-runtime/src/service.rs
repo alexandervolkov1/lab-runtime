@@ -6,7 +6,7 @@
 use crate::recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor};
 use crate::{
     configuration::{FlowControlDto, ParityDto, RecordingPolicyDto, load_runtime_toml},
-    deployment::DeploymentLifecycle,
+    deployment::{ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError},
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
     serial::{ComSettings, ComTransport, SerialFlowControl, SerialParity},
 };
@@ -123,6 +123,60 @@ pub struct ServiceHost {
     terminal: Option<ShutdownStatus>,
     fatal: bool,
     deployment: Option<DeploymentLifecycle>,
+    configuration_path: Option<PathBuf>,
+}
+
+/// Bounded lifecycle-operation failure exposed without leaking filesystem details.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleOperationError {
+    /// This process was started with the legacy compiled profile.
+    ConfigurationDisabled,
+    /// Candidate loading or validation failed before active mutation.
+    InvalidCandidate,
+    /// The one staged-candidate slot or revision fence rejected the request.
+    Conflict,
+    /// The requested diff needs a lifecycle not supported by this operation.
+    RequiresSafeBarrier,
+    /// No managed component exists in the active deployment.
+    NoManagedComponents,
+    /// The authoritative owner rejected the model transition.
+    OwnerFailure,
+}
+
+/// Successful configuration activation identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReloadConfigurationResult {
+    /// Newly committed nonzero configuration revision.
+    pub revision: u64,
+}
+
+/// Successful native-model restart summary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestartModelsResult {
+    /// Number of native models reset in this bounded operation.
+    pub models: usize,
+    /// Latest generation committed by this operation.
+    pub generation: u64,
+}
+
+struct LiveApplyPort<'a>(&'a mut HostCore);
+impl ApplyPort for LiveApplyPort<'_> {
+    fn enter_safe_barrier(&mut self, _: std::time::Duration) -> Result<bool, ApplyError> {
+        Ok(false)
+    }
+
+    fn prepare_bindings(&mut self) -> Result<(), ApplyError> {
+        Err(ApplyError::OwnerFailure)
+    }
+
+    fn commit_configuration(
+        &mut self,
+        candidate: &crate::configuration::FrozenDeployment,
+    ) -> Result<(), ApplyError> {
+        self.0
+            .apply_live_configuration(candidate)
+            .map_err(|_| ApplyError::OwnerFailure)
+    }
 }
 impl ServiceHost {
     /// Bind a trusted already-safe host fixture on loopback, without changing its
@@ -170,10 +224,12 @@ impl ServiceHost {
             terminal: None,
             fatal: false,
             deployment: None,
+            configuration_path: None,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
     pub fn startup(options: ServiceOptions) -> Result<Self, Box<dyn Error>> {
+        let configuration_path = options.configuration_path().map(PathBuf::from);
         let loaded = options
             .configuration_path()
             .map(load_runtime_toml)
@@ -306,6 +362,7 @@ impl ServiceHost {
             terminal: None,
             fatal: false,
             deployment: loaded.map(DeploymentLifecycle::new),
+            configuration_path,
         })
     }
 
@@ -407,6 +464,81 @@ impl ServiceHost {
     /// Current immutable loaded deployment, absent for the legacy virtual profile.
     pub const fn loaded_configuration(&self) -> Option<&DeploymentLifecycle> {
         self.deployment.as_ref()
+    }
+
+    /// Reload, validate, stage and atomically commit a live-safe deployment diff.
+    pub fn reload_configuration(
+        &mut self,
+    ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
+        let path = self
+            .configuration_path
+            .as_deref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
+        let candidate =
+            load_runtime_toml(path).map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let lifecycle = self
+            .deployment
+            .as_mut()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
+        let staged = lifecycle
+            .stage(candidate, self.clock.now())
+            .map_err(|error| match error {
+                StageError::Busy | StageError::CounterExhausted | StageError::DeadlineOverflow => {
+                    LifecycleOperationError::Conflict
+                }
+            })?;
+        let mut port = LiveApplyPort(&mut self.host);
+        match lifecycle.apply(
+            staged.id(),
+            staged.base_revision(),
+            self.clock.now(),
+            &mut port,
+        ) {
+            Ok(ApplyResult::Applied { revision }) => Ok(ReloadConfigurationResult { revision }),
+            Ok(ApplyResult::FailedBeforeCommit) => {
+                Err(LifecycleOperationError::RequiresSafeBarrier)
+            }
+            Err(ApplyError::RestartRequired) => Err(LifecycleOperationError::InvalidCandidate),
+            Err(ApplyError::OwnerFailure) => Err(LifecycleOperationError::OwnerFailure),
+            Err(ApplyError::UnknownCandidate | ApplyError::Conflict | ApplyError::Expired) => {
+                Err(LifecycleOperationError::Conflict)
+            }
+        }
+    }
+
+    /// Reload managed sources independently of deployment and model restart.
+    pub fn reload_managed_scripts(&mut self) -> Result<(), LifecycleOperationError> {
+        let lifecycle = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
+        if lifecycle
+            .active()
+            .effective()
+            .dto
+            .managed_components
+            .is_empty()
+        {
+            return Err(LifecycleOperationError::NoManagedComponents);
+        }
+        Err(LifecycleOperationError::OwnerFailure)
+    }
+
+    /// Restart configured native models without rereading TOML or managed sources.
+    pub fn restart_virtual_models(
+        &mut self,
+    ) -> Result<RestartModelsResult, LifecycleOperationError> {
+        let active = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .active()
+            .clone();
+        let (models, generation) = self
+            .host
+            .restart_configured_models(&active, self.clock.now())
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        Ok(RestartModelsResult { models, generation })
     }
     /// Return the one monotonic process clock used by the owner.
     pub const fn clock(&self) -> &SystemClock {
