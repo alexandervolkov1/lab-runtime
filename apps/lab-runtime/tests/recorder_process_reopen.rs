@@ -347,6 +347,110 @@ fn killed_process_after_commit_reopens_committed_row_without_a_receipt() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn killed_commit_before_receipt_is_readable_via_public_history_without_control_replay() {
+    let path = temporary_database();
+    let (old_boot, database_id) = kill_held_child(&path, "after_commit", "M7_POSTCOMMIT_REACHED ");
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut b = ServiceHost::startup(options).unwrap();
+    assert_ne!(b.boot_id(), old_boot);
+    assert_eq!(
+        b.owner().recording_database_id(),
+        Some(database_id.as_str())
+    );
+    let QueryResult::Controller(controller) = b
+        .owner()
+        .query(Query::Controller(b.owner().controller_id()))
+        .unwrap()
+    else {
+        panic!("new boot native controller unavailable")
+    };
+    assert_eq!(controller.state, lab_core::control::ControllerState::Ready);
+    let QueryResult::Output(output) = b
+        .owner()
+        .query(Query::Output(lab_core::output::ActuatorId::new(
+            b.owner().plant_id(),
+            lab_core::HEATER_POWER,
+        )))
+        .unwrap()
+    else {
+        panic!("new boot output unavailable")
+    };
+    assert!(
+        output.lease.is_none(),
+        "archive reopen cannot restore old output authority"
+    );
+    let mut app = Application::new(b.boot_id()).unwrap();
+    let frame = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+    let hello = app.handle(
+        &mut b,
+        1,
+        frame(json!({"v":1,"msg_id":"hello-b",
+        "op":"hello","args":{"scope":null}})),
+    );
+    let scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let read = app.handle(
+        &mut b,
+        1,
+        frame(json!({"v":1,"msg_id":"old-run",
+        "op":"history_read","request_id":{"scope":scope,"seq":"1"},
+        "args":{"mode":"measurements","database_id":database_id,"boot_id":old_boot,
+            "run_id":{"boot_id":old_boot,"run_no":"1"},
+            "signal":{"instrument":"701","parameter":"1"},
+            "from_ns":"0","to_ns":"2000000000","max_records":8,"cursor":null}})),
+    );
+    assert_eq!(read[0]["state"], "accepted");
+    let by = Instant::now() + Duration::from_secs(2);
+    let completion = loop {
+        let completion = app.poll_history(&mut b);
+        if !completion.is_empty() {
+            break completion;
+        }
+        assert!(Instant::now() < by);
+        thread::yield_now();
+    };
+    assert_eq!(completion[0].1["state"], "completed", "{completion:?}");
+    let token = completion[0].1["result"]["page_token"].clone();
+    let page = app.handle(
+        &mut b,
+        1,
+        frame(json!({"v":1,"msg_id":"old-page",
+        "op":"history_page","args":{"page_token":token}})),
+    );
+    assert_eq!(page[0]["result"]["coverage"], "unknown_tail");
+    let rows = page[0]["result"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["quality"], "good");
+    assert_eq!(rows[0]["value"]["value"], 21.0);
+    let stale_event = app.handle(
+        &mut b,
+        1,
+        frame(json!({"v":1,"msg_id":"old-event",
+        "op":"subscribe","args":{"after":{"boot_id":old_boot,"seq":"0"},
+            "filter":{"kinds":[],"targets":[]}}})),
+    );
+    assert_eq!(stale_event[0]["code"], "instance_changed");
+    b.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    while b.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < close_by);
+        thread::yield_now();
+    }
+    drop(app);
+    drop(b);
+    std::fs::remove_file(path).unwrap();
+}
+
 fn kill_held_child(path: &PathBuf, stage: &str, marker: &str) -> (String, String) {
     kill_selected_child(
         path,
