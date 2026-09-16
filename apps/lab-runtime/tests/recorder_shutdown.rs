@@ -323,6 +323,63 @@ fn blocked_writer_expires_finite_flush_without_falsifying_safe_output_evidence()
 }
 
 #[test]
+fn late_finish_commit_is_archived_after_process_flush_timeout_without_revising_terminal_result() {
+    let path = temporary_database();
+    let barrier = WriterBarrier::held_finish();
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap();
+    let boot = worker.boot_id().to_owned();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    service.request_shutdown().unwrap();
+    let by = Instant::now() + Duration::from_secs(5);
+    let terminal = loop {
+        if let Some(terminal) = service.shutdown_step().unwrap() {
+            break terminal;
+        }
+        assert!(Instant::now() < by);
+        std::thread::yield_now();
+    };
+    assert!(
+        barrier.reached(),
+        "Finish must have been accepted before timeout"
+    );
+    assert!(terminal.safe_confirmed);
+    assert!(!terminal.recorder_flushed);
+    assert!(terminal.recorder_unfinished);
+    assert!(!terminal.exit_success);
+    barrier.release();
+    drop(service);
+    let close_by = Instant::now() + Duration::from_secs(3);
+    let recovered = loop {
+        match SqliteStore::open(&path) {
+            Ok(store) => break store,
+            Err(_) => assert!(
+                Instant::now() < close_by,
+                "late Finish did not close worker"
+            ),
+        }
+        std::thread::yield_now();
+    };
+    assert_ne!(recovered.boot_id(), boot);
+    drop(recovered);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let (state, shutdown_rows): (String, i64) = (
+        db.query_row("SELECT state FROM runtime_boots WHERE boot_id=(SELECT boot_id FROM records WHERE kind='shutdown')", [], |row| row.get(0)).unwrap(),
+        db.query_row("SELECT count(*) FROM records WHERE kind='shutdown'", [], |row| row.get(0)).unwrap(),
+    );
+    assert_eq!(state, "sealed");
+    assert_eq!(shutdown_rows, 1);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn stop_and_finish_drain_all_four_accepted_groups_with_full_normal_credit() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();

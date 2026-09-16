@@ -55,6 +55,7 @@ struct BarrierState {
     hold_after_fact_commit: bool,
     hold_terminal_operation: bool,
     panic_before_fact_sql: bool,
+    hold_finish: bool,
 }
 /// Trusted fault-harness barrier for a confirmed held storage stage.
 #[derive(Clone, Debug)]
@@ -69,6 +70,7 @@ impl WriterBarrier {
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
+            hold_finish: false,
         }))
     }
     /// Hold the Start SQL barrier as well, for boundary admission tests.
@@ -80,6 +82,7 @@ impl WriterBarrier {
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
+            hold_finish: false,
         }))
     }
     /// Hold after a real fact transaction commits but before its owner receipt.
@@ -92,6 +95,7 @@ impl WriterBarrier {
             hold_after_fact_commit: true,
             hold_terminal_operation: false,
             panic_before_fact_sql: false,
+            hold_finish: false,
         }))
     }
     /// Hold only a terminal operation before SQL, after earlier acceptance commits.
@@ -104,6 +108,7 @@ impl WriterBarrier {
             hold_after_fact_commit: false,
             hold_terminal_operation: true,
             panic_before_fact_sql: false,
+            hold_finish: false,
         }))
     }
     /// Terminate the storage thread before one fact transaction for fault tests.
@@ -115,6 +120,19 @@ impl WriterBarrier {
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
             panic_before_fact_sql: true,
+            hold_finish: false,
+        }))
+    }
+    /// Hold only Finish before SQL, after its owner FIFO admission.
+    pub fn held_finish() -> Self {
+        Self(Arc::new(BarrierState {
+            held: AtomicBool::new(true),
+            reached: AtomicBool::new(false),
+            hold_start: false,
+            hold_after_fact_commit: false,
+            hold_terminal_operation: false,
+            panic_before_fact_sql: false,
+            hold_finish: true,
         }))
     }
     /// Release any worker held at a deterministic storage stage.
@@ -1540,6 +1558,9 @@ fn worker_loop(
                     })
             }
             Message::Finish(summary, at, assigned) => {
+                if let Some(barrier) = barrier.filter(|barrier| barrier.0.hold_finish) {
+                    barrier.await_release();
+                }
                 let anchor = TimeAnchor::capture(|| source.now(), || Ok(SystemTime::now()));
                 let result = anchor.and_then(|anchor| {
                     store.finish_boot_with_summary_assigned(at, &summary, &anchor, assigned)
