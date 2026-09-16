@@ -10,7 +10,7 @@ use lab_core::{AccessMode, ParameterRole, Unit, WriteEffect, instrument::KnownOp
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -421,8 +421,17 @@ pub fn parse_runtime_toml(
     }
     let text = std::str::from_utf8(bytes).map_err(|_| ConfigurationError::InvalidUtf8)?;
     prescan(text)?;
-    let dto: DeploymentDto = toml::from_str(text)
+    let mut dto: DeploymentDto = toml::from_str(text)
         .map_err(|error| ConfigurationError::InvalidToml(bounded_message(&error.to_string())))?;
+    // Array-of-table order is presentation, never dependency or scheduling
+    // identity. Canonical explicit IDs make equivalent documents deterministic.
+    dto.resources.sort_by_key(|item| item.id);
+    dto.instruments.sort_by_key(InstrumentDto::id);
+    dto.managed_components.sort_by_key(|item| item.id);
+    dto.references.sort_by_key(|item| item.id);
+    dto.controllers.sort_by_key(|item| item.id);
+    dto.safe_profiles
+        .sort_by_key(|item| (item.instrument_id, item.parameter_id));
     validate_structure(&dto)?;
 
     let mut artifacts = Vec::new();
@@ -617,23 +626,45 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
     }
 
     let mut component_ids = BTreeSet::new();
+    let mut managed_inputs = BTreeMap::new();
     for component in &dto.managed_components {
         validate_nonzero(component.id, "component id")?;
         validate_nonzero(component.instrument_id, "component instrument id")?;
         validate_key(&component.key)?;
         validate_display_name(&component.display_name)?;
         validate_period(component.period_ms, "component period")?;
-        if !component_ids.insert(component.id) || instrument_ids.contains(&component.instrument_id)
+        if !component_ids.insert(component.id)
+            || instrument_ids.contains(&component.instrument_id)
+            || managed_inputs
+                .insert(component.instrument_id, component.input_instrument_id)
+                .is_some()
         {
             return Err(ConfigurationError::invalid("duplicate component identity"));
         }
-        instrument_ids.insert(component.instrument_id);
+    }
+    let all_instruments: BTreeSet<_> = instrument_ids
+        .iter()
+        .copied()
+        .chain(managed_inputs.keys().copied())
+        .collect();
+    for component in &dto.managed_components {
         if let Some(input) = component.input_instrument_id
-            && !instrument_ids.contains(&input)
+            && !all_instruments.contains(&input)
         {
             return Err(ConfigurationError::invalid("unknown managed input"));
         }
     }
+    for start in managed_inputs.keys().copied() {
+        let mut visited = BTreeSet::new();
+        let mut current = Some(start);
+        while let Some(instrument) = current {
+            if !visited.insert(instrument) {
+                return Err(ConfigurationError::invalid("managed dependency cycle"));
+            }
+            current = managed_inputs.get(&instrument).copied().flatten();
+        }
+    }
+    instrument_ids.extend(managed_inputs.keys().copied());
 
     let reference_ids: BTreeSet<_> = dto.references.iter().map(|item| item.id).collect();
     let reference_keys: BTreeSet<_> = dto

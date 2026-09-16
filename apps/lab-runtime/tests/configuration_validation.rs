@@ -200,6 +200,50 @@ fn c1_valid_runtime_toml_is_deterministic_and_freezes_exact_bytes() {
 }
 
 #[test]
+fn c1_reordered_object_tables_have_one_canonical_effective_graph() {
+    fn config(order: [u64; 2]) -> Vec<u8> {
+        let instrument = |id: u64| {
+            format!(
+                r#"[[instruments]]
+id={id}
+key="sensor-{id}"
+kind="virtual_measurement"
+display_name="Sensor {id}"
+history_capacity=8
+base_temperature=20.0
+measurement_enabled=true
+poll_period_ms=100
+"#
+            )
+        };
+        format!(
+            r#"schema_version=1
+[runtime]
+key="ordered"
+display_name="Ordered"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+{}{}
+"#,
+            instrument(order[0]),
+            instrument(order[1])
+        )
+        .into_bytes()
+    }
+    let base = Path::new("C:/lab/config");
+    let mut first_reader = MemoryReader::default();
+    let mut second_reader = MemoryReader::default();
+    let first = parse_runtime_toml(&config([20, 10]), base, &mut first_reader).unwrap();
+    let second = parse_runtime_toml(&config([10, 20]), base, &mut second_reader).unwrap();
+    assert_eq!(first.effective(), second.effective());
+    assert_ne!(first.toml_hash(), second.toml_hash());
+}
+
+#[test]
 fn c2_structurally_invalid_candidate_reads_no_artifacts() {
     let base = Path::new("C:/lab/config");
     let mut bytes = physical_config("metakon.json");

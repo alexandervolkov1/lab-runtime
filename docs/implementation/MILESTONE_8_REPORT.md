@@ -217,6 +217,14 @@ are not reported as passing evidence.
     configured port—never an enumerated substitute. COM/physical/Core targeted
     tests and warning-denied workspace clippy pass. No real port was opened, so
     C16/C17 and the hardware part of C14/C19 remain pending.
+22. C1 canonical-order acceptance was red because equivalent arrays of instrument
+    tables retained source order in the effective graph. The loader now sorts
+    every bounded object class by explicit identity before validation and
+    scheduling while retaining the exact original TOML bytes/hash separately.
+    Managed cross-reference validation was also made order-independent and now
+    rejects dependency cycles explicitly. The reordered fixture has equal
+    effective graphs and distinct exact-content hashes; all six configuration
+    validation tests pass.
 
 Red/green test names, commands, defects and resolved dependency versions will be
 added after each logical slice.
