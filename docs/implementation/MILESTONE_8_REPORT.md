@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `READY_FOR_HARDWARE_RERUN`; software correction of the Recorder-corrected
-physical pre-rebind failure is complete, 2026-09-16. COM5 has not been reopened.
+Status: `READY_FOR_HARDWARE_RERUN`; bounded transient-open correction after the
+accepted 2026-09-17 physical failure oracle is complete. COM5 has not been reopened.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -1204,19 +1204,80 @@ cargo run -p lab-runtime -- --serve --config .\examples\runtime.metakon-513-com5
 
 COM5 was not opened during this correction. M9 remains unauthorized.
 
+## Transient Windows-open failure oracle and correction — 2026-09-17
+
+The final read-only rerun used the exact LF deployment hash
+`8688bf121b27a6ffc88a73eb35fc23def9c0787330eaf2168899198c41f5186c`
+and unchanged definition hash
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+Initial COM5 acquisition was healthy: actual open/configuration succeeded, channel
+type was 3, repeated generation-1 Good temperatures of 23/24 degrees Celsius agreed
+with the front panel, Required Recorder was healthy, durable/public history contained
+real rows and no output event existed.
+
+After the operator-reported power-off, exactly one value-less
+Unavailable/Transport was recorded and no later Good was fabricated. The resource
+reached Offline, generation remained 1, the ordinary queue remained empty and the
+old worker retired. Following the operator-reported power-on, exactly one public
+reconnect was accepted. It spawned one replacement worker, whose first actual Windows
+open failed with `SerialError::Disconnected`. No Core rebind or compatibility probe
+occurred, generation stayed 1, Required Recorder remained complete, shutdown was
+finite and clean, and the archive contains zero output events.
+
+That immutable failure oracle is
+`examples/metakon-513-com5-prepared-reconnect-history.sqlite`, main-file SHA-256
+`1396421e62b5a1abb834b4178689b3303277a88d46174e0353d2710c2ab17023`.
+Its main/WAL/SHM files are retained and must not be modified or reused.
+
+Source review localized the cause to `SerialPortDevice::open()`, `worker_main()` and
+`ServiceHost::reconnect_resource_with_factory()`: Windows/serialport `NoDevice` was
+truthfully mapped to `Disconnected`, but one failed asynchronous factory/open attempt
+immediately terminated the worker and cancelled the lifecycle. Therefore the
+validated `open_timeout_ms` bounded waiting for one attempt rather than providing a
+bounded transient-absence grace.
+
+Tests were added red-first for transient-first-then-Ready, several transient failures
+then success, finite absence, terminal invalid/non-retryable errors, hung-open worker
+uniqueness, sequential retirement, generation/probe/acquisition fences, Required
+Recorder health and finite shutdown. Production commit `a55acb1` keeps retry inside
+one candidate worker: one public reconnect, one candidate, one worker and at most one
+active OS-open call. Completed `Disconnected` attempts retry every 100 ms, capped at
+64 attempts and by the single original `open_timeout_ms` absolute deadline. The
+deadline is never reset. `InvalidSettings`, `Timeout` and `Other` are terminal. A hung
+OS open creates no concurrent replacement and remains governed by existing
+timeout/quarantine/shutdown semantics. No protocol byte or compatibility probe can
+occur before actual-open/settings-readback Ready.
+
+The post-correction software gate passed all 436 named debug workspace tests, all 40
+`lab-runtime` library tests, the focused reconnect/Windows COM/configured-physical/
+Recorder/shutdown suites, actual Babashka 1.13.220 A/B (three process tests), Babashka
+client tests (8 tests, 13 assertions), formatting, workspace all-target Clippy with
+warnings denied and `git diff --check`. COM5 was not opened during correction.
+Release-profile tests and warning-denied rustdoc remain reserved for the eventual
+successful final hardware gate.
+
+The next new archive is
+`examples/metakon-513-com5-transient-open-retry-history.sqlite`; main/WAL/SHM were
+confirmed absent. Its exact LF runtime TOML SHA-256 is
+`39715f3d70391154935f3ab6b25a1e78162f2b711f038238496f8853dc729c09`;
+the definition hash remains unchanged. Exact deployment provenance currently depends
+on checkout line endings when `core.autocrlf=true`; later release hardening should pin
+relevant provenance-bearing text files to LF via `.gitattributes`. That unrelated
+hardening is deliberately not included before this hardware rerun.
+
 ## Current limitations
 
 The first archive remains evidence of the old incorrect profile; the separate
 corrected run establishes plausible real temperature and durable history. The
 pre-fix disconnect and failed-reconnect contradictions are preserved as evidence.
 The latest run proves corrected finite disconnect and acquisition quiescing, but
-actual reconnect still failed and exposed a Recorder reservation failure plus an
-unsealed shutdown. Firmware remains unknown and no independent wire capture
-exists.
+actual reconnect stopped at a transient Windows open failure before Ready. The
+preserved archive has a complete Recorder prefix and clean shutdown. Firmware remains
+unknown and no independent wire capture exists.
 
 M8 is `READY_FOR_HARDWARE_RERUN`, not ready for acceptance and does not authorize
-M9. The prior reconnect failure is localized and corrected in software, with
-bounded stage diagnostics ready for the rerun. Successful physical reconnect,
+M9. The transient-open failure is localized and corrected in software, with bounded
+single-worker retry diagnostics ready for the rerun. Successful physical reconnect,
 Babashka independence during that physical run, harmless live-safe reload and
 the final release/rustdoc gates remain open. M8 performed no physical actuator
 write and makes no physical-output-safety, power-loss, remote-security, GUI or

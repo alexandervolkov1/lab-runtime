@@ -12,7 +12,7 @@ M7 Recorder/SQLite is externally accepted at `f3ff456`.
 M8 software-side implementation and subsequent reconnect/recovery/Recorder corrections
 are complete.
 
-The latest reconnect production correction is `6f641e2`.
+The latest reconnect production correction is `a55acb1`.
 
 The most recently reported full repository HEAD before the planned documentation
 cleanup was:
@@ -28,7 +28,7 @@ historical checkpoint.
 
 Latest reported software verification:
 
-- 427 named debug workspace tests;
+- 436 named debug workspace tests;
 - all 136 `lab-core` tests;
 - focused reconnect/Windows COM/configured-physical/Recorder/shutdown suites;
 - actual Babashka 1.13.220 A/B: all three process tests;
@@ -43,18 +43,21 @@ No real COM port was opened during the latest software correction.
 
 ## Latest reconnect correction
 
-The previous physical reconnect failure was localized before retirement/replacement
-open/rebind: Host supplied an older cached monotonic time and Core correctly rejected
-it as `Transport(InvalidTime)`.
+The 2026-09-17 physical failure oracle proved clean old-worker retirement and one
+replacement worker spawn, but the first actual Windows open returned typed
+`SerialError::Disconnected`. The old implementation treated that first completed
+attempt as terminal even though the unchanged 2000 ms `open_timeout_ms` deadline had
+time remaining.
 
 The corrected path now:
 
-- uses current owner monotonic time;
-- has persistent/coalesced retirement intent;
-- cannot lose Stop merely because an ordinary mailbox is occupied;
-- distinguishes replacement spawn/open-pending/open-failure/Ready;
+- retains the accepted current-time and persistent/coalesced retirement corrections;
+- keeps all attempts inside one candidate worker and one public lifecycle operation;
+- retries only typed `Disconnected` at 100 ms cadence, with a fixed 64-attempt cap;
+- uses one original absolute `open_timeout_ms` deadline which retries never extend;
+- treats `InvalidSettings`, `Timeout` and `Other` as terminal;
 - requires actual Windows open + configured-settings readback Ready before Core rebind;
-- retains bounded reconnect stage diagnostics;
+- retains bounded diagnostics with attempt count and last typed error;
 - uses stable public failure codes;
 - preserves Required Recorder and generation fencing.
 
@@ -77,7 +80,7 @@ The remaining task is to demonstrate this same chain on real Windows COM + Metak
 Next archive:
 
 ```text
-examples/metakon-513-com5-prepared-reconnect-history.sqlite
+examples/metakon-513-com5-transient-open-retry-history.sqlite
 ```
 
 At the software checkpoint, main/WAL/SHM were absent.
@@ -86,7 +89,7 @@ Expected hashes:
 
 ```text
 runtime.toml
-8688bf121b27a6ffc88a73eb35fc23def9c0787330eaf2168899198c41f5186c
+39715f3d70391154935f3ab6b25a1e78162f2b711f038238496f8853dc729c09
 
 instrument definition
 b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb

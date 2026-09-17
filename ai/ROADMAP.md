@@ -45,7 +45,8 @@ M8 already provides:
 - read-only Windows COM adapter;
 - real Metakon read path;
 - Required Recorder integration;
-- bounded reconnect diagnostics and corrected recovery/rebind logic.
+- bounded reconnect diagnostics and corrected recovery/rebind logic;
+- one-worker transient `Disconnected` OS-open grace bounded by the original deadline.
 
 Current status:
 

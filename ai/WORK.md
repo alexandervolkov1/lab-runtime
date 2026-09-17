@@ -25,8 +25,8 @@ docs/implementation/MILESTONE_8_REPORT.md
 
 Latest reported M8 software evidence:
 
-- reconnect production correction `6f641e2`;
-- 427 named debug workspace tests;
+- transient-open reconnect correction `a55acb1`;
+- 436 named debug workspace tests;
 - all 136 Core tests;
 - focused reconnect/COM/Recorder/configured-physical suites;
 - actual Babashka A/B three process tests;
@@ -45,7 +45,7 @@ before using real hardware.
 Next evidence archive:
 
 ```text
-examples/metakon-513-com5-prepared-reconnect-history.sqlite
+examples/metakon-513-com5-transient-open-retry-history.sqlite
 ```
 
 Before opening COM5, main/WAL/SHM must not exist.
@@ -54,7 +54,7 @@ Expected hashes:
 
 ```text
 runtime.toml
-8688bf121b27a6ffc88a73eb35fc23def9c0787330eaf2168899198c41f5186c
+39715f3d70391154935f3ab6b25a1e78162f2b711f038238496f8853dc729c09
 
 definition
 b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb
@@ -145,7 +145,10 @@ Issue exactly one:
 reconnect_resource(resource=1, expected_binding_generation=<actual current generation>)
 ```
 
-No automatic retry.
+No second public reconnect. Inside this one lifecycle operation, only bounded
+same-resource/same-COM/same-settings `Disconnected` OS-open attempts are permitted
+under the original `open_timeout_ms` deadline. No protocol probe is permitted before
+actual-open/settings-readback Ready.
 
 Prove order:
 
