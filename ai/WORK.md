@@ -11,7 +11,8 @@ M9B.4: COMPLETE
 M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
-M9B.8: NOT STARTED
+M9B.8: COMPLETE
+M9B.9: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -26,8 +27,9 @@ measurement/history and subscription semantics; M9B.4 completed Reference and na
 controller/PID operations; M9B.5 completed the semantic Recorder status, lifecycle,
 event and durable-boundary API; M9B.6 completed resources, configuration/property
 and reconnect semantics; M9B.7 completed virtual instruments and external emulator
-publication. These are recorded in
-`docs/implementation/MILESTONE_9B_REPORT.md`. Stop before M9B.8; a new instruction
+publication; M9B.8 completed reconnect, resynchronization, backpressure and fault
+acceptance. These are recorded in
+`docs/implementation/MILESTONE_9B_REPORT.md`. Stop before M9B.9; a new instruction
 must authorize the next implementation slice.
 
 ## Goal

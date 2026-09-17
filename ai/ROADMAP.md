@@ -16,7 +16,8 @@ M9B.4: COMPLETE
 M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
-M9B.8: NOT STARTED
+M9B.8: COMPLETE
+M9B.9: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -76,6 +77,9 @@ M9B.6 completed semantic resources, generic validated property metadata/mutation
 typed deployment stage/apply state and generation-fenced reconnect projections.
 M9B.7 completed explicit virtual-only external measurement publication and separated
 native virtual-model restart from managed-component lifecycle.
+M9B.8 completed adversarial reconnect/resynchronization, bounded-pressure and
+multi-client fault acceptance, including the final connection-local history-cursor
+bound.
 
 ### Discovery
 

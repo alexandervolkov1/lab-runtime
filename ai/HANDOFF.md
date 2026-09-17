@@ -13,7 +13,8 @@ M9B.4: COMPLETE
 M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
-M9B.8: NOT STARTED
+M9B.8: COMPLETE
+M9B.9: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -100,7 +101,13 @@ M9B.7 is complete. Explicitly configured external-publication virtual signals ac
 bounded Good/Unavailable observations through the ordinary Runtime measurement,
 event, recent-history, controller and Recorder paths. Native thermal model restart
 is now the distinct `virtual_models_restart` operation; the mixed public
-`restart_models` name is retired. Stop before M9B.8.
+`restart_models` name is retired.
+
+M9B.8 acceptance is complete. Reconnect reconstruction, operation replay,
+slow-client gap recovery, subscription churn, emulator/Recorder pressure, malformed
+traffic and process-level client isolation passed. One connection-local durable
+history defect was fixed: continuation tokens are now capped at eight, one per
+connection, and released on disconnect. Stop before M9B.9.
 
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.

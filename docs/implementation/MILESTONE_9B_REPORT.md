@@ -10,11 +10,12 @@ M9B.4 Reference and controller/PID API: COMPLETE
 M9B.5 Recorder Application API: COMPLETE
 M9B.6 resources / configuration / reconnect: COMPLETE
 M9B.7 virtual instruments / external emulator API: COMPLETE
-M9B.8: NOT STARTED
+M9B.8 reconnect / resynchronization / fault acceptance: COMPLETE
+M9B.9: NOT STARTED
 M9C+: NOT AUTHORIZED
 ```
 
-This report is cumulative through M9B.7. It does not claim that
+This report is cumulative through M9B.8. It does not claim that
 the complete M9B Application API is finished or externally accepted.
 
 ## M9B.2 scope and architecture
@@ -630,6 +631,110 @@ non-advertisement/non-mutation, generic thermal properties and generation-fenced
 targeted restart. Existing protocol, subscription/gap, configuration, control,
 Recorder, process, physical-resource and prior M9B suites remain regression gates.
 
-M9B.8 and later work remains deferred: full adversarial fault acceptance and final
-API freeze. No COM port or hardware path was opened, Lua was unchanged, M8 evidence
+At M9B.7 completion, adversarial fault acceptance and final API freeze remained
+deferred. No COM port or hardware path was opened, Lua was unchanged, M8 evidence
 was unchanged, and M9C was not started.
+
+## M9B.8 reconnect, resynchronization, backpressure, and fault acceptance
+
+The complete M9B surface was exercised as one composition rather than as isolated
+handlers. A disposable client can reconstruct hello/capabilities, discovery,
+current measurements, References, controllers, Recorder status,
+resource/configuration projections and a fresh subscription. Runtime-owned state
+and retained operation outcomes do not depend on the old socket. Reusing the same
+scope and exact request ID returns the retained terminal result without applying a
+second mutation; a new scope may reuse sequence numbers independently.
+
+Disconnect acceptance covers synchronous mutations by dropping delivery after the
+authoritative commit and reconstructing state, and asynchronous work through the
+existing Recorder, durable-history, reconnect and shutdown suites. Accepted work
+continues to its Runtime/worker boundary. Late replies check the connection/scope
+binding, cancelled history jobs discard late worker results, and a reused network
+slot cannot receive an earlier connection's result.
+
+Slow subscription delivery remains outside the owner critical path. Each
+subscription scans the 1,024-record replay ring in bounded slices and the reactor
+retains at most sixteen event frames for a peer. A ring overrun returns explicit
+`event_gap` with `resync_required`; a full socket event queue or blocked-write
+deadline detaches only that peer. Recovery is explicit: current snapshot, optional
+recent/durable history, then a new subscription at the current cursor. No claim of
+stream completeness crosses a reported gap. Thirty-two deterministic
+subscribe/unsubscribe cycles and disconnect/reconnect churn release the single
+per-client subscription slot.
+
+One concrete M9B.8 defect was found and fixed. Durable-history continuations had a
+30-second TTL but were indexed only by token/scope: disconnect removed the cached
+page and pending job but not already issued continuation tokens. Rapid completed
+pages could therefore retain more connection-local cursors than the documented
+history-job bound until TTL expiry. Continuations now record their owning
+connection, replace that connection's previous cursor, are capped at eight
+globally, and are removed on detach. The Recorder job remains Runtime-owned and is
+cancelled/discarded through the existing late-result fence. A deterministic
+nine-client regression fills all eight cursor slots, observes `history_busy`,
+disconnects one owner, and proves immediate admission and cleanup. This is an API
+delivery-state correction; Core, Recorder schema/transactions and durable facts did
+not change.
+
+The first full debug workspace run also exposed an independent existing test-oracle
+race in `eight_deferred_cancellations_never_expand_history_job_credit`. The storage
+worker briefly holds the active-job mutex while publishing a completed page, and
+the production owner deliberately uses `try_lock`, returning bounded
+`history slots busy` rather than blocking. The test incorrectly unwrapped eight
+back-to-back admissions and one replacement as if mutex acquisition were
+guaranteed. Its helper now retries only that explicit transient-busy outcome until
+actual admission or the unchanged two-second test deadline. Production Recorder
+locking, capacity and timing are unchanged; 100 focused repetitions passed.
+
+One final optimized workspace run also saw the temporary Babashka recorded A/B
+fixture trip the existing Required-recorder progress contract and report a truthful
+sealed gap under parallel suite load. The exact optimized test immediately passed,
+and the next complete optimized workspace run passed. No Application, Recorder,
+Babashka or timeout change was made; this remains a load-sensitive pre-M9C
+regression observation rather than evidence of silent success or an M9B.8 defect.
+
+### Capacity acceptance matrix
+
+| Resource | Capacity | Full behavior | Release and isolation |
+| --- | ---: | --- | --- |
+| TCP clients | 8 | New socket is refused | Disconnect/timeout; existing clients continue |
+| Owner/reactor mailbox | 64 | Nonblocking admission pauses or detaches peer | Owner drain/detach; native service runs first |
+| Requests/replies per client | 8 / 8 | Read pauses or peer detaches | Reply completion/disconnect |
+| Event frames per client | 16 | Affected peer detaches | Disconnect; other peers unaffected |
+| Session pending operations | 8 per scope, 64 total | Structured `busy` | Terminal completion; other scopes retain finite shared behavior |
+| Retained scopes/outcomes | 16 scopes; 32 per scope, 256 total | Structured scope/capacity outcome | TTL/terminal eviction without mutation replay |
+| Subscriptions | 1 per client | `subscription_busy` | Unsubscribe/disconnect/gap |
+| Event replay | 1,024 records, 4 KiB each | Old cursor gets `event_gap` | Client resyncs from current/history |
+| Recent history | 128 requested, signal-owned configured ring | Oldest records evict deterministically | No connection-owned allocation |
+| Durable history jobs/pages/cursors | 8 / 8 KiB / 8 | `history_busy` or bounded page error | Page release/TTL/disconnect/job terminal |
+| Configuration stage/overlays | 1 candidate / 32 overlays | Structured busy/capacity rejection | Apply/expiry/replacement |
+| Emulator publication | 1 scalar/request; session bounds above | Structured busy/capacity rejection | Synchronous terminal/session completion |
+| Recorder ingress | Existing four causal groups and byte/batch limits | Existing gap/fail-closed contract | Worker progress; never borrowed by API delivery |
+
+The acceptance oracle is committed Runtime progress, not request responsiveness.
+During 600 alternating Good/Unavailable emulator publications, independent current
+queries succeeded, the native thermal model retained its authoritative generation,
+periodic service produced committed plant observations, recent history remained at
+its configured sixteen-record bound, and an attempted publication into the native
+plant failed without output authority. Existing held-SQLite tests additionally show
+native PID leases, physical transport progress and normal socket queries continuing
+while Recorder/history clients are stalled. Recorder ingress and event delivery
+remain separate capacities.
+
+Malformed JSON, oversized frames, unknown operations, wrong identifiers/enums and
+invalid semantic requests remain bounded and nonfatal to the owner. The focused
+real-loopback test sends malformed traffic from client A, observes the structured
+protocol rejection, proves periodic measurement progress through client B,
+disconnects it, reconnects a fresh client, rebuilds discovery and completes finite
+server shutdown. Existing reactor tests cover stale-slot frames, full mailboxes,
+partial-frame deadlines and nonreading event peers.
+
+The focused `m9b8_fault_acceptance` suite covers full state reconstruction, exact
+dedup replay, subscription churn, explicit gap/current/history/fresh-subscription
+resync, two-client emulator pressure, physical-target rejection, session/global
+capacity recovery, malformed isolation and process-level reconnect/shutdown. The
+history-cursor regression and all M9B.2-M9B.7 protocol, control, Recorder,
+configuration, resource/reconnect, emulator and process suites remain mandatory.
+
+M9B.9 remains deferred. No capacities were increased, no product operation was
+added, COM5 and hardware were not used, Lua was unchanged, M8 evidence was
+unchanged, and M9C was not started.

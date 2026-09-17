@@ -13,7 +13,8 @@ M9B.4: COMPLETE
 M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
-M9B.8: NOT STARTED
+M9B.8: COMPLETE
+M9B.9: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -137,8 +138,10 @@ Completed M9B slices:
   validated live mutation, deployment candidate status and semantic reconnect state.
 - M9B.7 completed explicit virtual-only external measurement publication, ordinary
   signal/history/Recorder integration and targeted native virtual-model restart.
+- M9B.8 completed reconnect/resynchronization, adversarial bounded-pressure and
+  multi-client isolation acceptance.
 
-M9B.8 and later M9B slices remain incomplete; M9B as a whole is not accepted.
+M9B.9 and later M9B slices remain incomplete; M9B as a whole is not accepted.
 
 Required coverage:
 
