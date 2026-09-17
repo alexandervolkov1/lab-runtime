@@ -26,16 +26,18 @@ context. Read them on demand. They do not override the active authorization.
 
 ```text
 M8: ACCEPTED
-M9A: IMPLEMENTED
-STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
-Current phase: external M9A review
+M9A: ACCEPTED
+M9B: AUTHORIZED
+M9C+: NOT AUTHORIZED
+Current phase: M9B — complete and stabilize Application API
 ```
 
 Final physical M8 acceptance and the final software gates have succeeded. No further
 M8 hardware rerun is required, and COM5 is not part of current work.
 
-M9A implementation and software gates have succeeded. M9B remains NOT AUTHORIZED
-until M9A receives explicit external acceptance. M10 and M11 remain future milestones.
+M9A implementation and external review have succeeded. M9B is the only authorized
+implementation milestone. M9C and later milestones remain blocked behind explicit
+review gates.
 
 ## Donor repository
 
@@ -51,8 +53,8 @@ Check both before reporting it unavailable.
 Never modify the donor.
 Never make it a workspace dependency.
 
-Use it only as a source of verified behavior, algorithms, protocol knowledge, tests,
-GUI requirements and migration evidence.
+Use it only as a source of verified behavior, algorithms, protocol knowledge, tests
+and migration evidence.
 
 ## Core ownership
 
@@ -62,8 +64,6 @@ Preserve:
 
 ```text
 client lifetime != experiment lifetime
-GUI lifetime != experiment lifetime
-Babashka lifetime != native controller lifetime
 
 Query = committed snapshot
 Command / Operation = mutation or work
@@ -74,27 +74,39 @@ Runtime owns Recorder lifecycle
 Runtime owns output safety
 ```
 
-GUI, Babashka and future embedded scripting are clients/adapters.
+Runtime owns experiment semantics. Clients own presentation semantics.
 
-A slow client, script, GUI operation or disk writer must not block required native
-safety/control progress.
+A slow client, managed component or disk writer must not block required native
+acquisition, safety, control or Recorder progress.
+
+Required Runtime work has scheduling priority over non-authoritative extension and
+external work. This is an architectural priority, not a Windows thread-priority
+class:
+
+```text
+authoritative / required Runtime work
+├── transport scheduling
+├── periodic instrument polling
+├── measurement publication
+├── native controller deadlines
+├── OutputAuthority
+├── Recorder ingestion
+└── required lifecycle/safety work
+
+non-authoritative extension/external work
+├── managed components
+└── API clients
+```
 
 ## Application boundary
 
-Keep one coherent language-neutral semantic Application API.
+Keep one coherent language-neutral local Application API for laboratory and Runtime
+semantics. Adapters may use different encodings, but must not duplicate or contradict
+domain semantics.
 
-Adapters may use different encodings or convenience helpers, but must not duplicate
-or contradict domain semantics.
-
-The expected client directions are:
-
-```text
-Babashka -> public local API -> Runtime
-GUI       -> public local API -> Runtime
-future Steel -> in-process Application adapter -> Runtime
-```
-
-Future Steel is post-v0.1 work, not current scope.
+The Application API must not expose presentation concepts such as workspace, plot,
+trace, button, panel, tab, color, layout or window. Any client presentation belongs
+outside `lab-runtime`.
 
 ## Managed-component boundary
 
@@ -118,10 +130,9 @@ A managed component is Runtime-invoked computation:
 Runtime -> component -> validated result
 ```
 
-Existing M5 Lua is one executor/implementation of this contract.
-
-For v0.1, M5 Lua is frozen. Only bug/regression, safety/security and documentation
-corrections are allowed.
+Existing M5 Lua is historical implementation context and remains active only until
+the authorized later M9C removal milestone. Until then, only changes required by an
+authorized milestone or bug/safety corrections are allowed.
 
 M5 Lua is not currently known to violate the safety boundary. Its sandbox denies
 raw transport, OutputAuthority, physical ACK/readback/safe evidence and general
@@ -130,12 +141,12 @@ definitions, execution, public lifecycle vocabulary and new provenance are neutr
 
 Do not rename historical SQLite evidence merely to neutralize old Lua provenance.
 
-Do not add a persistent Lua workspace, Lua application/scenario API, Lua GUI API,
-Lua REPL/editor or broader M5 scope.
+Do not add a persistent Lua workspace, Lua application/scenario API, Lua presentation
+API, Lua REPL/editor or broader M5 scope.
 
 M9A added the first-class `native.moving_mean.v1` path through the same bounded
-contract. Current authorization is external M9A review only; detailed review scope
-belongs in `ai/WORK.md`.
+contract and is externally accepted. Current authorization is M9B only; detailed
+scope belongs in `ai/WORK.md`.
 
 ## Virtual/emulator boundary
 
@@ -143,10 +154,9 @@ The existing `VirtualInstrument` deterministic/fault-injection source and
 `ThermalPlantInstrument` stateful native thermal emulator/reference model remain
 useful native infrastructure. Do not remove or replace them.
 
-M9B adds a validated Application API around this native virtual-instrument foundation
-so Babashka now, and future Steel later, can implement/control user-authored
-emulators through the same semantics. This does not mean rewriting the existing
-native instruments or moving emulator behavior into M5 Lua.
+M9B adds a validated Application API around this native virtual-instrument foundation.
+This does not mean rewriting the existing native instruments or moving emulator
+behavior into M5 Lua.
 
 Only explicitly declared virtual/emulated instruments may accept virtual publication
 or model steps.
@@ -209,12 +219,12 @@ Invalid candidates do not partially mutate active Runtime state.
 
 Safety-sensitive changes require an explicit safe barrier.
 
-GUI Properties editing must use the same validation/stage/apply lifecycle rather than
-mutating live state directly.
+Any property/configuration edit through the Application API must use the same
+validation/stage/apply lifecycle rather than mutating live state directly.
 
 ## Recorder
 
-Recorder is Runtime-owned and independent of GUI/client lifetime.
+Recorder is Runtime-owned and independent of client lifetime.
 
 Runtime producers do not block on disk I/O.
 
@@ -224,53 +234,24 @@ Required recording failure must follow the accepted fail-closed contract.
 
 Durable history and transient event replay remain separate concepts.
 
-## GUI and presentation
+Recorder/SQLite is durable scientific and experiment audit history. Diagnostic logs
+are separate bounded troubleshooting information. Routine worker, TCP and debug
+messages must not become unbounded Recorder content. Semantically important
+diagnostics may be represented as structured durable Runtime events.
 
-GUI is a separate client over the public Application API.
-
-Runtime must not depend on egui.
-
-Server-owned semantic presentation state may be manipulated by GUI or external
-clients.
-
-The target GUI uses:
+Before release, document the active SQLite schema, relationships, time semantics,
+provenance, gaps, sealing/completeness, migration/version policy and example
+read-only queries. Keep these contracts distinct:
 
 ```text
-Rust
-eframe
-egui
-egui_plot
+Application API != Recorder contract != SQLite schema
 ```
 
-unless a concrete blocker appears.
+## Presentation boundary
 
-Preserve/adapt successful donor plot behavior:
-
-```text
-multiple plot panels
-multiple traces
-trace labels
-colors
-visibility
-ordering
-panel assignment
-local-time/time-axis formatting
-pan/zoom
-follow/live
-configurable time window
-auto/manual Y
-double-click autoscale
-legend
-plot sizing
-downsampling
-signal/series sidebar
-logs
-```
-
-Required contextual controls include Reference, PID, controller lifecycle, recording,
-resource/instrument status, reconnect and Properties.
-
-No scenario menu is required for v0.1.
+v0.1 is headless. It contains no GUI, Presentation API, plotting/workspace concepts,
+first-party frontend or client SDK. Runtime must not depend on presentation toolkits.
+Clients own all presentation semantics outside `lab-runtime`.
 
 ## Boundedness
 
@@ -312,12 +293,10 @@ Do not globally kill Runtime merely for:
 
 ```text
 one malformed client
-GUI disconnect
-Babashka disconnect
+client disconnect
 one unavailable measurement
 one invalid configuration candidate
-ordinary frozen-M5 Lua failure
-presentation persistence failure
+ordinary managed-component failure
 ```
 
 Safety-critical failures fail closed.
@@ -338,12 +317,12 @@ failure behavior
 why the boundary exists
 ```
 
-The Runtime owner must not wait on network, GUI, scripts or disk I/O in a way that
-prevents required safety service.
+The Runtime owner must not wait on network clients, managed components or disk I/O in
+a way that prevents required acquisition, control, safety or Recorder service.
 
 ## Core dependency discipline
 
-`lab-core` remains OS-, GUI-, storage- and scripting-runtime-independent.
+`lab-core` remains OS-, presentation-, storage- and scripting-runtime-independent.
 
 Avoid crate proliferation and speculative framework layers.
 

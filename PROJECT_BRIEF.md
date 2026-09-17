@@ -1,176 +1,102 @@
 # lab-runtime — current product brief
 
-## Goal
+## Product goal
 
-`lab-runtime` is a long-running Rust laboratory automation Runtime.
+`lab-runtime` v0.1 is a polished headless laboratory automation Runtime written in
+Rust. It owns authoritative experiment state and provides native instruments,
+periodic acquisition, measurement signals and bounded history, native control,
+central output safety, durable recording, virtual/emulated instruments and one
+documented local Application API.
 
-It owns authoritative experiment state and combines:
+The release includes:
 
-- physical and virtual instruments;
-- acquisition;
-- signal processing;
-- native References/controllers;
-- central output safety;
-- durable recording/history;
-- a language-neutral Application API;
-- external interactive automation;
-- a separate GUI client.
+- `lab-core` and `lab-runtime`;
+- native Rust instruments and managed components;
+- periodic instrument polling and measurement publication;
+- latest values and bounded/paged history;
+- Reference and native PID/controller lifecycle;
+- OutputAuthority and output-safety enforcement;
+- Recorder/SQLite experiment history and provenance;
+- configuration, resource and reconnect lifecycle;
+- virtual instruments and emulator support;
+- a complete local Application API;
+- bounded diagnostic logging;
+- professional English documentation and Windows packaging.
 
-The architecture should remain understandable enough to study and small enough for
-real laboratory workloads.
+The release does not include a GUI, Presentation API, plotting/workspace concepts,
+Steel, Lua, Babashka or Python clients, a first-party frontend, a client SDK, a
+bundled plotting application or a user-facing scripting environment.
 
-## Runtime ownership
+v0.1 does not claim physical actuator qualification or generic hardware safety
+certification.
 
-The Rust Runtime is the single authoritative mutable experiment owner.
-
-Clients and adapters do not own critical experiment state.
+## Fundamental boundary
 
 ```text
-GUI
-Babashka
-future embedded scripting
-tests
-        ↓
-language-neutral Application API
-        ↓
-Runtime
+Runtime owns experiment semantics.
+Clients own presentation semantics.
 ```
 
-Client lifetime is not experiment lifetime.
+The local Application API exposes laboratory and Runtime concepts. It does not expose
+workspace, plot, trace, button, panel, tab, color, layout or window concepts. Any
+client presentation is outside `lab-runtime`.
 
-Queries return committed snapshots and do not perform hidden physical refresh.
+The Rust Runtime is the sole authoritative mutable experiment owner. Client lifetime
+is not experiment lifetime. Queries return committed snapshots without hidden
+physical refresh. Commands and Operations perform mutation or work through explicit
+Runtime-owned lifecycle rules.
 
-Commands/Operations perform mutation or work.
+## Runtime priority model
 
-## First stable release: v0.1.0
+Periodic native acquisition is a primary Runtime responsibility:
 
-v0.1.0 should provide:
+```text
+authoritative / required Runtime work
+├── transport scheduling
+├── periodic instrument polling
+├── measurement publication
+├── native controller deadlines
+├── OutputAuthority
+├── Recorder ingestion
+└── required lifecycle/safety work
 
-- long-running headless Runtime;
-- declarative deployment configuration;
-- validated/staged lifecycle changes;
-- real read-only Windows COM support;
-- conservative Metakon 513 read path;
-- Runtime-owned Recorder + SQLite;
-- bounded raw history queries;
-- native Reference/PID/controller lifecycle;
-- public local Application API;
-- optional Babashka client;
-- server-owned semantic presentation/workspace state;
-- separate Rust eframe/egui/egui_plot GUI;
-- contextual control panels;
-- Properties/configuration editing through the normal lifecycle;
-- clear user/developer documentation and tutorials;
-- Windows packaging and checksums.
+non-authoritative extension/external work
+├── managed components
+└── API clients
+```
 
-v0.1.0 does not claim physical actuator qualification.
+This is an architectural scheduling priority, not a Windows thread-priority claim.
+Slow, stalled or disconnected managed components and API clients must not prevent
+required acquisition, native control, safety or Recorder progress.
 
 ## Managed components
 
-The language-neutral managed-component boundary is useful independent of Lua.
-
-Conceptually:
+The implementation-neutral managed-component path remains:
 
 ```text
 Runtime
   ↓ Invocation
-managed component
-  ↓ ComponentResult
-Runtime validates/commits
+ComponentExecutor
+  ↓ ComponentCompletion / ComponentResult
+Runtime validation
+  ↓
+committed managed state and signal
 ```
 
-The current Core execution seam includes language-neutral data and executor concepts
-such as `Invocation`, `ComponentResult`, `ComponentCompletion`, `ComponentExecutor`
-and `PlainData`, together with generation, revision and failure semantics.
+The contract includes `Invocation`, `ComponentResult`, `ComponentCompletion`,
+`ComponentExecutor`, `PlainData` and generation/revision/failure semantics. M9A added
+the bounded native `native.moving_mean.v1` reference implementation and is externally
+accepted.
 
-### Current Lua role
+Lua remains only as temporary active baggage until M9C. M9C removes `lab-lua`,
+`mlua`, `lua.v1`, active Lua configuration/API vocabulary and fixtures after M9B is
+accepted. Historical milestone reports, immutable archives and historical provenance
+such as `managed_lua_source` remain evidence and are not rewritten.
 
-M5 implemented bounded disposable Lua model/filter/transform components.
+## Instruments, acquisition and signals
 
-For v0.1 this subsystem is FROZEN.
-
-M5 Lua is not currently known to violate the safety boundary. Its existing sandbox
-denies raw transport, OutputAuthority, physical ACK/readback/safe evidence and
-general Runtime mutability.
-
-M9A removed the Lua-specific leakage from common definitions, public capability and
-lifecycle names, trusted composition helpers and new provenance. Historical
-`managed_lua_source` SQLite evidence remains unchanged; new activations use neutral
-managed-component provenance.
-
-Allowed changes:
-
-- bug/regression fixes;
-- safety/security fixes;
-- documentation corrections.
-
-Not planned before v0.1:
-
-- persistent Lua application workspace;
-- Lua scenario/orchestration API;
-- Lua GUI API;
-- Lua REPL/editor;
-- broader M5 component features.
-
-### Native Rust components
-
-Native Rust components now have a first-class implementation path through the same
-managed-component execution contract. The reference implementation is the bounded
-`native.moving_mean.v1` transform; frozen Lua uses `lua.v1` through the same executor.
-
-This gives a simple future migration:
-
-```text
-M5 Lua model/filter/transform
-        ↓
-equivalent native Rust component
-        ↓
-remove the Lua implementation after replacement coverage exists
-```
-
-Recompilation is acceptable for trusted internal algorithms and models.
-
-A future complete `lab-lua` removal remains a separate post-release decision.
-
-## User-facing automation
-
-User-facing experiment automation should use one semantic Application API.
-
-Babashka is the current external interactive/orchestration client.
-
-A future embedded scripting language may expose the same Application semantics through
-an in-process adapter.
-
-The intended post-v0.1 candidate is Steel, but Steel is not part of the v0.1
-commitment and is not currently authorized.
-
-No scripting language receives raw Runtime mutability, OutputAuthority or physical
-evidence capabilities.
-
-## Virtual instruments and emulators
-
-The repository already has two useful native virtual foundations:
-
-- `VirtualInstrument`, the simple deterministic/fault-injection virtual source;
-- `ThermalPlantInstrument`, the built-in stateful native thermal
-  emulator/reference model.
-
-They remain in the architecture and are not scheduled for removal or replacement.
-M9B adds a validated virtual-instrument/emulator part of the Application API around
-this foundation rather than rewriting it.
-
-This enables the same emulator procedure to be expressed from Babashka now and from
-a future embedded language later.
-
-Only explicitly declared virtual/emulated instruments may accept virtual model
-publication.
-
-A script/client may never manufacture facts for a physical instrument or fabricate
-ACK/readback/safe/transport evidence.
-
-## Instruments and transports
-
-The trusted architecture keeps these concerns separate where useful:
+Runtime owns transport scheduling and periodic instrument polling. The trusted
+boundary remains:
 
 ```text
 Transport
@@ -180,26 +106,16 @@ Protocol
 Instrument semantics
 ```
 
-Runtime owns physical transport resources and scheduling.
+Signals carry typed values, engineering units, quality, generation/revision where
+semantically required and explicit time. Latest values, live events and bounded
+history are distinct query surfaces. New low-level protocols, complex drivers and
+reliability-sensitive paths remain native Rust.
 
-Data-driven instrument definitions may describe known protocol primitives.
+## Reference, control and output safety
 
-New low-level protocols, complex drivers and reliability-sensitive paths remain
-native Rust.
-
-## Signals, References and controllers
-
-Signals carry typed values, unit metadata, quality and explicit time.
-
-Current native control includes:
-
-- independent Reference;
-- EMA processing;
-- native PID;
-- controller lifecycle;
-- bounded native output leases.
-
-Controllers do not write hardware directly.
+Current native control includes independent Reference, EMA processing, PID,
+controller lifecycle and finite output leases. Controllers never write hardware
+directly:
 
 ```text
 Controller
@@ -213,154 +129,99 @@ trusted operation mapping
 Transport
 ```
 
-## Output safety
+Keep requested, authorized, first possible output byte, acknowledged, readback and
+physical effect distinct. ACK is not readback. Timeout after possible transmission
+does not prove no physical effect. There is no blind retry after ambiguous output and
+no automatic rearm after safe transition, reload or reconnect.
 
-Rust owns physical output authority.
+## Virtual instruments and emulation
 
-Keep separate:
+`VirtualInstrument` remains the deterministic/fault-injection virtual source.
+`ThermalPlantInstrument` remains the built-in stateful thermal emulator/reference
+model. M9B adds validated Application API operations around this native foundation.
+
+Only explicitly declared virtual/emulated instruments accept virtual publication.
+An emulator or client can never fabricate a physical observation, ACK, readback,
+transport completion or safe-output evidence.
+
+## Recorder and diagnostics
 
 ```text
-requested
-authorized
-send started
-ACK
-readback
-physical effect
+Recorder / SQLite
+= durable scientific + experiment audit history
+
+Diagnostic logs
+= bounded troubleshooting information
 ```
 
-ACK is never silently promoted to readback.
+Recorder stores semantic experiment facts: measurements, quality/status transitions,
+run and interval boundaries, controller and component lifecycle, configuration
+revisions, resource/reconnect lifecycle, operations, gaps, provenance and other
+structured experiment-relevant events. Required recording retains its accepted
+fail-closed behavior.
 
-A timeout after possible output transmission does not prove that nothing happened.
+Routine worker, TCP and debug messages do not become unbounded Recorder content.
+Diagnostic logging has separate bounds, levels, rotation/retention and collection
+guidance. A semantically important diagnostic may also be a structured durable
+Runtime event.
 
-No client, GUI, Lua component or future Steel script may fabricate physical evidence.
+The SQLite archive is documented before release, including every active table,
+important columns and relationships, run/interval and measurement models, operations,
+object snapshots, provenance, component source/build identities, gaps, sealing,
+shutdown state, timestamps, invariants, content-addressed deduplication, migration
+policy and example read-only SQL.
 
-## Recorder
+```text
+Application API != Recorder contract != SQLite schema
+```
 
-Recorder is Runtime-owned.
-
-SQLite is a storage adapter, not the domain model.
-
-Recording and history survive client disconnects.
-
-Disk I/O must not block native safety/control progress.
-
-Required recording follows the accepted fail-closed behavior.
+SQLite is a documented archival format, not the live control interface.
 
 ## Application API
 
-The Application API should be the semantic boundary used by GUI, Babashka and future
-embedded scripting.
+M9B completes one coherent local semantic API for:
 
-It should cover, as required by product work:
+- discovery of resources, instruments, signals, capabilities and properties;
+- latest measurements, quality, units, acquisition state, live events and bounded
+  history;
+- Reference and controller/PID configuration, lifecycle and status;
+- Recorder start/stop/status and public history/query surfaces;
+- resource status, reconnect and validated configuration operations;
+- virtual instruments, emulator publication and deterministic fault injection;
+- coherent operations, structured errors, versioning, bounds, backpressure,
+  reconnect/resynchronization and malformed-input behavior.
 
-- discover/describe;
-- current snapshots;
-- subscriptions/events;
-- bounded history;
-- Reference operations;
-- PID/controller lifecycle/configuration;
-- recording;
-- reconnect/resource status;
-- configuration stage/apply/reload;
-- virtual/emulator operations;
-- presentation/workspace operations;
-- control-panel operations;
-- properties/configuration editing.
-
-Wire DTOs are adapters and must not become the Core domain model.
-
-## Presentation and GUI
-
-Presentation is server-owned semantic state, separate from safety-critical state.
-
-The target presentation model supports:
-
-- workspaces;
-- plot panels;
-- traces;
-- labels;
-- colors;
-- visibility;
-- ordering;
-- panel assignment;
-- time windows;
-- follow/live;
-- axis policy;
-- control panels;
-- logs.
-
-The GUI is a separate Rust client using the public Application API.
-
-Required donor plotting behavior to preserve/adapt:
-
-- multiple plot panels;
-- multiple traces per panel;
-- local-time/time-axis formatting;
-- pan/zoom;
-- follow/live;
-- auto/manual Y;
-- double-click autoscale;
-- legend;
-- trace color/visibility/labels;
-- ordering/panel assignment;
-- configurable time window;
-- plot sizing;
-- downsampling;
-- signal/series sidebar.
-
-Contextual controls should include:
-
-- live signal/value display;
-- Reference editor/display;
-- PID configuration/status;
-- controller start/pause/resume;
-- recording start/stop/status;
-- resource/instrument status;
-- reconnect;
-- logs;
-- Properties.
-
-No scenario menu is required for v0.1.
-
-Properties edits must produce structured validated candidates and use the normal
-validate/stage/apply lifecycle.
-
-## External API and Babashka
-
-The first API is local-first and not an Internet security claim.
-
-Babashka is optional and not a Runtime startup dependency.
-
-Babashka is appropriate for:
-
-- REPL-driven exploration;
-- experiment procedures;
-- supervisory orchestration;
-- emulator scripts;
-- Application API learning;
-- presentation/workspace manipulation.
-
-Disconnecting Babashka does not stop Runtime-owned native acquisition/control unless
-an explicit accepted safety policy requires it.
+Wire DTOs are adapters and do not become the Core domain model. M9B contains no
+Presentation API, frontend, client implementation or bundled scripting environment.
 
 ## Current release path
 
 ```text
-M8  ACCEPTED
-M9A READY_FOR_M9A_EXTERNAL_REVIEW — neutral boundary + native Rust path implemented
-M9B NOT AUTHORIZED until M9A acceptance
-M10 future GUI milestone
-M11 future hardening, documentation, tutorials and packaging milestone
+M8   ACCEPTED — deployment, Windows COM and physical read-only evidence
+M9A  ACCEPTED — neutral managed components and native Rust execution
+M9B  AUTHORIZED — complete and stabilize Application API
+M9C  NOT AUTHORIZED — remove Lua and obsolete client baggage
+M10  NOT AUTHORIZED — Core cleanup and studyability
+M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
+M12  NOT AUTHORIZED — documentation, packaging and final release audit
 v0.1.0
 ```
 
-Current phase: external M9A review. The completed M8 gate requires no further
-hardware rerun; COM5 is not part of current work.
+The roadmap ends at v0.1.0. Milestones do not cross review gates automatically.
 
-The v0.1 documentation teaches native Rust managed components and the native
-virtual/emulator foundation plus Application API and Babashka use. It does not teach
-a Lua application workflow. `MILESTONE_5_DESIGN.md` and `MILESTONE_5_REPORT.md`
-remain historical engineering evidence.
+## v0.1 identity
 
-Post-v0.1 work may include embedded Steel over the same Application API, optional
-later Lua removal, additional controllers and richer instruments.
+```text
+lab-runtime v0.1
+
+A polished headless laboratory automation runtime with:
+- periodic instrument acquisition,
+- measurement signals and history,
+- native control and output safety,
+- durable recording and provenance,
+- native Rust extensibility,
+- virtual/emulated instruments,
+- a documented local Application API,
+- bounded diagnostic logging,
+- comprehensive English documentation.
+```

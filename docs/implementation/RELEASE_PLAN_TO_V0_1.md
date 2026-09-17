@@ -2,412 +2,297 @@
 
 ## Status
 
-Completed and accepted baseline:
-
-```text
-M1-M8
-```
-
-Current phase:
-
 ```text
 M8: ACCEPTED
-M9A: IMPLEMENTED
-STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
-Current phase: external M9A review
+M9A: ACCEPTED
+M9B: AUTHORIZED
+M9C+: NOT AUTHORIZED
+Current phase: M9B — complete and stabilize Application API
 ```
 
-M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
-M11 remain future milestones.
-
-This plan is product direction, not automatic authorization to cross review gates.
+M9B is the only authorized implementation milestone. This plan does not authorize
+automatic milestone transitions. The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
 
-v0.1.0 is a usable laboratory automation Runtime with:
+v0.1 is a polished headless laboratory automation Runtime containing:
 
-- long-running Rust owner;
-- declarative deployment configuration;
-- read-only real Windows COM/Metakon integration;
-- Recorder/SQLite durable history;
-- native Reference/PID/controller lifecycle;
-- local public Application API;
-- optional Babashka;
-- validated virtual/emulator API;
-- server-owned presentation/workspace model;
-- separate Rust GUI client;
-- contextual control panels and Properties;
-- clear documentation/tutorials;
-- Windows packaging.
+- `lab-core` and `lab-runtime`;
+- native Rust instruments and managed components;
+- periodic instrument polling/acquisition;
+- measurement signals/series, latest values and bounded history;
+- Reference and native controllers/PID;
+- OutputAuthority and output safety;
+- Recorder/SQLite durable experiment history and provenance;
+- configuration, reconnect and resource lifecycle;
+- virtual instruments and emulator support;
+- one complete local Application API;
+- bounded diagnostic logging;
+- extensive professional English documentation;
+- Windows release packaging.
+
+The release does not contain a GUI, Presentation API, Runtime-owned plotting or
+workspace state, Steel, Lua, Babashka/Python clients, a first-party frontend, client
+SDK, bundled plotting application or user-facing scripting environment.
 
 v0.1 does not claim physical actuator qualification.
 
-## Cross-cutting invariants
-
-Preserve through release:
+## Cross-cutting boundaries
 
 ```text
-Runtime is the sole authoritative mutable experiment owner
-Query = committed snapshot / no hidden I/O
-Command/Operation = mutation or work
+Runtime owns experiment semantics.
+Clients own presentation semantics.
 
-client lifetime != experiment lifetime
-GUI lifetime != experiment lifetime
-Babashka lifetime != native controller lifetime
+Query = committed snapshot / no hidden physical I/O
+Command / Operation = mutation or work
 
-central OutputAuthority
-ACK != readback != physical effect
-final authority recheck before first possible output byte
-no blind retry after ambiguous output
-
-finite leases/recovery
-reload != rearm
-safe transition != rearm
-
-bounded queues/histories/workers
-monotonic time for control/safety
-wall time for human history/display
-
-Recorder is Runtime-owned
-disk/network/GUI/scripts do not block required native safety progress
-
-lab-core remains OS/GUI/storage/scripting-runtime independent
+Application API != Recorder contract != SQLite schema
 ```
 
-## Managed-component direction
+The Application API exposes laboratory and Runtime concepts. It never exposes
+workspace, plot, trace, button, panel, tab, color, layout or window concepts.
 
-The language-neutral managed-component execution contract remains part of the product
-architecture.
+Preserve central OutputAuthority, distinct ACK/readback/physical-effect states,
+authority recheck before first possible output byte, no blind retry after ambiguous
+output, finite leases, generation fencing, no automatic rearm, bounded
+queues/histories/workers and monotonic scheduling/control time.
 
-It retains `Invocation`, `ComponentResult`, `ComponentCompletion`,
-`ComponentExecutor`, `PlainData` and their generation/revision/failure semantics.
+Required transport, polling, measurement, native control, OutputAuthority, Recorder
+and lifecycle/safety work has architectural priority over managed components and API
+clients. Slow or disconnected extension/client work must not block required Runtime
+progress. This is not a Windows thread-priority-class requirement.
 
-Existing M5 Lua is frozen for v0.1.
+## Recorder and diagnostic logging
 
-M5 Lua is not currently known to violate the safety boundary. Its sandbox denies raw
-transport, OutputAuthority, physical ACK/readback/safe evidence and general Runtime
-mutability. M9A moved Lua-specific implementation material behind the explicit
-`lua.v1` adapter and neutralized the common definition, public lifecycle and new
-provenance vocabulary.
+```text
+Recorder / SQLite
+= durable scientific + experiment audit history
 
-No persistent Lua workspace or Lua application/scenario API is required for v0.1.
+Diagnostic logs
+= bounded troubleshooting information
+```
 
-M9A added a first-class native Rust implementation path through the same contract and
-proved the bounded `native.moving_mean.v1` transform. Historical SQLite evidence was
-not rewritten merely to rename old Lua provenance.
+Recorder contains semantic experiment facts: measurements, quality/status changes,
+run/interval boundaries, controller and component lifecycle, configuration revisions,
+resource/reconnect lifecycle, operations, gaps, provenance and other structured
+experiment-relevant events. Routine worker/TCP/debug messages do not become
+unbounded Recorder content.
 
-Optional complete Lua removal is post-v0.1 and requires replacement coverage.
+Diagnostics are a separate bounded/rotated mechanism. Semantically important
+diagnostics may also be represented as structured durable Runtime events.
 
-## M8 — final deployment/hardware gate
+## Accepted milestones
 
-M8 has already implemented the software contract for:
+### M8 — deployment, Windows COM and real read-only acceptance
 
-- strict `runtime.toml`;
-- frozen deployment artifacts/provenance;
-- staged/classified safe lifecycle activation;
-- managed reload/restart operations;
-- read-only Windows COM;
-- resource recovery/reconnect;
-- Metakon compatibility/read acquisition;
-- Required Recorder integration.
+M8 is externally accepted. It established strict/frozen deployment configuration,
+safe lifecycle activation, read-only Windows COM/Metakon acquisition, Required
+Recorder integration and bounded explicit reconnect with transient `Disconnected`
+open handling.
 
-Completed M8 gate evidence:
+Its preserved evidence proves real initial acquisition, device-off to Offline,
+exactly one reconnect, generation fencing, compatibility probe ordering, durable
+lifecycle before resumed acquisition, sustained generation-2 acquisition, zero
+outputs/gaps and clean shutdown. No further M8 hardware run is required.
 
-1. successful real initial acquisition;
-2. finite real device-off transition to Offline;
-3. exactly one explicit reconnect;
-4. bounded transient `Disconnected` reopen handling;
-5. actual-open/settings Ready before Core rebind;
-6. generation 1 -> 2 fencing;
-7. `channel_type = 3` compatibility probe;
-8. durable reconnect lifecycle before ordinary generation-2 acquisition;
-9. sustained generation-2 Good acquisition;
-10. Babashka A/B independence;
-11. harmless live-safe configuration revision without unnecessary rebind;
-12. clean shutdown and complete Recorder history;
-13. complete debug/release/fmt/Clippy/rustdoc/Babashka/client/demo gates.
+### M9A — neutral managed components and native Rust execution
 
-External M8 review accepted this gate. No further M8 hardware rerun is required, and
-COM5 is not part of current work. Historical M8 reports and evidence remain
-immutable.
+M9A is externally accepted. It retained one neutral `Invocation`,
+`ComponentExecutor`, `ComponentCompletion`/`ComponentResult`, Runtime validation and
+generation/revision lifecycle for both adapter-backed and native implementations.
 
-## M9A — neutral managed components and native Rust execution
+It added bounded native `MovingMean`, scoped source reload, exact component-to-source
+provenance and actual executable identity for built-in components. Historical SQLite
+archives and provenance remain immutable.
 
-### Goal
+## M9B — Complete and stabilize Application API
 
-Neutralize Lua-specific leakage from the common managed-component boundary and make
-native Rust a first-class executor path without weakening the established lifecycle
-or safety contract.
+Goal: expose complete useful Runtime semantics through one coherent bounded local
+Application API.
 
-Completed implementation:
+Required coverage:
 
-- neutral common definition, capability, lifecycle and provenance vocabulary for new
-  work;
-- retained `Invocation`, `ComponentResult`, `ComponentCompletion`,
-  `ComponentExecutor`, `PlainData` and generation/revision/failure semantics;
-- native Rust registration and execution through the same validation, unit,
-  bounded-state, bounded-execution, failure and replacement/reload rules;
-- bounded native `MovingMean` proved through the contract;
-- M5 Lua remains frozen except for bug/regression, safety/security and documentation
-  corrections;
-- historical SQLite evidence remains immutable.
+- discovery of resources, instruments, signals/series, capabilities, properties and
+  implementation-neutral status;
+- latest measurements, quality, units, generation/revision where needed, periodic
+  acquisition state, live subscriptions/events and bounded/paged history;
+- Reference lifecycle/configuration and controller/PID configuration, lifecycle,
+  status and validated results;
+- Recorder start/stop/status, current run/interval state, durable failure/status and
+  appropriate public history/query surfaces;
+- Runtime/resource status, validated configuration operations, reconnect, safe
+  reload/rebind and explicit revision/conflict behavior;
+- virtual instruments, emulator publication/model steps and deterministic fault
+  injection with typed/lifecycle validation;
+- coherent names, structured errors, capabilities, versioning, request/response
+  bounds, backpressure, disconnect/reconnect, resynchronization, malformed input,
+  resource exhaustion and finite shutdown.
 
-M9A software gates are complete and the milestone awaits external review. M9B remains
-blocked until M9A receives explicit external acceptance.
+Virtual/emulator operations can never fabricate physical ACK, physical readback,
+transport completion or safe-output evidence.
 
-## M9B — unified Application / emulator / presentation API
+M9B has no Presentation API, frontend/client implementation or bundled scripting
+environment. Acceptance uses Rust, raw-protocol and integration tests.
 
-### Goal
+## M9C — Remove Lua and obsolete client baggage
 
-Make the public semantic boundary complete enough for both GUI and scripting.
+After explicit M9B acceptance, remove active product Lua:
+
+- `lab-lua`, `mlua`, `lua.v1` and the Lua runtime/sandbox;
+- active Lua configuration/API vocabulary and fixtures;
+- Lua user documentation.
+
+Preserve historical milestone reports, immutable SQLite archives and historical
+provenance such as `managed_lua_source`; retain inspection compatibility only where
+genuinely required.
+
+Remove active first-party client baggage: Babashka client/workflow, client SDK
+material and bundled external-client examples. Replace acceptance coverage with
+implementation-neutral Rust/protocol integration tests.
+
+The active component model becomes:
+
+```text
+Application API
+      ↓
+Runtime
+      ↓
+native instruments
+native managed components
+native control
+Recorder
+```
+
+## M10 — Core cleanup and studyability
+
+Refactor only under test coverage, preserving behavior and safety:
+
+- split oversized files by responsibility;
+- preserve the single Runtime owner;
+- make API -> Runtime -> domain flow easy to trace;
+- make periodic acquisition and signal/series lifecycle explicit;
+- make transport/instrument, native control, OutputAuthority, Recorder and native
+  component extension boundaries obvious;
+- remove stale naming, dead compatibility and unused abstractions;
+- keep public/private boundaries deliberate.
+
+Developers must be able to find quickly how instruments, polling, measurement
+series, controllers, output authorization, Recorder submission, API dispatch and
+native managed extensions work. Do not create speculative frameworks.
+
+## M11 — Runtime / Recorder / logging / API hardening
+
+### Acquisition
+
+Audit monotonic scheduling, cadence/drift, bounded queues, slow transport behavior,
+starvation resistance, finite shutdown and priority of required native work.
+
+### Control and safety
+
+Audit controller lifecycle, leases, generation/epoch fencing, OutputAuthority,
+ambiguous writes, retry behavior and rearm behavior.
+
+### Recorder
+
+Audit complete durable history, provenance integrity, sealing/gaps, bounded ingestion,
+failure paths, crash/clean-close expectations and SQLite integrity behavior.
+
+### Diagnostic logging
+
+Implement/document a separate bounded diagnostics mechanism: destination, levels,
+size bounds, rotation/retention, startup/shutdown and user collection workflow.
 
 ### Application API
 
-Normalize/extend the language-neutral API required for:
+Harden names, errors, capabilities/versioning, response bounds, backpressure,
+disconnect/reconnect/resync, malformed input, resource exhaustion and shutdown. Add
+fault/adversarial tests where useful.
 
-- discovery/descriptors;
-- snapshots/subscriptions;
-- bounded history;
-- Reference;
-- controller/PID;
-- recording;
-- resources/reconnect;
-- configuration candidate/stage/apply;
-- virtual/emulator operations;
-- presentation/workspace;
-- control panels/properties.
+## M12 — Documentation, packaging and final release audit
 
-Do not duplicate semantics in each adapter.
+Documentation is a release gate and is written in professional technical English.
 
-Provide Babashka wrappers over the same semantic API rather than implementing
-Babashka-specific domain behavior.
+### Architecture and concepts
 
-### Virtual/emulator API
+Document overview/ownership, Runtime/domain separation, instruments, signals/series,
+periodic acquisition, Query/Command/Operation, time, transport, Reference,
+controllers/PID, OutputAuthority, Recorder/provenance, native managed components,
+virtual/emulated instruments, Application API and diagnostic logging.
 
-Retain the existing native virtual foundation:
+### Tutorials
 
-- `VirtualInstrument` remains the simple deterministic/fault-injection virtual
-  source;
-- `ThermalPlantInstrument` remains the built-in stateful native thermal
-  emulator/reference model.
+Provide step-by-step tutorials for build/run, instrument configuration, polling and
+series, latest values, history, protocol subscriptions, Reference, PID with a virtual
+plant, Recorder, SQLite and provenance inspection, virtual/emulator configuration,
+adding native instruments/components, diagnostics and common failures.
 
-Add a validated virtual-instrument Application API around that foundation for
-user-authored emulator behavior. Do not remove, replace or rewrite the existing
-native instruments.
+Raw protocol examples are allowed. Do not create or ship a first-party client SDK for
+tutorials.
 
-Required properties:
+### Reference documentation
 
-- explicit virtual identity;
-- typed value/unit/quality;
-- bounded input/publication;
-- generation/revision/lifecycle fencing;
-- explicit stale/failure behavior;
-- no physical evidence fabrication;
-- Babashka usability.
+Document the Application API, protocol/versioning, operations, errors, capabilities,
+configuration schema, instrument definitions, native component contract, diagnostics,
+shutdown/recovery and supported platform assumptions.
 
-Babashka now, and future Steel later, use the same semantic API. Steel is an
-Application API client, not an M5 replacement VM. This path remains separate from
-the frozen M5 Lua managed-component implementation.
+The Recorder SQLite documentation must cover:
 
-### Presentation/workspace
+- database purpose and schema version;
+- every active table and important column;
+- primary/foreign relationships;
+- run/interval model and measurements;
+- operations/events and object snapshots;
+- provenance and component implementation/source/build identities;
+- gaps, sealing/completeness and shutdown state;
+- timestamps/time semantics and invariants;
+- content-addressed data/deduplication;
+- migration/version policy;
+- example read-only SQL queries.
 
-Server-owned semantic model:
+SQLite is a documented archival format, not the live control interface.
 
-- Workspace;
-- PlotPanel;
-- Trace;
-- ControlPanel;
-- LogPanel;
-- presentation properties.
+### Rust documentation
 
-At minimum traces carry:
+Document meaningful public ownership, invariants, bounds, failure and safety seams;
+avoid restating Rust syntax.
 
-- signal identity;
-- label;
-- color;
-- visibility;
-- order;
-- panel assignment.
+### Packaging and release audit
 
-Plot panels carry:
-
-- time window;
-- follow/live;
-- Y policy;
-- sizing/presentation configuration.
-
-Both GUI and Babashka manipulate the same model.
-
-### Control-panel API
-
-Provide semantic controls for:
-
-- signal/value readout;
-- Reference;
-- PID configuration/status;
-- controller start/pause/resume;
-- recording;
-- resource/instrument status;
-- reconnect;
-- selected validated configuration fields.
-
-No arbitrary GUI callback execution from scripts.
-
-### Properties API
-
-Expose structured deployment editing through:
+Prepare a minimal Windows bundle:
 
 ```text
-candidate edit
--> validation
--> stage
--> classified effects
--> safe apply
+lab-runtime.exe
+example configuration
+instrument definitions
+README/documentation entry point
+LICENSE if applicable
+checksums
 ```
 
-The GUI must not bypass Runtime lifecycle.
-
-### M9B non-goals
-
-- GUI implementation;
-- persistent Lua workspace;
-- Lua application API;
-- Steel implementation;
-- scenario menu;
-- physical actuator qualification.
-
-## M10 — GUI
-
-Build a separate eframe/egui/egui_plot client using the public Application API.
-
-### Plotting acceptance
-
-Preserve/adapt the successful donor UX:
-
-- multiple panels;
-- multiple traces per panel;
-- labels/colors/visibility;
-- ordering;
-- signal-to-panel assignment;
-- local-time formatting;
-- pan/zoom;
-- follow/live;
-- configurable time window;
-- auto/manual Y;
-- double-click autoscale;
-- legend;
-- plot sizing;
-- bounded/downsampled point preparation;
-- signal/series sidebar.
-
-### Application UI acceptance
-
-Provide:
-
-- contextual control panels;
-- Reference editor/display;
-- PID settings/status;
-- controller start/pause/resume;
-- recording;
-- resource/instrument status;
-- reconnect;
-- bounded/filterable logs;
-- separate Properties window.
-
-No scenario menu for v0.1.
-
-No embedded Lua/Steel editor or REPL for v0.1.
-
-GUI closure/reconnect must not own Runtime experiment lifetime.
-
-## M11 — hardening, docs and release candidate
-
-### Hardening
-
-- integration/fault regressions;
-- reconnect/reload/restart;
-- GUI reconnect;
-- history reopen;
-- boundedness audit;
-- shutdown paths;
-- clean-machine Windows smoke.
-
-### Documentation target
-
-Create a coherent release set so users do not need milestone archaeology:
-
-- README and quick start;
-- architecture/ownership guide;
-- configuration/deployment guide;
-- Metakon/physical-read guide;
-- signals/Reference/PID guide;
-- Recorder/history guide;
-- GUI guide;
-- Babashka/Application API guide;
-- virtual/emulator guide based on `VirtualInstrument`,
-  `ThermalPlantInstrument`, the Application API emulator path and a Babashka example;
-- strong native Rust managed-component guide based on real repository code;
-- native-extension developer guide;
-- end-to-end tutorials.
-
-The native managed-component guide teaches when to use a normal native
-instrument/model versus a managed component, `ComponentManifest`/identity,
-`Invocation`, PlainData configuration/state, `ComponentResult`,
-`ComponentExecutor`, validation, units, bounded state/execution, failure propagation,
-generation/replacement/reload, registration, tests and adding one small native Rust
-model/filter/transform.
-
-Do not publish a Lua tutorial, Lua fallback workflow, Lua application API guide,
-`experiment.lua`/`model.lua`/`filter.lua` tutorial or Lua example-script package.
-`MILESTONE_5_DESIGN.md` and `MILESTONE_5_REPORT.md` remain historical engineering
-evidence.
-
-### Packaging
-
-- Windows package;
-- examples;
-- version metadata;
-- SHA-256;
-- clean install/run test;
-- final external review.
-
-Then release:
-
-```text
-v0.1.0
-```
-
-## Model/test economy
-
-Use SOL_HIGH for substantial implementation.
-
-Use a cheaper capable model for mechanical documentation, fixtures, packaging and
-routine UI plumbing.
-
-Use ASTRA_HIGH only when implementation exposes a real unresolved architecture,
-safety, lifecycle or trust-boundary contradiction.
-
-Do not impose a mandatory Astra design phase on every milestone.
-
-## Post-v0.1 direction
-
-Not part of the first-release commitment:
-
-1. learn/exercise the Application API with Babashka procedures and emulators;
-2. evaluate embedded Steel as an in-process client of the SAME Application API;
-3. migrate useful remaining M5 Lua implementations after native replacement coverage;
-4. optionally remove `lab-lua` after replacement coverage;
-5. richer controllers, instruments and recipes.
+Do not ship Lua, Babashka/Python clients, GUI, Steel, development fixtures or
+unrelated historical evidence archives. Perform clean Windows release acceptance and
+final external release review.
 
 ## v0.1 definition of done
 
-v0.1 is done when:
+v0.1 is done when M8 and M9A remain accepted; M9B-M12 are explicitly reviewed and
+accepted; Runtime ownership/safety/Recorder/API invariants are green; the SQLite
+archive and local API are fully documented; bounded diagnostics are operational; and
+the reproducible checksummed Windows package passes final review.
 
-- M8 real read-only hardware gate is accepted;
-- Application/emulator/presentation/control/properties API is usable;
-- GUI reaches the required plot/control UX;
-- Runtime ownership/safety/Recorder invariants remain green;
-- Babashka remains optional and useful;
-- documentation/tutorials are sufficient without historical milestone reports;
-- Windows package is reproducible and checksummed;
-- final external release review is accepted.
+```text
+lab-runtime v0.1
+
+A polished headless laboratory automation runtime with:
+- periodic instrument acquisition,
+- measurement signals and history,
+- native control and output safety,
+- durable recording and provenance,
+- native Rust extensibility,
+- virtual/emulated instruments,
+- a documented local Application API,
+- bounded diagnostic logging,
+- comprehensive English documentation.
+```
+
+The release roadmap ends at v0.1.0.

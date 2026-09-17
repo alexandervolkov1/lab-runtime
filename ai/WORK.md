@@ -1,82 +1,188 @@
-# Current work — external M9A re-review
+# Current work — M9B Application API completion and stabilization
 
 ```text
 M8: ACCEPTED
-M9A: IMPLEMENTED
-STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
-Current phase: external M9A review
-M9B: NOT AUTHORIZED
+M9A: ACCEPTED
+M9B: AUTHORIZED
+M9C+: NOT AUTHORIZED
+Current phase: M9B — complete and stabilize Application API
 ```
 
-This is the only current authorization. Re-review the completed M9A implementation
-and its focused first-review corrections; do not begin M9B, Presentation API, GUI,
-Steel or unrelated release work.
+This is the only current implementation authorization. Do not begin M9C, M10, M11
+or M12 automatically.
 
-## Review objective
+## Goal
 
-Confirm that the shared managed-component architecture is implementation-neutral and
-that native Rust executes through the same bounded Runtime-owned lifecycle rather
-than through a second subsystem or direct state mutation.
-
-Review together:
+Expose complete useful Runtime semantics through one coherent bounded local
+Application API.
 
 ```text
-crates/lab-core/src/managed.rs
-crates/lab-core/src/runtime.rs
-crates/lab-lua/src/runner.rs
-apps/lab-runtime/src/managed_executor.rs
-apps/lab-runtime/src/configuration.rs
-apps/lab-runtime/src/host.rs
-apps/lab-runtime/src/service.rs
-apps/lab-runtime/src/application.rs
-docs/implementation/MILESTONE_9A_REPORT.md
+Runtime owns experiment semantics.
+Clients own presentation semantics.
 ```
 
-## Required findings
+M9B extends laboratory/runtime semantics only. It must not add workspace, plot,
+trace, button, panel, tab, color, layout or window concepts.
 
-Verify:
+## Required Runtime priority
 
-1. `ComponentDefinition` selects an explicit bounded implementation without requiring
-   executable text for a native component.
-2. `lab-core` remains independent of Lua, OS, filesystem, TOML and host adapters.
-3. Frozen `lua.v1` and `native.moving_mean.v1` use the same `Invocation`,
-   `ComponentCompletion`, `ComponentResult`, Core validation and generation/revision
-   fences.
-4. One common executor owns exactly two worker threads, one job and one completion
-   mailbox per worker, a 100-ms job deadline and no replacement-worker churn.
-5. Native `MovingMean` has a validated 2..=64 window, bounded `PlainData` state,
-   honest three-sample standard-profile warm-up, unit preservation and no direct
-   Runtime/output/evidence capability.
-6. replacement advances generation once, rejects old completion identity and resets
-   warm-up/state; failures remain component-scoped.
-7. `reload_managed_sources` prevalidates and commits only the selected source-backed
-   dependency closure; an unrelated failed or warming component cannot cause a
-   post-commit error. `restart_models` reinitializes without rereading source.
-8. public capability/discovery/status/lifecycle vocabulary is implementation-neutral.
-9. new provenance binds each text-backed component to its exact executable source
-   bytes by content SHA-256 and each built-in component to the actual runtime
-   executable SHA-256, while historical `managed_lua_source` evidence remains
-   unchanged.
-10. M5 Lua sandbox/security coverage, controllers, Recorder, deployment and output
-    safety regressions remain green.
-
-## Preserved evidence and scope
-
-Do not modify or reopen through Runtime:
+Periodic native acquisition remains primary Runtime work:
 
 ```text
-examples/metakon-513-com5-transient-open-retry-history.sqlite
-SHA-256 63ecb8575be5ac82ef968b929e8b3098b051a0f30a55c190b7fdc1dcaf64dc80
+authoritative / required Runtime work
+├── transport scheduling
+├── periodic instrument polling
+├── measurement publication
+├── native controller deadlines
+├── OutputAuthority
+├── Recorder ingestion
+└── required lifecycle/safety work
 
-examples/metakon-513-com5-prepared-reconnect-history.sqlite
-SHA-256 1396421e62b5a1abb834b4178689b3303277a88d46174e0353d2710c2ab17023
+non-authoritative extension/external work
+├── managed components
+└── API clients
 ```
 
-No COM5 or hardware run is required. Do not perform the deferred `.gitattributes`
-hardening correction in this review.
+This is an architectural scheduling priority, not a Windows thread-priority class.
+Slow, stalled or disconnected managed components or clients must not prevent required
+acquisition, native control, safety or Recorder progress.
 
-## Gate
+## Scope
 
-If no technical or documentation blocker remains, return explicit M9A acceptance.
-M9B remains NOT AUTHORIZED until that external acceptance. Do not cross the milestone
-gate automatically.
+### Discovery
+
+Provide coherent discovery for:
+
+- resources and transports;
+- instruments;
+- signals/measurement series;
+- capabilities;
+- validated properties;
+- implementation-neutral status.
+
+### Measurements
+
+Expose:
+
+- latest values;
+- quality and engineering units;
+- generation/revision where semantically required;
+- periodic acquisition state;
+- bounded live subscriptions/events;
+- bounded and paged history.
+
+Keep query snapshots free of hidden physical I/O.
+
+### References and control
+
+Expose:
+
+- Reference lifecycle and configuration;
+- controller/PID configuration;
+- supported controller start, pause, resume and stop operations;
+- controller status;
+- validated operation results and conflicts.
+
+All physical output remains behind Runtime-owned OutputAuthority.
+
+### Recorder
+
+Expose appropriate public operations and queries for:
+
+- start, stop and status;
+- current run/interval state;
+- durable failure and coverage status;
+- bounded history/query surfaces.
+
+Recorder/SQLite remains durable scientific and experiment audit history. It is not a
+diagnostic log stream or a substitute for the live Application API.
+
+### Resources, transports and configuration
+
+Expose:
+
+- Runtime/resource status;
+- validated configuration operations;
+- reconnect;
+- safe reload/rebind semantics where applicable;
+- explicit configuration revisions and conflict behavior.
+
+Preserve no-blind-retry, no-automatic-rearm and ambiguous-write safety rules.
+
+### Virtual and emulator API
+
+Expose validated operations for:
+
+- explicitly declared virtual instruments;
+- emulator publication/model steps;
+- deterministic fault injection where appropriate;
+- typed value, unit, quality and lifecycle fencing.
+
+An emulator or client must never fabricate:
+
+- a physical instrument observation;
+- physical ACK;
+- physical readback;
+- transport completion;
+- safe-output evidence.
+
+### Protocol and API quality
+
+Complete and normalize:
+
+- coherent operation names;
+- structured errors;
+- capability discovery;
+- protocol/API versioning;
+- bounded request and response sizes;
+- subscriptions and backpressure;
+- client disconnect/reconnect;
+- resynchronization after gaps or stale cursors;
+- malformed/untrusted input behavior;
+- resource-exhaustion behavior;
+- finite shutdown behavior.
+
+Testing is through Rust, raw-protocol and integration tests. Do not build a first-party
+client or SDK merely to exercise the API.
+
+## Existing contracts to preserve
+
+- `lab-core` remains OS-, storage-, presentation- and adapter-independent.
+- Runtime remains the sole authoritative mutable experiment owner.
+- Query, Command and Operation semantics remain distinct.
+- Lua and native implementations continue to use the one accepted neutral managed
+  lifecycle until Lua is removed in a later authorized M9C.
+- Managed execution retains its fixed worker/mailbox bounds and cannot block owner
+  safety progress.
+- Generation/revision fencing, scoped component failure and bounded PlainData remain.
+- Recorder remains Runtime-owned, bounded and fail-closed when Required.
+- Client disconnect does not end Runtime-owned acquisition/control/recording.
+- Historical SQLite archives and milestone reports remain immutable.
+
+## Non-goals
+
+Do not implement:
+
+- Presentation API or server-owned presentation state;
+- workspace, plot, trace, button, panel, tab, color, layout or window concepts;
+- GUI or any first-party frontend;
+- client SDK;
+- Babashka, Python or other release client work;
+- bundled scripting environment;
+- Steel;
+- Lua removal (M9C);
+- broad Core cleanup (M10);
+- release-hardening or logging redesign outside what M9B directly requires;
+- packaging or final documentation work;
+- new physical protocol/hardware acceptance.
+
+## M9B documentation and review gate
+
+Document the final API surface, bounds, ownership, error behavior, versioning,
+subscriptions/backpressure, resynchronization and emulator safety boundary. Update
+active coordination documents and create an M9B implementation report following the
+existing milestone convention.
+
+M9B completes only after focused and full debug/release/fmt/Clippy/rustdoc/protocol
+gates pass and explicit external review accepts it. Do not authorize or start M9C
+automatically.
