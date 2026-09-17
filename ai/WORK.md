@@ -4,6 +4,9 @@
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: AUTHORIZED
+M9B.1 API audit: COMPLETE
+M9B.2 protocol / error / operation foundation: COMPLETE
+M9B.3: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -12,10 +15,10 @@ This is the only current implementation authorization. Do not begin M9C, M10, M1
 or M12 automatically.
 
 The read-only M9B.1 audit is complete in
-`docs/implementation/MILESTONE_9B_API_AUDIT.md`. Production implementation has not
-started. Implement M9B in the bounded dependency order recorded there, beginning
-with the protocol/error/operation foundation; do not treat the audit itself as an
-implementation result.
+`docs/implementation/MILESTONE_9B_API_AUDIT.md`. M9B.2 implemented the common
+protocol/error/operation foundation and is recorded in
+`docs/implementation/MILESTONE_9B_REPORT.md`. Stop before M9B.3; a new instruction
+must authorize the next implementation slice.
 
 ## Goal
 

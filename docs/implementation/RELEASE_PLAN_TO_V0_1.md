@@ -6,6 +6,9 @@
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: AUTHORIZED
+M9B.1 API audit: COMPLETE
+M9B.2 protocol / error / operation foundation: COMPLETE
+M9B.3: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -109,6 +112,17 @@ archives and provenance remain immutable.
 
 Goal: expose complete useful Runtime semantics through one coherent bounded local
 Application API.
+
+Completed M9B slices:
+
+- M9B.1 audited the actual public API and established the bounded implementation
+  sequence;
+- M9B.2 established explicit protocol/Application version identities, one operation
+  and capability source, bounded structured public errors, deterministic malformed
+  and unknown-operation handling, and correlated exactly-one-terminal operation
+  responses.
+
+M9B.3 and later M9B slices remain incomplete; M9B as a whole is not accepted.
 
 Required coverage:
 

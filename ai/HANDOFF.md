@@ -6,6 +6,9 @@
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: AUTHORIZED
+M9B.1 API audit: COMPLETE
+M9B.2 protocol / error / operation foundation: COMPLETE
+M9B.3: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -69,11 +72,19 @@ Recorder/SQLite is durable scientific and experiment audit history. Diagnostic l
 are separate bounded troubleshooting information. The Application API, Recorder
 contract and SQLite schema are distinct contracts.
 
-## Authorized next step
+## M9B implementation progress
 
-Implement only M9B under `ai/WORK.md`: complete and stabilize the local Application
-API for discovery, measurements/history/subscriptions, Reference/control, Recorder,
-resources/configuration/reconnect, virtual/emulator behavior and protocol quality.
+M9B.2 now provides explicit `lab-runtime.application` protocol identity/versioning,
+one operation registry shared by framing and hello, structured composition-aware
+capabilities, bounded typed public errors and normalized accepted/terminal operation
+responses. Unknown operations are nonfatal; malformed input remains reactor-scoped;
+oversized outgoing results become correlated client errors instead of stopping the
+service. Existing session/dedup/disconnect ownership remains intact.
+
+M9B.3 has not started. Stop until a new instruction authorizes that slice. The
+remaining M9B domains are discovery, measurements/history/subscriptions,
+Reference/control, Recorder, resources/configuration/reconnect, virtual/emulator
+behavior and full reconnect/resynchronization.
 
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.
