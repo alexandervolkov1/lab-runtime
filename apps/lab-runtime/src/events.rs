@@ -4,9 +4,8 @@
 //! A pure query never calls observe. Ring pressure evicts oldest records without
 //! pinning them for snapshots or subscribers.
 
-use crate::application::{
-    controller_json, nanos, output_json, quality_name, reference_json, sample_value,
-};
+use crate::application::{controller_json, nanos, output_json, reference_json};
+use crate::measurements::sample_json;
 use lab_core::control::ControllerId;
 use lab_core::managed::{ComponentId, ComponentState};
 use lab_core::output::ActuatorId;
@@ -79,12 +78,23 @@ impl Target {
     fn query(&self, runtime: &Runtime) -> Option<Value> {
         match self {
             Self::Signal(s) => match runtime.query(Query::GetLatestSignal(*s)).ok()? {
-                QueryResult::Latest(Some(sample)) => Some(
-                    json!({"value":sample_value(&sample),"quality":quality_name(sample.quality()),
-                "observed_at":nanos(sample.at()),"freshness_at":nanos(sample.freshness_at()),
-                "unit":{"id":sample.unit().id(),"symbol":sample.unit().symbol()}}),
-                ),
-                QueryResult::Latest(None) => Some(Value::Null),
+                QueryResult::Latest(Some(sample)) => {
+                    let generation = match runtime
+                        .query(Query::GetInstrumentState(s.instrument()))
+                        .ok()
+                    {
+                        Some(QueryResult::State(state)) => state.generation,
+                        _ => 1,
+                    };
+                    Some(sample_json(&sample, generation))
+                }
+                QueryResult::Latest(None) => Some(json!({
+                    "signal":{"instrument":s.instrument().get().to_string(),
+                        "parameter":s.parameter().get().to_string()},
+                    "value":Value::Null,"quality":"unavailable","status":"not_observed",
+                    "failure":"not_observed","observed_at_ns":Value::Null,
+                    "source_at_ns":Value::Null,"generation":"1"
+                })),
                 _ => None,
             },
             Self::Controller(id) => match runtime.query(Query::Controller(*id)).ok()? {

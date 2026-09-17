@@ -141,7 +141,12 @@ fn standard_profile_prepares_lua_and_native_components_before_readiness_and_sche
     query(&mut service, &mut app, "hello", json!({"scope":null}));
     let discovery = query(&mut service, &mut app, "discover", json!({}));
     assert_eq!(
-        discovery["result"]["components"].as_array().unwrap().len(),
+        discovery["result"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| record["kind"] == "component")
+            .count(),
         2
     );
     let initial = query(

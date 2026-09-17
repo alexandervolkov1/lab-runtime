@@ -681,7 +681,7 @@ mod bounded_peer_tests {
             to_net
                 .send(Outgoing::Event {
                     connection: 1,
-                    frame: vec![b'x'; 1024],
+                    frame: vec![b'x'; wire::FRAME_LIMIT],
                 })
                 .unwrap();
         }

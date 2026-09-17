@@ -422,6 +422,8 @@ pub enum QueryResult {
 pub struct InstrumentState {
     /// Target instrument identity, independent of its display name.
     pub instrument: InstrumentId,
+    /// Current replacement or binding generation for all observations of this instance.
+    pub generation: u64,
     /// Current configuration values; these are not sensor observations or commanded outputs.
     pub configured: Vec<(ParameterId, Value)>,
     /// Latest measurement attempts; metadata-only actuators have no fabricated entry.
@@ -1858,6 +1860,7 @@ impl Runtime {
                 if let Some(instrument) = self.instruments.get(&id) {
                     Ok(QueryResult::State(InstrumentState {
                         instrument: id,
+                        generation: 1,
                         configured: instrument.configured(),
                         observations: vec![ParameterObservation {
                             parameter: TEMPERATURE,
@@ -1868,6 +1871,7 @@ impl Runtime {
                 } else if let Some(instrument) = self.metakon_instruments.get(&id) {
                     Ok(QueryResult::State(InstrumentState {
                         instrument: id,
+                        generation: instrument.binding.binding_generation,
                         configured: instrument.configured(),
                         observations: instrument
                             .descriptor
@@ -1889,6 +1893,7 @@ impl Runtime {
                 } else if let Some(instrument) = self.thermal_plants.get(&id) {
                     Ok(QueryResult::State(InstrumentState {
                         instrument: id,
+                        generation: instrument.generation,
                         configured: instrument.configured(),
                         observations: vec![ParameterObservation {
                             parameter: TEMPERATURE,
@@ -1903,6 +1908,7 @@ impl Runtime {
                 {
                     Ok(QueryResult::State(InstrumentState {
                         instrument: id,
+                        generation: component.generation,
                         configured: vec![],
                         observations: vec![ParameterObservation {
                             parameter: component.definition.manifest.parameter,

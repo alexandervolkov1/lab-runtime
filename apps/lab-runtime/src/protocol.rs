@@ -76,8 +76,12 @@ macro_rules! operation {
 pub const OPERATIONS: &[OperationSpec] = &[
     operation!("hello", Query, ["scope"]),
     operation!("discover", Query, []),
+    operation!("discovery_page", Query, ["projection", "index"]),
     operation!("describe", Query, ["instrument"]),
     operation!("latest", Query, ["signal"]),
+    operation!("measurements_current", Query, []),
+    operation!("measurements_page", Query, ["projection", "index"]),
+    operation!("measurement_window", Query, ["signal", "max_records"]),
     operation!("controller", Query, ["controller"]),
     operation!("reference", Query, ["reference"]),
     operation!("component", Query, ["component"]),
@@ -194,12 +198,12 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         operation: "operation_status",
     },
     CapabilitySpec {
-        name: "runtime_queries",
+        name: "structured_discovery",
         stability: "stable",
         operation: "discover",
     },
     CapabilitySpec {
-        name: "event_replay",
+        name: "live_subscriptions",
         stability: "stable",
         operation: "subscribe",
     },
@@ -207,6 +211,16 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         name: "runtime_snapshot",
         stability: "transitional",
         operation: "runtime_snapshot",
+    },
+    CapabilitySpec {
+        name: "current_measurements",
+        stability: "stable",
+        operation: "measurements_current",
+    },
+    CapabilitySpec {
+        name: "recent_measurement_history",
+        stability: "stable",
+        operation: "measurement_window",
     },
     CapabilitySpec {
         name: "instrument_queries",
@@ -245,7 +259,7 @@ const CAPABILITIES: &[CapabilitySpec] = &[
     },
     CapabilitySpec {
         name: "measurement_history",
-        stability: "transitional",
+        stability: "stable",
         operation: "history_read",
     },
     CapabilitySpec {
@@ -303,6 +317,17 @@ pub fn limits() -> Value {
         "terminal_result_bytes": sessions::OUTCOME_SIZE_LIMIT,
         "event_replay_records": events::EVENT_RING_LIMIT,
         "event_bytes": events::EVENT_SIZE_LIMIT,
+        "discovery_page_entries": 64,
+        "discovery_page_bytes": 8 * 1024,
+        "current_page_entries": 64,
+        "current_page_bytes": 8 * 1024,
+        "recent_history_records": 128,
+        "durable_history_records": 128,
+        "history_page_bytes": 8 * 1024,
+        "history_jobs": 8,
+        "subscriptions_per_client": 1,
+        "subscription_kinds": 8,
+        "subscription_targets": 16,
         "capabilities": CAPABILITY_LIMIT,
         "semantic_name_bytes": SEMANTIC_NAME_LIMIT,
         "error_message_bytes": ERROR_MESSAGE_LIMIT,
@@ -459,6 +484,7 @@ fn error_spec(code: &str) -> Option<PublicError> {
         ),
         "input_unavailable"
         | "stale_input"
+        | "client_disconnected"
         | "shutdown_in_progress"
         | "shutdown_before_execution" => public_error(
             canonical_code(code),
@@ -595,6 +621,7 @@ fn canonical_code(code: &str) -> &'static str {
         "snapshot_expired" => "snapshot_expired",
         "input_unavailable" => "input_unavailable",
         "stale_input" => "stale_input",
+        "client_disconnected" => "client_disconnected",
         "shutdown_in_progress" => "shutdown_in_progress",
         "shutdown_before_execution" => "shutdown_before_execution",
         "transport_unavailable" => "transport_unavailable",

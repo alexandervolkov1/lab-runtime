@@ -3025,6 +3025,43 @@ impl HostCore {
         &self.components
     }
 
+    /// Public semantic class for discovery; never exposes a Rust implementation type.
+    pub fn instrument_kind(&self, id: InstrumentId) -> &'static str {
+        if self.runtime.metakon_binding(id).is_some() {
+            "physical"
+        } else if self
+            .components
+            .iter()
+            .any(|(component, _)| component.get() == id.get())
+        {
+            "managed"
+        } else if self.model_generations.contains_key(&id) {
+            "emulated"
+        } else {
+            "virtual"
+        }
+    }
+
+    /// Current replacement fence used consistently by discovery and measurement DTOs.
+    pub fn signal_generation(&self, signal: SignalId) -> u64 {
+        if let Some((component, _)) = self
+            .components
+            .iter()
+            .find(|(component, _)| component.get() == signal.instrument().get())
+            && let Ok(QueryResult::Component(snapshot)) =
+                self.runtime.query(Query::Component(*component))
+        {
+            snapshot.generation
+        } else if let Some(binding) = self.runtime.metakon_binding(signal.instrument()) {
+            binding.binding_generation
+        } else {
+            self.model_generations
+                .get(&signal.instrument())
+                .copied()
+                .unwrap_or(1)
+        }
+    }
+
     /// Add one trusted managed-input controller fixture after Transform init.
     /// It has a separate safe output; the independent native plant remains bound.
     pub fn add_managed_dependent_fixture(&mut self) -> Result<(), Error> {

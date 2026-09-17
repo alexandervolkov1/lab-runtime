@@ -903,6 +903,22 @@ fn disconnected_held_history_job_cannot_publish_into_reused_client_capacity() {
     app.detach(&service, 101);
     assert!(app.poll_history(&mut service).is_empty());
 
+    let resumed = app.handle(
+        &mut service,
+        102,
+        frame(json!({"v":1,"msg_id":"resume","op":"hello","args":{"scope":old_scope}})),
+    );
+    assert_eq!(resumed[0]["type"], "result");
+    let terminal = app.handle(
+        &mut service,
+        102,
+        frame(json!({"v":1,"msg_id":"old-status","op":"operation_status",
+            "args":{"request_id":{"scope":old_scope,"seq":"1"}}})),
+    );
+    assert_eq!(terminal[0]["result"]["state"], "failed");
+    assert_eq!(terminal[0]["result"]["code"], "client_disconnected");
+    app.detach(&service, 102);
+
     let new_hello = app.handle(
         &mut service,
         202,

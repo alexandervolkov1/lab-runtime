@@ -142,7 +142,22 @@
 (defn operation-status! [client request-id]
   (query! client "operation_status" {:request_id request-id}))
 
-(defn discover! [client] (query! client "discover" {}))
+(defn discover!
+  "Consume bounded M9B.3 discovery while retaining the acceptance fixture shape."
+  [client]
+  (let [first (query! client "discover" {})
+        token (:projection first)
+        records (loop [all (vec (:records first)) next-index (:next_index first)]
+                  (if (nil? next-index)
+                    all
+                    (let [page (query! client "discovery_page"
+                                      {:projection token :index next-index})]
+                      (recur (into all (:records page)) (:next_index page)))))]
+    {:instruments (filterv #(= (:kind %) "instrument") records)
+     :components (filterv #(= (:kind %) "component") records)
+     :controllers (mapv :id (filter #(= (:kind %) "controller") records))
+     :references (mapv :id (filter #(= (:kind %) "reference") records))
+     :outputs (mapv :id (filter #(= (:kind %) "output") records))}))
 (defn describe! [client instrument] (query! client "describe" {:instrument instrument}))
 (defn latest! [client signal] (query! client "latest" {:signal signal}))
 

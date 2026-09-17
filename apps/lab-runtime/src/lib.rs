@@ -15,6 +15,8 @@ pub mod events;
 pub mod host;
 /// Compile-time managed implementation registry and shared bounded worker pool.
 pub mod managed_executor;
+/// Stable public discovery and measurement DTO builders.
+pub mod measurements;
 /// Stable Application-protocol identity, operation registry, and public errors.
 pub mod protocol;
 /// Bounded durable-history storage adapter and host-owned recording ingress.

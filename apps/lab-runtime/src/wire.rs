@@ -310,7 +310,9 @@ fn allowed_keys(object: &Map<String, Value>, keys: &[&str]) -> Result<(), WireEr
 fn validate_nested_args(op: &str, args: &Map<String, Value>) -> Result<(), WireError> {
     let mut nested = Vec::new();
     match op {
-        "latest" => nested.push(("signal", &["instrument", "parameter"] as &[&str])),
+        "latest" | "measurement_window" => {
+            nested.push(("signal", &["instrument", "parameter"] as &[&str]))
+        }
         "output" => nested.push(("actuator", &["instrument", "parameter"])),
         "operation_status" => nested.push(("request_id", &["scope", "seq"])),
         "subscribe" => {

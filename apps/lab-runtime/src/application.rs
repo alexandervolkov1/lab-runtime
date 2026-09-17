@@ -8,6 +8,7 @@ use crate::recorder::{
 };
 use crate::{
     host::Clock,
+    measurements::{current_json, sample_json, signal_id_json},
     protocol::{self, PublicError},
     service::{LifecycleOperationError, ServiceHost},
     sessions::{Admission, Mutation, OperationState, SessionError, SessionStore},
@@ -32,6 +33,7 @@ use std::time::Duration;
 
 struct FrozenSnapshot {
     token: String,
+    kind: &'static str,
     cursor: u64,
     records: Vec<Value>,
     expires: Duration,
@@ -76,6 +78,7 @@ struct HistoryCache {
 }
 struct HistoryContinuation {
     token: String,
+    scope: String,
     cursor: RetainedHistoryCursor,
     expires: Duration,
 }
@@ -99,7 +102,7 @@ pub struct Application {
     pending_recording: Option<PendingRecording>,
     pending_history: BTreeMap<u64, PendingHistory>,
     history_pages: BTreeMap<u64, HistoryCache>,
-    history_cursors: BTreeMap<u64, HistoryContinuation>,
+    history_cursors: BTreeMap<String, HistoryContinuation>,
     orphan_history: Vec<u64>,
 }
 impl Application {
@@ -126,8 +129,11 @@ impl Application {
         self.snapshots.remove(&connection);
         self.subscriptions.remove(&connection);
         self.history_pages.remove(&connection);
-        self.history_cursors.remove(&connection);
         if let Some(pending) = self.pending_history.remove(&connection) {
+            let terminal = OperationState::Failed("client_disconnected".into());
+            self.sessions
+                .complete(&pending.scope, pending.seq, terminal, service.clock().now())
+                .expect("detached admitted history operation");
             self.orphan_history.push(pending.job);
         }
         self.sessions.detach(connection, service.clock().now());
@@ -406,16 +412,16 @@ impl Application {
                             }
                         };
                         if let Some(cursor) = next_cursor {
+                            let token = cursor_token.expect("cursor was present");
                             self.history_cursors.insert(
-                                connection,
+                                token.clone(),
                                 HistoryContinuation {
-                                    token: cursor_token.expect("cursor was present"),
+                                    token,
+                                    scope: pending.scope.clone(),
                                     cursor,
                                     expires: now + Duration::from_secs(30),
                                 },
                             );
-                        } else {
-                            self.history_cursors.remove(&connection);
                         }
                         self.history_pages.insert(
                             connection,
@@ -606,6 +612,7 @@ impl Application {
                     connection,
                     FrozenSnapshot {
                         token: token.clone(),
+                        kind: "runtime_snapshot",
                         cursor,
                         records,
                         expires,
@@ -620,6 +627,19 @@ impl Application {
                     .ok_or("invalid_args")?;
                 let index = id_field(args, "index")?;
                 self.page(service, connection, token, index as usize)?
+            }
+            "discovery_page" | "measurements_page" => {
+                let token = args
+                    .get("projection")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid_args")?;
+                let index = id_field(args, "index")? as usize;
+                let expected = if request.op == "discovery_page" {
+                    "discovery"
+                } else {
+                    "measurements"
+                };
+                self.projection_page(service, connection, token, index, expected)?
             }
             "snapshot_release" => {
                 let token = args
@@ -805,13 +825,26 @@ impl Application {
                     )))
                     .map_err(domain_code)?
                 {
-                    QueryResult::Latest(sample) => match sample {
-                        None => Value::Null,
-                        Some(sample) => {
-                            json!({"value":sample_value(&sample),"quality":quality_name(sample.quality()),
-                            "observed_at":nanos(sample.at()),"unit":{"id":sample.unit().id().to_string(),"symbol":sample.unit().symbol()}})
-                        }
-                    },
+                    QueryResult::Latest(sample) => {
+                        let QueryResult::Descriptor(descriptor) = owner
+                            .query(Query::DescribeInstrument(InstrumentId::new(instrument)))
+                            .map_err(domain_code)?
+                        else {
+                            return Err("internal_error");
+                        };
+                        let descriptor = descriptor
+                            .parameter(ParameterId::new(parameter))
+                            .ok_or("unknown_parameter")?;
+                        current_json(
+                            descriptor.signal.ok_or("unknown_signal")?,
+                            descriptor.unit,
+                            sample.as_ref(),
+                            owner.signal_generation(SignalId::new(
+                                InstrumentId::new(instrument),
+                                ParameterId::new(parameter),
+                            )),
+                        )
+                    }
                     _ => return Err("internal_error"),
                 }
             }
@@ -828,26 +861,127 @@ impl Application {
                 else {
                     return Err("internal_error");
                 };
-                let list: Vec<_> = instruments
-                    .iter()
-                    .map(|d| json!({"id":d.id.get().to_string(),"name":d.name}))
-                    .collect();
-                let components: Vec<_> = owner
-                    .component_catalog()
-                    .iter()
-                    .filter_map(|(id, kind)| {
-                        let QueryResult::Component(snapshot) =
-                            owner.query(Query::Component(*id)).ok()?
+                let mut records = Vec::new();
+                for descriptor in instruments {
+                    let kind = owner.instrument_kind(descriptor.id);
+                    records.push(json!({"kind":"instrument","id":descriptor.id.get().to_string(),
+                        "name":descriptor.name,"implementation_kind":kind,
+                        "capabilities":{"readable":true,"current":descriptor.parameters.iter().any(|p|p.signal.is_some()),
+                            "recent_history":descriptor.parameters.iter().any(|p|p.signal.is_some()),
+                            "live_subscription":descriptor.parameters.iter().any(|p|p.signal.is_some()),
+                            "properties":descriptor.parameters.iter().any(|p|p.role==ParameterRole::Configuration)}}));
+                    for parameter in descriptor.parameters {
+                        if let Some(signal) = parameter.signal {
+                            let QueryResult::Latest(latest) = owner
+                                .query(Query::GetLatestSignal(signal))
+                                .map_err(domain_code)?
+                            else {
+                                return Err("internal_error");
+                            };
+                            records.push(json!({"kind":"signal","id":signal_id_json(signal),
+                                "instrument":descriptor.id.get().to_string(),"name":parameter.name,
+                                "signal_kind":match parameter.role {ParameterRole::Measurement=>"measurement",_=>"diagnostic"},
+                                "value_type":value_type_name(&parameter.value_spec),
+                                "unit":{"id":parameter.unit.id(),"symbol":parameter.unit.symbol()},
+                                "quality":latest.as_ref().map_or("unavailable",|s|quality_name(s.quality())),
+                                "generation":owner.signal_generation(signal).to_string(),
+                                "capabilities":{"readable":true,"current":true,"recent_history":true,
+                                    "durable_history":owner.recording_database_id().is_some(),"live_subscription":true}}));
+                        }
+                    }
+                }
+                for (id, component_kind) in owner.component_catalog() {
+                    let QueryResult::Component(snapshot) =
+                        owner.query(Query::Component(*id)).map_err(domain_code)?
+                    else {
+                        return Err("internal_error");
+                    };
+                    records.push(json!({"kind":"component","id":id.get().to_string(),
+                        "component_kind":component_kind,"instrument":snapshot.instrument.get().to_string(),
+                        "implementation":snapshot.implementation.as_str(),
+                        "generation":snapshot.generation.to_string(),"revision":snapshot.revision.to_string()}));
+                }
+                records.extend(
+                    owner
+                        .event_log()
+                        .snapshot_records()
+                        .into_iter()
+                        .filter(|record| {
+                            matches!(
+                                record["kind"].as_str(),
+                                Some("controller" | "reference" | "output")
+                            )
+                        })
+                        .map(|record| {
+                            json!({"kind":record["kind"],"id":record["target"],
+                                "state":record["data"]})
+                        }),
+                );
+                records.extend(owner.resource_records().into_iter().map(|record| {
+                    json!({
+                    "kind":"resource","id":record["target"]["id"],"state":record["data"]["state"],
+                    "generation":record["data"]["generation"]})
+                }));
+                records.sort_by_key(|record| record.to_string());
+                self.begin_projection(service, connection, "discovery", records)?
+            }
+            "measurements_current" => {
+                let QueryResult::Instruments(instruments) =
+                    owner.query(Query::Discover).map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                let mut records = Vec::new();
+                for descriptor in instruments {
+                    for parameter in descriptor.parameters.iter().filter(|p| p.signal.is_some()) {
+                        let signal = parameter.signal.expect("filtered above");
+                        let QueryResult::Latest(latest) = owner
+                            .query(Query::GetLatestSignal(signal))
+                            .map_err(domain_code)?
                         else {
-                            return None;
+                            return Err("internal_error");
                         };
-                        Some(json!({"id":id.get().to_string(),"kind":kind,
-                            "implementation":snapshot.implementation.as_str()}))
-                    })
-                    .collect();
-                json!({"instruments":list,"controllers":[{"id":"1","kind":"native_pid"}],
-                    "references":[{"id":"1","kind":"ramp"}],"components":components,
-                    "outputs":[{"instrument":"1","parameter":lab_core::HEATER_POWER.get().to_string()}]})
+                        records.push(current_json(
+                            signal,
+                            parameter.unit,
+                            latest.as_ref(),
+                            owner.signal_generation(signal),
+                        ));
+                    }
+                }
+                self.begin_projection(service, connection, "measurements", records)?
+            }
+            "measurement_window" => {
+                let signal = args.get("signal").ok_or("invalid_args")?;
+                let signal = SignalId::new(
+                    InstrumentId::new(id_field(signal, "instrument")?),
+                    ParameterId::new(id_field(signal, "parameter")?),
+                );
+                let limit = args
+                    .get("max_records")
+                    .and_then(Value::as_u64)
+                    .ok_or("invalid_args")? as usize;
+                if !(1..=128).contains(&limit) {
+                    return Err("invalid_args");
+                }
+                let QueryResult::Window(window) = owner
+                    .query(Query::GetSignalWindow(signal))
+                    .map_err(domain_code)?
+                else {
+                    return Err("internal_error");
+                };
+                let total = window.len();
+                let start = total.saturating_sub(limit);
+                let rows = window[start..]
+                    .iter()
+                    .map(|sample| sample_json(sample, owner.signal_generation(signal)))
+                    .collect::<Vec<_>>();
+                let result = json!({"signal":signal_id_json(signal),"ordering":"oldest_first",
+                    "source":"runtime_recent","capacity":total.to_string(),"truncated":start>0,"rows":rows});
+                if serde_json::to_vec(&result).map_or(true, |bytes| bytes.len() > 8 * 1024) {
+                    return Err("response_too_large");
+                }
+                result
             }
             _ => return Err("unsupported_operation"),
         };
@@ -858,6 +992,63 @@ impl Application {
         let counter = self.next_token;
         self.next_token = self.next_token.checked_add(1).ok_or("counter_exhausted")?;
         Ok(format!("{boot}:{counter}"))
+    }
+    fn begin_projection(
+        &mut self,
+        service: &ServiceHost,
+        connection: u64,
+        kind: &'static str,
+        records: Vec<Value>,
+    ) -> Result<Value, &'static str> {
+        let token = self.issue_token(service.boot_id())?;
+        self.snapshots.insert(
+            connection,
+            FrozenSnapshot {
+                token: token.clone(),
+                kind,
+                cursor: service.owner().event_log().latest_cursor(),
+                records,
+                expires: service.clock().now() + Duration::from_secs(5),
+            },
+        );
+        self.projection_page(service, connection, &token, 0, kind)
+    }
+    fn projection_page(
+        &self,
+        service: &ServiceHost,
+        connection: u64,
+        token: &str,
+        index: usize,
+        kind: &str,
+    ) -> Result<Value, &'static str> {
+        let snapshot = self.snapshots.get(&connection).ok_or("snapshot_expired")?;
+        if snapshot.token != token
+            || snapshot.kind != kind
+            || service.clock().now() >= snapshot.expires
+            || index > snapshot.records.len()
+        {
+            return Err("snapshot_expired");
+        }
+        let mut records = Vec::new();
+        let mut next = index;
+        while next < snapshot.records.len() && records.len() < 64 {
+            let candidate = &snapshot.records[next];
+            let mut trial = records.clone();
+            trial.push(candidate.clone());
+            if serde_json::to_vec(&trial).map_or(true, |bytes| bytes.len() > 8 * 1024) {
+                break;
+            }
+            records.push(candidate.clone());
+            next += 1;
+        }
+        if next == index && next < snapshot.records.len() {
+            return Err("snapshot_capacity");
+        }
+        Ok(
+            json!({"projection":token,"revision":{"boot_id":service.boot_id(),
+            "event_seq":snapshot.cursor.to_string()},"records":records,
+            "next_index":(next<snapshot.records.len()).then(||next.to_string()),"complete":next==snapshot.records.len()}),
+        )
     }
     fn page(
         &self,
@@ -1032,9 +1223,11 @@ impl Application {
                 || self.pending_history.len() + self.history_pages.len() >= 8;
             let retained_cursor = if let Some(token) = cursor {
                 self.history_cursors
-                    .get(&connection)
+                    .get(token)
                     .filter(|retained| {
-                        retained.token == *token && service.clock().now() < retained.expires
+                        retained.token == *token
+                            && retained.scope == scope
+                            && service.clock().now() < retained.expires
                     })
                     .and_then(|retained| match &retained.cursor {
                         RetainedHistoryCursor::Runs(cursor) => Some(cursor.clone()),
@@ -1098,9 +1291,11 @@ impl Application {
                 || self.pending_history.len() + self.history_pages.len() >= 8;
             let retained_cursor = if let Some(token) = cursor {
                 self.history_cursors
-                    .get(&connection)
+                    .get(token)
                     .filter(|retained| {
-                        retained.token == *token && service.clock().now() < retained.expires
+                        retained.token == *token
+                            && retained.scope == scope
+                            && service.clock().now() < retained.expires
                     })
                     .and_then(|retained| match &retained.cursor {
                         RetainedHistoryCursor::Measurements(cursor) => Some(cursor.clone()),
@@ -1802,6 +1997,15 @@ fn parameter_json(p: &ParameterDescriptor) -> Value {
         "write_effect":match p.write_effect {WriteEffect::None=>"none",WriteEffect::ConfigurationOnly=>"configuration_only",WriteEffect::OutputAffecting=>"output_affecting"},
         "signal":p.signal.map(|s|json!({"instrument":s.instrument().get().to_string(),"parameter":s.parameter().get().to_string()}))})
 }
+fn value_type_name(spec: &ValueSpec) -> &'static str {
+    match spec {
+        ValueSpec::Float { .. } => "float",
+        ValueSpec::Integer { .. } => "integer",
+        ValueSpec::Boolean => "boolean",
+        ValueSpec::Text { .. } => "text",
+        ValueSpec::Enum { .. } => "enum",
+    }
+}
 pub(crate) fn output_json(s: OutputSnapshot) -> Value {
     let owner = s.lease.map(|l| match l.owner() {
         OutputOwner::Manual(id) => json!({"kind":"manual","id":id.to_string()}),
@@ -1849,12 +2053,6 @@ pub(crate) fn quality_name(s: lab_core::SampleQuality) -> &'static str {
     match s {
         lab_core::SampleQuality::Good => "good",
         lab_core::SampleQuality::Unavailable => "unavailable",
-    }
-}
-pub(crate) fn sample_value(sample: &lab_core::Sample) -> Value {
-    match sample.value() {
-        Some(lab_core::Value::Float(v)) => json!(v),
-        _ => Value::Null,
     }
 }
 pub(crate) fn nanos(at: std::time::Duration) -> String {
