@@ -843,4 +843,116 @@ mod tests {
         ));
         assert_eq!(response["details"], json!({"field":"scope"}));
     }
+
+    #[test]
+    fn review_inventory_is_an_exact_projection_of_the_registry() {
+        let queries = [
+            "hello",
+            "discover",
+            "discovery_page",
+            "describe",
+            "resource",
+            "configuration_status",
+            "configuration_properties",
+            "configuration_page",
+            "latest",
+            "measurements_current",
+            "measurements_page",
+            "measurement_window",
+            "controller",
+            "reference",
+            "component",
+            "output",
+            "runtime_snapshot",
+            "operation_status",
+            "snapshot_page",
+            "snapshot_release",
+            "subscribe",
+            "unsubscribe",
+            "recording_status",
+            "history_page",
+            "history_release",
+        ];
+        let mutations = [
+            "reference_configure",
+            "reference_retune",
+            "controller_configure_pid",
+            "controller_configure",
+            "controller_start",
+            "controller_pause",
+            "controller_resume",
+            "controller_reset_failed",
+            "runtime_shutdown",
+            "stage_configuration",
+            "apply_configuration",
+            "reload_configuration",
+            "property_configure",
+            "reload_managed_sources",
+            "emulator_publish",
+            "virtual_models_restart",
+            "reconnect_resource",
+            "recording_start",
+            "recording_stop",
+            "experiment_annotate",
+            "history_read",
+        ];
+        let projected = |kind| {
+            OPERATIONS
+                .iter()
+                .filter(|operation| operation.kind == kind)
+                .map(|operation| operation.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(projected(OperationKind::Query), queries);
+        assert_eq!(projected(OperationKind::Mutation), mutations);
+        assert_eq!(OPERATIONS.len(), 46);
+        let capabilities = [
+            "operation_lifecycle",
+            "structured_discovery",
+            "live_subscriptions",
+            "runtime_snapshot",
+            "current_measurements",
+            "recent_measurement_history",
+            "instrument_queries",
+            "reference_read_write",
+            "controller_status",
+            "controller_configuration",
+            "controller_lifecycle",
+            "managed_components",
+            "output_status",
+            "runtime_shutdown",
+            "recording_status",
+            "recording_control",
+            "measurement_history",
+            "resource_status",
+            "configuration_read",
+            "configuration_properties",
+            "configuration_write",
+            "deployment_configuration",
+            "managed_source_reload",
+            "resource_reconnect",
+            "virtual_instruments",
+            "emulator_publication",
+            "virtual_model_lifecycle",
+        ];
+        assert_eq!(
+            CAPABILITIES
+                .iter()
+                .map(|capability| capability.name)
+                .collect::<Vec<_>>(),
+            capabilities
+        );
+        assert_eq!(CAPABILITIES.len(), 27);
+        assert!(CAPABILITIES.iter().all(|capability| {
+            matches!(capability.stability, "stable" | "transitional")
+                && operation_spec(capability.operation).is_some()
+        }));
+        assert!(OPERATIONS.iter().all(|operation| {
+            operation
+                .argument_fields
+                .iter()
+                .enumerate()
+                .all(|(index, field)| !operation.argument_fields[..index].contains(field))
+        }));
+    }
 }
