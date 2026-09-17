@@ -159,7 +159,7 @@ fn attach_and_start(host: &mut HostCore, worker: RecorderWorker) {
     }
 }
 
-fn service_until_offline(host: &mut HostCore, clock: &mut Clock) {
+fn service_until_offline(host: &mut HostCore, clock: &mut Clock) -> Duration {
     host.begin_configured_probes(clock.0).unwrap();
     for millisecond in (0..=700).step_by(10) {
         clock.0 = Duration::from_millis(millisecond);
@@ -177,6 +177,29 @@ fn service_until_offline(host: &mut HostCore, clock: &mut Clock) {
         panic!("disconnect must publish temperature Unavailable")
     };
     assert_eq!(sample.quality(), SampleQuality::Unavailable);
+    sample.at()
+}
+
+fn await_recorded_prefix(host: &mut HostCore, submitted_through: Duration, at: Duration) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = host.recording_status().unwrap();
+        assert_eq!(
+            status.state,
+            RecordingState::Recording,
+            "recording failed before the offline prefix receipt: {status:#?}"
+        );
+        if status.outstanding_groups == 0
+            && status
+                .confirmed_submission
+                .is_some_and(|confirmed| confirmed >= submitted_through)
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{status:#?}");
+        host.poll_recorder(at);
+        std::thread::yield_now();
+    }
 }
 
 fn lifecycle(at: Duration) -> ConfigurationLifecycleRecord {
@@ -230,7 +253,11 @@ fn await_only_activation_reservation(host: &mut HostCore, at: Duration) {
     }
     let status = host.recording_status().unwrap();
     assert_eq!(status.outstanding_records, 1);
-    assert_eq!(status.state, RecordingState::Recording);
+    assert_eq!(
+        status.state,
+        RecordingState::Recording,
+        "complete recording status: {status:#?}"
+    );
 }
 
 fn close_recording(host: &mut HostCore, at: Duration) {
@@ -265,6 +292,7 @@ fn record_sequence(bytes: Vec<u8>) -> u64 {
 #[test]
 fn reconnect_probe_fact_precedes_durable_activation_and_later_good_temperature() {
     let path = temporary_database("reconnect-success");
+    let barrier = WriterBarrier::held();
     let old = Rc::new(RefCell::new(Wire {
         responses: VecDeque::from([channel_type_response(3), temperature_response(200)]),
         disconnect_when_empty: true,
@@ -273,10 +301,20 @@ fn reconnect_probe_fact_precedes_durable_activation_and_later_good_temperature()
     let mut host = host_with_old_wire(old);
     attach_and_start(
         &mut host,
-        RecorderWorker::open(&path, RecorderLimits::default()).unwrap(),
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+            .unwrap(),
     );
     let mut clock = Clock::default();
-    service_until_offline(&mut host, &mut clock);
+    let offline_at = service_until_offline(&mut host, &mut clock);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !barrier.reached() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let held = host.recording_status().unwrap();
+    assert_eq!(held.outstanding_groups, 3, "{held:#?}");
+    barrier.release();
+    await_recorded_prefix(&mut host, offline_at, clock.0);
 
     let record = lifecycle(Duration::from_millis(710));
     let reservation = reserve_reconnect(&mut host, &record);
@@ -395,7 +433,8 @@ fn failed_probe_cancels_after_recorded_fact_without_gap_or_good_temperature() {
         RecorderWorker::open(&path, RecorderLimits::default()).unwrap(),
     );
     let mut clock = Clock::default();
-    service_until_offline(&mut host, &mut clock);
+    let offline_at = service_until_offline(&mut host, &mut clock);
+    await_recorded_prefix(&mut host, offline_at, clock.0);
     let record = lifecycle(Duration::from_millis(710));
     let reservation = reserve_reconnect(&mut host, &record);
     let replacement = Rc::new(RefCell::new(Wire {

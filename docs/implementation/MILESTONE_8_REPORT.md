@@ -1,7 +1,7 @@
 # M8 implementation report
 
-Status: `READY_FOR_HARDWARE_RERUN`; bounded transient-open correction after the
-accepted 2026-09-17 physical failure oracle is complete. COM5 has not been reopened.
+Status: `READY_FOR_EXTERNAL_REVIEW`; the final read-only hardware run and all final
+software gates passed. COM5 was closed cleanly and has not been reopened.
 
 Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
 externally accepted at `f3ff456`; the design-only checkpoint was committed as
@@ -25,13 +25,13 @@ are not reported as passing evidence.
 | C11 | `model_restart`, `managed_script_reload`, `runtime_lifecycle_operations` | Software pass |
 | C12 | `windows_com_transport`, `configured_physical` | Software pass; actual COM5 open/settings/close observed |
 | C13 | `windows_com_transport`, accepted M3 transport suites | Software pass |
-| C14 | `windows_com_transport`, `configured_physical` | Corrected software pass; actual finite disconnect passed, reconnect rerun pending |
+| C14 | `windows_com_transport`, `configured_physical` | Software and final physical reconnect pass |
 | C15 | `configured_physical`, `windows_com_transport` | Software pass |
-| C16 | Actual Windows COM + Metakon read-only bench | Corrected acquisition and disconnect pass; corrected reconnect rerun pending |
-| C17 | Actual observations, public history and SQLite reopen | Good/Unavailable/failed-reconnect evidence retained; successful reconnect archive pending |
-| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software pass; live clients observed acquisition/disconnect/failed reconnect, final A/B phase pending |
-| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Corrected software and two clean hardware shutdowns pass; final successful-reconnect shutdown pending |
-| C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Software pass |
+| C16 | Actual Windows COM + Metakon read-only bench | Final read-only acquisition, disconnect and reconnect pass |
+| C17 | Actual observations, public history and SQLite reopen | Complete successful archive; zero gaps and zero outputs |
+| C18 | `babashka_reconnect`, `host_scheduler`, configured acquisition suites | Software and physical-run Babashka A-kill/B-resume pass |
+| C19 | `com_recorder_shutdown`, `recorder_shutdown`, `runtime_shutdown` | Software and final physical shutdown pass |
+| C20 | `recorder_reload_budget`, Recorder bounds/fault/time/process suites and final gates | Debug, release, rustdoc and client gates pass |
 
 ## Actual sequence
 
@@ -1265,20 +1265,77 @@ on checkout line endings when `core.autocrlf=true`; later release hardening shou
 relevant provenance-bearing text files to LF via `.gitattributes`. That unrelated
 hardening is deliberately not included before this hardware rerun.
 
+## Final corrected hardware acceptance — 2026-09-17
+
+The final read-only run used production HEAD `8da89ab`, exact LF deployment SHA-256
+`39715f3d70391154935f3ab6b25a1e78162f2b711f038238496f8853dc729c09` and the
+unchanged definition SHA-256
+`b631a78a13b9126c430c50732ac1fb3f0739c3e7da7664ef1591e4ce178c65eb`.
+The immutable successful archive is
+`examples/metakon-513-com5-transient-open-retry-history.sqlite`, SHA-256
+`63ecb8575be5ac82ef968b929e8b3098b051a0f30a55c190b7fdc1dcaf64dc80`.
+It must not be modified or reused.
+
+Actual generation-1 acquisition recorded 184 Good temperature rows at 27 degrees
+Celsius. The operator-reported power-off was followed by exactly one generation-1
+Unavailable/Transport and no fabricated later Good. Exactly one public reconnect
+then produced the accepted order: generation-2 channel baseline, generation-2
+temperature baseline, Good integer `channel_type = 3`, durable reconnect lifecycle,
+completed reconnect and only afterward the first ordinary generation-2 Good
+temperature. The run retained 215 sustained generation-2 Good temperature rows at
+26 degrees Celsius.
+
+Babashka A was killed and B resumed the same scope while the durable prefix advanced.
+A harmless live-safe `display_name` change committed revision 2 without another
+rebind. The sealed archive has zero output events, zero gaps, complete coverage and
+complete run/interval seals. Normal shutdown closed COM and Recorder, retired all
+workers and exited successfully.
+
+## Final release-only Recorder test investigation — 2026-09-17
+
+The first final `cargo test --workspace --release` exposed a reproducible failure in
+`reconnect_probe_fact_precedes_durable_activation_and_later_good_temperature` and
+`failed_probe_cancels_after_recorded_fact_without_gap_or_good_temperature`. The
+stable first Recorder error was exactly:
+
+```text
+recorder ingress capacity exhausted
+```
+
+This was a test-harness synchronization defect, not a production Recorder ordering
+defect. The helper interpreted `outstanding_groups == 1` after reserving the live
+activation as proof that every earlier fact group and receipt had drained. That
+predicate was insufficient. Under release scheduling, three pre-reconnect fact
+groups could still occupy the four-group ingress bound when the activation reserved
+the fourth group. The next required fact then truthfully failed closed on capacity.
+By the time the helper observed one outstanding group, the earlier groups had drained
+but the failure was already latched. There was no future/regressing receipt and no
+`fact record reservation mismatch`.
+
+The test-only correction waits before taking the activation reservation for the real
+semantic fence: zero outstanding charged groups and `confirmed_submission` at or
+beyond the generation-1 Offline/Unavailable fact. It polls Recorder and yields; it
+adds no sleep and does not extend the existing two-second test deadline. A deterministic
+regression holds the SQLite writer with `WriterBarrier`, proves that the exact three
+pre-reconnect groups are charged, releases the barrier, waits for their durable
+receipt and then continues the original reconnect-ordering assertion. Production
+code, limits, FIFO validation and fail-closed behavior are unchanged.
+
+Each affected exact release test passed 10 consecutive runs. The complete
+`reconnect_recorder_ordering_tests` module passed 10 consecutive release runs, and
+the release Recorder and reconnect library subsets each passed three consecutive
+runs. Both `cargo test --workspace` and `cargo test --workspace --release` pass.
+Formatting, workspace all-target Clippy with warnings denied, warning-denied rustdoc,
+actual Babashka A/B process tests, Babashka client tests (8 tests, 13 assertions),
+the finite virtual demo and `git diff --check` pass.
+
 ## Current limitations
 
-The first archive remains evidence of the old incorrect profile; the separate
-corrected run establishes plausible real temperature and durable history. The
-pre-fix disconnect and failed-reconnect contradictions are preserved as evidence.
-The latest run proves corrected finite disconnect and acquisition quiescing, but
-actual reconnect stopped at a transient Windows open failure before Ready. The
-preserved archive has a complete Recorder prefix and clean shutdown. Firmware remains
-unknown and no independent wire capture exists.
+The earlier unsuccessful archives remain immutable failure evidence. Firmware remains
+unknown and no independent wire capture exists. Exact deployment provenance still
+depends on checkout line endings when `core.autocrlf=true`; later release hardening
+should pin relevant provenance-bearing text files to LF via `.gitattributes`.
 
-M8 is `READY_FOR_HARDWARE_RERUN`, not ready for acceptance and does not authorize
-M9. The transient-open failure is localized and corrected in software, with bounded
-single-worker retry diagnostics ready for the rerun. Successful physical reconnect,
-Babashka independence during that physical run, harmless live-safe reload and
-the final release/rustdoc gates remain open. M8 performed no physical actuator
-write and makes no physical-output-safety, power-loss, remote-security, GUI or
-long-soak certification claim.
+M8 is `READY_FOR_EXTERNAL_REVIEW`. M9 remains unauthorized until external M8
+acceptance. M8 performed no physical actuator write and makes no physical-output-
+safety, power-loss, remote-security, GUI or long-soak certification claim.

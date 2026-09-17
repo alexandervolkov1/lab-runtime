@@ -34,7 +34,7 @@ helpers such as `stage_standard_lua`, and `ManagedLuaSource`/`managed_lua_source
 provenance vocabulary. Historical SQLite evidence is never rewritten merely to
 rename that provenance.
 
-## Current: M8 final physical acceptance
+## Current: M8 external acceptance
 
 M8 already provides:
 
@@ -51,17 +51,15 @@ M8 already provides:
 Current status:
 
 ```text
-READY_FOR_HARDWARE_RERUN
+READY_FOR_EXTERNAL_REVIEW
 ```
 
-Remaining:
+The final real reconnect, Babashka independence, harmless live-safe change, clean
+shutdown/history evidence and complete debug/release/rustdoc regression gates all
+passed. A release-only Recorder failure was classified and corrected as a test-only
+semantic synchronization defect; production hardware behavior is unchanged.
 
-- successful real reconnect through generation 2;
-- Babashka independence during that physical run;
-- one harmless live-safe change;
-- clean final shutdown/history evidence;
-- final release/rustdoc and regression gates;
-- external M8 review.
+Remaining: external M8 review only.
 
 M9A is not authorized before external M8 acceptance.
 
