@@ -91,6 +91,12 @@ reconnect remains the accepted generation-fenced M8 operation. Stop until a new
 instruction authorizes M9B.7. Remaining M9B domains are virtual/emulator behavior,
 fault acceptance and final freeze.
 
+The M9B.6 optimized release gate also passes. Its two observed optimized-only
+failures were test timing defects: a yield-count loop raced the serial worker's
+legitimate retry park, and one lifecycle test injected a future 1 ms timestamp ahead
+of the service clock. Test synchronization/time input was corrected without changing
+production serial, lifecycle or Application API behavior.
+
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.
 

@@ -510,3 +510,40 @@ M9B.7 and later work remains deferred: external emulator API, target-specific
 virtual lifecycle separation, full adversarial fault acceptance, and final API
 freeze. No COM port or hardware path was opened, Lua was not removed, M8 evidence
 was unchanged, and M9C was not started.
+
+### M9B.6 optimized release-gate investigation
+
+The initial optimized workspace gate repeatedly failed in
+`serial::retirement_tests::shutdown_during_transient_retry_wait_is_finite` with
+`bounded worker did not make progress`, although the exact test passed alone. The
+failure was a test-harness synchronization defect, not a production shutdown or
+retry defect. After the first intentionally failed open, the sole worker was
+correctly parked inside the production retry wait. Stop authority was already the
+persistent atomic `StopIntent`; neither the capacity-one request mailbox nor a
+notification carried that authority. The test nevertheless treated 100,000 calls
+to `yield_now` as a time bound. An optimized caller under suite load could exhaust
+that iteration budget before the worker's existing 10 ms stop-poll wakeup. No stop
+was lost, no second worker existed, and no production deadline was exceeded.
+
+The regression now synchronizes the first factory attempt through a zero-capacity
+channel, requests shutdown through the unchanged public transport path, and unparks
+that same retained worker as a test-only wakeup hint before observing the real
+`TransportShutdown::Complete` lifecycle fact. It does not lengthen a timeout,
+weaken the terminal assertion, add a worker, or change production serial code,
+retry count, retry deadline, mailbox behavior, or shutdown semantics.
+
+The separate one-off
+`c6_pid_reload_pauses_warming_control_proves_safe_and_never_rearms` failure had a
+different test timing error. The test injected commands at an assumed future
+monotonic time of 1 ms and immediately invoked reload, whose real `SystemClock`
+could still be below 1 ms in an optimized run. Runtime correctly rejected that
+non-monotonic safe-barrier command as `OwnerFailure`. The test now captures the
+authoritative service clock for its injected commands; production configuration,
+safe-barrier, controller and output code is unchanged.
+
+Both corrected exact tests passed 100 consecutive optimized repetitions. The
+standard parallel `cargo test --workspace --release` and the diagnostic
+single-thread variant both then passed completely. Debug workspace tests,
+warning-denied Clippy, warning-denied rustdoc, formatting and diff checks also
+passed. This closes the M9B.6 release gate without changing Application API or
+hardware-facing behavior.
