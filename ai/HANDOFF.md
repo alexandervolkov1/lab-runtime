@@ -15,13 +15,13 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: AUTHORIZED
-Current phase: M9C — remove Lua and obsolete client baggage
+M9C: READY_FOR_EXTERNAL_REVIEW
+Current phase: M9C external review gate
 M10+: NOT AUTHORIZED
 ```
 
-M9B implementation and external review are accepted. M9C is the only authorized
-implementation milestone. Do not begin M10, hardening, packaging or release work
+M9B implementation and external review are accepted. M9C implementation is complete
+and awaits external review. Do not begin M10, hardening, packaging or release work
 automatically.
 
 ## Accepted baselines
@@ -34,9 +34,9 @@ corrections are externally accepted at
 
 M9A provides one implementation-neutral `Invocation -> ComponentExecutor ->
 ComponentCompletion/ComponentResult -> Runtime validation -> commit` lifecycle.
-Native `native.moving_mean.v1` and the temporary Lua adapter use that same bounded
-path. Text-backed component provenance is content-addressed; built-in provenance
-identifies the actual Runtime executable bytes.
+Native `native.moving_mean.v1` uses that bounded path. M9C removed the temporary Lua
+adapter and executable-text artifacts; BuiltIn provenance identifies the actual
+Runtime executable bytes.
 
 ## Preserved hardware evidence
 
@@ -120,6 +120,8 @@ review accepted M9B at `d228d697c01a4b77d55333655129f95ee784c07c`.
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.
 
-M9C removes active Lua and obsolete first-party client baggage while preserving the
-neutral managed-component architecture and historical evidence. M10-M12 remain
+M9C removed active Lua, executable-text configuration, source reload, the transitional
+snapshot family and the Babashka client. The final registry has 42 operations and 25
+capabilities. Neutral Rust/process tests retain managed-component and client-isolation
+coverage; historical Recorder provenance compatibility remains. M10-M12 remain
 blocked. The roadmap ends at v0.1.0.

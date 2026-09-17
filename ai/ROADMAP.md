@@ -18,8 +18,8 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: AUTHORIZED
-Current phase: M9C — remove Lua and obsolete client baggage
+M9C: READY_FOR_EXTERNAL_REVIEW
+Current phase: M9C external review gate
 M10+: NOT AUTHORIZED
 ```
 
@@ -150,10 +150,9 @@ completion or safe-output evidence.
 M9B contains no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, raw-protocol and integration tests.
 
-## M9C — Remove Lua and obsolete client baggage
+## M9C — Remove Lua and obsolete client baggage — READY_FOR_EXTERNAL_REVIEW
 
-With M9B externally accepted, remove active Lua product code and dependencies where
-no longer required:
+M9C removed active Lua product code and dependencies:
 
 - `lab-lua`;
 - `mlua`;
@@ -178,10 +177,8 @@ Remove active first-party client baggage from the release product:
 Replace required acceptance coverage with implementation-neutral Rust/protocol
 integration tests.
 
-Inspect the transitional `runtime_snapshot`, `snapshot_page` and
-`snapshot_release` family. Remove it when accepted domain-specific discovery/current
-surfaces supersede it; retain only genuinely necessary neutral semantics, not old
-Babashka convenience.
+The transitional `runtime_snapshot`, `snapshot_page` and `snapshot_release` family
+was removed because accepted domain-specific discovery/current surfaces supersede it.
 
 Keep the neutral managed-component contract, BuiltIn/native executor path, bounded
 `PlainData`, generation/revision fencing, `native.moving_mean.v1` and neutral
@@ -201,8 +198,9 @@ authoritative Runtime
       └── virtual instruments / emulator API
 ```
 
-M9C adds no replacement scripting language, GUI, Presentation API, client SDK or
-post-v0.1 roadmap. It is simplification, not substitution.
+M9C added no replacement scripting language, GUI, Presentation API, client SDK or
+post-v0.1 roadmap. It is simplification, not substitution. External review is the
+current gate; M10 remains unauthorized.
 
 ## M10 — Core cleanup and studyability
 

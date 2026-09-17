@@ -28,17 +28,18 @@ context. Read them on demand. They do not override the active authorization.
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: ACCEPTED
-M9C: AUTHORIZED
-Current phase: M9C — remove Lua and obsolete client baggage
+M9C: READY_FOR_EXTERNAL_REVIEW
+Current phase: M9C external review gate
 M10+: NOT AUTHORIZED
 ```
 
 Final physical M8 acceptance and the final software gates have succeeded. No further
 M8 hardware rerun is required, and COM5 is not part of current work.
 
-M9A and M9B implementation and external review have succeeded. M9C is the only
-authorized implementation milestone. M10 and later milestones remain blocked behind
-explicit review gates.
+M9A and M9B implementation and external review have succeeded. M9C implementation
+removed active Lua, obsolete first-party client baggage and transitional
+source-reload/snapshot API. M10 and later milestones remain blocked behind explicit
+review gates.
 
 ## Donor repository
 
@@ -131,23 +132,17 @@ A managed component is Runtime-invoked computation:
 Runtime -> component -> validated result
 ```
 
-Existing M5 Lua is historical implementation context and remains active only until
-the currently authorized M9C removal is completed. Removal must preserve the neutral
-managed-component contract and historical evidence.
-
-M5 Lua is not currently known to violate the safety boundary. Its sandbox denies
-raw transport, OutputAuthority, physical ACK/readback/safe evidence and general
-Runtime mutability. M9A moved it behind implementation identity `lua.v1`; common
-definitions, execution, public lifecycle vocabulary and new provenance are neutral.
+M5 Lua is historical implementation context. M9C removed its active crate, runtime,
+configuration and public API while preserving the neutral managed-component contract
+and historical evidence. The active execution path is compile-time native Rust.
 
 Do not rename historical SQLite evidence merely to neutralize old Lua provenance.
 
-Do not add a persistent Lua workspace, Lua application/scenario API, Lua presentation
-API, Lua REPL/editor or broader M5 scope.
+Do not restore Lua or add another scripting language, dynamic plugin loader,
+REPL/editor or broader M5 scope.
 
 M9A added the first-class `native.moving_mean.v1` path through the same bounded
-contract and is externally accepted. Current authorization is M9C only; detailed
-scope belongs in `ai/WORK.md`.
+contract and is externally accepted.
 
 ## Virtual/emulator boundary
 
@@ -155,9 +150,9 @@ The existing `VirtualInstrument` deterministic/fault-injection source and
 `ThermalPlantInstrument` stateful native thermal emulator/reference model remain
 useful native infrastructure. Do not remove or replace them.
 
-M9B adds a validated Application API around this native virtual-instrument foundation.
+M9B added a validated Application API around this native virtual-instrument foundation.
 This does not mean rewriting the existing native instruments or moving emulator
-behavior into M5 Lua.
+behavior into a scripting layer.
 
 Only explicitly declared virtual/emulated instruments may accept virtual publication
 or model steps.

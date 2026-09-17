@@ -88,10 +88,10 @@ The contract includes `Invocation`, `ComponentResult`, `ComponentCompletion`,
 the bounded native `native.moving_mean.v1` reference implementation and is externally
 accepted.
 
-Lua remains only as temporary active baggage. M9C is authorized to remove `lab-lua`,
-`mlua`, `lua.v1`, active Lua configuration/API vocabulary and fixtures. Historical
-milestone reports, immutable archives and historical provenance such as
-`managed_lua_source` remain evidence and are not rewritten.
+M9C removed the active Lua implementation, executable-text artifacts, Lua
+configuration/API vocabulary and obsolete first-party client. Historical milestone
+reports, immutable archives and historical provenance such as `managed_lua_source`
+remain evidence and are not rewritten.
 
 ## Instruments, acquisition and signals
 
@@ -200,7 +200,7 @@ Presentation API, frontend, client implementation or bundled scripting environme
 M8   ACCEPTED — deployment, Windows COM and physical read-only evidence
 M9A  ACCEPTED — neutral managed components and native Rust execution
 M9B  ACCEPTED — coherent bounded Application API
-M9C  AUTHORIZED — remove Lua and obsolete client baggage
+M9C  READY_FOR_EXTERNAL_REVIEW — Lua and obsolete client baggage removed
 M10  NOT AUTHORIZED — Core cleanup and studyability
 M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
 M12  NOT AUTHORIZED — documentation, packaging and final release audit

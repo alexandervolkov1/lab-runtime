@@ -15,8 +15,8 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: AUTHORIZED
-Current phase: M9C — remove Lua and obsolete client baggage
+M9C: READY_FOR_EXTERNAL_REVIEW
+Current phase: M9C external review gate
 M10+: NOT AUTHORIZED
 ```
 
@@ -171,9 +171,9 @@ transport completion or safe-output evidence.
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Acceptance uses Rust, raw-protocol and integration tests.
 
-## M9C — Remove Lua and obsolete client baggage
+## M9C — Remove Lua and obsolete client baggage — READY_FOR_EXTERNAL_REVIEW
 
-M9C is authorized to remove active product Lua:
+M9C removed active product Lua:
 
 - `lab-lua`, `mlua`, `lua.v1` and the Lua runtime/sandbox;
 - Lua source/configuration paths and Lua-only active fixtures;
@@ -185,15 +185,12 @@ Preserve historical milestone reports, immutable SQLite archives and historical
 provenance such as `managed_lua_source`; retain inspection compatibility only where
 genuinely required.
 
-Remove active first-party client baggage: Babashka client/workflow, Babashka-only
-process acceptance with no neutral product role, client SDK material and bundled
-external-client examples. Replace required coverage with implementation-neutral
+Active first-party client baggage was removed: the Babashka client/workflow and its
+client-only process acceptance. Required coverage remains in implementation-neutral
 Rust/protocol/process integration tests.
 
-Inspect the transitional `runtime_snapshot`, `snapshot_page` and
-`snapshot_release` family. Remove it when accepted domain-specific discovery/current
-surfaces supersede it; retain only genuinely necessary neutral semantics, not old
-Babashka convenience.
+The transitional `runtime_snapshot`, `snapshot_page` and `snapshot_release` family
+was removed because accepted domain-specific discovery/current surfaces supersede it.
 
 Keep the neutral managed-component types and executor architecture, BuiltIn/native
 implementation path, bounded `PlainData`, generation/revision fencing,

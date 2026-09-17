@@ -10,8 +10,8 @@ durable recording and a local Application API.
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: ACCEPTED
-M9C: AUTHORIZED
-Current phase: M9C — remove Lua and obsolete client baggage
+M9C: READY_FOR_EXTERNAL_REVIEW
+Current phase: M9C external review gate
 M10+: NOT AUTHORIZED
 ```
 
@@ -19,9 +19,9 @@ M8 physical read-only acceptance and M9A neutral/native managed-component execut
 are externally accepted. No additional M8 hardware run is required, and COM5 is not
 part of current work.
 
-M9B's coherent local Application API is externally accepted. M9C is authorized to
-remove active Lua and obsolete first-party client baggage without replacing them
-with another scripting language, client SDK or presentation surface.
+M9B's coherent local Application API is externally accepted. M9C removed active Lua,
+the obsolete Babashka client and transitional source-reload/snapshot API without
+adding a replacement scripting language, client SDK or presentation surface.
 
 ## Product boundary
 
@@ -58,10 +58,9 @@ The release does not contain a GUI, Presentation API, Steel, Lua, Babashka or Py
 client, first-party frontend, client SDK, bundled plotting application or user-facing
 scripting environment.
 
-The current workspace still contains temporary Lua and Babashka-era implementation
-and acceptance material. M9C removes active Lua and obsolete first-party client
-baggage after M9B acceptance while preserving historical reports and immutable
-evidence.
+Historical milestone reports and immutable Recorder evidence still describe Lua and
+Babashka where necessary to explain earlier acceptance. They are not active product
+dependencies or supported v0.1 workflows.
 
 ## Recorder and diagnostics
 
