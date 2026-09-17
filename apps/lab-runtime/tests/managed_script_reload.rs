@@ -376,6 +376,15 @@ implementation="native.moving_mean.v1"
 input_instrument_id=1
 period_ms=100
 config={{window=3}}
+[[managed_components]]
+id=203
+instrument_id=203
+key="independent-warming-native"
+display_name="Independent warming native mean"
+implementation="native.moving_mean.v1"
+input_instrument_id=1
+period_ms=100
+config={{window=3}}
 "#
     );
     fs::write(&config, toml).unwrap();
@@ -403,6 +412,15 @@ config={{window=3}}
     };
     assert_eq!(unrelated_before.generation, 1);
     assert_eq!(unrelated_before.state, ComponentState::Failed);
+    let QueryResult::Component(warming_before) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(203)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(warming_before.generation, 1);
+    assert_eq!(warming_before.state, ComponentState::Warming);
 
     fs::write(&script, source("generation two")).unwrap();
     assert_eq!(service.reload_managed_sources(), Ok(()));
@@ -430,6 +448,19 @@ config={{window=3}}
     assert_eq!(
         unrelated_after.committed_state,
         unrelated_before.committed_state
+    );
+    let QueryResult::Component(warming_after) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(203)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(warming_after.generation, warming_before.generation);
+    assert_eq!(warming_after.revision, warming_before.revision);
+    assert_eq!(
+        warming_after.committed_state,
+        warming_before.committed_state
     );
 
     fs::remove_file(config).unwrap();

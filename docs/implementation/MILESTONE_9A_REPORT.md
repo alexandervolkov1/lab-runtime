@@ -167,10 +167,11 @@ bounded explicit provenance failure; version text is never substituted as equiva
 build identity.
 
 Deterministic regressions reproduce the original reload oracle with an independent
-failed native component, prove invalid selected source fails before generation
-mutation, prove source A/B component swaps and exact byte recovery, reject a missing
-source blob atomically, hash controlled byte fixtures, and verify native Recorder
-provenance links to the current executable digest without a fabricated source hash.
+failed native component and a second independent component initially in `Warming`,
+prove invalid selected source fails before generation mutation, prove source A/B
+component swaps and exact byte recovery, reject a missing source blob atomically,
+hash controlled byte fixtures, and verify native Recorder provenance links to the
+current executable digest without a fabricated source hash.
 
 ## Tests-first evidence
 
