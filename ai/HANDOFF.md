@@ -8,7 +8,8 @@ M9A: ACCEPTED
 M9B: AUTHORIZED
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
-M9B.3: NOT STARTED
+M9B.3: COMPLETE
+M9B.4: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -81,7 +82,7 @@ responses. Unknown operations are nonfatal; malformed input remains reactor-scop
 oversized outgoing results become correlated client errors instead of stopping the
 service. Existing session/dedup/disconnect ownership remains intact.
 
-M9B.3 has not started. Stop until a new instruction authorizes that slice. The
+M9B.3 is complete. Stop until a new instruction authorizes M9B.4. The
 remaining M9B domains are discovery, measurements/history/subscriptions,
 Reference/control, Recorder, resources/configuration/reconnect, virtual/emulator
 behavior and full reconnect/resynchronization.

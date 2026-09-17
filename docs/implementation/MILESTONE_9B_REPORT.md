@@ -5,11 +5,12 @@
 ```text
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
-M9B.3: NOT STARTED
+M9B.3 discovery / measurements / history / subscriptions: COMPLETE
+M9B.4: NOT STARTED
 M9C+: NOT AUTHORIZED
 ```
 
-This report is cumulative. This revision records only M9B.2. It does not claim that
+This report is cumulative through M9B.3. It does not claim that
 the complete M9B Application API is finished or externally accepted.
 
 ## M9B.2 scope and architecture
@@ -187,11 +188,7 @@ not made part of the future product API.
 
 ## Deferred M9B work
 
-M9B.3 remains not started. It owns owner-derived discovery, normalized current
-measurement DTOs, bounded signal windows, history page semantics and subscription
-coverage. The known pending-history disconnect/page-retention correction is also
-deferred to that history slice as explicitly authorized; it is not required to
-define common operation identity.
+M9B.3 is complete. M9B.4 owns Reference/controller completeness.
 
 Later slices own Reference/controller completeness, Recorder projections,
 resource/configuration projections, emulator publication, full reconnect/resync and
@@ -199,3 +196,76 @@ the remaining operation-specific naming cleanup. `reload_managed_sources` and
 `restart_models` were deliberately not redesigned in M9B.2.
 
 No COM port or hardware path was opened. M8 evidence was not modified.
+
+## M9B.3 discovery, measurements, history, and subscriptions
+
+Discovery is now an immutable, owner-derived projection of the actual Runtime and
+host composition. `discover` freezes records for resources, instruments, and signals;
+`discovery_page` continues the same revision. Records are deterministically ordered,
+contain stable domain IDs and bounded domain metadata, and classify implementations
+as `physical`, `virtual`, `emulated`, or `managed` without exposing Rust type names or
+transport handles. A page contains at most 64 records and 8 KiB. The existing single
+frozen-projection slot and five-second TTL apply per connection.
+
+The public signal identity is exactly `{instrument, parameter}` everywhere:
+discovery, `latest`, `measurements_current`, `measurement_window`, durable history,
+and signal events. Array position is never an identity. Object identity is distinct
+from generation: physical binding, native-model, and managed-component replacement
+fences are projected as `generation`.
+
+`latest` and the paged `measurements_current` operation use one complete measurement
+DTO. It always contains signal, value (possibly null), unit, quality, explicit
+status/failure, publication time, source/freshness time, and generation. A signal
+that has never been attempted is explicitly `quality=unavailable`,
+`status=not_observed`, and `failure=not_observed`; clients do not infer state from
+missing JSON. Current values come only from committed Runtime snapshots, never
+SQLite. Current pages share the 64-record/8-KiB projection limits.
+
+`measurement_window` exposes the Runtime's bounded recent attempts, oldest first,
+with the same measurement DTO, a maximum request of 128 records, explicit source and
+truncation metadata, and an 8-KiB encoded-result check. Durable `history_read`
+remains the distinct Recorder-backed operation: 1..=128 measurement rows or 1..=32
+runs, frozen checkpoint ordering, at most 8 KiB per retained page, a two-second job
+deadline, five-second page retention, and thirty-second continuation retention.
+Empty selections succeed with an empty terminal page. Cursor tokens remain bound to
+database/checkpoint/filter and are now also bound to the session scope, so a client
+may reconnect to the same retained scope without inheriting another connection's
+cursor.
+
+The pending-history disconnect defect was a missing terminal transition. `detach`
+removed the connection-keyed job and queued worker cancellation, but left the
+already-admitted session operation pending indefinitely. Disconnect now records a
+bounded `client_disconnected` terminal failure before cancelling only the
+connection-local query delivery job. It removes page/snapshot/subscription delivery
+state, does not mutate durable archive or experiment state, and cannot publish an
+orphan result into a reused connection. Reconnect observes the retained terminal
+outcome and starts a fresh explicit query.
+
+Live delivery retains one aggregate subscription per connection, at most eight event
+kinds and sixteen typed targets. The owner scans at most 32 retained events and
+offers at most four per pump into the existing 16-frame client event queue. Runtime
+acquisition, control, safety, and Recorder work never wait for that queue. Ring loss
+or an invalid installed replay produces explicit `event_gap` with
+`resync_required=true` and removes the subscription; a full network queue detaches
+the slow client. Because the 1,024-record semantic ring is independent of the client,
+a reconnect can resume from a still-retained cursor or receives an explicit gap. A
+fresh connection reconstructs state with hello, discovery/current projections,
+optional recent/durable history, and a new subscription. Subscription objects are
+not preserved magically across disconnect.
+
+Hello now advertises stable `structured_discovery`, `current_measurements`,
+`recent_measurement_history`, `measurement_history`, and `live_subscriptions`
+capabilities only when their operations are present. It also publishes the discovery,
+current, recent/durable history, subscription, event queue, and page byte bounds.
+The transitional storage-oriented history capability name is not present.
+
+Focused M9B.3 tests cover owner-derived ordered discovery, stable signal identity,
+Good and Unavailable current states, units, quality and generation, bounded recent
+windows/pages, structured missing-signal errors, subscription admission/unsubscribe,
+capability bounds, disconnect terminalization, no stale result delivery, and fresh
+connection capacity. Existing protocol, session, durable-history, replay/gap, and
+slow-client suites remain regression gates.
+
+M9B.4 and later work remains deferred: complete Reference/controller API,
+Recorder public-contract refinements, resource/configuration lifecycle expansion,
+external emulator API, full adversarial fault acceptance, and final API freeze.

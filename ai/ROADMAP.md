@@ -11,7 +11,8 @@ M9A: ACCEPTED
 M9B: AUTHORIZED
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
-M9B.3: NOT STARTED
+M9B.3: COMPLETE
+M9B.4: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -59,7 +60,8 @@ Application API.
 
 M9B.1 audited the actual API. M9B.2 completed the shared protocol identity,
 composition-aware operation/capability registry, bounded public error taxonomy and
-operation lifecycle response foundation. M9B.3 has not started.
+operation lifecycle response foundation. M9B.3 completed discovery, current/recent
+measurements, durable-history delivery cleanup, and live subscription semantics.
 
 ### Discovery
 
