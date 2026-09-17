@@ -1939,6 +1939,19 @@ fn worker_loop(
 mod cancellation_tests {
     use super::*;
 
+    fn request_runs_after_transient_lock(worker: &mut RecorderWorker, deadline: Instant) -> u64 {
+        loop {
+            match worker.request_runs(None, 1) {
+                Ok(job) => return job,
+                Err(error) if error.0 == "history slots busy" => {
+                    assert!(Instant::now() < deadline, "history slot lock stayed busy");
+                    thread::yield_now();
+                }
+                Err(error) => panic!("unexpected history admission failure: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn contested_history_cancel_releases_slot_and_discards_late_result() {
         let mut entropy = [0u8; 16];
@@ -1977,9 +1990,11 @@ mod cancellation_tests {
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
         let path = std::env::temp_dir().join(format!("lab-m7-eight-cancel-{suffix}.sqlite"));
         let mut worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
-        let jobs: Vec<_> = (0..MAX_HISTORY_JOBS)
-            .map(|_| worker.request_runs(None, 1).unwrap())
-            .collect();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut jobs = Vec::new();
+        while jobs.len() < MAX_HISTORY_JOBS {
+            jobs.push(request_runs_after_transient_lock(&mut worker, deadline));
+        }
         assert!(worker.request_runs(None, 1).is_err());
         let slots = Arc::clone(&worker.active_history_jobs);
         let guard = slots.lock().unwrap();
@@ -1989,17 +2004,18 @@ mod cancellation_tests {
         assert_eq!(worker.pending_cancellations.len(), MAX_HISTORY_JOBS);
         assert!(worker.request_runs(None, 1).is_err());
         drop(guard);
-        let deadline = Instant::now() + Duration::from_secs(2);
         while !worker.pending_cancellations.is_empty() && Instant::now() < deadline {
             worker.poll();
             thread::yield_now();
         }
         assert!(worker.pending_cancellations.is_empty());
         assert!(slots.lock().unwrap().is_empty());
-        let replacement = worker.request_runs(None, 1).unwrap();
+        let replacement =
+            request_runs_after_transient_lock(&mut worker, Instant::now() + Duration::from_secs(2));
         worker.cancel_history(replacement);
         worker.request_finish().unwrap();
-        while worker.poll().state != RecordingState::Closed && Instant::now() < deadline {
+        let close_deadline = Instant::now() + Duration::from_secs(2);
+        while worker.poll().state != RecordingState::Closed && Instant::now() < close_deadline {
             thread::yield_now();
         }
         assert_eq!(worker.poll().state, RecordingState::Closed);

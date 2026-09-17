@@ -989,6 +989,105 @@ fn disconnected_held_history_job_cannot_publish_into_reused_client_capacity() {
 }
 
 #[test]
+fn continuation_capacity_is_bounded_and_disconnect_releases_its_slot() {
+    let path = temporary_database();
+    let archive_boot = "82828282828282828282828282828282";
+    let mut archive = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
+    for run in 0..12 {
+        archive.start_run(&format!("cursor run {run}")).unwrap();
+        archive.stop_run().unwrap();
+    }
+    archive.finish_boot(Duration::from_millis(1)).unwrap();
+    archive.close().unwrap();
+
+    let worker = RecorderWorker::open(&path, RecorderLimits::default()).unwrap();
+    let database_id = worker.database_id().to_owned();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    let mut app = Application::new(service.boot_id()).unwrap();
+
+    for connection in 1..=8u64 {
+        let hello = app.handle(
+            &mut service,
+            connection,
+            frame(json!({"v":1,"msg_id":format!("hello-{connection}"),
+                "op":"hello","args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].as_str().unwrap();
+        let accepted = app.handle(
+            &mut service,
+            connection,
+            frame(json!({"v":1,"msg_id":format!("read-{connection}"),
+                "op":"history_read","request_id":{"scope":scope,"seq":"1"},
+                "args":{"mode":"runs","database_id":database_id,
+                    "max_records":1,"cursor":null}})),
+        );
+        assert_eq!(accepted[0]["state"], "accepted");
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut terminals = Vec::new();
+    while terminals.len() < 8 {
+        terminals.extend(app.poll_history(&mut service));
+        assert!(Instant::now() < deadline, "history jobs did not complete");
+        std::thread::yield_now();
+    }
+    for (connection, terminal) in terminals {
+        assert_eq!(terminal["state"], "completed");
+        let page = app.handle(
+            &mut service,
+            connection,
+            frame(json!({"v":1,"msg_id":format!("page-{connection}"),
+                "op":"history_page","args":{"page_token":terminal["result"]["page_token"]}})),
+        );
+        assert!(page[0]["result"]["next_cursor"].is_string());
+    }
+
+    let ninth = app.handle(
+        &mut service,
+        9,
+        frame(json!({"v":1,"msg_id":"hello-9","op":"hello","args":{"scope":null}})),
+    );
+    let ninth_scope = ninth[0]["result"]["scope"].as_str().unwrap().to_owned();
+    let full = app.handle(
+        &mut service,
+        9,
+        frame(json!({"v":1,"msg_id":"read-9","op":"history_read",
+            "request_id":{"scope":ninth_scope,"seq":"1"},
+            "args":{"mode":"runs","database_id":database_id,
+                "max_records":1,"cursor":null}})),
+    );
+    assert_eq!(full[1]["code"], "history_busy");
+
+    app.detach(&service, 1);
+    let released = app.handle(
+        &mut service,
+        9,
+        frame(json!({"v":1,"msg_id":"read-9-retry","op":"history_read",
+            "request_id":{"scope":ninth_scope,"seq":"2"},
+            "args":{"mode":"runs","database_id":database_id,
+                "max_records":1,"cursor":null}})),
+    );
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0]["state"], "accepted");
+
+    for connection in 2..=9 {
+        app.detach(&service, connection);
+    }
+    assert!(app.poll_history(&mut service).is_empty());
+    drop(app);
+    drop(service);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
+}
+
+#[test]
 fn run_discovery_operation_lists_archived_runs_after_service_reopen() {
     let path = temporary_database();
     let mut previous = lab_runtime::recorder::SqliteStore::open_with_boot(

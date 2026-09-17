@@ -467,6 +467,13 @@ pub fn limits() -> Value {
         .expect("protocol limits are an object")
         .insert("emulator".into(), emulator);
     limits
+        .as_object_mut()
+        .expect("protocol limits are an object")
+        .insert(
+            "history_cursors".into(),
+            json!(crate::application::MAX_HISTORY_CURSORS),
+        );
+    limits
 }
 
 /// One allowlisted bounded public error description.

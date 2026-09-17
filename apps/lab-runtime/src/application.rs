@@ -85,10 +85,12 @@ struct HistoryCache {
 }
 struct HistoryContinuation {
     token: String,
+    connection: u64,
     scope: String,
     cursor: RetainedHistoryCursor,
     expires: Duration,
 }
+pub(crate) const MAX_HISTORY_CURSORS: usize = 8;
 enum RetainedHistoryCursor {
     Measurements(HistoryCursor),
     Runs(RunsCursor),
@@ -136,6 +138,8 @@ impl Application {
         self.snapshots.remove(&connection);
         self.subscriptions.remove(&connection);
         self.history_pages.remove(&connection);
+        self.history_cursors
+            .retain(|_, cursor| cursor.connection != connection);
         if let Some(pending) = self.pending_history.remove(&connection) {
             let terminal = OperationState::Failed("client_disconnected".into());
             self.sessions
@@ -428,10 +432,13 @@ impl Application {
                         };
                         if let Some(cursor) = next_cursor {
                             let token = cursor_token.expect("cursor was present");
+                            self.history_cursors
+                                .retain(|_, retained| retained.connection != connection);
                             self.history_cursors.insert(
                                 token.clone(),
                                 HistoryContinuation {
                                     token,
+                                    connection,
                                     scope: pending.scope.clone(),
                                     cursor,
                                     expires: now + Duration::from_secs(30),
@@ -1259,7 +1266,12 @@ impl Application {
                 service.owner().recording_database_id() == Some(database_id.as_str());
             let busy = self.pending_history.contains_key(&connection)
                 || self.history_pages.contains_key(&connection)
-                || self.pending_history.len() + self.history_pages.len() >= 8;
+                || self.pending_history.len() + self.history_pages.len() >= 8
+                || (!self
+                    .history_cursors
+                    .values()
+                    .any(|retained| retained.connection == connection)
+                    && self.history_cursors.len() >= MAX_HISTORY_CURSORS);
             let retained_cursor = if let Some(token) = cursor {
                 self.history_cursors
                     .get(token)
@@ -1327,7 +1339,12 @@ impl Application {
                 service.owner().recording_database_id() == Some(database_id.as_str());
             let busy = self.pending_history.contains_key(&connection)
                 || self.history_pages.contains_key(&connection)
-                || self.pending_history.len() + self.history_pages.len() >= 8;
+                || self.pending_history.len() + self.history_pages.len() >= 8
+                || (!self
+                    .history_cursors
+                    .values()
+                    .any(|retained| retained.connection == connection)
+                    && self.history_cursors.len() >= MAX_HISTORY_CURSORS);
             let retained_cursor = if let Some(token) = cursor {
                 self.history_cursors
                     .get(token)
