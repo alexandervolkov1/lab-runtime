@@ -16,12 +16,16 @@ use std::{
     io::{Read, Write},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
-    thread::JoinHandle,
-    time::Duration,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
+
+const RECONNECT_OPEN_MAX_ATTEMPTS: usize = 64;
+const RECONNECT_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Serial parity accepted by schema-v1 deployment configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +183,60 @@ pub enum ComOpenStatus {
     Failed(SerialError),
 }
 
+/// Fixed retry policy for one worker-owned asynchronous open sequence.
+///
+/// The policy carries one absolute deadline. Only a completed transient
+/// `Disconnected` attempt may advance to another attempt, so a hung factory
+/// call never creates concurrent open workers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OpenRetryPolicy {
+    deadline: Instant,
+    retry_interval: Duration,
+    max_attempts: usize,
+}
+
+impl OpenRetryPolicy {
+    fn single_attempt() -> Self {
+        Self {
+            deadline: Instant::now(),
+            retry_interval: Duration::ZERO,
+            max_attempts: 1,
+        }
+    }
+
+    /// Apply the reviewed reconnect bounds to one existing candidate worker.
+    pub(crate) fn transient_until(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            retry_interval: RECONNECT_OPEN_RETRY_INTERVAL,
+            max_attempts: RECONNECT_OPEN_MAX_ATTEMPTS,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        deadline: Instant,
+        retry_interval: Duration,
+        max_attempts: usize,
+    ) -> Self {
+        assert!(max_attempts > 0);
+        Self {
+            deadline,
+            retry_interval,
+            max_attempts,
+        }
+    }
+
+    fn should_retry(self, error: SerialError, attempt: usize, now: Instant) -> bool {
+        error == SerialError::Disconnected && attempt < self.max_attempts && now < self.deadline
+    }
+
+    #[cfg(test)]
+    fn deadline(self) -> Instant {
+        self.deadline
+    }
+}
+
 /// Bounded resource diagnostics; no handle or authority is exposed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComSnapshot {
@@ -200,6 +258,10 @@ pub struct ComSnapshot {
     pub worker_finished: bool,
     /// The worker confirmed the actual OS open and settings readback.
     pub os_port_open_confirmed: bool,
+    /// Completed or active OS-open attempts in this one worker, capped by policy.
+    pub open_attempts: usize,
+    /// Last typed failed open attempt, replacing rather than accumulating history.
+    pub last_open_error: Option<SerialError>,
     /// Persistent retirement intent visible independently of mailbox capacity.
     pub stop_requested: bool,
 }
@@ -248,6 +310,8 @@ pub struct ComTransport {
     clean_boundary: bool,
     stop: StopIntent,
     open_confirmed: bool,
+    open_attempts: Arc<AtomicUsize>,
+    last_open_error: Arc<AtomicU8>,
 }
 
 impl ComTransport {
@@ -258,6 +322,22 @@ impl ComTransport {
             SerialPortDevice::open(&worker_settings)
                 .map(|device| Box::new(device) as Box<dyn SerialDevice>)
         })
+    }
+
+    /// Spawn one candidate worker with bounded transient-absence retry.
+    pub(crate) fn open_windows_with_transient_retry(
+        settings: ComSettings,
+        deadline: Instant,
+    ) -> Result<Self, SerialError> {
+        let worker_settings = settings.clone();
+        Self::spawn_retrying(
+            settings,
+            OpenRetryPolicy::transient_until(deadline),
+            move || {
+                SerialPortDevice::open(&worker_settings)
+                    .map(|device| Box::new(device) as Box<dyn SerialDevice>)
+            },
+        )
     }
 
     /// Install an already-created deterministic device for software acceptance.
@@ -283,17 +363,53 @@ impl ComTransport {
         Self::spawn(settings, factory)
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_retrying_device_factory(
+        settings: ComSettings,
+        policy: OpenRetryPolicy,
+        factory: impl FnMut() -> Result<Box<dyn SerialDevice>, SerialError> + Send + 'static,
+    ) -> Result<Self, SerialError> {
+        Self::spawn_retrying(settings, policy, factory)
+    }
+
     fn spawn(
         settings: ComSettings,
         factory: impl FnOnce() -> Result<Box<dyn SerialDevice>, SerialError> + Send + 'static,
+    ) -> Result<Self, SerialError> {
+        let mut factory = Some(factory);
+        Self::spawn_retrying(settings, OpenRetryPolicy::single_attempt(), move || {
+            factory
+                .take()
+                .expect("single-attempt serial factory called once")()
+        })
+    }
+
+    fn spawn_retrying(
+        settings: ComSettings,
+        retry: OpenRetryPolicy,
+        factory: impl FnMut() -> Result<Box<dyn SerialDevice>, SerialError> + Send + 'static,
     ) -> Result<Self, SerialError> {
         let (request_tx, request_rx) = mpsc::sync_channel(1);
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
         let stop = StopIntent::new();
         let worker_stop = stop.clone();
+        let open_attempts = Arc::new(AtomicUsize::new(0));
+        let worker_open_attempts = open_attempts.clone();
+        let last_open_error = Arc::new(AtomicU8::new(0));
+        let worker_last_open_error = last_open_error.clone();
         let worker = std::thread::Builder::new()
             .name(format!("lab-com-{}", settings.resource_id))
-            .spawn(move || worker_main(factory, request_rx, completion_tx, worker_stop))
+            .spawn(move || {
+                worker_main(
+                    factory,
+                    request_rx,
+                    completion_tx,
+                    worker_stop,
+                    retry,
+                    worker_open_attempts,
+                    worker_last_open_error,
+                )
+            })
             .map_err(|_| SerialError::Other)?;
         Ok(Self {
             settings,
@@ -307,6 +423,8 @@ impl ComTransport {
             clean_boundary: false,
             stop,
             open_confirmed: false,
+            open_attempts,
+            last_open_error,
         })
     }
 
@@ -337,6 +455,8 @@ impl ComTransport {
                 .as_ref()
                 .is_none_or(|worker| worker.is_finished()),
             os_port_open_confirmed: self.open_confirmed,
+            open_attempts: self.open_attempts.load(Ordering::Acquire),
+            last_open_error: decode_serial_error(self.last_open_error.load(Ordering::Acquire)),
             stop_requested: self.stop.requested(),
         }
     }
@@ -523,28 +643,98 @@ impl Drop for ComTransport {
 }
 
 fn worker_main(
-    factory: impl FnOnce() -> Result<Box<dyn SerialDevice>, SerialError>,
+    mut factory: impl FnMut() -> Result<Box<dyn SerialDevice>, SerialError>,
     requests: Receiver<Request>,
     completions: SyncSender<Completion>,
     stop: StopIntent,
+    retry: OpenRetryPolicy,
+    open_attempts: Arc<AtomicUsize>,
+    last_open_error: Arc<AtomicU8>,
 ) {
-    let device = match factory() {
-        Ok(device) => {
-            if stop.requested() {
-                let _ = completions.send(Completion::Stopped);
-                return;
-            }
-            if completions.send(Completion::Opened).is_err() {
-                return;
-            }
-            device
-        }
-        Err(error) => {
-            let _ = completions.send(Completion::Failed(error));
+    let device = loop {
+        if stop.requested() {
+            let _ = completions.send(Completion::Stopped);
             return;
         }
+
+        let attempt = open_attempts.fetch_add(1, Ordering::AcqRel) + 1;
+        match factory() {
+            Ok(device) => break device,
+            Err(error) if retry.should_retry(error, attempt, Instant::now()) => {
+                last_open_error.store(encode_serial_error(error), Ordering::Release);
+                match wait_for_open_retry(retry, &stop) {
+                    RetryWait::Ready => {}
+                    RetryWait::Deadline => {
+                        let _ = completions.send(Completion::Failed(error));
+                        return;
+                    }
+                    RetryWait::Stopped => {
+                        let _ = completions.send(Completion::Stopped);
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                last_open_error.store(encode_serial_error(error), Ordering::Release);
+                let _ = completions.send(Completion::Failed(error));
+                return;
+            }
+        }
     };
+    if stop.requested() {
+        let _ = completions.send(Completion::Stopped);
+        return;
+    }
+    if completions.send(Completion::Opened).is_err() {
+        return;
+    }
     worker_request_loop(device, requests, completions, stop);
+}
+
+const fn encode_serial_error(error: SerialError) -> u8 {
+    match error {
+        SerialError::InvalidSettings => 1,
+        SerialError::Disconnected => 2,
+        SerialError::Timeout => 3,
+        SerialError::Other => 4,
+    }
+}
+
+const fn decode_serial_error(encoded: u8) -> Option<SerialError> {
+    match encoded {
+        1 => Some(SerialError::InvalidSettings),
+        2 => Some(SerialError::Disconnected),
+        3 => Some(SerialError::Timeout),
+        4 => Some(SerialError::Other),
+        _ => None,
+    }
+}
+
+enum RetryWait {
+    Ready,
+    Deadline,
+    Stopped,
+}
+
+fn wait_for_open_retry(retry: OpenRetryPolicy, stop: &StopIntent) -> RetryWait {
+    let now = Instant::now();
+    let retry_at = now
+        .checked_add(retry.retry_interval)
+        .unwrap_or(retry.deadline)
+        .min(retry.deadline);
+    loop {
+        if stop.requested() {
+            return RetryWait::Stopped;
+        }
+        let now = Instant::now();
+        if now >= retry.deadline {
+            return RetryWait::Deadline;
+        }
+        if now >= retry_at {
+            return RetryWait::Ready;
+        }
+        thread::park_timeout((retry_at - now).min(RETRY_STOP_POLL_INTERVAL));
+    }
 }
 
 fn worker_request_loop(
@@ -866,6 +1056,197 @@ mod retirement_tests {
             .expect("worker thread should spawn");
         wait_until(|| ready.open_status() != ComOpenStatus::Opening);
         assert_eq!(ready.open_status(), ComOpenStatus::Ready);
+    }
+
+    #[test]
+    fn transient_disconnected_open_retries_inside_one_worker_then_becomes_ready() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_attempts = attempts.clone();
+        let policy = OpenRetryPolicy::for_test(
+            std::time::Instant::now() + Duration::from_secs(1),
+            Duration::ZERO,
+            4,
+        );
+        let mut transport =
+            ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
+                if factory_attempts.fetch_add(1, Ordering::AcqRel) == 0 {
+                    Err(SerialError::Disconnected)
+                } else {
+                    Ok(Box::new(ReadyDevice))
+                }
+            })
+            .expect("one worker should spawn");
+
+        wait_until(|| transport.open_status() != ComOpenStatus::Opening);
+        assert_eq!(transport.open_status(), ComOpenStatus::Ready);
+        assert_eq!(attempts.load(Ordering::Acquire), 2);
+        assert_eq!(transport.snapshot().open_attempts, 2);
+        assert!(transport.snapshot().os_port_open_confirmed);
+    }
+
+    #[test]
+    fn several_transient_opens_are_bounded_and_eventually_ready() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_attempts = attempts.clone();
+        let policy = OpenRetryPolicy::for_test(
+            std::time::Instant::now() + Duration::from_secs(1),
+            Duration::ZERO,
+            5,
+        );
+        let mut transport =
+            ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
+                let attempt = factory_attempts.fetch_add(1, Ordering::AcqRel) + 1;
+                if attempt < 4 {
+                    Err(SerialError::Disconnected)
+                } else {
+                    Ok(Box::new(ReadyDevice))
+                }
+            })
+            .expect("one worker should spawn");
+
+        wait_until(|| transport.open_status() != ComOpenStatus::Opening);
+        assert_eq!(transport.open_status(), ComOpenStatus::Ready);
+        assert_eq!(attempts.load(Ordering::Acquire), 4);
+        assert_eq!(transport.snapshot().open_attempts, 4);
+    }
+
+    #[test]
+    fn transient_absence_stops_at_the_original_attempt_bound() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_attempts = attempts.clone();
+        let policy = OpenRetryPolicy::for_test(
+            std::time::Instant::now() + Duration::from_secs(1),
+            Duration::ZERO,
+            3,
+        );
+        let mut transport =
+            ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
+                factory_attempts.fetch_add(1, Ordering::AcqRel);
+                Err(SerialError::Disconnected)
+            })
+            .expect("one worker should spawn");
+
+        wait_until(|| transport.open_status() != ComOpenStatus::Opening);
+        assert_eq!(
+            transport.open_status(),
+            ComOpenStatus::Failed(SerialError::Disconnected)
+        );
+        assert_eq!(attempts.load(Ordering::Acquire), 3);
+        assert_eq!(transport.snapshot().open_attempts, 3);
+        wait_until(|| transport.try_shutdown() == TransportShutdown::Complete);
+    }
+
+    #[test]
+    fn invalid_settings_and_other_open_errors_are_not_retried() {
+        for error in [
+            SerialError::InvalidSettings,
+            SerialError::Timeout,
+            SerialError::Other,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let factory_attempts = attempts.clone();
+            let policy = OpenRetryPolicy::for_test(
+                std::time::Instant::now() + Duration::from_secs(1),
+                Duration::ZERO,
+                4,
+            );
+            let mut transport =
+                ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
+                    factory_attempts.fetch_add(1, Ordering::AcqRel);
+                    Err(error)
+                })
+                .expect("one worker should spawn");
+
+            wait_until(|| transport.open_status() != ComOpenStatus::Opening);
+            assert_eq!(transport.open_status(), ComOpenStatus::Failed(error));
+            assert_eq!(attempts.load(Ordering::Acquire), 1);
+            assert_eq!(transport.snapshot().open_attempts, 1);
+        }
+    }
+
+    #[test]
+    fn hung_open_has_one_attempt_and_no_concurrent_replacement_worker() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let worker_entered = entered.clone();
+        let worker_release = release.clone();
+        let worker_active = active.clone();
+        let worker_maximum = maximum_active.clone();
+        let policy = OpenRetryPolicy::for_test(
+            std::time::Instant::now() + Duration::from_millis(10),
+            Duration::ZERO,
+            4,
+        );
+        let mut transport =
+            ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
+                let now_active = worker_active.fetch_add(1, Ordering::AcqRel) + 1;
+                worker_maximum.fetch_max(now_active, Ordering::AcqRel);
+                worker_entered.store(true, Ordering::Release);
+                while !worker_release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                worker_active.fetch_sub(1, Ordering::AcqRel);
+                Ok(Box::new(ReadyDevice))
+            })
+            .expect("one worker should spawn");
+
+        wait_until(|| entered.load(Ordering::Acquire));
+        assert_eq!(transport.open_status(), ComOpenStatus::Opening);
+        assert_eq!(transport.snapshot().open_attempts, 1);
+        assert_eq!(maximum_active.load(Ordering::Acquire), 1);
+        assert_eq!(transport.try_shutdown(), TransportShutdown::Pending);
+        assert_eq!(transport.snapshot().open_attempts, 1);
+
+        release.store(true, Ordering::Release);
+        wait_until(|| transport.try_shutdown() == TransportShutdown::Complete);
+        assert_eq!(maximum_active.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn shutdown_during_transient_retry_wait_is_finite() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_attempts = attempts.clone();
+        let policy = OpenRetryPolicy::for_test(
+            std::time::Instant::now() + Duration::from_secs(10),
+            Duration::from_secs(5),
+            4,
+        );
+        let mut transport =
+            ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
+                factory_attempts.fetch_add(1, Ordering::AcqRel);
+                Err(SerialError::Disconnected)
+            })
+            .expect("one worker should spawn");
+
+        wait_until(|| attempts.load(Ordering::Acquire) == 1);
+        if transport.try_shutdown() == TransportShutdown::Pending {
+            wait_until(|| transport.try_shutdown() == TransportShutdown::Complete);
+        }
+        assert_eq!(attempts.load(Ordering::Acquire), 1);
+        assert_eq!(transport.snapshot().state, ComState::Closed);
+    }
+
+    #[test]
+    fn retry_policy_uses_one_deadline_and_an_explicit_attempt_cap() {
+        let start = std::time::Instant::now();
+        let deadline = start + Duration::from_secs(1);
+        let policy = OpenRetryPolicy::for_test(deadline, Duration::from_millis(10), 3);
+
+        assert!(policy.should_retry(SerialError::Disconnected, 1, start));
+        assert!(policy.should_retry(SerialError::Disconnected, 2, start));
+        assert!(!policy.should_retry(SerialError::Disconnected, 3, start));
+        assert!(!policy.should_retry(SerialError::Disconnected, 1, deadline));
+        assert!(!policy.should_retry(SerialError::InvalidSettings, 1, start));
+        assert!(!policy.should_retry(SerialError::Timeout, 1, start));
+        assert!(!policy.should_retry(SerialError::Other, 1, start));
+        assert_eq!(policy.deadline(), deadline);
+
+        let production = OpenRetryPolicy::transient_until(deadline);
+        assert_eq!(production.max_attempts, RECONNECT_OPEN_MAX_ATTEMPTS);
+        assert_eq!(production.retry_interval, RECONNECT_OPEN_RETRY_INTERVAL);
+        assert_eq!(production.deadline(), deadline);
     }
 
     struct ReadyDevice;

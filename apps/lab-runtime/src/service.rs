@@ -248,6 +248,8 @@ pub struct ReconnectDiagnostic {
     pub replacement_worker_spawned: bool,
     /// Whether actual OS port open plus configured settings readback completed.
     pub os_port_open_confirmed: bool,
+    /// Open attempts performed by the one bounded candidate worker.
+    pub open_attempts: usize,
     /// Whether Core installed the replacement and crossed the generation fence.
     pub core_rebind_crossed: bool,
 }
@@ -265,6 +267,7 @@ impl ReconnectDiagnostic {
             "old_worker_finished": self.old_worker_finished,
             "replacement_worker_spawned": self.replacement_worker_spawned,
             "os_port_open_confirmed": self.os_port_open_confirmed,
+            "open_attempts": self.open_attempts,
             "core_rebind_crossed": self.core_rebind_crossed,
         })
     }
@@ -1413,7 +1416,7 @@ impl ServiceHost {
         self.reconnect_resource_with_factory(
             resource_id,
             expected_binding_generation,
-            ComTransport::open_windows,
+            ComTransport::open_windows_with_transient_retry,
         )
     }
 
@@ -1421,7 +1424,7 @@ impl ServiceHost {
         &mut self,
         resource_id: u64,
         expected_binding_generation: u64,
-        factory: impl FnOnce(ComSettings) -> Result<ComTransport, SerialError>,
+        factory: impl FnOnce(ComSettings, std::time::Instant) -> Result<ComTransport, SerialError>,
     ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
         self.reconnect_diagnostic = None;
         let active = self
@@ -1476,6 +1479,7 @@ impl ServiceHost {
             old_worker_finished: false,
             replacement_worker_spawned: false,
             os_port_open_confirmed: false,
+            open_attempts: 0,
             core_rebind_crossed: false,
         });
         if let Some((quarantined_resource, candidate)) =
@@ -1485,10 +1489,12 @@ impl ServiceHost {
                 self.quarantined_reconnect_candidate = None;
             } else {
                 if let Some(diagnostic) = self.reconnect_diagnostic.as_mut() {
+                    let snapshot = candidate.snapshot();
                     diagnostic.stage = ReconnectStage::ReplacementPortOpenFailed;
-                    diagnostic.com_state = Some(candidate.snapshot().state);
-                    diagnostic.serial_error = candidate.snapshot().last_error;
+                    diagnostic.com_state = Some(snapshot.state);
+                    diagnostic.serial_error = snapshot.last_open_error.or(snapshot.last_error);
                     diagnostic.replacement_worker_spawned = true;
+                    diagnostic.open_attempts = snapshot.open_attempts;
                 }
                 let _ = quarantined_resource;
                 return Err(LifecycleOperationError::TransportUnavailable);
@@ -1583,7 +1589,9 @@ impl ServiceHost {
             .as_mut()
             .expect("diagnostic initialized")
             .stage = ReconnectStage::ReplacementWorkerSpawn;
-        let mut adapter = match factory(settings) {
+        let open_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(resource.open_timeout_ms);
+        let mut adapter = match factory(settings, open_deadline) {
             Ok(adapter) => adapter,
             Err(error) => {
                 let diagnostic = self
@@ -1604,9 +1612,8 @@ impl ServiceHost {
             diagnostic.stage = ReconnectStage::ActualPortOpening;
             diagnostic.com_state = Some(snapshot.state);
             diagnostic.replacement_worker_spawned = snapshot.worker_spawned;
+            diagnostic.open_attempts = snapshot.open_attempts;
         }
-        let open_deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(resource.open_timeout_ms);
         loop {
             match adapter.open_status() {
                 ComOpenStatus::Ready => {
@@ -1618,6 +1625,8 @@ impl ServiceHost {
                     diagnostic.stage = ReconnectStage::ReplacementPortReady;
                     diagnostic.com_state = Some(snapshot.state);
                     diagnostic.os_port_open_confirmed = snapshot.os_port_open_confirmed;
+                    diagnostic.open_attempts = snapshot.open_attempts;
+                    diagnostic.serial_error = snapshot.last_open_error;
                     break;
                 }
                 ComOpenStatus::Failed(error) => {
@@ -1629,6 +1638,7 @@ impl ServiceHost {
                     diagnostic.stage = ReconnectStage::ReplacementPortOpenFailed;
                     diagnostic.com_state = Some(snapshot.state);
                     diagnostic.serial_error = Some(error);
+                    diagnostic.open_attempts = snapshot.open_attempts;
                     self.cancel_recorded_lifecycle(pending);
                     self.retire_uninstalled_reconnect_candidate(
                         resource_key,
@@ -1638,6 +1648,11 @@ impl ServiceHost {
                     return Err(LifecycleOperationError::TransportUnavailable);
                 }
                 ComOpenStatus::Opening if std::time::Instant::now() < open_deadline => {
+                    let snapshot = adapter.snapshot();
+                    if let Some(diagnostic) = self.reconnect_diagnostic.as_mut() {
+                        diagnostic.open_attempts = snapshot.open_attempts;
+                        diagnostic.serial_error = snapshot.last_open_error;
+                    }
                     if self.host.service(&self.clock).is_err() {
                         self.cancel_recorded_lifecycle(pending);
                         self.retire_uninstalled_reconnect_candidate(
@@ -1650,13 +1665,16 @@ impl ServiceHost {
                     std::thread::yield_now();
                 }
                 ComOpenStatus::Opening => {
+                    let snapshot = adapter.snapshot();
                     let diagnostic = self
                         .reconnect_diagnostic
                         .as_mut()
                         .expect("diagnostic initialized");
                     diagnostic.stage = ReconnectStage::ReplacementPortOpenFailed;
-                    diagnostic.com_state = Some(adapter.snapshot().state);
-                    diagnostic.serial_error = Some(SerialError::Timeout);
+                    diagnostic.com_state = Some(snapshot.state);
+                    diagnostic.serial_error =
+                        snapshot.last_open_error.or(Some(SerialError::Timeout));
+                    diagnostic.open_attempts = snapshot.open_attempts;
                     self.cancel_recorded_lifecycle(pending);
                     self.retire_uninstalled_reconnect_candidate(
                         resource_key,
@@ -1890,7 +1908,7 @@ mod reconnect_preparation_tests {
     use crate::{
         configuration::{ArtifactReader, ConfigurationError, parse_runtime_toml},
         recorder::RecordingState,
-        serial::SerialDevice,
+        serial::{OpenRetryPolicy, SerialDevice},
     };
     use lab_core::{
         metakon::crc,
@@ -1903,6 +1921,7 @@ mod reconnect_preparation_tests {
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
         },
+        time::Duration,
     };
 
     const DEFINITION: &[u8] = br#"{
@@ -2101,7 +2120,7 @@ transaction_timeout_ms=50
         let (mut service, database) = service_with_old_transport(true);
 
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, |_| Err(SerialError::Other)),
+            service.reconnect_resource_with_factory(7, 1, |_, _| Err(SerialError::Other)),
             Err(LifecycleOperationError::TransportUnavailable)
         );
         let diagnostic = service.reconnect_diagnostic().unwrap();
@@ -2123,7 +2142,7 @@ transaction_timeout_ms=50
         let (mut service, database) = service_with_old_transport(false);
 
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, |_| Err(SerialError::Other)),
+            service.reconnect_resource_with_factory(7, 1, |_, _| Err(SerialError::Other)),
             Err(LifecycleOperationError::TransportUnavailable)
         );
         let diagnostic = service.reconnect_diagnostic().unwrap();
@@ -2144,13 +2163,13 @@ transaction_timeout_ms=50
     fn stale_expected_generation_is_conflict_without_prior_failure_diagnostics() {
         let (mut service, database) = service_with_old_transport(false);
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, |_| Err(SerialError::Other)),
+            service.reconnect_resource_with_factory(7, 1, |_, _| Err(SerialError::Other)),
             Err(LifecycleOperationError::TransportUnavailable)
         );
         assert!(service.reconnect_diagnostic().is_some());
 
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 99, |_| Err(SerialError::Other)),
+            service.reconnect_resource_with_factory(7, 99, |_, _| Err(SerialError::Other)),
             Err(LifecycleOperationError::Conflict)
         );
         assert!(service.reconnect_diagnostic().is_none());
@@ -2167,8 +2186,12 @@ transaction_timeout_ms=50
         let (mut service, database) = service_with_old_transport(false);
 
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, |settings| {
-                ComTransport::with_device_factory(settings, || Err(SerialError::Disconnected))
+            service.reconnect_resource_with_factory(7, 1, |settings, open_deadline| {
+                ComTransport::with_retrying_device_factory(
+                    settings,
+                    OpenRetryPolicy::transient_until(open_deadline),
+                    || Err(SerialError::Disconnected),
+                )
             }),
             Err(LifecycleOperationError::TransportUnavailable)
         );
@@ -2193,7 +2216,7 @@ transaction_timeout_ms=50
         let worker_release = release.clone();
 
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, move |settings| {
+            service.reconnect_resource_with_factory(7, 1, move |settings, _| {
                 ComTransport::with_device_factory(settings, move || {
                     while !worker_release.load(Ordering::Acquire) {
                         std::thread::yield_now();
@@ -2228,7 +2251,7 @@ transaction_timeout_ms=50
         let (mut service, database) = service_with_old_transport(false);
 
         assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, |settings| {
+            service.reconnect_resource_with_factory(7, 1, |settings, _| {
                 ComTransport::with_device_factory(settings, || {
                     Ok(Box::new(ProbeDevice {
                         readable: VecDeque::new(),
@@ -2261,7 +2284,7 @@ transaction_timeout_ms=50
         let (mut service, database) = service_with_old_transport(false);
 
         let result = service
-            .reconnect_resource_with_factory(7, 1, |settings| {
+            .reconnect_resource_with_factory(7, 1, |settings, _| {
                 ComTransport::with_device_factory(settings, || {
                     Ok(Box::new(ProbeDevice {
                         readable: VecDeque::new(),
@@ -2278,6 +2301,85 @@ transaction_timeout_ms=50
         assert!(diagnostic.os_port_open_confirmed);
         assert!(diagnostic.core_rebind_crossed);
         assert_eq!(service.owner().configured_binding_generation(11), Some(2));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+        assert!(status.exit_success);
+    }
+
+    #[test]
+    fn transient_disconnected_open_retries_before_same_deadline_and_rebinds_once() {
+        let (mut service, database) = service_with_old_transport(false);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_attempts = attempts.clone();
+
+        let result = service
+            .reconnect_resource_with_factory(7, 1, move |settings, open_deadline| {
+                ComTransport::with_retrying_device_factory(
+                    settings,
+                    OpenRetryPolicy::for_test(open_deadline, Duration::ZERO, 4),
+                    move || {
+                        if factory_attempts.fetch_add(1, Ordering::AcqRel) == 0 {
+                            Err(SerialError::Disconnected)
+                        } else {
+                            Ok(Box::new(ProbeDevice {
+                                readable: VecDeque::new(),
+                                channel_type: 3,
+                            }))
+                        }
+                    },
+                )
+            })
+            .unwrap_or_else(|error| panic!("{error:?}: {:?}", service.reconnect_diagnostic()));
+
+        assert_eq!(attempts.load(Ordering::Acquire), 2);
+        assert_eq!(result.binding_generation, 2);
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::Complete);
+        assert_eq!(diagnostic.open_attempts, 2);
+        assert_eq!(diagnostic.serial_error, Some(SerialError::Disconnected));
+        assert!(diagnostic.old_worker_finished);
+        assert!(diagnostic.os_port_open_confirmed);
+        assert!(diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(2));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+        assert!(status.exit_success);
+    }
+
+    #[test]
+    fn invalid_settings_open_is_terminal_without_generation_or_probe() {
+        let (mut service, database) = service_with_old_transport(false);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_attempts = attempts.clone();
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, move |settings, open_deadline| {
+                ComTransport::with_retrying_device_factory(
+                    settings,
+                    OpenRetryPolicy::transient_until(open_deadline),
+                    move || {
+                        factory_attempts.fetch_add(1, Ordering::AcqRel);
+                        Err(SerialError::InvalidSettings)
+                    },
+                )
+            }),
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+
+        assert_eq!(attempts.load(Ordering::Acquire), 1);
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ReplacementPortOpenFailed);
+        assert_eq!(diagnostic.serial_error, Some(SerialError::InvalidSettings));
+        assert_eq!(diagnostic.open_attempts, 1);
+        assert!(!diagnostic.os_port_open_confirmed);
+        assert!(!diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(1));
         assert_required_healthy_and_no_outputs(&service);
 
         let status = shutdown_and_remove(service, database);
