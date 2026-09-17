@@ -75,11 +75,9 @@ pub(crate) fn property_records(service: &ServiceHost) -> Result<Vec<Value>, &'st
             InstrumentDto::VirtualMeasurement {
                 display_name,
                 poll_period_ms,
-                ..
-            }
-            | InstrumentDto::ThermalPlant {
-                display_name,
-                poll_period_ms,
+                base_temperature,
+                measurement_enabled,
+                external_publication,
                 ..
             } => {
                 records.push(property(
@@ -102,6 +100,93 @@ pub(crate) fn property_records(service: &ServiceHost) -> Result<Vec<Value>, &'st
                     ),
                     &revision,
                 ));
+                records.push(property(
+                    &owner,
+                    "base_temperature",
+                    "number",
+                    json!(base_temperature),
+                    (
+                        Some(json!({"minimum":-100.0,"maximum":100.0})),
+                        "deployment_only",
+                        "reinitialize",
+                    ),
+                    &revision,
+                ));
+                records.push(property(
+                    &owner,
+                    "measurement_enabled",
+                    "boolean",
+                    json!(measurement_enabled),
+                    (None, "deployment_only", "reinitialize"),
+                    &revision,
+                ));
+                records.push(property(
+                    &owner,
+                    "external_publication",
+                    "boolean",
+                    json!(external_publication),
+                    (None, "read_only", "reinitialize"),
+                    &revision,
+                ));
+            }
+            InstrumentDto::ThermalPlant {
+                display_name,
+                poll_period_ms,
+                ambient_temperature,
+                initial_temperature,
+                gain_per_percent,
+                time_constant_ms,
+                ..
+            } => {
+                records.push(property(
+                    &owner,
+                    "display_name",
+                    "text",
+                    json!(display_name),
+                    (None, "read_write", "live_safe"),
+                    &revision,
+                ));
+                records.push(property(
+                    &owner,
+                    "poll_period_ms",
+                    "integer",
+                    json!(poll_period_ms),
+                    (
+                        Some(json!({"minimum":1,"maximum":60000})),
+                        "read_write",
+                        "ordinary_live",
+                    ),
+                    &revision,
+                ));
+                for (id, current, unit) in [
+                    (
+                        "ambient_temperature",
+                        json!(ambient_temperature),
+                        Some(json!({"id":"degC","symbol":"°C"})),
+                    ),
+                    (
+                        "initial_temperature",
+                        json!(initial_temperature),
+                        Some(json!({"id":"degC","symbol":"°C"})),
+                    ),
+                    ("gain_per_percent", json!(gain_per_percent), None),
+                    (
+                        "time_constant_ms",
+                        json!(time_constant_ms),
+                        Some(json!({"id":"ms","symbol":"ms"})),
+                    ),
+                ] {
+                    let mut record = property(
+                        &owner,
+                        id,
+                        "number",
+                        current,
+                        (None, "deployment_only", "reinitialize"),
+                        &revision,
+                    );
+                    record["unit"] = unit.unwrap_or(Value::Null);
+                    records.push(record);
+                }
             }
             InstrumentDto::Metakon { poll_period_ms, .. } => {
                 records.push(property(

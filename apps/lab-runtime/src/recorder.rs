@@ -138,9 +138,11 @@ impl ConfigurationLifecycleRecord {
             "reload_configuration" | "apply_configuration" => {
                 self.committed_revision == self.base_revision.checked_add(1).unwrap_or(0)
             }
-            "reload_managed_sources" | "restart_models" | "reconnect_resource" => {
-                self.committed_revision == self.base_revision
-            }
+            "reload_managed_sources"
+            | "restart_models"
+            | "virtual_models_restart"
+            | "emulator_publish"
+            | "reconnect_resource" => self.committed_revision == self.base_revision,
             _ => false,
         };
         self.operation_id > 0

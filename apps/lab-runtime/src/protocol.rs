@@ -39,6 +39,8 @@ enum Availability {
     Configuration,
     ManagedSourceReload,
     ResourceReconnect,
+    EmulatorPublication,
+    VirtualModelLifecycle,
 }
 
 /// One authoritative bounded public operation declaration.
@@ -157,7 +159,18 @@ pub const OPERATIONS: &[OperationSpec] = &[
         ["target", "property", "value", "expected_revision"]
     ),
     operation!("reload_managed_sources", Mutation, ManagedSourceReload, []),
-    operation!("restart_models", Mutation, []),
+    operation!(
+        "emulator_publish",
+        Mutation,
+        EmulatorPublication,
+        ["signal", "state", "value", "expected_generation"]
+    ),
+    operation!(
+        "virtual_models_restart",
+        Mutation,
+        VirtualModelLifecycle,
+        []
+    ),
     operation!(
         "reconnect_resource",
         Mutation,
@@ -199,6 +212,10 @@ pub struct ProtocolFeatures {
     pub managed_source_reload: bool,
     /// At least one configured physical resource supports explicit reconnect.
     pub resource_reconnect: bool,
+    /// At least one explicit virtual signal accepts external publication.
+    pub emulator_publication: bool,
+    /// At least one Runtime-owned native virtual model supports restart.
+    pub virtual_model_lifecycle: bool,
 }
 
 /// Find one declared operation without allocating.
@@ -214,6 +231,8 @@ pub fn operation_supported(spec: &OperationSpec, features: ProtocolFeatures) -> 
         Availability::Configuration => features.configuration,
         Availability::ManagedSourceReload => features.managed_source_reload,
         Availability::ResourceReconnect => features.resource_reconnect,
+        Availability::EmulatorPublication => features.emulator_publication,
+        Availability::VirtualModelLifecycle => features.virtual_model_lifecycle,
     }
 }
 
@@ -354,6 +373,21 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         stability: "stable",
         operation: "reconnect_resource",
     },
+    CapabilitySpec {
+        name: "virtual_instruments",
+        stability: "stable",
+        operation: "discover",
+    },
+    CapabilitySpec {
+        name: "emulator_publication",
+        stability: "stable",
+        operation: "emulator_publish",
+    },
+    CapabilitySpec {
+        name: "virtual_model_lifecycle",
+        stability: "stable",
+        operation: "virtual_models_restart",
+    },
 ];
 
 /// Bounded structured semantic capabilities supported by this composition.
@@ -378,6 +412,8 @@ pub fn limits() -> Value {
         "page_bytes":crate::configuration_api::PROPERTY_PAGE_BYTES,
         "runtime_overrides":32,"staged_candidates":1,"candidate_retention_seconds":30
     });
+    let emulator = json!({"targets":64,"records_per_request":1,
+        "metadata_bytes":0,"pending_per_scope":sessions::MAX_PENDING_SCOPE});
     let mut limits = json!({
         "frame_bytes": wire::FRAME_LIMIT,
         "json_depth": wire::DEPTH_LIMIT,
@@ -426,6 +462,10 @@ pub fn limits() -> Value {
         .as_object_mut()
         .expect("protocol limits are an object")
         .insert("configuration".into(), configuration);
+    limits
+        .as_object_mut()
+        .expect("protocol limits are an object")
+        .insert("emulator".into(), emulator);
     limits
 }
 

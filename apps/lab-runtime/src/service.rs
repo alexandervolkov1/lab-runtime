@@ -610,6 +610,8 @@ impl ServiceHost {
             }),
             resource_reconnect: deployment
                 .is_some_and(|active| !active.effective().dto.resources.is_empty()),
+            emulator_publication: self.host.emulator_target_count() != 0,
+            virtual_model_lifecycle: self.host.virtual_model_count() != 0,
         }
     }
 
@@ -1514,6 +1516,34 @@ impl ServiceHost {
         Ok(RestartModelsResult { models, generation })
     }
 
+    /// Restart only Runtime-owned native virtual models, never managed components or resources.
+    pub fn restart_virtual_models(
+        &mut self,
+    ) -> Result<RestartModelsResult, LifecycleOperationError> {
+        let active = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .active()
+            .clone();
+        if self.host.virtual_model_count() == 0 {
+            return Err(LifecycleOperationError::InvalidCandidate);
+        }
+        let pending = self.begin_recorded_lifecycle("virtual_models_restart", &active)?;
+        let (models, generation) = match self
+            .host
+            .restart_configured_models(&active, self.clock.now())
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::OwnerFailure);
+            }
+        };
+        self.finish_recorded_lifecycle(pending)?;
+        Ok(RestartModelsResult { models, generation })
+    }
+
     /// Explicitly retire and reopen one configured read-only COM resource.
     /// Port enumeration never calls this operation and no write retry is implied.
     pub fn reconnect_resource(
@@ -2287,6 +2317,58 @@ transaction_timeout_ms=50
         assert_eq!(event["target"]["id"], "7");
         assert_eq!(event["data"]["resource"], "7");
 
+        drop(application);
+        let status = shutdown_and_remove(service, database);
+        assert!(status.safe_confirmed);
+    }
+
+    #[test]
+    fn physical_signal_never_advertises_or_accepts_emulator_publication() {
+        let (mut service, database) = service_with_old_transport(false);
+        let signal = lab_core::SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        );
+        let before = service
+            .owner()
+            .query(lab_core::Query::GetLatestSignal(signal))
+            .unwrap();
+        assert!(!service.owner().emulator_writable(signal));
+        assert!(!service.protocol_features().emulator_publication);
+
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        assert!(
+            !hello[0]["result"]["operations"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("emulator_publish"))
+        );
+        let rejected = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"publish","op":"emulator_publish",
+                "request_id":{"scope":hello[0]["result"]["scope"],"seq":"1"},
+                "args":{"signal":{"instrument":"11","parameter":"2"},"state":"good",
+                    "value":25.0,"expected_generation":"1"}}),
+            ),
+        );
+        assert_eq!(rejected[0]["code"], "unsupported_operation");
+        assert_eq!(
+            service
+                .owner()
+                .query(lab_core::Query::GetLatestSignal(signal))
+                .unwrap(),
+            before
+        );
+        assert_required_healthy_and_no_outputs(&service);
         drop(application);
         let status = shutdown_and_remove(service, database);
         assert!(status.safe_confirmed);

@@ -1315,6 +1315,8 @@ pub(crate) enum InstrumentDto {
         base_temperature: f64,
         #[serde(default = "default_true")]
         measurement_enabled: bool,
+        #[serde(default)]
+        external_publication: bool,
         poll_period_ms: u64,
     },
     ThermalPlant {
@@ -1384,9 +1386,10 @@ impl InstrumentDto {
                 history_capacity,
                 base_temperature,
                 measurement_enabled,
+                external_publication,
                 ..
             } => format!(
-                "virtual:{id}:{key}:{history_capacity}:{base_temperature}:{measurement_enabled}"
+                "virtual:{id}:{key}:{history_capacity}:{base_temperature}:{measurement_enabled}:{external_publication}"
             ),
             Self::ThermalPlant {
                 id,

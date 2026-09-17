@@ -174,6 +174,35 @@ impl VirtualInstrument {
         self.signal.push(sample.clone())?;
         Ok(sample)
     }
+
+    /// Commit one externally supplied virtual observation at Runtime-owned time.
+    ///
+    /// This path owns no transport or output evidence. The descriptor remains the
+    /// authority for signal identity, scalar kind, unit, and numeric range.
+    pub(crate) fn publish(
+        &mut self,
+        parameter: ParameterId,
+        at: Duration,
+        value: Option<Value>,
+    ) -> Result<Sample, Error> {
+        let descriptor = self.parameter(parameter)?;
+        if descriptor.role != ParameterRole::Measurement {
+            return Err(Error::OperationNotAllowed(parameter));
+        }
+        let signal = descriptor
+            .signal
+            .ok_or(Error::OperationNotAllowed(parameter))?;
+        self.signal.check_time(at)?;
+        let sample = match value {
+            Some(value) => {
+                descriptor.value_spec.validate(&value)?;
+                Sample::good(signal, descriptor.unit, at, value)
+            }
+            None => Sample::unavailable(signal, descriptor.unit, at, MeasurementFailure::Disabled),
+        };
+        self.signal.push(sample.clone())?;
+        Ok(sample)
+    }
 }
 
 fn base_spec() -> ValueSpec {

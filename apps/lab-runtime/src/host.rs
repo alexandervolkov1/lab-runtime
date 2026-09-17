@@ -19,7 +19,7 @@ use crate::{
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
     ParameterDescriptor, ParameterRole, Query, QueryResult, Runtime, Sample, SampleQuality,
-    SignalId, Unit, ValueSpec, WriteEffect,
+    SignalId, Unit, Value, ValueSpec, WriteEffect,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
     instrument::{KnownOperation, MetakonBinding, MetakonInstrumentConfig},
     managed::{
@@ -361,6 +361,7 @@ pub struct HostCore {
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
     deployment_provenance: Vec<ProvenanceEntry>,
     model_generations: BTreeMap<InstrumentId, u64>,
+    emulator_targets: BTreeSet<SignalId>,
     configured_probes: Vec<ConfiguredProbe>,
     configuration_quiesced: bool,
     reconnect_quiesced_resources: BTreeSet<ResourceId>,
@@ -392,6 +393,7 @@ impl HostCore {
         let mut runtime = Runtime::new();
         let mut measurements = Vec::with_capacity(dto.instruments.len());
         let mut model_generations = BTreeMap::new();
+        let mut emulator_targets = BTreeSet::new();
         let mut resources = Vec::with_capacity(dto.resources.len());
         for resource in &dto.resources {
             let id = ResourceId::new(resource.id);
@@ -420,6 +422,7 @@ impl HostCore {
                     history_capacity,
                     base_temperature,
                     measurement_enabled,
+                    external_publication,
                     poll_period_ms,
                     ..
                 } => {
@@ -432,10 +435,15 @@ impl HostCore {
                             measurement_enabled: *measurement_enabled,
                         },
                     ))?;
-                    measurements.push((
-                        InstrumentId::new(*id),
-                        Periodic::new(Duration::from_millis(*poll_period_ms)),
-                    ));
+                    let signal = SignalId::new(InstrumentId::new(*id), lab_core::TEMPERATURE);
+                    if *external_publication {
+                        emulator_targets.insert(signal);
+                    } else {
+                        measurements.push((
+                            InstrumentId::new(*id),
+                            Periodic::new(Duration::from_millis(*poll_period_ms)),
+                        ));
+                    }
                 }
                 InstrumentDto::ThermalPlant {
                     id,
@@ -703,6 +711,7 @@ impl HostCore {
             pending_operations: BTreeMap::new(),
             deployment_provenance,
             model_generations,
+            emulator_targets,
             configured_probes,
             configuration_quiesced: false,
             reconnect_quiesced_resources: BTreeSet::new(),
@@ -815,6 +824,7 @@ impl HostCore {
             pending_operations: BTreeMap::new(),
             deployment_provenance: Vec::new(),
             model_generations: BTreeMap::from([(PLANT, 1)]),
+            emulator_targets: BTreeSet::new(),
             configured_probes: Vec::new(),
             configuration_quiesced: false,
             reconnect_quiesced_resources: BTreeSet::new(),
@@ -3079,6 +3089,51 @@ impl HostCore {
                 .get(&signal.instrument())
                 .copied()
                 .unwrap_or(1)
+        }
+    }
+
+    /// Whether this exact virtual signal is deployment-authorized for API publication.
+    pub fn emulator_writable(&self, signal: SignalId) -> bool {
+        self.emulator_targets.contains(&signal)
+    }
+
+    /// Number of explicitly configured external-emulator targets.
+    pub fn emulator_target_count(&self) -> usize {
+        self.emulator_targets.len()
+    }
+
+    /// Number of Runtime-owned native virtual models with generation-fenced restart.
+    pub fn virtual_model_count(&self) -> usize {
+        self.model_generations.len()
+    }
+
+    /// Commit one external virtual observation through the ordinary owner path.
+    pub fn publish_emulator_measurement(
+        &mut self,
+        signal: SignalId,
+        value: Option<Value>,
+        expected_generation: u64,
+        at: Duration,
+        cause: Option<(String, u64)>,
+    ) -> Result<Sample, Error> {
+        if !self.emulator_targets.contains(&signal) {
+            return Err(Error::OperationNotAllowed(signal.parameter()));
+        }
+        self.command_with_cause(
+            Command::PublishVirtualMeasurement {
+                instrument: signal.instrument(),
+                parameter: signal.parameter(),
+                value,
+                expected_generation,
+                at,
+            },
+            cause,
+        )?;
+        match self.runtime.query(Query::GetLatestSignal(signal))? {
+            QueryResult::Latest(Some(sample)) if sample.at() == at => Ok(sample),
+            _ => Err(Error::InvalidConfiguration(
+                "virtual publication did not commit",
+            )),
         }
     }
 

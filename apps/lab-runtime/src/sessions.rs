@@ -198,10 +198,21 @@ pub enum Mutation {
         /// Active deployment revision observed by the caller.
         expected_revision: u64,
     },
+    /// Publish one Runtime-timed observation to an explicitly writable virtual signal.
+    PublishEmulatorMeasurement {
+        /// Stable instrument identity shared with discovery/history/events.
+        instrument: u64,
+        /// Stable parameter identity shared with discovery/history/events.
+        parameter: u64,
+        /// Generation observed from discovery/current state.
+        expected_generation: u64,
+        /// Good scalar or explicit virtual Unavailable.
+        publication: EmulatorPublication,
+    },
     /// Reload only managed implementation sources; TOML and built-ins are unchanged.
     ReloadManagedSources,
     /// Reinitialize configured managed components and native virtual models.
-    RestartModels,
+    RestartVirtualModels,
     /// Explicitly replace one configured read-only resource session.
     ReconnectResource {
         /// Stable logical resource identity.
@@ -220,6 +231,15 @@ pub enum PropertyMutationValue {
     Integer(i64),
     /// Bounded UTF-8 text.
     Text(String),
+}
+
+/// Bounded states accepted by external virtual measurement publication.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EmulatorPublication {
+    /// One finite floating-point value in the signal's configured unit and range.
+    Good(f64),
+    /// Explicit virtual disabled/unavailable observation.
+    Unavailable,
 }
 impl Mutation {
     fn normalized(mut self) -> Self {

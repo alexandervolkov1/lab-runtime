@@ -95,6 +95,19 @@ pub enum Command {
     },
     /// Validate and register a native virtual instrument without producing a measurement.
     RegisterVirtual(VirtualInstrumentConfig),
+    /// Publish one Good or explicitly Unavailable observation into a virtual source.
+    PublishVirtualMeasurement {
+        /// Stable virtual instrument identity.
+        instrument: InstrumentId,
+        /// Stable measurement parameter identity.
+        parameter: ParameterId,
+        /// Good scalar, or `None` for virtual Unavailable/disabled.
+        value: Option<Value>,
+        /// Runtime generation observed by the caller; clients cannot assign it.
+        expected_generation: u64,
+        /// Authoritative Runtime receipt/commit time.
+        at: Duration,
+    },
     /// Register a deterministic first-order virtual thermal plant.
     RegisterThermalPlant(ThermalPlantConfig),
     /// Replace one stopped native model and fence every observation from its old generation.
@@ -325,6 +338,8 @@ pub enum CommandResult {
     Output(OutputResult),
     /// Registration completed without starting acquisition or output authority.
     Registered(InstrumentId),
+    /// One externally supplied virtual observation committed through the normal signal path.
+    VirtualMeasurementPublished(Sample),
     /// A native virtual model was reset under a checked generation fence.
     ModelRestarted {
         /// Stable logical instrument identity.
@@ -1142,6 +1157,24 @@ impl Runtime {
                 self.outputs.insert(actuator, authority);
                 self.sync_recording_output_context(actuator);
                 Ok(CommandResult::Registered(id))
+            }
+            Command::PublishVirtualMeasurement {
+                instrument,
+                parameter,
+                value,
+                expected_generation,
+                at,
+            } => {
+                if expected_generation != 1 {
+                    return Err(Error::InvalidConfiguration("stale virtual generation"));
+                }
+                let instance = self
+                    .instruments
+                    .get_mut(&instrument)
+                    .ok_or(Error::UnknownInstrument(instrument))?;
+                let sample = instance.publish(parameter, at, value)?;
+                self.recording_facts.measurement(sample.clone(), 1, 1);
+                Ok(CommandResult::VirtualMeasurementPublished(sample))
             }
             Command::RegisterThermalPlant(config) => {
                 let id = config.id;

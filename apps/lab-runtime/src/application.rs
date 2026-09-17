@@ -15,7 +15,8 @@ use crate::{
     recorder_api,
     service::{LifecycleOperationError, ServiceHost},
     sessions::{
-        Admission, Mutation, OperationState, PropertyMutationValue, SessionError, SessionStore,
+        Admission, EmulatorPublication, Mutation, OperationState, PropertyMutationValue,
+        SessionError, SessionStore,
     },
     wire::{WireRequest, WireRequestId, decimal_u64},
 };
@@ -889,9 +890,11 @@ impl Application {
                     let kind = owner.instrument_kind(descriptor.id);
                     records.push(json!({"kind":"instrument","id":descriptor.id.get().to_string(),
                         "name":descriptor.name,"implementation_kind":kind,
+                        "identity_class":if kind=="physical"{"physical"}else{"virtual"},
                         "capabilities":{"readable":true,"current":descriptor.parameters.iter().any(|p|p.signal.is_some()),
                             "recent_history":descriptor.parameters.iter().any(|p|p.signal.is_some()),
                             "live_subscription":descriptor.parameters.iter().any(|p|p.signal.is_some()),
+                            "emulator_publication":descriptor.parameters.iter().any(|p|p.signal.is_some_and(|s|owner.emulator_writable(s))),
                             "properties":descriptor.parameters.iter().any(|p|p.role==ParameterRole::Configuration)}}));
                     for parameter in descriptor.parameters {
                         if let Some(signal) = parameter.signal {
@@ -909,7 +912,12 @@ impl Application {
                                 "quality":latest.as_ref().map_or("unavailable",|s|quality_name(s.quality())),
                                 "generation":owner.signal_generation(signal).to_string(),
                                 "capabilities":{"readable":true,"current":true,"recent_history":true,
-                                    "durable_history":owner.recording_database_id().is_some(),"live_subscription":true}}));
+                                    "durable_history":owner.recording_database_id().is_some(),"live_subscription":true,
+                                    "emulator_publication":owner.emulator_writable(signal)},
+                                "emulator":if owner.emulator_writable(signal) {json!({"writable":true,
+                                    "states":["good","unavailable"],"timing":"runtime_receipt",
+                                    "expected_generation":owner.signal_generation(signal).to_string(),
+                                    "value_constraints":value_constraints(&parameter.value_spec)})} else {Value::Null}}));
                         }
                     }
                 }
@@ -1718,7 +1726,19 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
                 "expected_revision":expected_revision.to_string()}),
         ),
         Mutation::ReloadManagedSources => ("reload_managed_sources", json!({})),
-        Mutation::RestartModels => ("restart_models", json!({})),
+        Mutation::PublishEmulatorMeasurement {
+            instrument,
+            parameter,
+            expected_generation,
+            publication,
+        } => (
+            "emulator_publish",
+            json!({"signal":{"instrument":instrument.to_string(),"parameter":parameter.to_string()},
+                "expected_generation":expected_generation.to_string(),
+                "state":match publication {EmulatorPublication::Good(_)=>"good",EmulatorPublication::Unavailable=>"unavailable"},
+                "value":match publication {EmulatorPublication::Good(value)=>json!(value),EmulatorPublication::Unavailable=>Value::Null}}),
+        ),
+        Mutation::RestartVirtualModels => ("virtual_models_restart", json!({})),
         Mutation::ReconnectResource {
             resource,
             expected_binding_generation,
@@ -1991,7 +2011,23 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
             }
         }
         "reload_managed_sources" => Mutation::ReloadManagedSources,
-        "restart_models" => Mutation::RestartModels,
+        "emulator_publish" => {
+            let signal = args.get("signal").ok_or("invalid_args")?;
+            let publication = match args.get("state").and_then(Value::as_str) {
+                Some("good") => EmulatorPublication::Good(float_field(args, "value")?),
+                Some("unavailable") if args.get("value").is_none() => {
+                    EmulatorPublication::Unavailable
+                }
+                _ => return Err("invalid_args"),
+            };
+            Mutation::PublishEmulatorMeasurement {
+                instrument: id_field(signal, "instrument")?,
+                parameter: id_field(signal, "parameter")?,
+                expected_generation: id_field(args, "expected_generation")?,
+                publication,
+            }
+        }
+        "virtual_models_restart" => Mutation::RestartVirtualModels,
         "reconnect_resource" => Mutation::ReconnectResource {
             resource: id_field(args, "resource")?,
             expected_binding_generation: id_field(args, "expected_binding_generation")?,
@@ -2226,9 +2262,33 @@ fn dispatch(
                 .map(|()| json!({"reloaded":true}))
                 .map_err(lifecycle_domain_error);
         }
-        Mutation::RestartModels => {
+        Mutation::PublishEmulatorMeasurement {
+            instrument,
+            parameter,
+            expected_generation,
+            publication,
+        } => {
+            let signal = SignalId::new(InstrumentId::new(instrument), ParameterId::new(parameter));
+            let value = match publication {
+                EmulatorPublication::Good(value) => Some(lab_core::Value::Float(value)),
+                EmulatorPublication::Unavailable => None,
+            };
+            let sample = service.owner_mut().publish_emulator_measurement(
+                signal,
+                value,
+                expected_generation,
+                at,
+                Some((rid.scope.clone(), rid.seq)),
+            )?;
+            let generation = service.owner().signal_generation(signal);
+            return Ok(json!({"signal":signal_id_json(signal),
+                "generation":generation.to_string(),
+                "state":if sample.quality()==lab_core::SampleQuality::Good{"good"}else{"unavailable"},
+                "committed_at_ns":nanos(sample.at())}));
+        }
+        Mutation::RestartVirtualModels => {
             return service
-                .restart_models()
+                .restart_virtual_models()
                 .map(|result| {
                     json!({"models":result.models.to_string(),
                     "generation":result.generation.to_string()})
@@ -2301,6 +2361,13 @@ fn float_field(args: &Value, field: &str) -> Result<f64, &'static str> {
         .and_then(Value::as_f64)
         .filter(|v| v.is_finite())
         .ok_or("invalid_args")
+}
+fn value_constraints(spec: &lab_core::ValueSpec) -> Value {
+    match spec {
+        lab_core::ValueSpec::Float { min, max } => json!({"minimum":min,"maximum":max}),
+        lab_core::ValueSpec::Integer { min, max } => json!({"minimum":min,"maximum":max}),
+        _ => Value::Null,
+    }
 }
 fn parse_filter_target(value: &Value) -> Result<FilterTarget, &'static str> {
     let object = value.as_object().ok_or("invalid_args")?;

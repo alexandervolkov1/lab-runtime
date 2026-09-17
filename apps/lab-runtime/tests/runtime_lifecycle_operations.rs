@@ -202,12 +202,13 @@ fn c8_public_api_advertises_only_composed_lifecycle_operations() {
     assert!(!capability_names.contains(&"lua_source"));
     let operations = hello[0]["result"]["operations"].as_array().unwrap();
     assert!(!operations.contains(&json!("reload_managed_sources")));
-    assert!(operations.contains(&json!("restart_models")));
+    assert!(operations.contains(&json!("virtual_models_restart")));
+    assert!(!operations.contains(&json!("restart_models")));
     assert!(!operations.contains(&json!("reload_managed_scripts")));
     let restart = application.handle(
         &mut service,
         1,
-        request(json!({"v":1,"msg_id":"r","op":"restart_models",
+        request(json!({"v":1,"msg_id":"r","op":"virtual_models_restart",
             "request_id":{"scope":scope,"seq":"1"},"args":{}})),
     );
     assert_eq!(restart[0]["state"], "accepted");
@@ -216,7 +217,7 @@ fn c8_public_api_advertises_only_composed_lifecycle_operations() {
     let known = application.handle(
         &mut service,
         1,
-        request(json!({"v":1,"msg_id":"again","op":"restart_models",
+        request(json!({"v":1,"msg_id":"again","op":"virtual_models_restart",
             "request_id":{"scope":scope,"seq":"1"},"args":{}})),
     );
     assert_eq!(known.len(), 1);
