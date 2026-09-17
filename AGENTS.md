@@ -27,13 +27,14 @@ context. Read them on demand. They do not override the active authorization.
 Current status:
 
 ```text
-READY_FOR_HARDWARE_RERUN
+STATUS: READY_FOR_EXTERNAL_REVIEW
 ```
 
-Authorized work is only the final read-only M8 hardware acceptance and its final
-verification/reporting gate.
+Final physical M8 acceptance and the final software gates have succeeded. Current
+authorized work is external M8 review only. No further COM5 or hardware rerun is
+authorized or required.
 
-Do not start M9A before external M8 acceptance.
+M9A remains NOT AUTHORIZED until M8 receives explicit external acceptance.
 
 ## Donor repository
 

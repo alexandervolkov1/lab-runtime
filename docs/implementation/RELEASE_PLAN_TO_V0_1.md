@@ -11,8 +11,8 @@ M1-M7
 Current phase:
 
 ```text
-M8 final real-hardware acceptance
-STATUS: READY_FOR_HARDWARE_RERUN
+M8 external acceptance review
+STATUS: READY_FOR_EXTERNAL_REVIEW
 ```
 
 M9A has not started.
@@ -109,22 +109,24 @@ M8 has already implemented the software contract for:
 - Metakon compatibility/read acquisition;
 - Required Recorder integration.
 
-Remaining release gate:
+Completed M8 gate evidence:
 
 1. successful real initial acquisition;
-2. finite real device-off recovery to Offline;
-3. one explicit real reconnect;
-4. actual-open Ready before generation-2 rebind;
-5. channel-type compatibility probe;
-6. durable reconnect lifecycle;
-7. generation-2 acquisition only after release;
-8. Babashka A/B independence;
-9. harmless live-safe configuration change;
-10. clean shutdown/history evidence;
-11. final debug/release/rustdoc/fmt/clippy/Babashka gates;
-12. external M8 review.
+2. finite real device-off transition to Offline;
+3. exactly one explicit reconnect;
+4. bounded transient `Disconnected` reopen handling;
+5. actual-open/settings Ready before Core rebind;
+6. generation 1 -> 2 fencing;
+7. `channel_type = 3` compatibility probe;
+8. durable reconnect lifecycle before ordinary generation-2 acquisition;
+9. sustained generation-2 Good acquisition;
+10. Babashka A/B independence;
+11. harmless live-safe configuration revision without unnecessary rebind;
+12. clean shutdown and complete Recorder history;
+13. complete debug/release/fmt/Clippy/rustdoc/Babashka/client/demo gates.
 
-Do not start M9A before this gate is accepted.
+The next gate is external M8 review. M8 is not externally accepted yet. Do not
+start M9A until that review explicitly returns acceptance.
 
 ## M9A — neutral managed components and native Rust execution
 

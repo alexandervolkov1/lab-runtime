@@ -8,17 +8,16 @@ local Application API.
 
 M1-M7 are complete. M7 Recorder/SQLite is externally accepted.
 
-M8 software-side deployment/Windows-COM/reconnect work is complete and the project is:
+M8 deployment/Windows-COM/reconnect work, final physical acceptance and final
+software gates are complete. The project is:
 
 ```text
-STATUS: READY_FOR_HARDWARE_RERUN
+STATUS: READY_FOR_EXTERNAL_REVIEW
 ```
 
-The latest reported software checkpoint includes 427 named debug workspace tests,
-focused reconnect/COM/Recorder suites and real Babashka A/B process acceptance.
-
-Real M8 hardware acceptance is not complete until the prepared reconnect path succeeds
-on the actual Metakon bench and the final release/rustdoc gates pass.
+The completed gate includes the successful real Metakon reconnect path, complete
+Recorder evidence and full debug/release/fmt/Clippy/rustdoc/Babashka/client/demo
+verification. No further COM5 or hardware rerun is authorized or required.
 
 Do not start M9A before external M8 acceptance.
 
@@ -78,7 +77,7 @@ Clients do not own controller, transport, Recorder or output-safety lifetime.
 ## Current release direction
 
 ```text
-M8  final physical acceptance
+M8  external acceptance review
 M9A neutral managed-component boundary + native Rust component path
 M9B unified Application/emulator/presentation/control/properties API + Babashka wrappers
 M10 GUI
