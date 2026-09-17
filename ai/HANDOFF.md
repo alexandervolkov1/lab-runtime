@@ -5,7 +5,7 @@
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: READY_FOR_EXTERNAL_REVIEW
+M9B: ACCEPTED
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
@@ -15,12 +15,14 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: NOT AUTHORIZED
-Current phase: M9B external review gate
+M9C: AUTHORIZED
+Current phase: M9C — remove Lua and obsolete client baggage
+M10+: NOT AUTHORIZED
 ```
 
-M9B implementation and internal gates are complete and await external review. Do
-not begin M9C, cleanup, hardening, packaging or release work automatically.
+M9B implementation and external review are accepted. M9C is the only authorized
+implementation milestone. Do not begin M10, hardening, packaging or release work
+automatically.
 
 ## Accepted baselines
 
@@ -112,12 +114,12 @@ connection, and released on disconnect.
 M9B.9 is complete. The final report now contains the exact 46-operation and
 27-capability inventories, identity/current/history/subscription/mutation contracts,
 structured error taxonomy, authoritative bounds, authority and extensibility
-invariants, transitional M9C inputs and the external-review checklist. M9B awaits
-external review; stop before M9C.
+invariants, transitional M9C inputs and the external-review checklist. External
+review accepted M9B at `d228d697c01a4b77d55333655129f95ee784c07c`.
 
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.
 
-After explicit M9B acceptance, M9C may remove active Lua and obsolete first-party
-client baggage while preserving historical evidence. M10-M12 remain blocked. The
-roadmap ends at v0.1.0.
+M9C removes active Lua and obsolete first-party client baggage while preserving the
+neutral managed-component architecture and historical evidence. M10-M12 remain
+blocked. The roadmap ends at v0.1.0.

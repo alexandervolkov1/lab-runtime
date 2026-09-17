@@ -9,19 +9,19 @@ durable recording and a local Application API.
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: READY_FOR_EXTERNAL_REVIEW
-M9C: NOT AUTHORIZED
-Current phase: M9B external review gate
+M9B: ACCEPTED
+M9C: AUTHORIZED
+Current phase: M9C — remove Lua and obsolete client baggage
+M10+: NOT AUTHORIZED
 ```
 
 M8 physical read-only acceptance and M9A neutral/native managed-component execution
 are externally accepted. No additional M8 hardware run is required, and COM5 is not
 part of current work.
 
-M9B implementation and internal gates are complete and await external review. The
-coherent local Application API exposes laboratory and Runtime semantics without
-presentation state, a frontend, client SDK or scripting environment. M9C is not
-authorized.
+M9B's coherent local Application API is externally accepted. M9C is authorized to
+remove active Lua and obsolete first-party client baggage without replacing them
+with another scripting language, client SDK or presentation surface.
 
 ## Product boundary
 

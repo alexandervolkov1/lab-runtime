@@ -8,7 +8,7 @@ implementation authorization. This roadmap ends at v0.1.0.
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: READY_FOR_EXTERNAL_REVIEW
+M9B: ACCEPTED
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
@@ -18,8 +18,9 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: NOT AUTHORIZED
-Current phase: M9B external review gate
+M9C: AUTHORIZED
+Current phase: M9C — remove Lua and obsolete client baggage
+M10+: NOT AUTHORIZED
 ```
 
 Completed milestones M1-M9A established the domain, OutputAuthority, bounded
@@ -82,7 +83,8 @@ multi-client fault acceptance, including the final connection-local history-curs
 bound.
 M9B.9 consolidated the source-derived operation/capability inventory, identity and
 lifecycle contracts, error taxonomy, authoritative limits, transition list and
-external-review checklist. M9B now awaits external review and is not self-accepted.
+external-review checklist. External review accepted M9B at
+`d228d697c01a4b77d55333655129f95ee784c07c`.
 
 ### Discovery
 
@@ -150,15 +152,16 @@ environment. Testing uses Rust, raw-protocol and integration tests.
 
 ## M9C — Remove Lua and obsolete client baggage
 
-After explicit M9B acceptance, remove active Lua product code and dependencies where
+With M9B externally accepted, remove active Lua product code and dependencies where
 no longer required:
 
 - `lab-lua`;
 - `mlua`;
 - `lua.v1`;
 - Lua runtime/sandbox;
-- active Lua configuration surface;
-- Lua fixtures and active API vocabulary;
+- Lua source/configuration paths and Lua-only active fixtures;
+- active Lua-specific API vocabulary, including `reload_managed_sources` and
+  `managed_source_reload`;
 - Lua user documentation.
 
 Preserve historical milestone reports, immutable SQLite archives and historical
@@ -168,24 +171,38 @@ inspection only when genuinely necessary.
 Remove active first-party client baggage from the release product:
 
 - Babashka client and user workflow;
+- Babashka-only process acceptance that has no neutral product coverage role;
 - client SDK material;
 - bundled external-client examples.
 
 Replace required acceptance coverage with implementation-neutral Rust/protocol
 integration tests.
 
+Inspect the transitional `runtime_snapshot`, `snapshot_page` and
+`snapshot_release` family. Remove it when accepted domain-specific discovery/current
+surfaces supersede it; retain only genuinely necessary neutral semantics, not old
+Babashka convenience.
+
+Keep the neutral managed-component contract, BuiltIn/native executor path, bounded
+`PlainData`, generation/revision fencing, `native.moving_mean.v1` and neutral
+provenance. Historical M5 documentation, archives, schemas and provenance names are
+evidence, not active product surface, and are not rewritten.
+
 Final active component model:
 
 ```text
 Application API
       ↓
-Runtime
-      ↓
-native instruments
-native managed components
-native control
-Recorder
+authoritative Runtime
+      ├── native instruments
+      ├── native managed components
+      ├── native controllers / OutputAuthority
+      ├── Recorder
+      └── virtual instruments / emulator API
 ```
+
+M9C adds no replacement scripting language, GUI, Presentation API, client SDK or
+post-v0.1 roadmap. It is simplification, not substitution.
 
 ## M10 — Core cleanup and studyability
 

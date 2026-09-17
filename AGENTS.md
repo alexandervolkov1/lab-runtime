@@ -27,17 +27,18 @@ context. Read them on demand. They do not override the active authorization.
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: AUTHORIZED
-M9C+: NOT AUTHORIZED
-Current phase: M9B — complete and stabilize Application API
+M9B: ACCEPTED
+M9C: AUTHORIZED
+Current phase: M9C — remove Lua and obsolete client baggage
+M10+: NOT AUTHORIZED
 ```
 
 Final physical M8 acceptance and the final software gates have succeeded. No further
 M8 hardware rerun is required, and COM5 is not part of current work.
 
-M9A implementation and external review have succeeded. M9B is the only authorized
-implementation milestone. M9C and later milestones remain blocked behind explicit
-review gates.
+M9A and M9B implementation and external review have succeeded. M9C is the only
+authorized implementation milestone. M10 and later milestones remain blocked behind
+explicit review gates.
 
 ## Donor repository
 
@@ -131,8 +132,8 @@ Runtime -> component -> validated result
 ```
 
 Existing M5 Lua is historical implementation context and remains active only until
-the authorized later M9C removal milestone. Until then, only changes required by an
-authorized milestone or bug/safety corrections are allowed.
+the currently authorized M9C removal is completed. Removal must preserve the neutral
+managed-component contract and historical evidence.
 
 M5 Lua is not currently known to violate the safety boundary. Its sandbox denies
 raw transport, OutputAuthority, physical ACK/readback/safe evidence and general
@@ -145,7 +146,7 @@ Do not add a persistent Lua workspace, Lua application/scenario API, Lua present
 API, Lua REPL/editor or broader M5 scope.
 
 M9A added the first-class `native.moving_mean.v1` path through the same bounded
-contract and is externally accepted. Current authorization is M9B only; detailed
+contract and is externally accepted. Current authorization is M9C only; detailed
 scope belongs in `ai/WORK.md`.
 
 ## Virtual/emulator boundary
