@@ -4,7 +4,7 @@
 //! A pure query never calls observe. Ring pressure evicts oldest records without
 //! pinning them for snapshots or subscribers.
 
-use crate::application::{controller_json, nanos, output_json, reference_json};
+use crate::application::{controller_projection_json, nanos, output_json, reference_json};
 use crate::measurements::sample_json;
 use lab_core::control::ControllerId;
 use lab_core::managed::{ComponentId, ComponentState};
@@ -98,7 +98,14 @@ impl Target {
                 _ => None,
             },
             Self::Controller(id) => match runtime.query(Query::Controller(*id)).ok()? {
-                QueryResult::Controller(s) => Some(controller_json(s)),
+                QueryResult::Controller(snapshot) => {
+                    let QueryResult::ControllerConfig(config) =
+                        runtime.query(Query::ControllerConfig(*id)).ok()?
+                    else {
+                        return None;
+                    };
+                    Some(controller_projection_json(snapshot, config))
+                }
                 _ => None,
             },
             Self::Reference(id) => match runtime.query(Query::Reference(*id)).ok()? {

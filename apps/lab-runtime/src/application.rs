@@ -21,7 +21,8 @@ use lab_core::managed::{ComponentId, ComponentState};
 use lab_core::output::{
     ActuatorId, DispatchOutcome, OutputError, OutputOwner, OutputSnapshot, OutputState,
 };
-use lab_core::reference::{ReferenceId, ReferenceSnapshot};
+use lab_core::processing::EmaConfig;
+use lab_core::reference::{ReferenceConfig, ReferenceId, ReferenceSnapshot};
 use lab_core::transport::TransportError;
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, ParameterDescriptor, ParameterId,
@@ -778,15 +779,7 @@ impl Application {
                 else {
                     return Err("internal_error");
                 };
-                let mut view = controller_json(snap);
-                view["config"] = json!({"input":{"instrument":config.input.instrument().get().to_string(),"parameter":config.input.parameter().get().to_string()},
-                    "output":{"instrument":config.output.instrument().get().to_string(),"parameter":config.output.parameter().get().to_string()},
-                    "reference":config.reference.get().to_string(),"pid":{"kp":config.pid.kp,"ki":config.pid.ki,"kd":config.pid.kd,
-                        "output_min":config.pid.output_min,"output_max":config.pid.output_max},
-                    "max_input_age_ns":nanos(config.max_input_age),"max_tick_gap_ns":nanos(config.max_tick_gap),
-                    "lease_lifetime_ns":nanos(config.lease_lifetime),"proposal_ttl_ns":nanos(config.proposal_ttl),
-                    "ema":{"time_constant_ns":nanos(config.ema.time_constant),"warmup_samples":config.ema.warmup_samples}});
-                view
+                controller_projection_json(snap, config)
             }
             "describe" => {
                 let id = id_field(args, "instrument")?;
@@ -1525,6 +1518,25 @@ impl Application {
 // or safe evidence. History selections remain process-local to avoid recursion.
 fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
     let (command, fields) = match mutation {
+        Mutation::ConfigureReferenceFixed {
+            reference,
+            expected_revision,
+            value,
+        } => (
+            "reference_configure",
+            json!({"reference":reference.to_string(),"expected_revision":expected_revision.to_string(),
+                "kind":"fixed","value":value}),
+        ),
+        Mutation::ConfigureReferenceRamp {
+            reference,
+            expected_revision,
+            target,
+            rate,
+        } => (
+            "reference_configure",
+            json!({"reference":reference.to_string(),"expected_revision":expected_revision.to_string(),
+                "kind":"ramp","target":target,"rate":rate}),
+        ),
         Mutation::RetuneRamp {
             reference,
             expected_revision,
@@ -1549,6 +1561,28 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
                 "expected_revision":expected_revision.to_string(),"kp":kp,"ki":ki,"kd":kd,
                 "output_min":output_min,"output_max":output_max}),
         ),
+        Mutation::ConfigureController {
+            controller,
+            expected_revision,
+            kp,
+            ki,
+            kd,
+            output_min,
+            output_max,
+            ema_time_constant_ns,
+            ema_warmup_samples,
+            max_input_age_ns,
+            max_tick_gap_ns,
+            lease_lifetime_ns,
+            proposal_ttl_ns,
+        } => (
+            "controller_configure",
+            json!({"controller":controller.to_string(),"expected_revision":expected_revision.to_string(),
+                "pid":{"kp":kp,"ki":ki,"kd":kd,"output_min":output_min,"output_max":output_max},
+                "ema":{"time_constant_ns":ema_time_constant_ns.to_string(),"warmup_samples":ema_warmup_samples.to_string()},
+                "max_input_age_ns":max_input_age_ns.to_string(),"max_tick_gap_ns":max_tick_gap_ns.to_string(),
+                "lease_lifetime_ns":lease_lifetime_ns.to_string(),"proposal_ttl_ns":proposal_ttl_ns.to_string()}),
+        ),
         Mutation::Start { controller } => (
             "controller_start",
             json!({"controller":controller.to_string()}),
@@ -1559,6 +1593,10 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
         ),
         Mutation::Resume { controller } => (
             "controller_resume",
+            json!({"controller":controller.to_string()}),
+        ),
+        Mutation::ResetFailed { controller } => (
+            "controller_reset_failed",
             json!({"controller":controller.to_string()}),
         ),
         Mutation::ReloadConfiguration => ("reload_configuration", json!({})),
@@ -1611,6 +1649,26 @@ fn recorded_terminal(outcome: &OperationState) -> (&'static str, String) {
 
 fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
     Ok(match op {
+        "reference_configure" => {
+            let reference = id_field(args, "reference")?;
+            let expected_revision = id_field(args, "expected_revision")?;
+            match args.get("kind").and_then(Value::as_str) {
+                Some("fixed") if args.get("target").is_none() && args.get("rate").is_none() => {
+                    Mutation::ConfigureReferenceFixed {
+                        reference,
+                        expected_revision,
+                        value: float_field(args, "value")?,
+                    }
+                }
+                Some("ramp") if args.get("value").is_none() => Mutation::ConfigureReferenceRamp {
+                    reference,
+                    expected_revision,
+                    target: float_field(args, "target")?,
+                    rate: float_field(args, "rate")?,
+                },
+                _ => return Err("invalid_args"),
+            }
+        }
         "reference_retune" => Mutation::RetuneRamp {
             reference: id_field(args, "reference")?,
             expected_revision: id_field(args, "expected_revision")?,
@@ -1629,6 +1687,25 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
                 output_max: float_field(pid, "output_max")?,
             }
         }
+        "controller_configure" => {
+            let pid = args.get("pid").ok_or("invalid_args")?;
+            let ema = args.get("ema").ok_or("invalid_args")?;
+            Mutation::ConfigureController {
+                controller: id_field(args, "controller")?,
+                expected_revision: id_field(args, "expected_revision")?,
+                kp: float_field(pid, "kp")?,
+                ki: float_field(pid, "ki")?,
+                kd: float_field(pid, "kd")?,
+                output_min: float_field(pid, "output_min")?,
+                output_max: float_field(pid, "output_max")?,
+                ema_time_constant_ns: id_field(ema, "time_constant_ns")?,
+                ema_warmup_samples: id_field(ema, "warmup_samples")?,
+                max_input_age_ns: id_field(args, "max_input_age_ns")?,
+                max_tick_gap_ns: id_field(args, "max_tick_gap_ns")?,
+                lease_lifetime_ns: id_field(args, "lease_lifetime_ns")?,
+                proposal_ttl_ns: id_field(args, "proposal_ttl_ns")?,
+            }
+        }
         "controller_start" => Mutation::Start {
             controller: id_field(args, "controller")?,
         },
@@ -1636,6 +1713,9 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
             controller: id_field(args, "controller")?,
         },
         "controller_resume" => Mutation::Resume {
+            controller: id_field(args, "controller")?,
+        },
+        "controller_reset_failed" => Mutation::ResetFailed {
             controller: id_field(args, "controller")?,
         },
         "recording_start" => {
@@ -1786,11 +1866,67 @@ fn dispatch(
     rid: &WireRequestId,
 ) -> Result<Value, Error> {
     let at = service.clock().now();
-    let retune_reference = match &mutation {
-        Mutation::RetuneRamp { reference, .. } => Some(*reference),
+    let changed_reference = match &mutation {
+        Mutation::RetuneRamp { reference, .. }
+        | Mutation::ConfigureReferenceFixed { reference, .. }
+        | Mutation::ConfigureReferenceRamp { reference, .. } => Some(*reference),
         _ => None,
     };
     let command = match mutation {
+        Mutation::ConfigureReferenceFixed {
+            reference,
+            expected_revision,
+            value,
+        } => {
+            let QueryResult::Reference(snapshot) = service
+                .owner()
+                .query(Query::Reference(ReferenceId::new(reference)))?
+            else {
+                return Err(Error::InvalidConfiguration("unexpected Reference query"));
+            };
+            let unit = match snapshot {
+                ReferenceSnapshot::Fixed { unit, .. } => unit,
+                ReferenceSnapshot::Ramp { state, .. } => state.unit,
+            };
+            Command::ReconfigureReference {
+                reference: ReferenceId::new(reference),
+                config: ReferenceConfig::Fixed {
+                    id: ReferenceId::new(reference),
+                    value,
+                    unit,
+                },
+                expected_revision,
+            }
+        }
+        Mutation::ConfigureReferenceRamp {
+            reference,
+            expected_revision,
+            target,
+            rate,
+        } => {
+            let QueryResult::Reference(snapshot) = service
+                .owner()
+                .query(Query::Reference(ReferenceId::new(reference)))?
+            else {
+                return Err(Error::InvalidConfiguration("unexpected Reference query"));
+            };
+            let (start, unit) = match snapshot {
+                ReferenceSnapshot::Fixed { value, unit, .. } => (value, unit),
+                ReferenceSnapshot::Ramp { state, .. } => (state.current, state.unit),
+            };
+            Command::ReconfigureReference {
+                reference: ReferenceId::new(reference),
+                config: ReferenceConfig::Ramp {
+                    id: ReferenceId::new(reference),
+                    start,
+                    target,
+                    rate,
+                    unit,
+                    at,
+                },
+                expected_revision,
+            }
+        }
         Mutation::RetuneRamp {
             reference,
             expected_revision,
@@ -1822,6 +1958,56 @@ fn dispatch(
                 output_max,
             },
         },
+        Mutation::ConfigureController {
+            controller,
+            expected_revision,
+            kp,
+            ki,
+            kd,
+            output_min,
+            output_max,
+            ema_time_constant_ns,
+            ema_warmup_samples,
+            max_input_age_ns,
+            max_tick_gap_ns,
+            lease_lifetime_ns,
+            proposal_ttl_ns,
+        } => {
+            let id = ControllerId::new(controller);
+            let QueryResult::ControllerConfig(current) =
+                service.owner().query(Query::ControllerConfig(id))?
+            else {
+                return Err(Error::InvalidConfiguration("unexpected controller query"));
+            };
+            let warmup_samples = usize::try_from(ema_warmup_samples)
+                .map_err(|_| Error::Controller(ControllerError::InvalidConfiguration))?;
+            Command::ReconfigureController {
+                controller: id,
+                config: lab_core::control::NativeControllerConfig {
+                    id,
+                    input: current.input,
+                    output: current.output,
+                    reference: current.reference,
+                    ema: EmaConfig {
+                        time_constant: Duration::from_nanos(ema_time_constant_ns),
+                        warmup_samples,
+                        unit: current.ema.unit,
+                    },
+                    pid: PidConfig {
+                        kp,
+                        ki,
+                        kd,
+                        output_min,
+                        output_max,
+                    },
+                    max_input_age: Duration::from_nanos(max_input_age_ns),
+                    max_tick_gap: Duration::from_nanos(max_tick_gap_ns),
+                    lease_lifetime: Duration::from_nanos(lease_lifetime_ns),
+                    proposal_ttl: Duration::from_nanos(proposal_ttl_ns),
+                },
+                expected_revision,
+            }
+        }
         Mutation::Start { controller } => Command::StartController {
             controller: ControllerId::new(controller),
             at,
@@ -1831,6 +2017,10 @@ fn dispatch(
             at,
         },
         Mutation::Resume { controller } => Command::ResumeController {
+            controller: ControllerId::new(controller),
+            at,
+        },
+        Mutation::ResetFailed { controller } => Command::ResetFailedController {
             controller: ControllerId::new(controller),
             at,
         },
@@ -1912,10 +2102,15 @@ fn dispatch(
         .command_with_cause(command, Some((rid.scope.clone(), rid.seq)))?
     {
         CommandResult::ReferenceRetuned(retuned) => Ok(
-            json!({"reference":retune_reference.ok_or(Error::InvalidConfiguration("unexpected retune identity"))?.to_string(),"revision":retuned.revision.to_string(),
+            json!({"reference":changed_reference.ok_or(Error::InvalidConfiguration("unexpected retune identity"))?.to_string(),"revision":retuned.revision.to_string(),
             "value":retuned.state.current,"target":retuned.state.target,"rate":retuned.state.rate,
             "committed_at":nanos(retuned.state.last_at)}),
         ),
+        CommandResult::ReferenceConfigured(snapshot) => Ok(reference_json(
+            changed_reference
+                .ok_or(Error::InvalidConfiguration("unexpected Reference identity"))?,
+            snapshot,
+        )),
         CommandResult::ControllerUpdated(snapshot) => Ok(controller_json(snapshot)),
         _ => Err(Error::InvalidConfiguration("unexpected command result")),
     }
@@ -1977,9 +2172,36 @@ fn parse_filter_target(value: &Value) -> Result<FilterTarget, &'static str> {
     })
 }
 pub(crate) fn controller_json(s: ControllerSnapshot) -> Value {
-    json!({"controller":s.id.get().to_string(),"state":state_name(s.state),
+    json!({"controller":s.id.get().to_string(),"kind":"pid","state":state_name(s.state),
+        "status":if s.state==ControllerState::Failed{"failed"}else{"valid"},
+        "failure":if s.state==ControllerState::Failed{Some("latched")}else{None},
+        "active":matches!(s.state,ControllerState::Warming|ControllerState::Running),
+        "paused":s.state==ControllerState::Paused,
         "revision":s.config_revision.to_string(),"last_tick":s.last_tick.map(nanos),
         "latest_output":s.latest_output.map(|v|v.output)})
+}
+pub(crate) fn controller_projection_json(
+    snapshot: ControllerSnapshot,
+    config: lab_core::control::NativeControllerConfig,
+) -> Value {
+    let mut view = controller_json(snapshot);
+    view["bindings"] = json!({
+        "input":{"instrument":config.input.instrument().get().to_string(),
+            "parameter":config.input.parameter().get().to_string()},
+        "reference":{"id":config.reference.get().to_string()},
+        "output":{"instrument":config.output.instrument().get().to_string(),
+            "parameter":config.output.parameter().get().to_string()}
+    });
+    view["config"] = json!({
+        "pid":{"kp":config.pid.kp,"ki":config.pid.ki,"kd":config.pid.kd,
+            "output_min":config.pid.output_min,"output_max":config.pid.output_max},
+        "max_input_age_ns":nanos(config.max_input_age),"max_tick_gap_ns":nanos(config.max_tick_gap),
+        "lease_lifetime_ns":nanos(config.lease_lifetime),"proposal_ttl_ns":nanos(config.proposal_ttl),
+        "ema":{"time_constant_ns":nanos(config.ema.time_constant),
+            "warmup_samples":config.ema.warmup_samples.to_string(),
+            "unit":{"id":config.ema.unit.id(),"symbol":config.ema.unit.symbol()}}
+    });
+    view
 }
 fn parameter_json(p: &ParameterDescriptor) -> Value {
     let spec = match &p.value_spec {
@@ -2028,14 +2250,19 @@ pub(crate) fn reference_json(id: u64, s: ReferenceSnapshot) -> Value {
         ReferenceSnapshot::Fixed {
             value,
             unit,
+            last_at,
             revision,
             ..
         } => json!({"reference":id.to_string(),"kind":"fixed","value":value,
-            "revision":revision.to_string(),"unit":{"id":unit.id().to_string(),"symbol":unit.symbol()}}),
+            "revision":revision.to_string(),"status":"valid","configurable":true,
+            "last_at":last_at.map(nanos),"last_evaluated_at_ns":last_at.map(nanos),
+            "unit":{"id":unit.id().to_string(),"symbol":unit.symbol()}}),
         ReferenceSnapshot::Ramp {
             state, revision, ..
         } => json!({"reference":id.to_string(),"kind":"ramp","value":state.current,
-            "target":state.target,"rate":state.rate,"revision":revision.to_string(),"last_at":nanos(state.last_at),
+            "target":state.target,"rate":state.rate,"revision":revision.to_string(),
+            "status":"valid","configurable":true,"last_at":nanos(state.last_at),
+            "last_evaluated_at_ns":nanos(state.last_at),
             "unit":{"id":state.unit.id().to_string(),"symbol":state.unit.symbol()}}),
     }
 }

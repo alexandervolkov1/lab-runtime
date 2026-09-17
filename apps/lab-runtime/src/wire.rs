@@ -322,6 +322,10 @@ fn validate_nested_args(op: &str, args: &Map<String, Value>) -> Result<(), WireE
         "controller_configure_pid" => {
             nested.push(("pid", &["kp", "ki", "kd", "output_min", "output_max"]))
         }
+        "controller_configure" => {
+            nested.push(("pid", &["kp", "ki", "kd", "output_min", "output_max"]));
+            nested.push(("ema", &["time_constant_ns", "warmup_samples"]));
+        }
         "recording_stop" => nested.push(("run_id", &["boot_id", "run_no"])),
         "history_read" => {
             if args.get("mode").and_then(Value::as_str) == Some("runs") {

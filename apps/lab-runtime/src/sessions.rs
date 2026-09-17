@@ -28,6 +28,26 @@ pub(crate) const OUTCOME_SIZE_LIMIT: usize = 4_096;
 /// Complete typed mutation identity; connection/msg_id do not affect equality.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mutation {
+    /// Replace a complete Reference policy while retaining its stable identity and unit.
+    ConfigureReferenceFixed {
+        /// Existing Reference identity.
+        reference: u64,
+        /// Configuration revision compared in Core.
+        expected_revision: u64,
+        /// New finite constant value in the existing engineering unit.
+        value: f64,
+    },
+    /// Replace a complete Ramp policy from its current committed value.
+    ConfigureReferenceRamp {
+        /// Existing Reference identity.
+        reference: u64,
+        /// Configuration revision compared in Core.
+        expected_revision: u64,
+        /// New finite target in the existing engineering unit.
+        target: f64,
+        /// Positive engineering units per second.
+        rate: f64,
+    },
     /// Retune existing Ramp without changing its stable identity.
     RetuneRamp {
         /// Existing Reference identity.
@@ -56,6 +76,35 @@ pub enum Mutation {
         /// Inclusive output upper limit.
         output_max: f64,
     },
+    /// Replace all mutable native-controller policy while preserving read-only bindings.
+    ConfigureController {
+        /// Existing native controller identity.
+        controller: u64,
+        /// Configuration revision compared in Core.
+        expected_revision: u64,
+        /// Proportional gain.
+        kp: f64,
+        /// Integral gain.
+        ki: f64,
+        /// Derivative-on-measurement gain.
+        kd: f64,
+        /// Inclusive output lower limit.
+        output_min: f64,
+        /// Inclusive output upper limit.
+        output_max: f64,
+        /// Native EMA time constant in nanoseconds.
+        ema_time_constant_ns: u64,
+        /// Distinct good observations required before readiness.
+        ema_warmup_samples: u64,
+        /// Exclusive input freshness threshold in nanoseconds.
+        max_input_age_ns: u64,
+        /// Maximum controller service gap in nanoseconds.
+        max_tick_gap_ns: u64,
+        /// Finite automatic authority lifetime in nanoseconds.
+        lease_lifetime_ns: u64,
+        /// Finite proposal lifetime in nanoseconds.
+        proposal_ttl_ns: u64,
+    },
     /// Start an existing Ready native controller.
     Start {
         /// Existing native controller identity.
@@ -68,6 +117,11 @@ pub enum Mutation {
     },
     /// Resume a safely Paused native controller through Warming.
     Resume {
+        /// Existing native controller identity.
+        controller: u64,
+    },
+    /// Deliberately acknowledge a safely failed controller into Paused.
+    ResetFailed {
         /// Existing native controller identity.
         controller: u64,
     },

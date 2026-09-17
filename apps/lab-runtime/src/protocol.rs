@@ -93,6 +93,18 @@ pub const OPERATIONS: &[OperationSpec] = &[
     operation!("subscribe", Query, ["after", "filter"]),
     operation!("unsubscribe", Query, ["subscription"]),
     operation!(
+        "reference_configure",
+        Mutation,
+        [
+            "reference",
+            "expected_revision",
+            "kind",
+            "value",
+            "target",
+            "rate"
+        ]
+    ),
+    operation!(
         "reference_retune",
         Mutation,
         ["reference", "expected_revision", "target", "rate"]
@@ -102,9 +114,24 @@ pub const OPERATIONS: &[OperationSpec] = &[
         Mutation,
         ["controller", "expected_revision", "pid"]
     ),
+    operation!(
+        "controller_configure",
+        Mutation,
+        [
+            "controller",
+            "expected_revision",
+            "pid",
+            "ema",
+            "max_input_age_ns",
+            "max_tick_gap_ns",
+            "lease_lifetime_ns",
+            "proposal_ttl_ns"
+        ]
+    ),
     operation!("controller_start", Mutation, ["controller"]),
     operation!("controller_pause", Mutation, ["controller"]),
     operation!("controller_resume", Mutation, ["controller"]),
+    operation!("controller_reset_failed", Mutation, ["controller"]),
     operation!("runtime_shutdown", Mutation, []),
     operation!("stage_configuration", Mutation, Configuration, []),
     operation!(
@@ -228,12 +255,22 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         operation: "describe",
     },
     CapabilitySpec {
-        name: "reference_control",
+        name: "reference_read_write",
         stability: "stable",
-        operation: "reference_retune",
+        operation: "reference_configure",
     },
     CapabilitySpec {
-        name: "controller_control",
+        name: "controller_status",
+        stability: "stable",
+        operation: "controller",
+    },
+    CapabilitySpec {
+        name: "controller_configuration",
+        stability: "stable",
+        operation: "controller_configure",
+    },
+    CapabilitySpec {
+        name: "controller_lifecycle",
         stability: "stable",
         operation: "controller_start",
     },
@@ -328,6 +365,10 @@ pub fn limits() -> Value {
         "subscriptions_per_client": 1,
         "subscription_kinds": 8,
         "subscription_targets": 16,
+        "reference_result_records": 1,
+        "controller_result_records": 1,
+        "pid_configuration_fields": 5,
+        "controller_configuration_fields": 6,
         "capabilities": CAPABILITY_LIMIT,
         "semantic_name_bytes": SEMANTIC_NAME_LIMIT,
         "error_message_bytes": ERROR_MESSAGE_LIMIT,
