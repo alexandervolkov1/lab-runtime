@@ -7,11 +7,12 @@ M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3 discovery / measurements / history / subscriptions: COMPLETE
 M9B.4 Reference and controller/PID API: COMPLETE
-M9B.5: NOT STARTED
+M9B.5 Recorder Application API: COMPLETE
+M9B.6: NOT STARTED
 M9C+: NOT AUTHORIZED
 ```
 
-This report is cumulative through M9B.4. It does not claim that
+This report is cumulative through M9B.5. It does not claim that
 the complete M9B Application API is finished or externally accepted.
 
 ## M9B.2 scope and architecture
@@ -189,8 +190,8 @@ not made part of the future product API.
 
 ## Deferred M9B work
 
-M9B.4 is complete. Later slices own Recorder projections,
-resource/configuration projections, emulator publication, full fault acceptance and
+M9B.5 is complete. Later slices own resource/configuration projections, emulator
+publication, full fault acceptance and
 the remaining operation-specific naming cleanup. `reload_managed_sources` and
 `restart_models` were deliberately not redesigned in M9B.2.
 
@@ -339,7 +340,82 @@ and authority fencing, safe pause, finite leases, final authority recheck, and
 nonblocking control progress. Protocol, deduplication, lifecycle, subscription/gap,
 process, Recorder, and workspace suites remain regression gates.
 
-M9B.5 and later work remains deferred: Recorder public-contract refinements,
-resource/configuration/reconnect expansion, external emulator API, full adversarial
-fault acceptance, and final API freeze. No COM port or hardware path was opened, M8
-evidence was unchanged, and M9C was not started.
+## M9B.5 Recorder Application API
+
+`recording_status` is now always queryable. An unconfigured composition returns an
+explicit bounded `unconfigured` DTO while Recorder control and durable-history
+operations remain composition-gated. A configured DTO reports configured/available,
+the actual Idle/Starting/Recording/Stopping/Failed/Closed state, explicit status,
+whether experiment facts are accepted, Required or BestEffort policy, semantic
+archive and serving-boot identity, active run/interval identity, durable committed
+prefix and coverage, provenance availability/generation/identity, and a bounded
+allowlisted failure record. It does not expose paths, SQLite/WAL details, connection
+or worker-queue structures, schema names, or the worker's uncontrolled error text.
+The semantic pending durability counters live under `durability.pending`; the
+top-level `persisted_through_seq` and `outstanding_*` aliases remain temporarily for
+the pre-M9C Babashka regression fixture and are candidates for final-freeze cleanup.
+
+`recording_start` retains its bounded 128-byte nonblank label and uses the existing
+Runtime-owner start barrier. The frozen experiment boundary and activation
+provenance precede ordinary fact admission. Terminal success is emitted only after
+the worker's committed start receipt reaches the owner; it explicitly states that
+start and provenance committed and fact admission is open. Duplicate/invalid state,
+unavailable Recorder and bounded busy cases use structured `invalid_state`,
+`recording_unavailable`, and `capacity_exhausted` categories. No archive path is a
+client argument.
+
+`recording_stop` retains the semantic `{boot_id, run_no}` fence. Required policy
+first requires inactive controllers and safe outputs. Admission then closes, the
+single Recorder FIFO drains all previously accepted facts, and the worker commits
+the interval-end anchor, interval seal, run seal and checkpoint in one transaction.
+Only the resulting Idle receipt completes the public operation. The terminal result
+therefore states `accepted_facts_drained`, `interval_sealed`, `run_sealed`, and
+`transaction_committed`. It also states the deliberately weaker boundary:
+`writer_closed=false` and `archive_boot_sealed=false`. Ordinary stop neither closes
+the worker nor performs the shutdown boot seal; no additional fsync claim is made
+beyond the configured Recorder transaction contract.
+
+Run identity remains `{boot_id, run_no}` and interval identity remains
+`{boot_id, interval_no}`, under the separately exposed stable archive identity.
+Start creates one run and one interval atomically; stop seals both and clears the
+active identities. M9B.3 durable run/history pages use the same run identity and
+archive identity. Recent Runtime history remains a separate non-durable surface.
+
+Recorder failure is never projected as Idle. Public state uses the stable
+`recording_failed` code plus persisted/coverage facts and never copies SQLite or Rust
+error strings. Existing worker failure/gap sealing and Required fail-closed behavior
+are unchanged. Invalid lifecycle requests do not mutate Recorder state, and accepted
+Runtime-owned start/stop work survives client disconnect.
+
+Lifecycle transitions publish `recorder` events containing the same semantic status
+projection as current queries. They use the existing 1,024-record replay ring,
+4,096-byte event bound, sixteen-frame client queue and explicit M9B.3 gap/resync
+behavior. Writer activity and per-fact queue counters are not streamed. Reconnect
+uses hello, `recording_status`, optional durable history and a fresh subscription;
+no connection owns recording.
+
+Capabilities are now `recording_status`, composition-gated `recording_control`, and
+the existing semantic `measurement_history`; the generic `recorder` capability was
+removed. Hello publishes a 128-byte label bound, one-record status result and the
+common event limit under `limits.recorder`. Common frame, string, operation/session,
+history and ingress bounds are unchanged.
+
+Focused tests cover unconfigured and Idle state, active run/interval projection,
+capability composition, exactly-once start, duplicate start and invalid stop,
+start/stop terminal barriers, durable-history identity alignment, lifecycle events,
+disconnect-independent start/stop, zero-client continuation and reconnect state
+reconstruction. Existing Recorder startup/failure/backpressure/isolation,
+operation-provenance, shutdown/sealing, history, protocol, process, deduplication and
+subscription suites remain regression gates.
+
+The previously reported unrelated serial timing flake reproduced once during a
+final release-profile workspace rerun:
+`serial::retirement_tests::shutdown_during_transient_retry_wait_is_finite` reported
+`bounded worker did not make progress`. Its immediate isolated release-profile rerun
+passed. No serial code or timing threshold was changed; this remains evidence for
+later hardening rather than M9B.5 scope.
+
+M9B.6 and later work remains deferred: resource/configuration/reconnect expansion,
+external emulator API, full adversarial fault acceptance, and final API freeze. No
+COM port or hardware path was opened, M8 evidence was unchanged, and M9C was not
+started.

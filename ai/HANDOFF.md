@@ -10,7 +10,8 @@ M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
 M9B.4: COMPLETE
-M9B.5: NOT STARTED
+M9B.5: COMPLETE
+M9B.6: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -83,12 +84,11 @@ responses. Unknown operations are nonfatal; malformed input remains reactor-scop
 oversized outgoing results become correlated client errors instead of stopping the
 service. Existing session/dedup/disconnect ownership remains intact.
 
-M9B.4 is complete. Reference and native PID state, complete validated configuration,
-the actual start/pause/resume/reset lifecycle, read-only bindings, and bounded public
-events now use stable domain identities and the existing Runtime/OutputAuthority
-path. Stop until a new instruction authorizes M9B.5. Remaining M9B domains are
-Recorder, resources/configuration/reconnect, virtual/emulator behavior, fault
-acceptance and final freeze.
+M9B.5 is complete. Recorder current state, start/stop barriers, run/interval identity,
+failure projection and lifecycle events now expose laboratory semantics without
+SQLite/WAL or worker leakage. Stop until a new instruction authorizes M9B.6.
+Remaining M9B domains are resources/configuration/reconnect, virtual/emulator
+behavior, fault acceptance and final freeze.
 
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.

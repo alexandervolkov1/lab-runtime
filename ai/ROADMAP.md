@@ -13,7 +13,8 @@ M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
 M9B.4: COMPLETE
-M9B.5: NOT STARTED
+M9B.5: COMPLETE
+M9B.6: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -66,6 +67,9 @@ measurements, durable-history delivery cleanup, and live subscription semantics.
 M9B.4 completed bounded Reference mutation/current state and native controller/PID
 configuration, status, lifecycle and event projections without exposing output
 authority.
+M9B.5 completed semantic Recorder current state, start/stop durability boundaries,
+stable run/interval identity, failure projection and bounded lifecycle events while
+keeping SQLite below the Application boundary.
 
 ### Discovery
 

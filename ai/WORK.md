@@ -8,7 +8,8 @@ M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
 M9B.4: COMPLETE
-M9B.5: NOT STARTED
+M9B.5: COMPLETE
+M9B.6: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -20,8 +21,9 @@ The read-only M9B.1 audit is complete in
 `docs/implementation/MILESTONE_9B_API_AUDIT.md`. M9B.2 implemented the common
 protocol/error/operation foundation; M9B.3 completed read-side discovery,
 measurement/history and subscription semantics; M9B.4 completed Reference and native
-controller/PID operations. These are recorded in
-`docs/implementation/MILESTONE_9B_REPORT.md`. Stop before M9B.5; a new instruction
+controller/PID operations; M9B.5 completed the semantic Recorder status, lifecycle,
+event and durable-boundary API. These are recorded in
+`docs/implementation/MILESTONE_9B_REPORT.md`. Stop before M9B.6; a new instruction
 must authorize the next implementation slice.
 
 ## Goal

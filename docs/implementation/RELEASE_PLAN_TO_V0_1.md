@@ -10,7 +10,8 @@ M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
 M9B.4: COMPLETE
-M9B.5: NOT STARTED
+M9B.5: COMPLETE
+M9B.6: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -127,9 +128,11 @@ Completed M9B slices:
   transient/durable history, live subscriptions and explicit gap recovery;
 - M9B.4 completed Reference current/mutation and native controller/PID current,
   configuration, lifecycle and event surfaces above the existing OutputAuthority
-  boundary.
+  boundary;
+- M9B.5 completed semantic Recorder status, start/stop, run/interval identity,
+  failure and lifecycle-event surfaces without exposing SQLite implementation state.
 
-M9B.5 and later M9B slices remain incomplete; M9B as a whole is not accepted.
+M9B.6 and later M9B slices remain incomplete; M9B as a whole is not accepted.
 
 Required coverage:
 
