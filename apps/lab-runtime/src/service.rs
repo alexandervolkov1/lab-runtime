@@ -12,13 +12,13 @@ use crate::{
         ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
     },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
-    managed_executor::ManagedExecutor,
+    managed_executor::{MOVING_MEAN_IMPLEMENTATION, ManagedExecutor},
     serial::{
         ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
         SerialParity,
     },
 };
-use lab_core::managed::ComponentError;
+use lab_core::managed::{ComponentError, ComponentId};
 use lab_core::{
     Error as DomainError,
     transport::{ByteTransport, ExecutorState, ResourceId},
@@ -1096,7 +1096,7 @@ impl ServiceHost {
         operation_kind: &'static str,
         deployment: &crate::configuration::FrozenDeployment,
     ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
-        self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, true)
+        self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, true, None)
     }
 
     fn begin_resource_recorded_lifecycle(
@@ -1104,7 +1104,29 @@ impl ServiceHost {
         operation_kind: &'static str,
         deployment: &crate::configuration::FrozenDeployment,
     ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
-        self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, false)
+        self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, false, None)
+    }
+
+    fn begin_managed_source_lifecycle(
+        &mut self,
+        deployment: &crate::configuration::FrozenDeployment,
+        components: &[ComponentId],
+    ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
+        let revision = self
+            .deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .revision();
+        let affected = components
+            .iter()
+            .map(|id| format!("component:{}:source_reload:{revision}", id.get()))
+            .collect();
+        self.begin_recorded_lifecycle_with_scope(
+            "reload_managed_sources",
+            deployment,
+            true,
+            Some(affected),
+        )
     }
 
     fn begin_recorded_lifecycle_with_scope(
@@ -1112,6 +1134,7 @@ impl ServiceHost {
         operation_kind: &'static str,
         deployment: &crate::configuration::FrozenDeployment,
         global_quiesced: bool,
+        affected: Option<Vec<String>>,
     ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
         let operation_id = self.next_lifecycle_operation;
         self.next_lifecycle_operation = operation_id
@@ -1143,7 +1166,8 @@ impl ServiceHost {
             base_revision: revision,
             committed_revision: revision,
             toml_hash: deployment.toml_hash(),
-            affected: configuration_affected(deployment, revision, revision),
+            affected: affected
+                .unwrap_or_else(|| configuration_affected(deployment, revision, revision)),
             reason: None,
             at,
         };
@@ -1263,6 +1287,11 @@ impl ServiceHost {
             .active()
             .reload_managed_sources()
             .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        self.deployment
+            .as_ref()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .validate_managed_sources_candidate(&candidate)
+            .map_err(|_| LifecycleOperationError::Conflict)?;
         let components = &candidate.effective().dto.managed_components;
         let mut affected_instruments: BTreeSet<_> = components
             .iter()
@@ -1317,29 +1346,32 @@ impl ServiceHost {
             }
             prepared.push(id);
         }
-        let pending = self.begin_recorded_lifecycle("reload_managed_sources", &candidate)?;
+        let activation = self
+            .host
+            .prepare_configured_component_activation(&candidate, &prepared, self.clock.now())
+            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        if self.host.recording_status().is_some()
+            && components
+                .iter()
+                .any(|component| component.implementation == MOVING_MEAN_IMPLEMENTATION)
+        {
+            crate::build_identity::runtime_binary_sha256()
+                .map_err(|_| LifecycleOperationError::RecordingUnavailable)?;
+        }
+        let pending = self.begin_managed_source_lifecycle(&candidate, &prepared)?;
         if self
             .host
             .commit_prepared_components(prepared, self.clock.now())
             .is_err()
-            || self
-                .host
-                .activate_configured_components(&candidate, self.clock.now())
-                .is_err()
         {
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
-        if self
-            .deployment
+        self.host.commit_configured_component_activation(activation);
+        self.deployment
             .as_mut()
             .expect("checked above")
-            .commit_managed_sources(candidate)
-            .is_err()
-        {
-            self.cancel_recorded_lifecycle(pending);
-            return Err(LifecycleOperationError::Conflict);
-        }
+            .commit_validated_managed_sources(candidate);
         self.finish_recorded_lifecycle(pending)
     }
 

@@ -1,7 +1,7 @@
 //! C9/C10 acceptance for the distinct managed-source reload operation.
 
 use lab_core::{
-    Query, QueryResult,
+    Command, Query, QueryResult,
     managed::{ComponentId, ComponentState},
 };
 use lab_runtime::host::Clock;
@@ -328,6 +328,110 @@ period_ms=100
         panic!()
     };
     assert_eq!(snapshot.generation, 1);
+    fs::remove_file(config).unwrap();
+    fs::remove_file(script).unwrap();
+}
+
+#[test]
+fn source_reload_ignores_an_unrelated_failed_native_component_after_selected_commit() {
+    let _slots = lua_slots();
+    let config = temporary_path("managed-scoped", "toml");
+    let script = temporary_path("managed-scoped", "lua");
+    fs::write(&script, source("generation one")).unwrap();
+    let declared = script.to_string_lossy().replace('\\', "\\\\");
+    let toml = format!(
+        r#"schema_version=1
+[runtime]
+key="managed-scoped"
+display_name="Managed scoped reload"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[instruments]]
+id=1
+key="unavailable-input"
+kind="virtual_measurement"
+display_name="Unavailable input"
+history_capacity=8
+base_temperature=20.0
+measurement_enabled=false
+poll_period_ms=100
+[[managed_components]]
+id=201
+instrument_id=201
+key="source"
+display_name="Selected Lua source"
+implementation="lua.v1"
+source="{declared}"
+period_ms=100
+[[managed_components]]
+id=202
+instrument_id=202
+key="independent-native"
+display_name="Independent native mean"
+implementation="native.moving_mean.v1"
+input_instrument_id=1
+period_ms=100
+config={{window=3}}
+"#
+    );
+    fs::write(&config, toml).unwrap();
+    let arg = config.to_string_lossy().into_owned();
+    let mut service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .unwrap();
+
+    let failed_at = service.clock().now();
+    assert!(
+        service
+            .owner_mut()
+            .command(Command::InvokeComponent {
+                component: ComponentId::new(202),
+                at: failed_at,
+            })
+            .is_err()
+    );
+    let QueryResult::Component(unrelated_before) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(202)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(unrelated_before.generation, 1);
+    assert_eq!(unrelated_before.state, ComponentState::Failed);
+
+    fs::write(&script, source("generation two")).unwrap();
+    assert_eq!(service.reload_managed_sources(), Ok(()));
+
+    let QueryResult::Component(selected) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(201)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(selected.generation, 2);
+    assert_eq!(selected.good_steps, 0);
+    assert_eq!(selected.state, ComponentState::Warming);
+    let QueryResult::Component(unrelated_after) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(202)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(unrelated_after.generation, unrelated_before.generation);
+    assert_eq!(unrelated_after.revision, unrelated_before.revision);
+    assert_eq!(unrelated_after.state, unrelated_before.state);
+    assert_eq!(
+        unrelated_after.committed_state,
+        unrelated_before.committed_state
+    );
+
     fs::remove_file(config).unwrap();
     fs::remove_file(script).unwrap();
 }

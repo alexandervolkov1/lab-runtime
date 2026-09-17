@@ -10,6 +10,7 @@ use crate::recorder::{
     RecordingPolicy, RecordingState, RecordingStatus, RunsCursor, RunsPage, StorageError,
 };
 use crate::{
+    build_identity::runtime_binary_sha256,
     configuration::{EvidenceDto, FrozenDeployment, InstrumentDto, ReferenceKindDto},
     definition::parse_definition_json,
     events::{EventError, EventLog},
@@ -34,6 +35,7 @@ use lab_core::{
     reference::{ReferenceConfig, ReferenceId, ReferenceSnapshot},
     transport::{ByteTransport, ExecutorState, ResourceId, TransactionOutcome},
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
@@ -91,6 +93,10 @@ fn plain_data_activation_json(data: &PlainData) -> serde_json::Value {
         );
     }
     serde_json::Value::Object(fields)
+}
+
+fn hex_sha256(hash: [u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn sample_boundary_json(sample: &Sample) -> serde_json::Value {
@@ -359,6 +365,15 @@ pub struct HostCore {
     configuration_quiesced: bool,
     reconnect_quiesced_resources: BTreeSet<ResourceId>,
 }
+
+/// A fully checked scheduling delta for already-prepared managed replacements.
+pub(crate) struct ManagedComponentActivation {
+    affected: BTreeSet<ComponentId>,
+    sources: Vec<(ComponentId, Periodic)>,
+    transforms: Vec<(ComponentId, SignalId)>,
+    deployment_provenance: Vec<ProvenanceEntry>,
+}
+
 impl HostCore {
     /// Construct a validated configured native observation graph without opening
     /// storage, listeners, Lua or physical resources.
@@ -1766,6 +1781,85 @@ impl HostCore {
         Ok(())
     }
 
+    /// Validate only the selected prepared branch and build its infallible schedule delta.
+    pub(crate) fn prepare_configured_component_activation(
+        &self,
+        deployment: &FrozenDeployment,
+        components: &[ComponentId],
+        at: Duration,
+    ) -> Result<ManagedComponentActivation, Error> {
+        if components.is_empty() || components.len() > lab_core::managed::MAX_COMPONENTS {
+            return Err(Error::InvalidConfiguration(
+                "managed activation component count",
+            ));
+        }
+        let affected: BTreeSet<_> = components.iter().copied().collect();
+        if affected.len() != components.len() {
+            return Err(Error::InvalidConfiguration(
+                "duplicate managed activation component",
+            ));
+        }
+        let mut sources = Vec::with_capacity(components.len());
+        let mut transforms = Vec::with_capacity(components.len());
+        for id in components {
+            if !self.runtime.component_prepared(*id) {
+                return Err(Error::InvalidConfiguration(
+                    "managed activation candidate missing",
+                ));
+            }
+            let component = deployment
+                .effective()
+                .dto
+                .managed_components
+                .iter()
+                .find(|component| ComponentId::new(component.id) == *id)
+                .ok_or(Error::InvalidConfiguration(
+                    "managed activation declaration missing",
+                ))?;
+            if let Some(input) = component.input_instrument_id {
+                transforms.push((
+                    *id,
+                    SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
+                ));
+            } else {
+                let mut slot = Periodic::new(Duration::from_millis(component.period_ms));
+                slot.next_due = at;
+                sources.push((*id, slot));
+            }
+        }
+        let deployment_provenance = deployment
+            .provenance_entries()
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        Ok(ManagedComponentActivation {
+            affected,
+            sources,
+            transforms,
+            deployment_provenance,
+        })
+    }
+
+    /// Apply a previously checked selected-branch schedule delta without new failure points.
+    pub(crate) fn commit_configured_component_activation(
+        &mut self,
+        activation: ManagedComponentActivation,
+    ) {
+        self.plan
+            .sources
+            .retain(|(id, _)| !activation.affected.contains(id));
+        self.plan
+            .transforms
+            .retain(|(id, _)| !activation.affected.contains(id));
+        self.plan.sources.extend(activation.sources);
+        self.plan.transforms.extend(activation.transforms);
+        self.deployment_provenance = activation.deployment_provenance;
+    }
+
     /// Attach one already-open worker under trusted host composition.
     /// Required control starts closed and opens only on a committed start receipt.
     pub fn attach_recorder(
@@ -2032,29 +2126,47 @@ impl HostCore {
             .into_bytes(),
         );
         let mut managed_definition_indices = BTreeMap::new();
+        let mut managed_source_hashes = BTreeMap::new();
+        let mut cached_binary_hash = None;
         for (id, _) in &self.components {
             let definition = self
                 .runtime
                 .component_definition(*id)
                 .ok_or(Error::InvalidConfiguration("managed definition missing"))?;
             managed_definition_indices.insert(*id, entries.len());
+            let mut implementation = serde_json::json!({
+                "component":id.get().to_string(),
+                "implementation":definition.implementation.id().as_str(),
+                "artifact":if definition.implementation.artifact().is_built_in(){
+                    "built_in"
+                }else{
+                    "text"
+                },
+                "package_version":env!("CARGO_PKG_VERSION"),
+                "config":plain_data_activation_json(&definition.config),
+            });
+            if let Some(source) = definition.implementation.artifact().text() {
+                let source_hash: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+                implementation["source_content_sha256"] = hex_sha256(source_hash).into();
+                managed_source_hashes.insert(*id, source_hash);
+            } else {
+                let binary_hash = match cached_binary_hash {
+                    Some(hash) => hash,
+                    None => {
+                        let hash = runtime_binary_sha256().map_err(|_| {
+                            Error::InvalidConfiguration("runtime binary identity unavailable")
+                        })?;
+                        cached_binary_hash = Some(hash);
+                        hash
+                    }
+                };
+                implementation["runtime_binary_sha256"] = hex_sha256(binary_hash).into();
+            }
             push(
                 &mut entries,
                 "managed_component_implementation",
                 "json_v1",
-                serde_json::json!({
-                    "component":id.get().to_string(),
-                    "implementation":definition.implementation.id().as_str(),
-                    "artifact":if definition.implementation.artifact().is_built_in(){
-                        "built_in"
-                    }else{
-                        "text"
-                    },
-                    "build":env!("CARGO_PKG_VERSION"),
-                    "config":plain_data_activation_json(&definition.config),
-                })
-                .to_string()
-                .into_bytes(),
+                implementation.to_string().into_bytes(),
             );
             if let Some(source) = definition.implementation.artifact().text() {
                 push(
@@ -2124,7 +2236,8 @@ impl HostCore {
                 unit_key: None,
                 generation: Some(generation),
                 binding,
-                source_entry_index: source_index,
+                definition_entry_index: source_index,
+                source_content_sha256: None,
             });
         }
         for controller in controllers {
@@ -2141,7 +2254,8 @@ impl HostCore {
                 unit_key: None,
                 generation: Some(1),
                 binding: Some(controller["output"].to_string()),
-                source_entry_index: 1,
+                definition_entry_index: 1,
+                source_content_sha256: None,
             });
         }
         for reference in references {
@@ -2158,7 +2272,8 @@ impl HostCore {
                 descriptor: reference.to_string(),
                 generation: Some(1),
                 binding: None,
-                source_entry_index: 1,
+                definition_entry_index: 1,
+                source_content_sha256: None,
             });
         }
         for output in outputs {
@@ -2182,7 +2297,8 @@ impl HostCore {
                 descriptor: output.to_string(),
                 generation: Some(1),
                 binding: None,
-                source_entry_index: 1,
+                definition_entry_index: 1,
+                source_content_sha256: None,
             });
         }
         for (id, _) in &self.components {
@@ -2200,8 +2316,9 @@ impl HostCore {
                     "generation":snapshot.generation.to_string(),"state_revision":snapshot.revision.to_string(),
                     "committed_state":plain_data_activation_json(&snapshot.committed_state)})
                     .to_string(),unit_key:None,generation:Some(snapshot.generation),binding:None,
-                source_entry_index:*managed_definition_indices.get(id)
-                    .ok_or(Error::InvalidConfiguration("component definition index missing"))?});
+                definition_entry_index:*managed_definition_indices.get(id)
+                    .ok_or(Error::InvalidConfiguration("component definition index missing"))?,
+                source_content_sha256:managed_source_hashes.get(id).copied()});
         }
         Ok((entries, objects))
     }

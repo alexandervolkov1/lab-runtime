@@ -3,6 +3,8 @@
 //! M3 keeps JSON parsing here so Core does not depend on a serialization format.
 
 pub mod application;
+/// Cached content identity for built-in managed-component provenance.
+pub mod build_identity;
 /// Strict bounded declarative deployment loading and validation.
 pub mod configuration;
 pub mod definition;

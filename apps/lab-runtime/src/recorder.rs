@@ -12,6 +12,7 @@ use lab_core::{
 use rusqlite::{Connection, ErrorCode, OptionalExtension, limits::Limit, params};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     error::Error,
     fmt,
     path::{Path, PathBuf},
@@ -541,8 +542,7 @@ pub struct ProvenanceEntry {
     pub content: Vec<u8>,
 }
 
-/// One frozen object baseline attached to an immutable activation. Entry links
-/// are indices into the transferred source set; the worker hashes exact bytes.
+/// One frozen object baseline attached to an immutable activation.
 #[derive(Clone, Debug)]
 pub struct ProvenanceObject {
     /// Stable object family (`instrument`, `controller`, `reference`, `actuator`).
@@ -561,8 +561,10 @@ pub struct ProvenanceObject {
     pub generation: Option<u64>,
     /// Immutable instance/output binding description if relevant.
     pub binding: Option<String>,
-    /// Index of the exact definition/source entry covering this object.
-    pub source_entry_index: usize,
+    /// Index of the exact bounded definition entry covering this object.
+    pub definition_entry_index: usize,
+    /// Exact text artifact hash for a text-backed managed component.
+    pub source_content_sha256: Option<[u8; 32]>,
 }
 
 /// Exclusive SQLite connection owned by one storage worker.
@@ -1180,6 +1182,7 @@ impl SqliteStore {
         let mut charge = 0usize;
         let mut indexed = Vec::with_capacity(entries.len());
         let mut entry_hashes = Vec::with_capacity(entries.len());
+        let mut managed_source_hashes = BTreeSet::new();
         for entry in entries {
             if entry.kind.is_empty()
                 || entry.kind.len() > 64
@@ -1206,6 +1209,9 @@ impl SqliteStore {
                 return Err(StorageError("provenance credit exhausted".into()));
             }
             let content_hash: [u8; 32] = Sha256::digest(&entry.content).into();
+            if entry.kind == "managed_component_source" {
+                managed_source_hashes.insert(content_hash);
+            }
             entry_hashes.push(content_hash);
             indexed.push((entry, content_hash));
         }
@@ -1225,7 +1231,11 @@ impl SqliteStore {
                     .binding
                     .as_ref()
                     .is_some_and(|binding| binding.len() > 128)
-                || object.source_entry_index >= entry_hashes.len()
+                || object.definition_entry_index >= entry_hashes.len()
+                || (object.kind != "managed_component" && object.source_content_sha256.is_some())
+                || object
+                    .source_content_sha256
+                    .is_some_and(|source_hash| !managed_source_hashes.contains(&source_hash))
             {
                 return Err(StorageError("invalid bounded object baseline".into()));
             }
@@ -1381,9 +1391,9 @@ impl SqliteStore {
             ],
         )?;
         for object in objects {
-            let source = entry_hashes[object.source_entry_index];
-            let source_hash = (object.kind == "managed_component").then_some(source.to_vec());
-            let safety_hash = (object.kind == "actuator").then_some(source.to_vec());
+            let definition = entry_hashes[object.definition_entry_index];
+            let source_hash = object.source_content_sha256.map(|hash| hash.to_vec());
+            let safety_hash = (object.kind == "actuator").then_some(definition.to_vec());
             transaction.execute(
                 "INSERT INTO object_snapshots(boot_id,activation_no,object_kind,object_id,
                  logical_key,label,generation,descriptor,unit_key,instance_binding,
@@ -1400,7 +1410,7 @@ impl SqliteStore {
                     object.descriptor,
                     object.unit_key,
                     object.binding,
-                    source.as_slice(),
+                    definition.as_slice(),
                     source_hash,
                     safety_hash
                 ],

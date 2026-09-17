@@ -21,10 +21,11 @@ use lab_core::{
     transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::{
+    build_identity::runtime_binary_sha256,
     host::{Clock, HostCore},
     recorder::{
-        HistoryFilter, ProvenanceEntry, RecorderLimits, RecorderWorker, RecordingPolicy,
-        RecordingState, SqliteStore,
+        HistoryFilter, ProvenanceEntry, ProvenanceObject, RecorderLimits, RecorderWorker,
+        RecordingPolicy, RecordingState, SqliteStore,
     },
     service::{ServiceHost, ServiceOptions},
 };
@@ -620,13 +621,40 @@ fn serving_activation_records_neutral_lua_and_native_provenance_and_links_the_ne
     assert!(
         implementations
             .iter()
-            .any(|entry| entry["implementation"] == "lua.v1")
+            .any(|entry| entry["implementation"] == "lua.v1"
+                && entry["source_content_sha256"]
+                    == hex_sha256(Sha256::digest(source.as_bytes()).into()))
     );
+    let binary_hash = runtime_binary_sha256().unwrap();
     assert!(implementations.iter().any(|entry| {
         entry["implementation"] == "native.moving_mean.v1"
             && entry["artifact"] == "built_in"
             && entry["config"]["window"]["value"] == 3.0
+            && entry["runtime_binary_sha256"] == hex_sha256(binary_hash)
     }));
+    let (native_definition_hash, native_source_hash): (Vec<u8>, Option<Vec<u8>>) = db
+        .query_row(
+            "SELECT definition_hash,source_hash FROM object_snapshots
+             WHERE object_kind='managed_component' AND object_id=x'00000000000000CA'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(native_source_hash, None, "BuiltIn cannot claim text source");
+    let native_metadata: Vec<u8> = db
+        .query_row(
+            "SELECT content FROM provenance_content
+             WHERE content_hash=?1 AND kind='managed_component_implementation'",
+            [native_definition_hash],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let native_metadata: serde_json::Value = serde_json::from_slice(&native_metadata).unwrap();
+    assert_eq!(native_metadata["implementation"], "native.moving_mean.v1");
+    assert_eq!(
+        native_metadata["runtime_binary_sha256"],
+        hex_sha256(binary_hash)
+    );
     let (root, activation): (Vec<u8>, Vec<u8>) = db
         .query_row(
             "SELECT manifest_root_hash,activation_no FROM configurations LIMIT 1",
@@ -665,6 +693,166 @@ fn serving_activation_records_neutral_lua_and_native_provenance_and_links_the_ne
     );
     drop(db);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn managed_source_hash_without_the_exact_source_blob_is_rejected_atomically() {
+    let path = temporary_database();
+    let mut store = SqliteStore::open(&path).unwrap();
+    let implementation = ProvenanceEntry {
+        kind: "managed_component_implementation".into(),
+        encoding: "json_v1".into(),
+        content: br#"{"component":"201","implementation":"lua.v1"}"#.to_vec(),
+    };
+    let object = ProvenanceObject {
+        kind: "managed_component",
+        id: 201u64.to_be_bytes().to_vec(),
+        logical_key: "component:201".into(),
+        label: "Managed component 201".into(),
+        descriptor: "{}".into(),
+        unit_key: None,
+        generation: Some(1),
+        binding: None,
+        definition_entry_index: 0,
+        source_content_sha256: Some([0x5a; 32]),
+    };
+    assert!(
+        store
+            .commit_activation(&[implementation], &[object])
+            .is_err()
+    );
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM configurations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn component_source_provenance_survives_source_swaps_without_index_identity() {
+    let config = temporary_database().with_extension("toml");
+    let database = config.with_extension("sqlite");
+    let first_source = config.with_extension("first.lua");
+    let second_source = config.with_extension("second.lua");
+    let source_a = source_fixture("source A", 21.0);
+    let source_b = source_fixture("source B", 42.0);
+    std::fs::write(&first_source, &source_a).unwrap();
+    std::fs::write(&second_source, &source_b).unwrap();
+    let first = first_source.to_string_lossy().replace('\\', "\\\\");
+    let second = second_source.to_string_lossy().replace('\\', "\\\\");
+    let database_text = database.to_string_lossy().replace('\\', "\\\\");
+    std::fs::write(
+        &config,
+        format!(
+            r#"schema_version=1
+[runtime]
+key="source-association"
+display_name="Source association"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=true
+path="{database_text}"
+policy="required"
+[[managed_components]]
+id=201
+instrument_id=201
+key="first"
+display_name="First"
+implementation="lua.v1"
+source="{first}"
+period_ms=100
+[[managed_components]]
+id=202
+instrument_id=202
+key="second"
+display_name="Second"
+implementation="lua.v1"
+source="{second}"
+period_ms=100
+"#
+        ),
+    )
+    .unwrap();
+
+    record_one_configured_activation(&config);
+    std::fs::write(&first_source, &source_b).unwrap();
+    std::fs::write(&second_source, &source_a).unwrap();
+    record_one_configured_activation(&config);
+
+    let db = rusqlite::Connection::open(&database).unwrap();
+    let activations: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = db
+        .prepare(
+            "SELECT boot_id,activation_no,manifest_root_hash FROM configurations ORDER BY rowid",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(activations.len(), 2);
+    assert_ne!(activations[0].2, activations[1].2);
+    let source_hash = |boot: &[u8], activation: &[u8], component: u64| -> Vec<u8> {
+        db.query_row(
+            "SELECT source_hash FROM object_snapshots
+             WHERE boot_id=?1 AND activation_no=?2
+               AND object_kind='managed_component' AND object_id=?3",
+            rusqlite::params![boot, activation, component.to_be_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let first_a = source_hash(&activations[0].0, &activations[0].1, 201);
+    let first_b = source_hash(&activations[0].0, &activations[0].1, 202);
+    let second_b = source_hash(&activations[1].0, &activations[1].1, 201);
+    let second_a = source_hash(&activations[1].0, &activations[1].1, 202);
+    assert_eq!(first_a, Sha256::digest(source_a.as_bytes()).to_vec());
+    assert_eq!(first_b, Sha256::digest(source_b.as_bytes()).to_vec());
+    assert_eq!(second_b, first_b);
+    assert_eq!(second_a, first_a);
+    for (hash, expected) in [(first_a, source_a), (first_b, source_b)] {
+        let exact: Vec<u8> = db
+            .query_row(
+                "SELECT content FROM provenance_content
+                 WHERE content_hash=?1 AND kind='managed_component_source' AND encoding='utf8'",
+                [hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exact, expected.as_bytes());
+    }
+    drop(db);
+    std::fs::remove_file(config).unwrap();
+    std::fs::remove_file(database).unwrap();
+    std::fs::remove_file(first_source).unwrap();
+    std::fs::remove_file(second_source).unwrap();
+}
+
+fn source_fixture(marker: &str, value: f64) -> String {
+    format!(
+        "-- {marker}\nreturn function(ctx)\n  if ctx.phase == 'init' then return {{state={{}},diagnostics={{}}}} end\n  return {{status='ready',value={value},unit_id=ctx.unit_id,state={{}},diagnostics={{}}}}\nend\n"
+    )
+}
+
+fn record_one_configured_activation(config: &std::path::Path) {
+    let arg = config.to_string_lossy().into_owned();
+    let mut service =
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .unwrap();
+    service.request_shutdown().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while service.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+}
+
+fn hex_sha256(hash: [u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[test]
