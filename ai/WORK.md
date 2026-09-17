@@ -1,4 +1,4 @@
-# Current work — external M9A review
+# Current work — external M9A re-review
 
 ```text
 M8: ACCEPTED
@@ -8,8 +8,9 @@ Current phase: external M9A review
 M9B: NOT AUTHORIZED
 ```
 
-This is the only current authorization. Review the completed M9A implementation;
-do not begin M9B, Presentation API, GUI, Steel or unrelated release work.
+This is the only current authorization. Re-review the completed M9A implementation
+and its focused first-review corrections; do not begin M9B, Presentation API, GUI,
+Steel or unrelated release work.
 
 ## Review objective
 
@@ -48,11 +49,13 @@ Verify:
    Runtime/output/evidence capability.
 6. replacement advances generation once, rejects old completion identity and resets
    warm-up/state; failures remain component-scoped.
-7. `reload_managed_sources` rereads only source-backed artifacts and reinitializes
-   their dependency closure; `restart_models` reinitializes without rereading source.
+7. `reload_managed_sources` prevalidates and commits only the selected source-backed
+   dependency closure; an unrelated failed or warming component cannot cause a
+   post-commit error. `restart_models` reinitializes without rereading source.
 8. public capability/discovery/status/lifecycle vocabulary is implementation-neutral.
-9. new provenance truthfully distinguishes built-in implementation identity from a
-   bounded text source, while historical `managed_lua_source` evidence remains
+9. new provenance binds each text-backed component to its exact executable source
+   bytes by content SHA-256 and each built-in component to the actual runtime
+   executable SHA-256, while historical `managed_lua_source` evidence remains
    unchanged.
 10. M5 Lua sandbox/security coverage, controllers, Recorder, deployment and output
     safety regressions remain green.

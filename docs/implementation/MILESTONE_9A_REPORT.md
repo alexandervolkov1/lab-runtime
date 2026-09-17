@@ -4,7 +4,8 @@ Date: 2026-09-17
 
 ```text
 Baseline: 69a377be20960fb8037a1a526cb2f2ca863633a4
-Implementation commit: bba8f49
+Initial implementation commit: bba8f49
+External-review correction commit: b7d8f40
 M8: ACCEPTED
 M9A: IMPLEMENTED
 STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
@@ -120,10 +121,56 @@ managed_component_source
 ```
 
 Implementation provenance includes component ID, semantic implementation ID,
-`built_in`/`text` artifact class, package build version and bounded PlainData config.
-Native provenance does not claim source bytes. Old SQLite rows named
-`managed_lua_source` remain valid historical evidence and Recorder retains bounded
-read/write compatibility for that old kind; no archive was migrated.
+`built_in`/`text` artifact class, package version and bounded PlainData config. Each
+text-backed component additionally records `source_content_sha256`, calculated from
+the exact bounded bytes supplied to its executor. That digest addresses the matching
+`managed_component_source` blob directly; entry ordering and deduplication are not
+part of the association. Each built-in component instead records
+`runtime_binary_sha256`, the SHA-256 of the actual running executable. The executable
+is streamed through a fixed 64 KiB buffer and the result, including a bounded typed
+failure, is cached process-wide. Package version remains descriptive metadata and is
+not treated as build identity. Native provenance does not claim source bytes. Old
+SQLite rows named `managed_lua_source` remain valid historical evidence and Recorder
+retains bounded read/write compatibility for that old kind; no archive was migrated.
+
+## External-review corrections
+
+The first external review reproduced three blockers.
+
+First, `reload_managed_sources` committed the selected source-backed branch and then
+ran global configured-component activation. An unrelated component already in
+`Failed` state could therefore clear the global schedule and make the public
+operation return `OwnerFailure` after the selected generation had advanced. Reload
+now validates the source bundle, implementation/artifact and complete affected
+dependency closure; prepares only that branch's schedule delta; establishes binary
+identity and Recorder/lifecycle capacity; and only then commits the prepared Core
+replacement, selected schedule delta and already-validated source bundle. No global
+post-commit schedulability check remains. An unrelated failed or warming component
+is unchanged and cannot turn a successful selected reload into an error. The
+selected generation still advances exactly once, state/warm-up reset, old completion
+identities remain fenced, and no controller or output authority is rearmed.
+
+Second, the earlier neutral provenance kept exact source blobs but did not bind a
+component activation to its concrete blob by immutable content identity. Recorder
+objects now carry an optional bounded `source_content_sha256`; Recorder accepts it
+only for managed components and only when the activation contains an exact
+`managed_component_source` blob with that digest. The durable object
+`source_hash` column stores this digest, while `definition_hash` continues to address
+the component implementation metadata. Swapping source A and B between two component
+IDs now swaps their per-component source hashes and produces unambiguous historical
+recovery even when the source set and its sorting/dedup order are unchanged.
+
+Third, `CARGO_PKG_VERSION` alone did not identify native executable bytes. Built-in
+implementation metadata now links every native component to the cached
+`runtime_binary_sha256`. Failure to resolve, open or read the actual executable is a
+bounded explicit provenance failure; version text is never substituted as equivalent
+build identity.
+
+Deterministic regressions reproduce the original reload oracle with an independent
+failed native component, prove invalid selected source fails before generation
+mutation, prove source A/B component swaps and exact byte recovery, reject a missing
+source blob atomically, hash controlled byte fixtures, and verify native Recorder
+provenance links to the current executable digest without a fabricated source hash.
 
 ## Tests-first evidence
 

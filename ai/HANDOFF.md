@@ -70,12 +70,22 @@ discovery and lifecycle vocabulary is neutral (`managed_component`,
 implementation/source identities; historical `managed_lua_source` archives remain
 unchanged.
 
-The complete debug/release/fmt/Clippy/rustdoc/Babashka/client/demo gates pass. The
-implementation report is `docs/implementation/MILESTONE_9A_REPORT.md`.
+The first external review found three focused M9A blockers, now corrected. Source
+reload prepares and validates only the selected source-backed dependency closure and
+commits its schedule delta without a fallible global activation after mutation.
+Text-backed component objects carry a content-addressed SHA-256 link to their exact
+executed source blob. Built-in component metadata carries a cached streaming SHA-256
+of the actual running executable; package version is descriptive only. Deterministic
+regressions cover the unrelated-Failed reload oracle, pre-commit rejection, source
+swaps/exact recovery and native binary association.
+
+The complete debug/release/fmt/Clippy/rustdoc/Babashka/client/demo gates pass after
+the review corrections. The implementation report is
+`docs/implementation/MILESTONE_9A_REPORT.md`.
 
 ## Next step
 
-Perform only external M9A review under `ai/WORK.md`. M9B remains NOT AUTHORIZED until
-M9A receives explicit external acceptance; M10 and M11 remain future milestones.
+Perform only external M9A re-review under `ai/WORK.md`. M9B remains NOT AUTHORIZED
+until M9A receives explicit external acceptance; M10 and M11 remain future milestones.
 Detailed chronological M8 evidence remains in
 `docs/implementation/MILESTONE_8_REPORT.md`.

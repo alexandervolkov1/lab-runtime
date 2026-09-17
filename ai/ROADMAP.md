@@ -69,6 +69,11 @@ M9B: NOT AUTHORIZED
 M9A removed Lua-specific leakage from the shared boundary and made native Rust a
 first-class implementation of the retained language-neutral contract.
 
+The first external-review findings are corrected: selected source reload is scoped
+and prevalidated before mutation, text-backed activations bind each component to
+exact source bytes by SHA-256, and built-in activations bind to the actual runtime
+executable SHA-256. M9A is awaiting external re-review.
+
 Completed work:
 
 - neutralize the common interface/capability/lifecycle vocabulary without rewriting
