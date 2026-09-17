@@ -1010,6 +1010,7 @@ fn continuation_capacity_is_bounded_and_disconnect_releases_its_slot() {
     let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
     let mut app = Application::new(service.boot_id()).unwrap();
 
+    let mut terminals = Vec::new();
     for connection in 1..=8u64 {
         let hello = app.handle(
             &mut service,
@@ -1027,13 +1028,17 @@ fn continuation_capacity_is_bounded_and_disconnect_releases_its_slot() {
                     "max_records":1,"cursor":null}})),
         );
         assert_eq!(accepted[0]["state"], "accepted");
-    }
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut terminals = Vec::new();
-    while terminals.len() < 8 {
-        terminals.extend(app.poll_history(&mut service));
-        assert!(Instant::now() < deadline, "history jobs did not complete");
-        std::thread::yield_now();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut completed = app.poll_history(&mut service);
+            if let Some(terminal) = completed.pop() {
+                assert!(completed.is_empty());
+                terminals.push(terminal);
+                break;
+            }
+            assert!(Instant::now() < deadline, "history job did not complete");
+            std::thread::yield_now();
+        }
     }
     for (connection, terminal) in terminals {
         assert_eq!(terminal["state"], "completed");

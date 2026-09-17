@@ -86,6 +86,20 @@ fn unknown_operation_is_a_structured_nonfatal_synchronous_rejection() {
     assert_eq!(rejected[0]["code"], "unsupported_operation");
     assert_eq!(rejected[0]["category"], "unsupported_operation");
 
+    for removed in [
+        "reload_managed_sources",
+        "runtime_snapshot",
+        "snapshot_page",
+        "snapshot_release",
+    ] {
+        let response = app.handle(
+            &mut service,
+            1,
+            frame(json!({"v":PROTOCOL_VERSION,"msg_id":removed,"op":removed,"args":{}})),
+        );
+        assert_eq!(response[0]["code"], "unsupported_operation", "{removed}");
+    }
+
     let later = app.handle(
         &mut service,
         1,

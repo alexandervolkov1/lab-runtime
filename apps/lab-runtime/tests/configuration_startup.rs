@@ -130,6 +130,7 @@ fn shutdown(mut service: ServiceHost) {
 }
 
 fn remove_relative_fixture(directory: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(4);
     for name in [
         "history.sqlite-shm",
         "history.sqlite-wal",
@@ -137,8 +138,19 @@ fn remove_relative_fixture(directory: &Path) {
         "runtime.toml",
     ] {
         let path = directory.join(name);
-        if path.exists() {
-            fs::remove_file(path).unwrap();
+        loop {
+            match fs::remove_file(&path) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error)
+                    if (error.kind() == std::io::ErrorKind::PermissionDenied
+                        || error.raw_os_error() == Some(32))
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("failed to remove {}: {error}", path.display()),
+            }
         }
     }
     fs::remove_dir(directory).unwrap();

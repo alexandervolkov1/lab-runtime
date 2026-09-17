@@ -8,8 +8,6 @@ use std::{collections::BTreeMap, time::Duration};
 
 /// At most eight managed observation components may be registered per Runtime.
 pub const MAX_COMPONENTS: usize = 8;
-/// A text artifact is admitted by trusted deployment, never loaded from within a callback.
-pub const MAX_IMPLEMENTATION_TEXT_BYTES: usize = 32 * 1024;
 /// Stable implementation identifiers are small semantic names, not Rust type names.
 pub const MAX_IMPLEMENTATION_ID_BYTES: usize = 64;
 /// Bound on each persistent plain-data map, including keys and typed payloads.
@@ -98,35 +96,10 @@ impl ComponentImplementationId {
     }
 }
 
-/// Bounded implementation material carried through the neutral executor port.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ComponentImplementationArtifact {
-    /// A compile-time implementation needs no persisted executable text.
-    BuiltIn,
-    /// Bounded adapter-owned text whose language Core does not interpret.
-    Text(String),
-}
-
-impl ComponentImplementationArtifact {
-    /// Whether this artifact selects only compile-time trusted code.
-    pub const fn is_built_in(&self) -> bool {
-        matches!(self, Self::BuiltIn)
-    }
-
-    /// Borrow adapter-owned text when the selected implementation requires it.
-    pub fn text(&self) -> Option<&str> {
-        match self {
-            Self::BuiltIn => None,
-            Self::Text(text) => Some(text),
-        }
-    }
-}
-
-/// Explicit implementation selection plus its bounded adapter artifact.
+/// Explicit selection of one compile-time trusted implementation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComponentImplementation {
     id: ComponentImplementationId,
-    artifact: ComponentImplementationArtifact,
 }
 
 impl ComponentImplementation {
@@ -134,33 +107,12 @@ impl ComponentImplementation {
     pub fn built_in(id: impl Into<String>) -> Result<Self, ComponentError> {
         Ok(Self {
             id: ComponentImplementationId::new(id)?,
-            artifact: ComponentImplementationArtifact::BuiltIn,
-        })
-    }
-
-    /// Select one adapter implementation with a bounded nonempty text artifact.
-    pub fn text(id: impl Into<String>, text: impl Into<String>) -> Result<Self, ComponentError> {
-        let text = text.into();
-        if text.is_empty() {
-            return Err(ComponentError::InvalidConfiguration);
-        }
-        if text.len() > MAX_IMPLEMENTATION_TEXT_BYTES {
-            return Err(ComponentError::DataLimit);
-        }
-        Ok(Self {
-            id: ComponentImplementationId::new(id)?,
-            artifact: ComponentImplementationArtifact::Text(text),
         })
     }
 
     /// Stable semantic implementation identity.
     pub const fn id(&self) -> &ComponentImplementationId {
         &self.id
-    }
-
-    /// Bounded opaque material interpreted only by the selected trusted adapter.
-    pub const fn artifact(&self) -> &ComponentImplementationArtifact {
-        &self.artifact
     }
 }
 

@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-// One process-wide fixed Lua supervisor is intentionally shared by this test
+// One process-wide fixed managed executor is intentionally shared by this test
 // binary; each real-host case owns it through its network shutdown.
 static TEST_SERVICE_GATE: Mutex<()> = Mutex::new(());
 

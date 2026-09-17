@@ -14,14 +14,14 @@ use crate::{
         ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
     },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
-    managed_executor::{MOVING_MEAN_IMPLEMENTATION, ManagedExecutor},
+    managed_executor::ManagedExecutor,
     protocol::ProtocolFeatures,
     serial::{
         ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
         SerialParity,
     },
 };
-use lab_core::managed::{ComponentError, ComponentId};
+use lab_core::managed::ComponentError;
 use lab_core::{
     Error as DomainError,
     transport::{ByteTransport, ExecutorState, ResourceId},
@@ -600,14 +600,6 @@ impl ServiceHost {
         ProtocolFeatures {
             recorder: self.host.recording_status().is_some(),
             configuration: deployment.is_some(),
-            managed_source_reload: deployment.is_some_and(|active| {
-                active
-                    .effective()
-                    .dto
-                    .managed_components
-                    .iter()
-                    .any(|component| component.source.is_some())
-            }),
             resource_reconnect: deployment
                 .is_some_and(|active| !active.effective().dto.resources.is_empty()),
             emulator_publication: self.host.emulator_target_count() != 0,
@@ -804,15 +796,6 @@ impl ServiceHost {
             };
             host.install_component_executor(Box::new(supervisor))?;
             host.stage_standard_components(clock.now())?;
-            while !host.source_component_initialized() {
-                if std::time::Instant::now() >= init_deadline {
-                    let _ = host.begin_shutdown(&clock);
-                    return Err(io::Error::other("managed Source init deadline").into());
-                }
-                host.service(&clock)?;
-                std::thread::yield_now();
-            }
-            host.stage_standard_filter(clock.now())?;
             while !host.standard_components_initialized() {
                 if std::time::Instant::now() >= init_deadline {
                     let _ = host.begin_shutdown(&clock);
@@ -1003,15 +986,8 @@ impl ServiceHost {
             .configuration_path
             .as_deref()
             .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
-        let candidate = load_runtime_toml(path)
-            .map_err(|_| LifecycleOperationError::InvalidCandidate)?
-            .reuse_unchanged_managed_sources(
-                self.deployment
-                    .as_ref()
-                    .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-                    .active(),
-            )
-            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let candidate =
+            load_runtime_toml(path).map_err(|_| LifecycleOperationError::InvalidCandidate)?;
         let lifecycle = self
             .deployment
             .as_mut()
@@ -1156,28 +1132,6 @@ impl ServiceHost {
         deployment: &crate::configuration::FrozenDeployment,
     ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
         self.begin_recorded_lifecycle_with_scope(operation_kind, deployment, false, None)
-    }
-
-    fn begin_managed_source_lifecycle(
-        &mut self,
-        deployment: &crate::configuration::FrozenDeployment,
-        components: &[ComponentId],
-    ) -> Result<PendingRecordedLifecycle, LifecycleOperationError> {
-        let revision = self
-            .deployment
-            .as_ref()
-            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-            .revision();
-        let affected = components
-            .iter()
-            .map(|id| format!("component:{}:source_reload:{revision}", id.get()))
-            .collect();
-        self.begin_recorded_lifecycle_with_scope(
-            "reload_managed_sources",
-            deployment,
-            true,
-            Some(affected),
-        )
     }
 
     fn begin_recorded_lifecycle_with_scope(
@@ -1327,193 +1281,6 @@ impl ServiceHost {
                 }
             }
         }
-    }
-
-    /// Reload managed sources independently of deployment and model restart.
-    pub fn reload_managed_sources(&mut self) -> Result<(), LifecycleOperationError> {
-        let candidate = self
-            .deployment
-            .as_ref()
-            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-            .active()
-            .reload_managed_sources()
-            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
-        self.deployment
-            .as_ref()
-            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-            .validate_managed_sources_candidate(&candidate)
-            .map_err(|_| LifecycleOperationError::Conflict)?;
-        let components = &candidate.effective().dto.managed_components;
-        let mut affected_instruments: BTreeSet<_> = components
-            .iter()
-            .filter(|component| component.source.is_some())
-            .map(|component| component.instrument_id)
-            .collect();
-        loop {
-            let before = affected_instruments.len();
-            for component in components {
-                if component
-                    .input_instrument_id
-                    .is_some_and(|input| affected_instruments.contains(&input))
-                {
-                    affected_instruments.insert(component.instrument_id);
-                }
-            }
-            if affected_instruments.len() == before {
-                break;
-            }
-        }
-        let replacement_indices: Vec<_> = components
-            .iter()
-            .enumerate()
-            .filter_map(|(index, component)| {
-                affected_instruments
-                    .contains(&component.instrument_id)
-                    .then_some(index)
-            })
-            .collect();
-        if replacement_indices.is_empty() {
-            return Err(LifecycleOperationError::NoManagedComponents);
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut prepared = Vec::with_capacity(replacement_indices.len());
-        for index in replacement_indices {
-            let id = self
-                .host
-                .stage_configured_component(&candidate, index, true, self.clock.now())
-                .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
-            while !self.host.component_prepared(id) {
-                if std::time::Instant::now() >= deadline {
-                    self.host.discard_prepared_components();
-                    return Err(LifecycleOperationError::OwnerFailure);
-                }
-                if self.host.service(&self.clock).is_err()
-                    || (!self.host.component_prepare_pending() && !self.host.component_prepared(id))
-                {
-                    self.host.discard_prepared_components();
-                    return Err(LifecycleOperationError::InvalidCandidate);
-                }
-                std::thread::yield_now();
-            }
-            prepared.push(id);
-        }
-        let activation = self
-            .host
-            .prepare_configured_component_activation(&candidate, &prepared, self.clock.now())
-            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
-        if self.host.recording_status().is_some()
-            && components
-                .iter()
-                .any(|component| component.implementation == MOVING_MEAN_IMPLEMENTATION)
-        {
-            crate::build_identity::runtime_binary_sha256()
-                .map_err(|_| LifecycleOperationError::RecordingUnavailable)?;
-        }
-        let pending = self.begin_managed_source_lifecycle(&candidate, &prepared)?;
-        if self
-            .host
-            .commit_prepared_components(prepared, self.clock.now())
-            .is_err()
-        {
-            self.cancel_recorded_lifecycle(pending);
-            return Err(LifecycleOperationError::OwnerFailure);
-        }
-        self.host.commit_configured_component_activation(activation);
-        self.deployment
-            .as_mut()
-            .expect("checked above")
-            .commit_validated_managed_sources(candidate);
-        self.finish_recorded_lifecycle(pending)
-    }
-
-    /// Reinitialize configured models without rereading TOML or managed sources.
-    pub fn restart_models(&mut self) -> Result<RestartModelsResult, LifecycleOperationError> {
-        let active = self
-            .deployment
-            .as_ref()
-            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
-            .active()
-            .clone();
-        let managed = active.effective().dto.managed_components.len();
-        let native = active
-            .effective()
-            .dto
-            .instruments
-            .iter()
-            .filter(|instrument| {
-                matches!(
-                    instrument,
-                    crate::configuration::InstrumentDto::ThermalPlant { .. }
-                )
-            })
-            .count();
-        if native == 0 && managed == 0 {
-            return Err(LifecycleOperationError::OwnerFailure);
-        }
-        let mut prepared = Vec::with_capacity(managed);
-        if managed != 0 {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            for index in 0..managed {
-                let id = self
-                    .host
-                    .stage_configured_component(&active, index, true, self.clock.now())
-                    .map_err(|_| LifecycleOperationError::OwnerFailure)?;
-                while !self.host.component_prepared(id) {
-                    if std::time::Instant::now() >= deadline
-                        || self.host.service(&self.clock).is_err()
-                        || (!self.host.component_prepare_pending()
-                            && !self.host.component_prepared(id))
-                    {
-                        self.host.discard_prepared_components();
-                        return Err(LifecycleOperationError::OwnerFailure);
-                    }
-                    std::thread::yield_now();
-                }
-                prepared.push(id);
-            }
-        }
-        let pending = self.begin_recorded_lifecycle("restart_models", &active)?;
-        let mut models = 0usize;
-        let mut generation = 0u64;
-        if native != 0 {
-            match self
-                .host
-                .restart_configured_models(&active, self.clock.now())
-            {
-                Ok((count, latest)) => {
-                    models += count;
-                    generation = generation.max(latest);
-                }
-                Err(_) => {
-                    self.cancel_recorded_lifecycle(pending);
-                    return Err(LifecycleOperationError::OwnerFailure);
-                }
-            }
-        }
-        if managed != 0 {
-            if self
-                .host
-                .commit_prepared_components(prepared, self.clock.now())
-                .is_err()
-                || self
-                    .host
-                    .activate_configured_components(&active, self.clock.now())
-                    .is_err()
-            {
-                self.cancel_recorded_lifecycle(pending);
-                return Err(LifecycleOperationError::OwnerFailure);
-            }
-            models += managed;
-            for component in &active.effective().dto.managed_components {
-                if let Ok(lab_core::QueryResult::Component(snapshot)) = self.host.query(
-                    lab_core::Query::Component(lab_core::managed::ComponentId::new(component.id)),
-                ) {
-                    generation = generation.max(snapshot.generation);
-                }
-            }
-        }
-        self.finish_recorded_lifecycle(pending)?;
-        Ok(RestartModelsResult { models, generation })
     }
 
     /// Restart only Runtime-owned native virtual models, never managed components or resources.

@@ -92,8 +92,6 @@ fn native_definition_requires_no_executable_source_text() {
             at: Duration::ZERO,
         })
         .unwrap();
-    let admitted = mailbox.lock().unwrap().submitted.front().unwrap().clone();
-    assert!(admitted.definition.implementation.artifact().is_built_in());
     commit_init(&mut runtime, &mailbox);
     let QueryResult::Component(snapshot) = runtime
         .query(Query::Component(ComponentId::new(901)))
@@ -105,7 +103,7 @@ fn native_definition_requires_no_executable_source_text() {
 }
 
 #[test]
-fn source_adapter_uses_the_same_neutral_definition_and_invocation_contract() {
+fn registered_implementation_uses_the_same_neutral_definition_and_invocation_contract() {
     let mailbox = Arc::new(Mutex::new(Mailbox::default()));
     let mut runtime = Runtime::new();
     runtime
@@ -115,11 +113,7 @@ fn source_adapter_uses_the_same_neutral_definition_and_invocation_contract() {
         .command(Command::StageComponent {
             definition: ComponentDefinition {
                 manifest: manifest(902),
-                implementation: ComponentImplementation::text(
-                    "lua.v1",
-                    "return function(ctx) return ctx end",
-                )
-                .unwrap(),
+                implementation: ComponentImplementation::built_in("test.adapter.v1").unwrap(),
                 config: PlainData::default(),
             },
             replaces: None,
@@ -127,14 +121,9 @@ fn source_adapter_uses_the_same_neutral_definition_and_invocation_contract() {
         })
         .unwrap();
     let admitted = mailbox.lock().unwrap().submitted.front().unwrap().clone();
-    assert_eq!(admitted.definition.implementation.id().as_str(), "lua.v1");
-    assert!(
-        admitted
-            .definition
-            .implementation
-            .artifact()
-            .text()
-            .is_some()
+    assert_eq!(
+        admitted.definition.implementation.id().as_str(),
+        "test.adapter.v1"
     );
     commit_init(&mut runtime, &mailbox);
 }

@@ -54,11 +54,7 @@ fn source() -> ComponentDefinition {
             max_input_age: Duration::from_secs(1),
             history_capacity: 8,
         },
-        implementation: ComponentImplementation::text(
-            "test.stalled.v1",
-            "return function(ctx) return ctx end",
-        )
-        .unwrap(),
+        implementation: ComponentImplementation::built_in("test.stalled.v1").unwrap(),
         config: PlainData::default(),
     }
 }

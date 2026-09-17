@@ -37,7 +37,6 @@ enum Availability {
     Always,
     Recorder,
     Configuration,
-    ManagedSourceReload,
     ResourceReconnect,
     EmulatorPublication,
     VirtualModelLifecycle,
@@ -97,10 +96,7 @@ pub const OPERATIONS: &[OperationSpec] = &[
     operation!("reference", Query, ["reference"]),
     operation!("component", Query, ["component"]),
     operation!("output", Query, ["actuator"]),
-    operation!("runtime_snapshot", Query, []),
     operation!("operation_status", Query, ["request_id"]),
-    operation!("snapshot_page", Query, ["snapshot", "index"]),
-    operation!("snapshot_release", Query, ["snapshot"]),
     operation!("subscribe", Query, ["after", "filter"]),
     operation!("unsubscribe", Query, ["subscription"]),
     operation!(
@@ -158,7 +154,6 @@ pub const OPERATIONS: &[OperationSpec] = &[
         Configuration,
         ["target", "property", "value", "expected_revision"]
     ),
-    operation!("reload_managed_sources", Mutation, ManagedSourceReload, []),
     operation!(
         "emulator_publish",
         Mutation,
@@ -208,8 +203,6 @@ pub struct ProtocolFeatures {
     pub recorder: bool,
     /// Declarative deployment lifecycle is configured.
     pub configuration: bool,
-    /// At least one active text-backed managed implementation can be reloaded.
-    pub managed_source_reload: bool,
     /// At least one configured physical resource supports explicit reconnect.
     pub resource_reconnect: bool,
     /// At least one explicit virtual signal accepts external publication.
@@ -229,7 +222,6 @@ pub fn operation_supported(spec: &OperationSpec, features: ProtocolFeatures) -> 
         Availability::Always => true,
         Availability::Recorder => features.recorder,
         Availability::Configuration => features.configuration,
-        Availability::ManagedSourceReload => features.managed_source_reload,
         Availability::ResourceReconnect => features.resource_reconnect,
         Availability::EmulatorPublication => features.emulator_publication,
         Availability::VirtualModelLifecycle => features.virtual_model_lifecycle,
@@ -267,11 +259,6 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         name: "live_subscriptions",
         stability: "stable",
         operation: "subscribe",
-    },
-    CapabilitySpec {
-        name: "runtime_snapshot",
-        stability: "transitional",
-        operation: "runtime_snapshot",
     },
     CapabilitySpec {
         name: "current_measurements",
@@ -362,11 +349,6 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         name: "deployment_configuration",
         stability: "stable",
         operation: "stage_configuration",
-    },
-    CapabilitySpec {
-        name: "managed_source_reload",
-        stability: "transitional",
-        operation: "reload_managed_sources",
     },
     CapabilitySpec {
         name: "resource_reconnect",
@@ -863,10 +845,7 @@ mod tests {
             "reference",
             "component",
             "output",
-            "runtime_snapshot",
             "operation_status",
-            "snapshot_page",
-            "snapshot_release",
             "subscribe",
             "unsubscribe",
             "recording_status",
@@ -887,7 +866,6 @@ mod tests {
             "apply_configuration",
             "reload_configuration",
             "property_configure",
-            "reload_managed_sources",
             "emulator_publish",
             "virtual_models_restart",
             "reconnect_resource",
@@ -905,12 +883,11 @@ mod tests {
         };
         assert_eq!(projected(OperationKind::Query), queries);
         assert_eq!(projected(OperationKind::Mutation), mutations);
-        assert_eq!(OPERATIONS.len(), 46);
+        assert_eq!(OPERATIONS.len(), 42);
         let capabilities = [
             "operation_lifecycle",
             "structured_discovery",
             "live_subscriptions",
-            "runtime_snapshot",
             "current_measurements",
             "recent_measurement_history",
             "instrument_queries",
@@ -929,7 +906,6 @@ mod tests {
             "configuration_properties",
             "configuration_write",
             "deployment_configuration",
-            "managed_source_reload",
             "resource_reconnect",
             "virtual_instruments",
             "emulator_publication",
@@ -942,7 +918,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             capabilities
         );
-        assert_eq!(CAPABILITIES.len(), 27);
+        assert_eq!(CAPABILITIES.len(), 25);
         assert!(CAPABILITIES.iter().all(|capability| {
             matches!(capability.stability, "stable" | "transitional")
                 && operation_spec(capability.operation).is_some()

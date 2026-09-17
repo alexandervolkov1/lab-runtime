@@ -4304,11 +4304,7 @@ mod managed_identity_tests {
                 max_input_age: Duration::from_secs(2),
                 history_capacity: 8,
             },
-            implementation: ComponentImplementation::text(
-                "test.fake.v1",
-                "return function(ctx) return ctx end",
-            )
-            .unwrap(),
+            implementation: ComponentImplementation::built_in("test.fake.v1").unwrap(),
             config: PlainData::default(),
         };
         let mut runtime = Runtime::new();

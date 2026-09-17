@@ -71,11 +71,11 @@ fn descriptor_and_controller_configuration_report_exact_roles_units_and_limits()
     );
     let discover = ask(&mut service, &mut app, "discover", json!({}));
     let components = discover["result"]["records"].as_array().unwrap();
-    assert!(components.iter().any(|component| {
-        component["kind"] == "component"
-            && component["implementation"] == "lua.v1"
-            && component["component_kind"] == "source"
-    }));
+    assert!(
+        !components
+            .iter()
+            .any(|component| component["implementation"] == "lua.v1")
+    );
     assert!(components.iter().any(|component| {
         component["kind"] == "component"
             && component["implementation"] == "native.moving_mean.v1"

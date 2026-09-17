@@ -1,4 +1,4 @@
-//! Frozen snapshot/cursor barrier and ring replay are owner-local, bounded state.
+//! Frozen projection/cursor barrier and ring replay are owner-local, bounded state.
 
 use lab_runtime::{
     application::Application,
@@ -33,23 +33,26 @@ fn ask(
 }
 
 #[test]
-fn retune_between_snapshot_and_subscribe_is_replayed_and_pages_remain_frozen() {
+fn retune_between_discovery_and_subscribe_is_replayed_and_pages_remain_frozen() {
     let (mut service, mut app, scope) = setup();
     let snapshot = ask(
         &mut service,
         &mut app,
         1,
-        json!({"v":1,"msg_id":"snap","op":"runtime_snapshot","args":{}}),
+        json!({"v":1,"msg_id":"snap","op":"discover","args":{}}),
     );
     assert_eq!(snapshot[0]["type"], "result");
-    let token = snapshot[0]["result"]["snapshot"].as_str().unwrap();
-    let cursor = snapshot[0]["result"]["cursor"].clone();
+    let token = snapshot[0]["result"]["projection"].as_str().unwrap();
+    let cursor = json!({
+        "boot_id": snapshot[0]["result"]["revision"]["boot_id"],
+        "seq": snapshot[0]["result"]["revision"]["event_seq"]
+    });
     let index = snapshot[0]["result"]["next_index"].as_str().unwrap_or("0");
     let frozen_page = ask(
         &mut service,
         &mut app,
         1,
-        json!({"v":1,"msg_id":"page","op":"snapshot_page","args":{"snapshot":token,"index":index}}),
+        json!({"v":1,"msg_id":"page","op":"discovery_page","args":{"projection":token,"index":index}}),
     );
     let mutation = ask(
         &mut service,
@@ -63,7 +66,7 @@ fn retune_between_snapshot_and_subscribe_is_replayed_and_pages_remain_frozen() {
         &mut service,
         &mut app,
         1,
-        json!({"v":1,"msg_id":"page2","op":"snapshot_page","args":{"snapshot":token,"index":index}}),
+        json!({"v":1,"msg_id":"page2","op":"discovery_page","args":{"projection":token,"index":index}}),
     );
     assert_eq!(
         frozen_page[0]["result"]["records"],
@@ -180,21 +183,21 @@ fn eviction_during_an_installed_replay_reports_gap_and_abandons_that_subscriptio
 }
 
 #[test]
-fn expired_snapshot_and_previous_boot_cursor_or_scope_require_explicit_resync() {
+fn expired_projection_and_previous_boot_cursor_or_scope_require_explicit_resync() {
     let (mut first, mut app, scope) = setup();
     let snap = ask(
         &mut first,
         &mut app,
         1,
-        json!({"v":1,"msg_id":"snap","op":"runtime_snapshot","args":{}}),
+        json!({"v":1,"msg_id":"snap","op":"discover","args":{}}),
     );
-    let token = snap[0]["result"]["snapshot"].as_str().unwrap();
+    let token = snap[0]["result"]["projection"].as_str().unwrap();
     app.expire_snapshots_at(std::time::Duration::from_secs(6));
     let page = ask(
         &mut first,
         &mut app,
         1,
-        json!({"v":1,"msg_id":"page","op":"snapshot_page","args":{"snapshot":token,"index":"0"}}),
+        json!({"v":1,"msg_id":"page","op":"discovery_page","args":{"projection":token,"index":"0"}}),
     );
     assert_eq!(page[0]["code"], "snapshot_expired");
     let old_boot = first.boot_id().to_string();

@@ -597,65 +597,6 @@ impl Application {
                 owner.recording_policy(),
                 service.boot_id(),
             ),
-            "runtime_snapshot" => {
-                let cursor = owner.event_log().latest_cursor();
-                let mut records = owner.event_log().snapshot_records();
-                records.extend(owner.resource_records().into_iter().filter_map(|record| {
-                    let id = record["target"]["id"].as_str()?.parse().ok()?;
-                    let data = configuration_api::resource_json(service, id)
-                        .unwrap_or_else(|_| record["data"].clone());
-                    Some(json!({"kind":"resource","target":{"id":id.to_string()},"data":data}))
-                }));
-                if service.loaded_configuration().is_some() {
-                    records.push(json!({"kind":"configuration","target":{"id":"runtime"},
-                        "data":configuration_api::status_json(service)}));
-                }
-                let QueryResult::Instruments(instruments) =
-                    owner.query(Query::Discover).map_err(domain_code)?
-                else {
-                    return Err("internal_error");
-                };
-                records.insert(0,json!({"kind":"catalog","target":{"id":"runtime"},"data":{
-                    "instruments":instruments.iter().map(|d|json!({"id":d.id.get().to_string(),"name":d.name})).collect::<Vec<_>>()}}));
-                let footprint: usize = records
-                    .iter()
-                    .map(|r| {
-                        serde_json::to_vec(r)
-                            .map(|v| v.len() * 2 + 128)
-                            .unwrap_or(usize::MAX)
-                    })
-                    .sum();
-                if footprint > 256 * 1024
-                    || records.iter().any(|r| {
-                        serde_json::to_vec(r)
-                            .map(|v| v.len() > 4096)
-                            .unwrap_or(true)
-                    })
-                {
-                    return Err("snapshot_capacity");
-                }
-                let token = self.issue_token(service.boot_id())?;
-                let expires = service.clock().now() + Duration::from_secs(5);
-                self.snapshots.insert(
-                    connection,
-                    FrozenSnapshot {
-                        token: token.clone(),
-                        kind: "runtime_snapshot",
-                        cursor,
-                        records,
-                        expires,
-                    },
-                );
-                self.page(service, connection, &token, 0)?
-            }
-            "snapshot_page" => {
-                let token = args
-                    .get("snapshot")
-                    .and_then(Value::as_str)
-                    .ok_or("invalid_args")?;
-                let index = id_field(args, "index")?;
-                self.page(service, connection, token, index as usize)?
-            }
             "discovery_page" | "measurements_page" | "configuration_page" => {
                 let token = args
                     .get("projection")
@@ -668,20 +609,6 @@ impl Application {
                     _ => "configuration",
                 };
                 self.projection_page(service, connection, token, index, expected)?
-            }
-            "snapshot_release" => {
-                let token = args
-                    .get("snapshot")
-                    .and_then(Value::as_str)
-                    .ok_or("invalid_args")?;
-                let removed = self
-                    .snapshots
-                    .get(&connection)
-                    .is_some_and(|s| s.token == token);
-                if removed {
-                    self.snapshots.remove(&connection);
-                }
-                json!({"released":removed})
             }
             "subscribe" => {
                 if self.subscriptions.contains_key(&connection) {
@@ -1094,49 +1021,6 @@ impl Application {
             json!({"projection":token,"revision":{"boot_id":service.boot_id(),
             "event_seq":snapshot.cursor.to_string()},"records":records,
             "next_index":(next<snapshot.records.len()).then(||next.to_string()),"complete":next==snapshot.records.len()}),
-        )
-    }
-    fn page(
-        &self,
-        service: &ServiceHost,
-        connection: u64,
-        token: &str,
-        index: usize,
-    ) -> Result<Value, &'static str> {
-        let snapshot = self.snapshots.get(&connection).ok_or("snapshot_expired")?;
-        if snapshot.token != token {
-            return Err("snapshot_expired");
-        }
-        if service.clock().now() >= snapshot.expires {
-            return Err("snapshot_expired");
-        }
-        if index > snapshot.records.len() {
-            return Err("invalid_args");
-        }
-        let mut page = Vec::new();
-        let mut next = index;
-        while next < snapshot.records.len() {
-            let record = &snapshot.records[next];
-            let bytes = serde_json::to_vec(record)
-                .map_err(|_| "internal_error")?
-                .len();
-            let current: usize = page
-                .iter()
-                .map(|v: &Value| serde_json::to_vec(v).map(|a| a.len()).unwrap_or(8192))
-                .sum();
-            if current + bytes + 1024 > 8192 && !page.is_empty() {
-                break;
-            }
-            if bytes + 1024 > 8192 {
-                return Err("snapshot_capacity");
-            }
-            page.push(record.clone());
-            next += 1;
-        }
-        Ok(
-            json!({"snapshot":token,"cursor":{"boot_id":service.boot_id(),"seq":snapshot.cursor.to_string()},
-            "records":page,"count":snapshot.records.len().to_string(),"next_index":(next<snapshot.records.len()).then(||next.to_string()),
-            "expires_at":nanos(snapshot.expires)}),
         )
     }
 
@@ -1742,7 +1626,6 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
                     PropertyMutationValue::Text(value)=>json!(value)},
                 "expected_revision":expected_revision.to_string()}),
         ),
-        Mutation::ReloadManagedSources => ("reload_managed_sources", json!({})),
         Mutation::PublishEmulatorMeasurement {
             instrument,
             parameter,
@@ -2027,7 +1910,6 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
                 expected_revision: id_field(args, "expected_revision")?,
             }
         }
-        "reload_managed_sources" => Mutation::ReloadManagedSources,
         "emulator_publish" => {
             let signal = args.get("signal").ok_or("invalid_args")?;
             let publication = match args.get("state").and_then(Value::as_str) {
@@ -2271,12 +2153,6 @@ fn dispatch(
                     "property":property,"revision":result.revision.to_string(),
                     "persisted_to_deployment_source":false})
                 })
-                .map_err(lifecycle_domain_error);
-        }
-        Mutation::ReloadManagedSources => {
-            return service
-                .reload_managed_sources()
-                .map(|()| json!({"reloaded":true}))
                 .map_err(lifecycle_domain_error);
         }
         Mutation::PublishEmulatorMeasurement {

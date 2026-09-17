@@ -35,7 +35,6 @@ use lab_core::{
     reference::{ReferenceConfig, ReferenceId, ReferenceSnapshot},
     transport::{ByteTransport, ExecutorState, ResourceId, TransactionOutcome},
 };
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
@@ -44,7 +43,6 @@ use std::{
 const PLANT: InstrumentId = InstrumentId::new(1);
 const REFERENCE: ReferenceId = ReferenceId::new(1);
 const CONTROLLER: ControllerId = ControllerId::new(1);
-const MANAGED_SOURCE: ComponentId = ComponentId::new(201);
 const MANAGED_FILTER: ComponentId = ComponentId::new(202);
 const DEPENDENT_PLANT: InstrumentId = InstrumentId::new(301);
 const DEPENDENT_CONTROLLER: ControllerId = ControllerId::new(2);
@@ -367,17 +365,9 @@ pub struct HostCore {
     reconnect_quiesced_resources: BTreeSet<ResourceId>,
 }
 
-/// A fully checked scheduling delta for already-prepared managed replacements.
-pub(crate) struct ManagedComponentActivation {
-    affected: BTreeSet<ComponentId>,
-    sources: Vec<(ComponentId, Periodic)>,
-    transforms: Vec<(ComponentId, SignalId)>,
-    deployment_provenance: Vec<ProvenanceEntry>,
-}
-
 impl HostCore {
     /// Construct a validated configured native observation graph without opening
-    /// storage, listeners, Lua or physical resources.
+    /// storage, listeners or physical resources.
     pub fn configured_native(deployment: &FrozenDeployment) -> Result<Self, Error> {
         Self::configured_with_transports(deployment, BTreeMap::new())
     }
@@ -1652,15 +1642,7 @@ impl HostCore {
             .managed_components
             .get(index)
             .ok_or(Error::InvalidConfiguration("managed component index"))?;
-        let implementation = if let Some(source_path) = &component.source {
-            let source = deployment
-                .artifact_bytes(source_path)
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .ok_or(Error::InvalidConfiguration("frozen managed source missing"))?;
-            ComponentImplementation::text(component.implementation.clone(), source)?
-        } else {
-            ComponentImplementation::built_in(component.implementation.clone())?
-        };
+        let implementation = ComponentImplementation::built_in(component.implementation.clone())?;
         let id = ComponentId::new(component.id);
         let kind = component
             .input_instrument_id
@@ -1727,34 +1709,6 @@ impl HostCore {
                 && snapshot.pending.is_none())
     }
 
-    pub(crate) fn component_prepared(&self, id: ComponentId) -> bool {
-        self.runtime.component_prepared(id)
-    }
-
-    pub(crate) fn component_prepare_pending(&self) -> bool {
-        self.runtime.component_prepare_pending()
-    }
-
-    pub(crate) fn discard_prepared_components(&mut self) {
-        let _ = self.runtime.command(Command::DiscardPreparedComponents);
-    }
-
-    pub(crate) fn commit_prepared_components(
-        &mut self,
-        components: Vec<ComponentId>,
-        at: Duration,
-    ) -> Result<(), Error> {
-        let CommandResult::ComponentsCommitted(_) = self
-            .runtime
-            .command(Command::CommitPreparedComponents { components, at })?
-        else {
-            return Err(Error::InvalidConfiguration(
-                "unexpected component batch result",
-            ));
-        };
-        self.observe(at, None)
-    }
-
     /// Start configured component cadences only after every init committed.
     pub(crate) fn activate_configured_components(
         &mut self,
@@ -1789,85 +1743,6 @@ impl HostCore {
             })
             .collect();
         Ok(())
-    }
-
-    /// Validate only the selected prepared branch and build its infallible schedule delta.
-    pub(crate) fn prepare_configured_component_activation(
-        &self,
-        deployment: &FrozenDeployment,
-        components: &[ComponentId],
-        at: Duration,
-    ) -> Result<ManagedComponentActivation, Error> {
-        if components.is_empty() || components.len() > lab_core::managed::MAX_COMPONENTS {
-            return Err(Error::InvalidConfiguration(
-                "managed activation component count",
-            ));
-        }
-        let affected: BTreeSet<_> = components.iter().copied().collect();
-        if affected.len() != components.len() {
-            return Err(Error::InvalidConfiguration(
-                "duplicate managed activation component",
-            ));
-        }
-        let mut sources = Vec::with_capacity(components.len());
-        let mut transforms = Vec::with_capacity(components.len());
-        for id in components {
-            if !self.runtime.component_prepared(*id) {
-                return Err(Error::InvalidConfiguration(
-                    "managed activation candidate missing",
-                ));
-            }
-            let component = deployment
-                .effective()
-                .dto
-                .managed_components
-                .iter()
-                .find(|component| ComponentId::new(component.id) == *id)
-                .ok_or(Error::InvalidConfiguration(
-                    "managed activation declaration missing",
-                ))?;
-            if let Some(input) = component.input_instrument_id {
-                transforms.push((
-                    *id,
-                    SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
-                ));
-            } else {
-                let mut slot = Periodic::new(Duration::from_millis(component.period_ms));
-                slot.next_due = at;
-                sources.push((*id, slot));
-            }
-        }
-        let deployment_provenance = deployment
-            .provenance_entries()
-            .into_iter()
-            .map(|(kind, encoding, content)| ProvenanceEntry {
-                kind,
-                encoding,
-                content,
-            })
-            .collect();
-        Ok(ManagedComponentActivation {
-            affected,
-            sources,
-            transforms,
-            deployment_provenance,
-        })
-    }
-
-    /// Apply a previously checked selected-branch schedule delta without new failure points.
-    pub(crate) fn commit_configured_component_activation(
-        &mut self,
-        activation: ManagedComponentActivation,
-    ) {
-        self.plan
-            .sources
-            .retain(|(id, _)| !activation.affected.contains(id));
-        self.plan
-            .transforms
-            .retain(|(id, _)| !activation.affected.contains(id));
-        self.plan.sources.extend(activation.sources);
-        self.plan.transforms.extend(activation.transforms);
-        self.deployment_provenance = activation.deployment_provenance;
     }
 
     /// Attach one already-open worker under trusted host composition.
@@ -2136,7 +2011,6 @@ impl HostCore {
             .into_bytes(),
         );
         let mut managed_definition_indices = BTreeMap::new();
-        let mut managed_source_hashes = BTreeMap::new();
         let mut cached_binary_hash = None;
         for (id, _) in &self.components {
             let definition = self
@@ -2147,45 +2021,27 @@ impl HostCore {
             let mut implementation = serde_json::json!({
                 "component":id.get().to_string(),
                 "implementation":definition.implementation.id().as_str(),
-                "artifact":if definition.implementation.artifact().is_built_in(){
-                    "built_in"
-                }else{
-                    "text"
-                },
+                "artifact":"built_in",
                 "package_version":env!("CARGO_PKG_VERSION"),
                 "config":plain_data_activation_json(&definition.config),
             });
-            if let Some(source) = definition.implementation.artifact().text() {
-                let source_hash: [u8; 32] = Sha256::digest(source.as_bytes()).into();
-                implementation["source_content_sha256"] = hex_sha256(source_hash).into();
-                managed_source_hashes.insert(*id, source_hash);
-            } else {
-                let binary_hash = match cached_binary_hash {
-                    Some(hash) => hash,
-                    None => {
-                        let hash = runtime_binary_sha256().map_err(|_| {
-                            Error::InvalidConfiguration("runtime binary identity unavailable")
-                        })?;
-                        cached_binary_hash = Some(hash);
-                        hash
-                    }
-                };
-                implementation["runtime_binary_sha256"] = hex_sha256(binary_hash).into();
-            }
+            let binary_hash = match cached_binary_hash {
+                Some(hash) => hash,
+                None => {
+                    let hash = runtime_binary_sha256().map_err(|_| {
+                        Error::InvalidConfiguration("runtime binary identity unavailable")
+                    })?;
+                    cached_binary_hash = Some(hash);
+                    hash
+                }
+            };
+            implementation["runtime_binary_sha256"] = hex_sha256(binary_hash).into();
             push(
                 &mut entries,
                 "managed_component_implementation",
                 "json_v1",
                 implementation.to_string().into_bytes(),
             );
-            if let Some(source) = definition.implementation.artifact().text() {
-                push(
-                    &mut entries,
-                    "managed_component_source",
-                    "utf8",
-                    source.as_bytes().to_vec(),
-                );
-            }
         }
         push(
             &mut entries,
@@ -2328,7 +2184,7 @@ impl HostCore {
                     .to_string(),unit_key:None,generation:Some(snapshot.generation),binding:None,
                 definition_entry_index:*managed_definition_indices.get(id)
                     .ok_or(Error::InvalidConfiguration("component definition index missing"))?,
-                source_content_sha256:managed_source_hashes.get(id).copied()});
+                source_content_sha256:None});
         }
         Ok((entries, objects))
     }
@@ -2935,55 +2791,11 @@ impl HostCore {
         self.runtime.install_component_executor(executor)
     }
 
-    /// Stage the fixed trusted source adapter; Core permits one staged init at a time.
+    /// Stage the fixed native transform used by the unconfigured demonstration profile.
     pub fn stage_standard_components(&mut self, at: Duration) -> Result<(), Error> {
         if !self.components.is_empty() {
             return Err(Error::InvalidConfiguration(
                 "managed profile already staged",
-            ));
-        }
-        let mut config = PlainData::default();
-        config
-            .fields
-            .insert("baseline".into(), PlainValue::Number(20.0));
-        config.fields.insert("rate".into(), PlainValue::Number(1.0));
-        let manifest =
-            |id: ComponentId, kind: ComponentKind, warmup_samples: usize| ComponentManifest {
-                schema_version: 1,
-                id,
-                instrument: InstrumentId::new(id.get()),
-                name: format!("Managed observation {}", id.get()),
-                parameter: lab_core::TEMPERATURE,
-                kind,
-                unit: Unit::CELSIUS,
-                min: -100.0,
-                max: 500.0,
-                warmup_samples,
-                max_input_age: Duration::from_secs(2),
-                history_capacity: 32,
-            };
-        self.runtime.command(Command::StageComponent {
-            definition: ComponentDefinition {
-                manifest: manifest(MANAGED_SOURCE, ComponentKind::Source, 1),
-                implementation: ComponentImplementation::text(
-                    lab_lua::IMPLEMENTATION_ID,
-                    lab_lua::fixtures::VIRTUAL_MODEL_SOURCE,
-                )?,
-                config,
-            },
-            replaces: None,
-            at,
-        })?;
-        self.events.track_component(MANAGED_SOURCE);
-        self.components.push((MANAGED_SOURCE, "source"));
-        Ok(())
-    }
-
-    /// Stage the fixed one-input Transform only after Source init has committed.
-    pub fn stage_standard_filter(&mut self, at: Duration) -> Result<(), Error> {
-        if !self.source_component_initialized() {
-            return Err(Error::InvalidConfiguration(
-                "managed Source init incomplete",
             ));
         }
         let manifest = ComponentManifest {
@@ -2993,10 +2805,7 @@ impl HostCore {
             name: "Native moving mean".into(),
             parameter: lab_core::TEMPERATURE,
             kind: ComponentKind::Transform {
-                input: SignalId::new(
-                    InstrumentId::new(MANAGED_SOURCE.get()),
-                    lab_core::TEMPERATURE,
-                ),
+                input: SignalId::new(PLANT, lab_core::TEMPERATURE),
             },
             unit: Unit::CELSIUS,
             min: -100.0,
@@ -3020,33 +2829,21 @@ impl HostCore {
         self.components.push((MANAGED_FILTER, "transform"));
         Ok(())
     }
-    /// The first real init result committed without any pending callback.
-    pub fn source_component_initialized(&self) -> bool {
-        matches!(self.runtime.query(Query::Component(MANAGED_SOURCE)),Ok(QueryResult::Component(s))
-            if matches!(s.state,ComponentState::Warming|ComponentState::Ready) && s.pending.is_none())
-    }
 
-    /// True only after both real init callbacks have committed and no job waits.
+    /// True only after the native initialization callback committed and no job waits.
     pub fn standard_components_initialized(&self) -> bool {
-        [MANAGED_SOURCE,MANAGED_FILTER].iter().all(|id|matches!(self.runtime.query(Query::Component(*id)),
-            Ok(QueryResult::Component(snapshot)) if matches!(snapshot.state,ComponentState::Warming|ComponentState::Ready) && snapshot.pending.is_none()))
+        matches!(self.runtime.query(Query::Component(MANAGED_FILTER)),
+            Ok(QueryResult::Component(snapshot)) if matches!(snapshot.state,ComponentState::Warming|ComponentState::Ready) && snapshot.pending.is_none())
     }
 
     /// Start trusted managed cadence after bounded startup init completes.
-    pub fn activate_standard_components(&mut self, at: Duration) -> Result<(), Error> {
+    pub fn activate_standard_components(&mut self, _at: Duration) -> Result<(), Error> {
         if !self.standard_components_initialized() {
             return Err(Error::InvalidConfiguration("managed init incomplete"));
         }
-        let mut source = Periodic::new(Duration::from_millis(200));
-        source.next_due = at;
-        self.plan.sources.push((MANAGED_SOURCE, source));
-        self.plan.transforms.push((
-            MANAGED_FILTER,
-            SignalId::new(
-                InstrumentId::new(MANAGED_SOURCE.get()),
-                lab_core::TEMPERATURE,
-            ),
-        ));
+        self.plan
+            .transforms
+            .push((MANAGED_FILTER, SignalId::new(PLANT, lab_core::TEMPERATURE)));
         Ok(())
     }
 

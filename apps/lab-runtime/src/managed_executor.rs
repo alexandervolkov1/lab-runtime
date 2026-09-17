@@ -2,8 +2,8 @@
 //!
 //! Runtime submits every implementation through the same
 //! [`ComponentExecutor`](lab_core::managed::ComponentExecutor)
-//! port. Two fixed workers own execution for both the frozen Lua adapter and native
-//! Rust implementations, so adding a native implementation does not add a second
+//! port. Two fixed workers own execution for registered native Rust
+//! implementations, so adding a native implementation does not add a second
 //! queue, correlation path, or source of committed state.
 
 use lab_core::managed::{
@@ -333,18 +333,11 @@ impl Drop for ManagedExecutor {
 
 fn validate_registered(job: &Invocation) -> Result<(), ComponentError> {
     match job.definition.implementation.id().as_str() {
-        lab_lua::IMPLEMENTATION_ID => {
-            if job.definition.implementation.artifact().text().is_none() {
-                return Err(ComponentError::InvalidConfiguration);
-            }
-        }
         MOVING_MEAN_IMPLEMENTATION => {
-            if !job.definition.implementation.artifact().is_built_in()
-                || !matches!(
-                    job.definition.manifest.kind,
-                    ComponentKind::Transform { .. }
-                )
-                || configured_window(job)? != job.definition.manifest.warmup_samples
+            if !matches!(
+                job.definition.manifest.kind,
+                ComponentKind::Transform { .. }
+            ) || configured_window(job)? != job.definition.manifest.warmup_samples
             {
                 return Err(ComponentError::InvalidConfiguration);
             }
@@ -361,7 +354,6 @@ fn run_registered(
 ) -> Result<ComponentResult, ComponentError> {
     validate_registered(job)?;
     match job.definition.implementation.id().as_str() {
-        lab_lua::IMPLEMENTATION_ID => lab_lua::run_bounded(job, deadline, cancelled),
         MOVING_MEAN_IMPLEMENTATION => run_moving_mean(job, deadline, &cancelled),
         _ => Err(ComponentError::InvalidConfiguration),
     }

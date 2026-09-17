@@ -81,11 +81,7 @@ fn definition(id: u64, rate: f64) -> ComponentDefinition {
             max_input_age: Duration::from_secs(2),
             history_capacity: 8,
         },
-        implementation: ComponentImplementation::text(
-            "test.fake.v1",
-            "return function(ctx) return ctx end",
-        )
-        .unwrap(),
+        implementation: ComponentImplementation::built_in("test.fake.v1").unwrap(),
         config,
     }
 }
@@ -767,20 +763,7 @@ fn trusted_plain_data_and_source_boundary_admission_is_atomic() {
     runtime
         .install_component_executor(Box::new(FakeExecutor(mailbox.clone())))
         .unwrap();
-    assert!(
-        ComponentImplementation::text(
-            "test.fake.v1",
-            "x".repeat(lab_core::managed::MAX_IMPLEMENTATION_TEXT_BYTES + 1),
-        )
-        .is_err()
-    );
-    assert!(mailbox.lock().unwrap().submitted.is_empty());
-    let mut exact = definition(201, 1.0);
-    exact.implementation = ComponentImplementation::text(
-        "test.fake.v1",
-        "x".repeat(lab_core::managed::MAX_IMPLEMENTATION_TEXT_BYTES),
-    )
-    .unwrap();
+    let exact = definition(201, 1.0);
     runtime
         .command(Command::StageComponent {
             definition: exact,

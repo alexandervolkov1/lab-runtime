@@ -197,7 +197,7 @@ fn native_and_managed_batches_reopen_through_public_indexed_history_with_exact_s
         service.owner_mut().service(&clock).unwrap();
         for (instrument, times) in [
             (InstrumentId::new(1), &mut native_times),
-            (InstrumentId::new(201), &mut managed_times),
+            (InstrumentId::new(202), &mut managed_times),
         ] {
             if let QueryResult::Latest(Some(sample)) = service
                 .owner()
@@ -229,7 +229,7 @@ fn native_and_managed_batches_reopen_through_public_indexed_history_with_exact_s
     assert!(native_times.len() >= 3, "native refresh did not advance");
     assert!(
         managed_times.len() >= 2,
-        "real managed Source did not publish twice"
+        "native managed transform did not publish twice"
     );
     assert!(
         confirmed.len() >= 3,
@@ -291,7 +291,7 @@ fn native_and_managed_batches_reopen_through_public_indexed_history_with_exact_s
             .collect::<Vec<_>>()
     };
     let native = expected(1);
-    let managed = expected(201);
+    let managed = expected(202);
     assert!(native.len() >= 3);
     assert!(managed.len() >= 2);
     assert!(
@@ -353,7 +353,7 @@ fn native_and_managed_batches_reopen_through_public_indexed_history_with_exact_s
     );
     let scope = hello[0]["result"]["scope"].as_str().unwrap().to_owned();
     let mut sequence = 1;
-    for (instrument, known) in [(1, &native), (201, &managed)] {
+    for (instrument, known) in [(1, &native), (202, &managed)] {
         let mut cursor = JsonValue::Null;
         let mut received = Vec::new();
         loop {

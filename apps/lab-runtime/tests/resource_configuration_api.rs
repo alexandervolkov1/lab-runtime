@@ -73,6 +73,19 @@ fn start() -> (PathBuf, ServiceHost, Application, String) {
 }
 
 #[test]
+fn removed_lua_implementation_cannot_be_activated() {
+    let path = temporary_path();
+    let candidate = deployment().replace("native.moving_mean.v1", "lua.v1");
+    fs::write(&path, candidate).unwrap();
+    let arg = path.to_string_lossy().into_owned();
+    assert!(
+        ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
+            .is_err()
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn generic_projection_exposes_native_component_properties_without_special_operations() {
     let (path, mut service, mut app, scope) = start();
     let status = app.handle(

@@ -8,7 +8,7 @@ use lab_core::{
 use lab_runtime::{
     application::Application,
     host::Clock,
-    service::{LifecycleOperationError, ServiceHost, ServiceOptions},
+    service::{ServiceHost, ServiceOptions},
     wire::{decode_frame, encode_frame},
 };
 use serde_json::json;
@@ -148,7 +148,7 @@ fn c5_live_reload_commits_one_revision_and_uses_frozen_candidate_bytes() {
 }
 
 #[test]
-fn c8_c11_source_reload_and_model_restart_are_distinct_and_never_auto_start() {
+fn virtual_model_restart_is_explicit_and_never_auto_starts() {
     let path = temporary_path();
     fs::write(&path, deployment("Bench", 100, 22.0)).unwrap();
     let arg = path.to_string_lossy().into_owned();
@@ -156,11 +156,7 @@ fn c8_c11_source_reload_and_model_restart_are_distinct_and_never_auto_start() {
         ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
             .unwrap();
 
-    assert_eq!(
-        service.reload_managed_sources(),
-        Err(LifecycleOperationError::NoManagedComponents)
-    );
-    let restarted = service.restart_models().unwrap();
+    let restarted = service.restart_virtual_models().unwrap();
     assert_eq!(restarted.models, 1);
     assert_eq!(restarted.generation, 2);
     assert_eq!(service.loaded_configuration().unwrap().revision(), 1);

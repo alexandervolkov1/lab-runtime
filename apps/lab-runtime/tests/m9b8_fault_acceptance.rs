@@ -200,7 +200,6 @@ fn reconnect_rebuilds_authoritative_state_and_exact_replay_never_reapplies() {
         ("recorder", "recording_status", json!({})),
         ("configuration", "configuration_status", json!({})),
         ("properties", "configuration_properties", json!({})),
-        ("snapshot", "runtime_snapshot", json!({})),
     ] {
         let response = ask(
             &mut app,

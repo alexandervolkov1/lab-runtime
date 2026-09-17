@@ -175,7 +175,7 @@ fn service_shutdown_grace_stays_nonblocking_and_reports_stalled_cleanup() {
     assert!(service.shutdown_step().unwrap().is_none());
     assert!(
         one_step_at.elapsed() < Duration::from_millis(30),
-        "owner step cannot wait for Lua"
+        "owner step cannot wait for managed work"
     );
     let until = std::time::Instant::now() + Duration::from_secs(1);
     let terminal = loop {

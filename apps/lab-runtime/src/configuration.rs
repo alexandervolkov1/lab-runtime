@@ -1,7 +1,7 @@
 //! Bounded, side-effect-free deployment parsing and validation.
 //!
 //! This module owns TOML and filesystem-shaped artifact identities outside Core.
-//! Parsing never opens a transport, SQLite database, listener or Lua VM. The
+//! Parsing never opens a transport, SQLite database or listener. The
 //! returned bundle owns the exact admitted bytes so later activation never has
 //! to reread a mutable pathname for provenance.
 
@@ -144,7 +144,6 @@ impl FrozenArtifact {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ArtifactKind {
     InstrumentDefinition,
-    ManagedComponentSource,
 }
 
 /// Fully validated typed deployment used to build a staged Runtime candidate.
@@ -311,7 +310,6 @@ impl FrozenDeployment {
             (
                 match artifact.kind {
                     ArtifactKind::InstrumentDefinition => "instrument_definition",
-                    ArtifactKind::ManagedComponentSource => "managed_component_source",
                 }
                 .into(),
                 "utf8".into(),
@@ -326,87 +324,6 @@ impl FrozenDeployment {
             )
         }));
         entries
-    }
-
-    /// Reread only declared managed sources into a new immutable bundle. TOML,
-    /// definitions and effective deployment identity remain unchanged.
-    pub(crate) fn reload_managed_sources(&self) -> Result<Self, ConfigurationError> {
-        let mut next = self.clone();
-        let mut reader = FileArtifactReader;
-        for component in &self.effective.dto.managed_components {
-            let Some(declared) = component.source.as_deref() else {
-                continue;
-            };
-            let path = self.resolved_path(declared)?;
-            let bytes = reader.read(&path, 32 * 1024)?;
-            std::str::from_utf8(&bytes)
-                .map_err(|_| ConfigurationError::artifact("managed source must be UTF-8"))?;
-            let artifact = next
-                .artifacts
-                .iter_mut()
-                .find(|artifact| {
-                    artifact.kind == ArtifactKind::ManagedComponentSource
-                        && artifact.declared_path == path
-                })
-                .ok_or_else(|| ConfigurationError::artifact("managed source not frozen"))?;
-            artifact.sha256 = Sha256::digest(&bytes).into();
-            artifact.bytes = Arc::from(bytes);
-        }
-        let total = next
-            .artifacts
-            .iter()
-            .try_fold(next.toml_bytes.len(), |total, artifact| {
-                total.checked_add(artifact.bytes.len() + 128)
-            })
-            .ok_or(ConfigurationError::TooLarge)?;
-        if total > MAX_DEPLOYMENT_BYTES {
-            return Err(ConfigurationError::TooLarge);
-        }
-        Ok(next)
-    }
-
-    /// Reuse active source bytes for unchanged managed declarations during a
-    /// configuration reload. Only the distinct source-reload operation rereads
-    /// those mutable pathnames.
-    pub(crate) fn reuse_unchanged_managed_sources(
-        mut self,
-        active: &Self,
-    ) -> Result<Self, ConfigurationError> {
-        for component in &self.effective.dto.managed_components {
-            let Some(declared) = component.source.as_deref() else {
-                continue;
-            };
-            if !active
-                .effective
-                .dto
-                .managed_components
-                .iter()
-                .any(|old| old == component)
-            {
-                continue;
-            }
-            let candidate_path = self.resolved_path(declared)?;
-            let active_path = active.resolved_path(declared)?;
-            let active_artifact = active
-                .artifacts
-                .iter()
-                .find(|artifact| {
-                    artifact.kind == ArtifactKind::ManagedComponentSource
-                        && artifact.declared_path == active_path
-                })
-                .ok_or_else(|| ConfigurationError::artifact("active managed source missing"))?;
-            let candidate_artifact = self
-                .artifacts
-                .iter_mut()
-                .find(|artifact| {
-                    artifact.kind == ArtifactKind::ManagedComponentSource
-                        && artifact.declared_path == candidate_path
-                })
-                .ok_or_else(|| ConfigurationError::artifact("candidate managed source missing"))?;
-            candidate_artifact.bytes = active_artifact.bytes.clone();
-            candidate_artifact.sha256 = active_artifact.sha256;
-        }
-        Ok(self)
     }
 
     pub(crate) fn changes_from(&self, active: &Self) -> DeploymentChanges {
@@ -565,7 +482,7 @@ pub fn load_runtime_toml(path: &Path) -> Result<FrozenDeployment, ConfigurationE
 /// Parse, cross-reference, safety-validate and freeze a candidate.
 ///
 /// Structural validation runs before any referenced artifact read. The function
-/// has no Runtime, transport, storage, listener or Lua execution capability.
+/// has no Runtime, transport, storage or listener capability.
 pub fn parse_runtime_toml(
     bytes: &[u8],
     base: &Path,
@@ -597,11 +514,6 @@ pub fn parse_runtime_toml(
     for instrument in &dto.instruments {
         if let InstrumentDto::Metakon { definition, .. } = instrument {
             freeze_definition(base, definition, reader, &mut artifacts, &mut total_bytes)?;
-        }
-    }
-    for component in &dto.managed_components {
-        if let Some(source) = &component.source {
-            freeze_source(base, source, reader, &mut artifacts, &mut total_bytes)?;
         }
     }
     if artifacts.len() > MAX_DEPLOYMENT_ARTIFACTS || total_bytes > MAX_DEPLOYMENT_BYTES {
@@ -792,17 +704,12 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
             .map_err(|_| ConfigurationError::invalid("invalid component implementation"))?;
         component.plain_config()?;
         match component.implementation.as_str() {
-            lab_lua::IMPLEMENTATION_ID if component.source.is_some() => {}
-            lab_lua::IMPLEMENTATION_ID => {
-                return Err(ConfigurationError::invalid("Lua component requires source"));
-            }
             MOVING_MEAN_IMPLEMENTATION
-                if component.source.is_none()
-                    && component.input_instrument_id.is_some()
+                if component.input_instrument_id.is_some()
                     && component.configured_window().is_some() => {}
             MOVING_MEAN_IMPLEMENTATION => {
                 return Err(ConfigurationError::invalid(
-                    "native moving mean requires Transform input, no source and window 2..=64",
+                    "native moving mean requires Transform input and window 2..=64",
                 ));
             }
             _ => {
@@ -1056,26 +963,6 @@ fn freeze_definition(
     }
     push_artifact(
         ArtifactKind::InstrumentDefinition,
-        path,
-        bytes,
-        artifacts,
-        total,
-    )
-}
-
-fn freeze_source(
-    base: &Path,
-    declared: &Path,
-    reader: &mut impl ArtifactReader,
-    artifacts: &mut Vec<FrozenArtifact>,
-    total: &mut usize,
-) -> Result<(), ConfigurationError> {
-    let path = resolve_artifact(base, declared)?;
-    let bytes = reader.read(&path, 32 * 1024)?;
-    std::str::from_utf8(&bytes)
-        .map_err(|_| ConfigurationError::artifact("managed source must be UTF-8"))?;
-    push_artifact(
-        ArtifactKind::ManagedComponentSource,
         path,
         bytes,
         artifacts,
@@ -1428,8 +1315,6 @@ pub(crate) struct ManagedComponentDto {
     pub(crate) key: String,
     pub(crate) display_name: String,
     pub(crate) implementation: String,
-    #[serde(default)]
-    pub(crate) source: Option<PathBuf>,
     #[serde(default)]
     pub(crate) config: BTreeMap<String, toml::Value>,
     #[serde(default)]

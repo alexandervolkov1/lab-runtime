@@ -210,7 +210,6 @@ pub enum Mutation {
         publication: EmulatorPublication,
     },
     /// Reload only managed implementation sources; TOML and built-ins are unchanged.
-    ReloadManagedSources,
     /// Reinitialize configured managed components and native virtual models.
     RestartVirtualModels,
     /// Explicitly replace one configured read-only resource session.
