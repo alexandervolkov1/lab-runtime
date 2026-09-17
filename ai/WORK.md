@@ -11,6 +11,12 @@ Current phase: M9B — complete and stabilize Application API
 This is the only current implementation authorization. Do not begin M9C, M10, M11
 or M12 automatically.
 
+The read-only M9B.1 audit is complete in
+`docs/implementation/MILESTONE_9B_API_AUDIT.md`. Production implementation has not
+started. Implement M9B in the bounded dependency order recorded there, beginning
+with the protocol/error/operation foundation; do not treat the audit itself as an
+implementation result.
+
 ## Goal
 
 Expose complete useful Runtime semantics through one coherent bounded local
