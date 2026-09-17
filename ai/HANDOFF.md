@@ -12,7 +12,8 @@ M9B.3: COMPLETE
 M9B.4: COMPLETE
 M9B.5: COMPLETE
 M9B.6: COMPLETE
-M9B.7: NOT STARTED
+M9B.7: COMPLETE
+M9B.8: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -87,15 +88,19 @@ service. Existing session/dedup/disconnect ownership remains intact.
 
 M9B.6 is complete. Resources, configuration status, generic property metadata and
 validated live property mutation now use the existing deployment/revision lifecycle;
-reconnect remains the accepted generation-fenced M8 operation. Stop until a new
-instruction authorizes M9B.7. Remaining M9B domains are virtual/emulator behavior,
-fault acceptance and final freeze.
+reconnect remains the accepted generation-fenced M8 operation.
 
 The M9B.6 optimized release gate also passes. Its two observed optimized-only
 failures were test timing defects: a yield-count loop raced the serial worker's
 legitimate retry park, and one lifecycle test injected a future 1 ms timestamp ahead
 of the service clock. Test synchronization/time input was corrected without changing
 production serial, lifecycle or Application API behavior.
+
+M9B.7 is complete. Explicitly configured external-publication virtual signals accept
+bounded Good/Unavailable observations through the ordinary Runtime measurement,
+event, recent-history, controller and Recorder paths. Native thermal model restart
+is now the distinct `virtual_models_restart` operation; the mixed public
+`restart_models` name is retired. Stop before M9B.8.
 
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.

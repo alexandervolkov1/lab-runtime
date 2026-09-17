@@ -9,11 +9,12 @@ M9B.3 discovery / measurements / history / subscriptions: COMPLETE
 M9B.4 Reference and controller/PID API: COMPLETE
 M9B.5 Recorder Application API: COMPLETE
 M9B.6 resources / configuration / reconnect: COMPLETE
-M9B.7: NOT STARTED
+M9B.7 virtual instruments / external emulator API: COMPLETE
+M9B.8: NOT STARTED
 M9C+: NOT AUTHORIZED
 ```
 
-This report is cumulative through M9B.6. It does not claim that
+This report is cumulative through M9B.7. It does not claim that
 the complete M9B Application API is finished or externally accepted.
 
 ## M9B.2 scope and architecture
@@ -547,3 +548,88 @@ single-thread variant both then passed completely. Debug workspace tests,
 warning-denied Clippy, warning-denied rustdoc, formatting and diff checks also
 passed. This closes the M9B.6 release gate without changing Application API or
 hardware-facing behavior.
+
+## M9B.7 virtual instruments and external emulator API
+
+Virtual identity is now explicit and authority-bearing. A deployment
+`virtual_measurement` may opt into `external_publication=true`; no other instrument
+or signal is writable through the emulator API. Discovery reports physical versus
+virtual identity, per-instrument and per-signal publication capability, the normal
+`{instrument, parameter}` signal ID, value type, unit, current generation, Good and
+Unavailable states, Runtime-receipt timing, and descriptor-owned numeric bounds.
+Native thermal plants remain emulated but are not external-publication targets.
+
+`emulator_publish` is one deduplicated mutation for one signal. Its DTO contains the
+stable signal ID, `expected_generation`, and either `state=good` with one finite
+typed numeric value or `state=unavailable` with no value. Batching and client
+metadata are deliberately absent. The client supplies no timestamp, unit, Runtime
+generation, transport status or evidence; the Runtime assigns monotonic receipt and
+commit time and returns its authoritative generation. Descriptor validation rejects
+wrong parameter/type, non-finite and out-of-range values before signal mutation.
+Unavailable is the bounded virtual `disabled` condition, not an arbitrary internal
+or physical transport failure enum.
+
+Externally writable sources are removed from periodic generator scheduling. A
+disconnect therefore leaves the last committed normal observation intact but does
+not cause the Runtime to invent future values for the missing emulator. Ordinary
+freshness rules remain authoritative. A restarted client needs no hidden endpoint
+identity: hello, discovery/current query, expected generation and a fresh publish
+are sufficient.
+
+Publication commits through `Runtime::PublishVirtualMeasurement` into the existing
+`SignalBuffer`. The same commit is consequently visible in current state, bounded
+recent history, the existing signal event/replay ring, native controller input and
+Recorder measurement facts/durable history. It has no emulator-specific history or
+event bus. Recorder rows retain the declared virtual signal identity, unit,
+generation and deployment provenance; arbitrary client provenance is not accepted.
+
+Backpressure is the existing bounded Application path: one record per request,
+16-KiB frame and 1,024-value parser limits, at most eight pending operations per
+scope and 64 globally, bounded owner reactor/client queues, a 1,024-record event
+ring, sixteen-frame client event queue and bounded Recorder ingress. No publication
+worker or connection-owned queue was added. Excess admission is rejected by the
+existing structured capacity/busy errors; slow readers detach or receive the
+existing explicit event gap. Each owner turn commits at most one validated scalar,
+so external clients cannot block transport, native control, OutputAuthority or
+Recorder on their I/O.
+
+The former public `restart_models` name mixed managed-component and native-model
+lifecycle and is retired before v0.1. `virtual_models_restart` now restarts only
+configured native `ThermalPlantInstrument` instances through their existing
+generation fence. It retains stable instrument/signal identity, increments the
+authoritative model generation, resets model state, invalidates old observations
+and rejects active dependent controllers or outstanding output authority. It does
+not restart resources, reload managed sources or rearm controllers/outputs.
+The internal combined helper remains only for earlier trusted regression coverage.
+
+Thermal-plant ambient/initial temperature, gain and time constant now appear through
+the generic M9B.6 property projection as deployment-only `reinitialize` properties;
+display name and cadence retain their existing generic live classes. No thermal or
+future ordinary virtual-instrument-specific wire operation was added.
+
+The physical safety boundary is structural and tested. Protocol composition does
+not advertise `emulator_publish` without an explicit target. The Host allowlist is
+an exact set of deployment-authorized `SignalId` values, and Core publication can
+only reach `VirtualInstrument`; physical Metakon, thermal plant, managed and output
+identities are outside it. The operation schema has no ACK, readback, transaction,
+resource state, lease, output command, authority token or generation-assignment
+field. A physical publication attempt is rejected before mutation and leaves its
+current observation, Recorder health and output state unchanged.
+
+Capabilities are `virtual_instruments`, composition-gated `emulator_publication`
+and composition-gated `virtual_model_lifecycle`. Errors use the existing structured
+taxonomy: unsupported composition, unknown identity, invalid configuration/value,
+generation conflict/domain rejection, and bounded capacity/operation failure. No
+Rust type or uncontrolled internal error string is exposed.
+
+Focused tests cover discovery authorization, stable signal identity across
+discovery/current/recent history/events, Good/Unavailable/recovery, numeric range
+and generation rejection atomicity, disconnect persistence without fabricated
+future samples, controller-input admission, durable Recorder history, physical
+non-advertisement/non-mutation, generic thermal properties and generation-fenced
+targeted restart. Existing protocol, subscription/gap, configuration, control,
+Recorder, process, physical-resource and prior M9B suites remain regression gates.
+
+M9B.8 and later work remains deferred: full adversarial fault acceptance and final
+API freeze. No COM port or hardware path was opened, Lua was unchanged, M8 evidence
+was unchanged, and M9C was not started.
