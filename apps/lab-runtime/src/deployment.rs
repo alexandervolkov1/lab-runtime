@@ -29,6 +29,21 @@ pub enum DiffEffect {
     RestartRequired,
 }
 
+impl DiffEffect {
+    /// Stable semantic spelling used by the Application API.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LiveSafe => "live_safe",
+            Self::OrdinaryLive => "ordinary_live",
+            Self::Reinitialize => "reinitialize",
+            Self::TransportRebind => "transport_rebind",
+            Self::ControllerRewarm => "controller_rewarm",
+            Self::OutputSafeBarrier => "output_safe_barrier",
+            Self::RestartRequired => "restart_required",
+        }
+    }
+}
+
 /// Bounded aggregate effects computed before any Runtime mutation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigurationDiff {
@@ -71,6 +86,7 @@ pub struct StagedConfiguration {
     id: u64,
     base_revision: u64,
     diff: ConfigurationDiff,
+    expires_at: Duration,
 }
 
 impl StagedConfiguration {
@@ -87,6 +103,11 @@ impl StagedConfiguration {
     /// Effects that will occur if the candidate is applied.
     pub const fn diff(&self) -> &ConfigurationDiff {
         &self.diff
+    }
+
+    /// Boot-local monotonic expiry of this one retained candidate.
+    pub const fn expires_at(&self) -> Duration {
+        self.expires_at
     }
 }
 
@@ -212,6 +233,7 @@ impl DeploymentLifecycle {
             id,
             base_revision: self.revision,
             diff: ConfigurationDiff::from_changes(candidate.changes_from(&self.active)),
+            expires_at,
         };
         self.staged = Some(Candidate {
             snapshot: snapshot.clone(),
@@ -219,6 +241,11 @@ impl DeploymentLifecycle {
             expires_at,
         });
         Ok(snapshot)
+    }
+
+    /// Current retained candidate metadata without exposing its private buffer.
+    pub fn staged(&self) -> Option<&StagedConfiguration> {
+        self.staged.as_ref().map(|candidate| &candidate.snapshot)
     }
 
     /// Apply through an explicit barrier/prepare/atomic-commit sequence.

@@ -23,6 +23,38 @@ use std::{
 /// Stable semantic identity of the reference native transform.
 pub const MOVING_MEAN_IMPLEMENTATION: &str = "native.moving_mean.v1";
 
+/// Registration-owned configuration metadata projected generically by the API.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ComponentPropertyMetadata {
+    /// Stable property identity within the implementation configuration.
+    pub id: &'static str,
+    /// Language-neutral scalar type.
+    pub value_type: &'static str,
+    /// Inclusive numeric minimum, when applicable.
+    pub minimum: Option<i64>,
+    /// Inclusive numeric maximum, when applicable.
+    pub maximum: Option<i64>,
+    /// Runtime lifecycle class selected by trusted registration.
+    pub mutation_class: &'static str,
+}
+
+const MOVING_MEAN_PROPERTIES: &[ComponentPropertyMetadata] = &[ComponentPropertyMetadata {
+    id: "window",
+    value_type: "integer",
+    minimum: Some(2),
+    maximum: Some(64),
+    mutation_class: "reinitialize",
+}];
+
+/// Property metadata for one registered implementation. The wire layer has no
+/// implementation-specific branch, so new registrations need no new operation.
+pub fn component_property_metadata(implementation: &str) -> &'static [ComponentPropertyMetadata] {
+    match implementation {
+        MOVING_MEAN_IMPLEMENTATION => MOVING_MEAN_PROPERTIES,
+        _ => &[],
+    }
+}
+
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const WORKERS: usize = 2;
 const JOB_DEADLINE: Duration = Duration::from_millis(100);

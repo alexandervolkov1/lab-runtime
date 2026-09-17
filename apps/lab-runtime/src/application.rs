@@ -7,12 +7,16 @@ use crate::recorder::{
     RunsCursor, RunsPage, bounded_annotation_data,
 };
 use crate::{
+    configuration::PropertyValue,
+    configuration_api,
     host::Clock,
     measurements::{current_json, sample_json, signal_id_json},
     protocol::{self, PublicError},
     recorder_api,
     service::{LifecycleOperationError, ServiceHost},
-    sessions::{Admission, Mutation, OperationState, SessionError, SessionStore},
+    sessions::{
+        Admission, Mutation, OperationState, PropertyMutationValue, SessionError, SessionStore,
+    },
     wire::{WireRequest, WireRequestId, decimal_u64},
 };
 use lab_core::control::{
@@ -588,7 +592,16 @@ impl Application {
             "runtime_snapshot" => {
                 let cursor = owner.event_log().latest_cursor();
                 let mut records = owner.event_log().snapshot_records();
-                records.extend(owner.resource_records());
+                records.extend(owner.resource_records().into_iter().filter_map(|record| {
+                    let id = record["target"]["id"].as_str()?.parse().ok()?;
+                    let data = configuration_api::resource_json(service, id)
+                        .unwrap_or_else(|_| record["data"].clone());
+                    Some(json!({"kind":"resource","target":{"id":id.to_string()},"data":data}))
+                }));
+                if service.loaded_configuration().is_some() {
+                    records.push(json!({"kind":"configuration","target":{"id":"runtime"},
+                        "data":configuration_api::status_json(service)}));
+                }
                 let QueryResult::Instruments(instruments) =
                     owner.query(Query::Discover).map_err(domain_code)?
                 else {
@@ -635,16 +648,16 @@ impl Application {
                 let index = id_field(args, "index")?;
                 self.page(service, connection, token, index as usize)?
             }
-            "discovery_page" | "measurements_page" => {
+            "discovery_page" | "measurements_page" | "configuration_page" => {
                 let token = args
                     .get("projection")
                     .and_then(Value::as_str)
                     .ok_or("invalid_args")?;
                 let index = id_field(args, "index")? as usize;
-                let expected = if request.op == "discovery_page" {
-                    "discovery"
-                } else {
-                    "measurements"
+                let expected = match request.op.as_str() {
+                    "discovery_page" => "discovery",
+                    "measurements_page" => "measurements",
+                    _ => "configuration",
                 };
                 self.projection_page(service, connection, token, index, expected)?
             }
@@ -705,6 +718,8 @@ impl Application {
                         "operation",
                         "host",
                         "recorder",
+                        "resource",
+                        "configuration",
                     ]
                     .contains(&name)
                     {
@@ -752,6 +767,14 @@ impl Application {
                     _ => return Err("internal_error"),
                 }
             }
+            "resource" => configuration_api::resource_json(service, id_field(args, "resource")?)?,
+            "configuration_status" => configuration_api::status_json(service),
+            "configuration_properties" => self.begin_projection(
+                service,
+                connection,
+                "configuration",
+                configuration_api::property_records(service)?,
+            )?,
             "component" => {
                 let id = id_field(args, "component")?;
                 let QueryResult::Component(snapshot) = owner
@@ -917,11 +940,19 @@ impl Application {
                                 "state":record["data"]})
                         }),
                 );
-                records.extend(owner.resource_records().into_iter().map(|record| {
-                    json!({
-                    "kind":"resource","id":record["target"]["id"],"state":record["data"]["state"],
-                    "generation":record["data"]["generation"]})
+                records.extend(owner.resource_records().into_iter().filter_map(|record| {
+                    let id = record["target"]["id"].as_str()?.parse().ok()?;
+                    let state =
+                        configuration_api::resource_json(service, id).unwrap_or_else(|_| {
+                            json!({"resource":id.to_string(),"state":record["data"]["state"],
+                            "binding_generation":Value::Null,
+                            "transport_generation":record["data"]["generation"]})
+                        });
+                    Some(json!({"kind":"resource","id":id.to_string(),"state":state}))
                 }));
+                if let Ok(properties) = configuration_api::property_records(service) {
+                    records.extend(properties);
+                }
                 records.sort_by_key(|record| record.to_string());
                 self.begin_projection(service, connection, "discovery", records)?
             }
@@ -1502,7 +1533,18 @@ impl Application {
             }
         }
         let recorded_command = recorded_intent(&payload).map(|(command, _)| command);
-        let reconnect_operation = matches!(&payload, Mutation::ReconnectResource { .. });
+        let reconnect_resource = match &payload {
+            Mutation::ReconnectResource { resource, .. } => Some(*resource),
+            _ => None,
+        };
+        let reconnect_operation = reconnect_resource.is_some();
+        let configuration_operation = matches!(
+            &payload,
+            Mutation::ReloadConfiguration
+                | Mutation::StageConfiguration
+                | Mutation::ApplyConfiguration { .. }
+                | Mutation::ConfigureProperty { .. }
+        );
         let outcome = dispatch(service, payload, &rid).map_or_else(
             |error| {
                 let code = domain_code(error);
@@ -1533,6 +1575,23 @@ impl Application {
                 outcome_basis: "domain_result",
                 at: terminal_at,
             });
+        }
+        let lifecycle_at = service.clock().now();
+        if let Some(resource) = reconnect_resource
+            && let Ok(state) = configuration_api::resource_json(service, resource)
+        {
+            let _ =
+                service
+                    .owner_mut()
+                    .event_log_mut()
+                    .resource_state(lifecycle_at, resource, state);
+        }
+        if configuration_operation && matches!(outcome, OperationState::Completed(_)) {
+            let state = configuration_api::status_json(service);
+            let _ = service
+                .owner_mut()
+                .event_log_mut()
+                .configuration_state(lifecycle_at, state);
         }
         let event_state = operation_state(outcome.clone());
         let published_at = service.clock().now();
@@ -1642,6 +1701,20 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
         } => (
             "apply_configuration",
             json!({"candidate_id":candidate_id.to_string(),
+                "expected_revision":expected_revision.to_string()}),
+        ),
+        Mutation::ConfigureProperty {
+            target_kind,
+            target_id,
+            property,
+            value,
+            expected_revision,
+        } => (
+            "property_configure",
+            json!({"target":{"kind":target_kind,"id":target_id.to_string()},
+                "property":property,"value":match value {
+                    PropertyMutationValue::Integer(value)=>json!(value),
+                    PropertyMutationValue::Text(value)=>json!(value)},
                 "expected_revision":expected_revision.to_string()}),
         ),
         Mutation::ReloadManagedSources => ("reload_managed_sources", json!({})),
@@ -1886,6 +1959,37 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
             candidate_id: id_field(args, "candidate_id")?,
             expected_revision: id_field(args, "expected_revision")?,
         },
+        "property_configure" => {
+            let target = args.get("target").ok_or("invalid_args")?;
+            let target_kind = target
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            let property = args
+                .get("property")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            if target_kind.len() > protocol::SEMANTIC_NAME_LIMIT
+                || property.is_empty()
+                || property.len() > protocol::SEMANTIC_NAME_LIMIT
+            {
+                return Err("invalid_args");
+            }
+            let value = match args.get("value").ok_or("invalid_args")? {
+                Value::Number(value) => {
+                    PropertyMutationValue::Integer(value.as_i64().ok_or("invalid_args")?)
+                }
+                Value::String(value) => PropertyMutationValue::Text(value.clone()),
+                _ => return Err("invalid_args"),
+            };
+            Mutation::ConfigureProperty {
+                target_kind: target_kind.to_owned(),
+                target_id: id_field(target, "id")?,
+                property: property.to_owned(),
+                value,
+                expected_revision: id_field(args, "expected_revision")?,
+            }
+        }
         "reload_managed_sources" => Mutation::ReloadManagedSources,
         "restart_models" => Mutation::RestartModels,
         "reconnect_resource" => Mutation::ReconnectResource {
@@ -2068,7 +2172,7 @@ fn dispatch(
             return service
                 .reload_configuration()
                 .map(|result| json!({"revision":result.revision.to_string()}))
-                .map_err(|_| Error::InvalidConfiguration("configuration reload failed"));
+                .map_err(lifecycle_domain_error);
         }
         Mutation::StageConfiguration => {
             return service
@@ -2078,13 +2182,14 @@ fn dispatch(
                         .diff()
                         .effects()
                         .iter()
-                        .map(|effect| format!("{effect:?}"))
+                        .map(|effect| effect.as_str())
                         .collect();
                     json!({"candidate_id":staged.id().to_string(),
                         "base_revision":staged.base_revision().to_string(),
+                        "expires_at_ns":staged.expires_at().as_nanos().to_string(),
                         "effects":effects})
                 })
-                .map_err(|_| Error::InvalidConfiguration("configuration stage failed"));
+                .map_err(lifecycle_domain_error);
         }
         Mutation::ApplyConfiguration {
             candidate_id,
@@ -2093,6 +2198,26 @@ fn dispatch(
             return service
                 .apply_staged_configuration(candidate_id, expected_revision)
                 .map(|result| json!({"revision":result.revision.to_string()}))
+                .map_err(lifecycle_domain_error);
+        }
+        Mutation::ConfigureProperty {
+            target_kind,
+            target_id,
+            property,
+            value,
+            expected_revision,
+        } => {
+            let value = match value {
+                PropertyMutationValue::Integer(value) => PropertyValue::Integer(value),
+                PropertyMutationValue::Text(value) => PropertyValue::Text(value),
+            };
+            return service
+                .configure_property(&target_kind, target_id, &property, value, expected_revision)
+                .map(|result| {
+                    json!({"target":{"kind":target_kind,"id":target_id.to_string()},
+                    "property":property,"revision":result.revision.to_string(),
+                    "persisted_to_deployment_source":false})
+                })
                 .map_err(lifecycle_domain_error);
         }
         Mutation::ReloadManagedSources => {
@@ -2184,11 +2309,17 @@ fn parse_filter_target(value: &Value) -> Result<FilterTarget, &'static str> {
         .and_then(Value::as_str)
         .ok_or("invalid_args")?;
     let target = match kind {
-        "instrument" | "controller" | "reference" | "component" => {
+        "instrument" | "controller" | "reference" | "component" | "resource" => {
             if object.len() != 2 || !object.contains_key("id") {
                 return Err("invalid_args");
             }
             json!({"id":id_field(value,"id")?.to_string()})
+        }
+        "configuration" => {
+            if object.len() != 2 || value.get("id").and_then(Value::as_str) != Some("runtime") {
+                return Err("invalid_args");
+            }
+            json!({"id":"runtime"})
         }
         "signal" | "output" => {
             if object.len() != 3

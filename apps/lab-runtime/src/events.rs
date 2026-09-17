@@ -326,6 +326,14 @@ impl EventLog {
     ) -> Result<(), EventError> {
         self.append(at, "recorder", json!({"id":archive_id}), data, None)
     }
+    /// Publish one semantic resource snapshot after an explicit lifecycle change.
+    pub fn resource_state(&mut self, at: Duration, id: u64, data: Value) -> Result<(), EventError> {
+        self.append(at, "resource", json!({"id":id.to_string()}), data, None)
+    }
+    /// Publish current configuration/candidate state after a lifecycle operation.
+    pub fn configuration_state(&mut self, at: Duration, data: Value) -> Result<(), EventError> {
+        self.append(at, "configuration", json!({"id":"runtime"}), data, None)
+    }
     fn append(
         &mut self,
         at: Duration,

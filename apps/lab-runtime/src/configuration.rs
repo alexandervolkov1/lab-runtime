@@ -186,6 +186,16 @@ pub struct FrozenDeployment {
     toml_hash: [u8; 32],
     effective: EffectiveDeployment,
     artifacts: Vec<FrozenArtifact>,
+    runtime_overrides: Vec<String>,
+}
+
+/// One bounded scalar admitted by the generic live property operation.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PropertyValue {
+    /// Signed integer property.
+    Integer(i64),
+    /// UTF-8 text property.
+    Text(String),
 }
 
 impl FrozenDeployment {
@@ -209,6 +219,74 @@ impl FrozenDeployment {
         &self.artifacts
     }
 
+    /// Number of process-local property overlays applied above the deployment file.
+    pub(crate) fn runtime_override_count(&self) -> usize {
+        self.runtime_overrides.len()
+    }
+
+    /// Produce a fully validated fixed-topology candidate for one supported live property.
+    pub(crate) fn with_property_override(
+        &self,
+        target_kind: &str,
+        target_id: u64,
+        property: &str,
+        value: PropertyValue,
+    ) -> Result<Self, ConfigurationError> {
+        let mut next = self.clone();
+        let recorded_value = match &value {
+            PropertyValue::Integer(value) => serde_json::json!(value),
+            PropertyValue::Text(value) => serde_json::json!(value),
+        };
+        match target_kind {
+            "instrument" => {
+                let instrument = next
+                    .effective
+                    .dto
+                    .instruments
+                    .iter_mut()
+                    .find(|instrument| instrument.id() == target_id)
+                    .ok_or_else(|| ConfigurationError::invalid("unknown property target"))?;
+                match (property, value) {
+                    ("display_name", PropertyValue::Text(value)) => {
+                        validate_display_name(&value)?;
+                        match instrument {
+                            InstrumentDto::VirtualMeasurement { display_name, .. }
+                            | InstrumentDto::ThermalPlant { display_name, .. } => {
+                                *display_name = value
+                            }
+                            InstrumentDto::Metakon { .. } => {
+                                return Err(ConfigurationError::invalid("property is read-only"));
+                            }
+                        }
+                    }
+                    ("poll_period_ms", PropertyValue::Integer(value)) => {
+                        let value = u64::try_from(value)
+                            .map_err(|_| ConfigurationError::invalid("invalid property value"))?;
+                        validate_period(value, "poll period")?;
+                        match instrument {
+                            InstrumentDto::VirtualMeasurement { poll_period_ms, .. }
+                            | InstrumentDto::ThermalPlant { poll_period_ms, .. }
+                            | InstrumentDto::Metakon { poll_period_ms, .. } => {
+                                *poll_period_ms = value
+                            }
+                        }
+                    }
+                    _ => return Err(ConfigurationError::invalid("unsupported property")),
+                }
+            }
+            _ => return Err(ConfigurationError::invalid("unsupported property target")),
+        }
+        if next.runtime_overrides.len() >= 32 {
+            return Err(ConfigurationError::TooLarge);
+        }
+        next.runtime_overrides.push(
+            serde_json::json!({"target":{"kind":target_kind,"id":target_id.to_string()},
+                "property":property,"value":recorded_value})
+            .to_string(),
+        );
+        Ok(next)
+    }
+
     pub(crate) fn resolved_path(&self, declared: &Path) -> Result<PathBuf, ConfigurationError> {
         resolve_artifact(&self.base, declared)
     }
@@ -222,7 +300,8 @@ impl FrozenDeployment {
     }
 
     pub(crate) fn provenance_entries(&self) -> Vec<(String, String, Vec<u8>)> {
-        let mut entries = Vec::with_capacity(self.artifacts.len() + 1);
+        let mut entries =
+            Vec::with_capacity(self.artifacts.len() + self.runtime_overrides.len() + 1);
         entries.push((
             "runtime_toml".into(),
             "utf8".into(),
@@ -237,6 +316,13 @@ impl FrozenDeployment {
                 .into(),
                 "utf8".into(),
                 artifact.bytes.to_vec(),
+            )
+        }));
+        entries.extend(self.runtime_overrides.iter().cloned().map(|content| {
+            (
+                "runtime_configuration_overlay".into(),
+                "json".into(),
+                content.into_bytes(),
             )
         }));
         entries
@@ -356,7 +442,30 @@ impl FrozenDeployment {
             || old.controllers.len() != new.controllers.len()
             || old.safe_profiles.len() != new.safe_profiles.len();
         let live_safe = self.toml_hash != active.toml_hash
-            || old.runtime.display_name != new.runtime.display_name;
+            || old.runtime.display_name != new.runtime.display_name
+            || old
+                .instruments
+                .iter()
+                .zip(&new.instruments)
+                .any(|(old, new)| match (old, new) {
+                    (
+                        InstrumentDto::VirtualMeasurement {
+                            display_name: old, ..
+                        },
+                        InstrumentDto::VirtualMeasurement {
+                            display_name: new, ..
+                        },
+                    )
+                    | (
+                        InstrumentDto::ThermalPlant {
+                            display_name: old, ..
+                        },
+                        InstrumentDto::ThermalPlant {
+                            display_name: new, ..
+                        },
+                    ) => old != new,
+                    _ => false,
+                });
         let ordinary_live = old
             .instruments
             .iter()
@@ -504,6 +613,7 @@ pub fn parse_runtime_toml(
         toml_hash: Sha256::digest(bytes).into(),
         effective: EffectiveDeployment { dto },
         artifacts,
+        runtime_overrides: Vec::new(),
     })
 }
 

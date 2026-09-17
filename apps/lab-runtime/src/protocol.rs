@@ -78,6 +78,15 @@ pub const OPERATIONS: &[OperationSpec] = &[
     operation!("discover", Query, []),
     operation!("discovery_page", Query, ["projection", "index"]),
     operation!("describe", Query, ["instrument"]),
+    operation!("resource", Query, ResourceReconnect, ["resource"]),
+    operation!("configuration_status", Query, Configuration, []),
+    operation!("configuration_properties", Query, Configuration, []),
+    operation!(
+        "configuration_page",
+        Query,
+        Configuration,
+        ["projection", "index"]
+    ),
     operation!("latest", Query, ["signal"]),
     operation!("measurements_current", Query, []),
     operation!("measurements_page", Query, ["projection", "index"]),
@@ -141,6 +150,12 @@ pub const OPERATIONS: &[OperationSpec] = &[
         ["candidate_id", "expected_revision"]
     ),
     operation!("reload_configuration", Mutation, Configuration, []),
+    operation!(
+        "property_configure",
+        Mutation,
+        Configuration,
+        ["target", "property", "value", "expected_revision"]
+    ),
     operation!("reload_managed_sources", Mutation, ManagedSourceReload, []),
     operation!("restart_models", Mutation, []),
     operation!(
@@ -305,8 +320,28 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         operation: "history_read",
     },
     CapabilitySpec {
+        name: "resource_status",
+        stability: "stable",
+        operation: "resource",
+    },
+    CapabilitySpec {
+        name: "configuration_read",
+        stability: "stable",
+        operation: "configuration_status",
+    },
+    CapabilitySpec {
+        name: "configuration_properties",
+        stability: "stable",
+        operation: "configuration_properties",
+    },
+    CapabilitySpec {
+        name: "configuration_write",
+        stability: "stable",
+        operation: "property_configure",
+    },
+    CapabilitySpec {
         name: "deployment_configuration",
-        stability: "transitional",
+        stability: "stable",
         operation: "stage_configuration",
     },
     CapabilitySpec {
@@ -337,7 +372,13 @@ pub fn capabilities(features: ProtocolFeatures) -> Vec<Value> {
 
 /// Actual fixed protocol and server bounds advertised by hello.
 pub fn limits() -> Value {
-    json!({
+    let configuration = json!({
+        "property_records":crate::configuration_api::PROPERTY_RECORD_LIMIT,
+        "page_records":crate::configuration_api::PROPERTY_PAGE_LIMIT,
+        "page_bytes":crate::configuration_api::PROPERTY_PAGE_BYTES,
+        "runtime_overrides":32,"staged_candidates":1,"candidate_retention_seconds":30
+    });
+    let mut limits = json!({
         "frame_bytes": wire::FRAME_LIMIT,
         "json_depth": wire::DEPTH_LIMIT,
         "json_values": wire::VALUE_LIMIT,
@@ -380,7 +421,12 @@ pub fn limits() -> Value {
         "semantic_name_bytes": SEMANTIC_NAME_LIMIT,
         "error_message_bytes": ERROR_MESSAGE_LIMIT,
         "error_details_bytes": ERROR_DETAILS_LIMIT
-    })
+    });
+    limits
+        .as_object_mut()
+        .expect("protocol limits are an object")
+        .insert("configuration".into(), configuration);
+    limits
 }
 
 /// One allowlisted bounded public error description.
@@ -488,13 +534,15 @@ fn error_spec(code: &str) -> Option<PublicError> {
             false,
             false,
         ),
-        "unsupported_operation" | "unsupported_history_mode" => public_error(
-            canonical_code(code),
-            "unsupported_operation",
-            "The requested operation is not supported by this Runtime.",
-            false,
-            false,
-        ),
+        "unsupported_operation" | "unsupported_history_mode" | "configuration_disabled" => {
+            public_error(
+                canonical_code(code),
+                "unsupported_operation",
+                "The requested operation is not supported by this Runtime.",
+                false,
+                false,
+            )
+        }
         "invalid_configuration" | "invalid_state" | "output_rejected" | "domain_rejected" => {
             public_error(
                 canonical_code(code),
@@ -566,6 +614,7 @@ fn error_spec(code: &str) -> Option<PublicError> {
         | "history_busy"
         | "subscription_busy"
         | "snapshot_capacity"
+        | "configuration_capacity"
         | "history_page_oversize"
         | "history_token_exhausted" => public_error(
             canonical_code(code),

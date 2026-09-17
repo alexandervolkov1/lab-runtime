@@ -185,6 +185,19 @@ pub enum Mutation {
         /// Active deployment revision observed at stage time.
         expected_revision: u64,
     },
+    /// Validate and apply one supported scalar property through deployment lifecycle.
+    ConfigureProperty {
+        /// Semantic owning object kind.
+        target_kind: String,
+        /// Stable owning object identity.
+        target_id: u64,
+        /// Stable property identity.
+        property: String,
+        /// Bounded typed scalar value.
+        value: PropertyMutationValue,
+        /// Active deployment revision observed by the caller.
+        expected_revision: u64,
+    },
     /// Reload only managed implementation sources; TOML and built-ins are unchanged.
     ReloadManagedSources,
     /// Reinitialize configured managed components and native virtual models.
@@ -198,6 +211,15 @@ pub enum Mutation {
     },
     /// Initiate host process shutdown; safe evidence is the later terminal result.
     Shutdown,
+}
+
+/// Typed scalar values admitted by generic configuration mutation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PropertyMutationValue {
+    /// Signed integer.
+    Integer(i64),
+    /// Bounded UTF-8 text.
+    Text(String),
 }
 impl Mutation {
     fn normalized(mut self) -> Self {

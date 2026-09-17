@@ -7,7 +7,9 @@ use crate::recorder::{
     ConfigurationLifecycleRecord, RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor,
 };
 use crate::{
-    configuration::{FlowControlDto, ParityDto, RecordingPolicyDto, load_runtime_toml},
+    configuration::{
+        FlowControlDto, ParityDto, PropertyValue, RecordingPolicyDto, load_runtime_toml,
+    },
     deployment::{
         ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
     },
@@ -1022,6 +1024,33 @@ impl ServiceHost {
         Ok(staged)
     }
 
+    /// Validate and commit one supported process-local property overlay through
+    /// the same staged deployment lifecycle used by trusted file reloads.
+    pub(crate) fn configure_property(
+        &mut self,
+        target_kind: &str,
+        target_id: u64,
+        property: &str,
+        value: PropertyValue,
+        expected_revision: u64,
+    ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
+        let lifecycle = self
+            .deployment
+            .as_mut()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
+        if lifecycle.revision() != expected_revision {
+            return Err(LifecycleOperationError::Conflict);
+        }
+        let candidate = lifecycle
+            .active()
+            .with_property_override(target_kind, target_id, property, value)
+            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let staged = lifecycle
+            .stage(candidate, self.clock.now())
+            .map_err(|_| LifecycleOperationError::Conflict)?;
+        self.apply_staged_configuration_kind(staged.id(), expected_revision, "property_configure")
+    }
+
     /// Apply one retained candidate under its explicit identity/revision fence.
     pub fn apply_staged_configuration(
         &mut self,
@@ -1985,9 +2014,12 @@ fn await_recorder_activation(host: &mut HostCore) -> Result<(), Box<dyn Error>> 
 mod reconnect_preparation_tests {
     use super::*;
     use crate::{
+        application::Application,
         configuration::{ArtifactReader, ConfigurationError, parse_runtime_toml},
+        configuration_api,
         recorder::RecordingState,
         serial::{OpenRetryPolicy, SerialDevice},
+        wire::{decode_frame, encode_frame},
     };
     use lab_core::{
         metakon::crc,
@@ -2192,6 +2224,72 @@ transaction_timeout_ms=50
         let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(database.with_extension("sqlite-shm"));
         status
+    }
+
+    #[test]
+    fn semantic_resource_identity_matches_discovery_current_and_event_without_raw_handle() {
+        let (mut service, database) = service_with_old_transport(false);
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        assert_eq!(hello[0]["type"], "result");
+        let current = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"resource","op":"resource",
+                "args":{"resource":"7"}}),
+            ),
+        );
+        let state = &current[0]["result"];
+        assert_eq!(state["resource"], "7");
+        assert_eq!(state["identity_class"], "physical");
+        assert_eq!(state["physical"], true);
+        assert_eq!(state["virtual"], false);
+        assert_eq!(state["binding_generation"], "1");
+        assert_eq!(state["instruments"], serde_json::json!(["11"]));
+        assert!(state.get("handle").is_none());
+
+        let discovery = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"discover","op":"discover","args":{}})),
+        );
+        let resource = discovery[0]["result"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["kind"] == "resource")
+            .unwrap();
+        assert_eq!(resource["id"], "7");
+        assert_eq!(resource["state"]["resource"], "7");
+
+        let snapshot = configuration_api::resource_json(&service, 7).unwrap();
+        let at = service.clock().now();
+        service
+            .owner_mut()
+            .event_log_mut()
+            .resource_state(at, 7, snapshot)
+            .unwrap();
+        let event = service
+            .owner()
+            .event_log()
+            .scan_after(0, 1024)
+            .unwrap()
+            .into_iter()
+            .find(|event| event["kind"] == "resource")
+            .unwrap();
+        assert_eq!(event["target"]["id"], "7");
+        assert_eq!(event["data"]["resource"], "7");
+
+        drop(application);
+        let status = shutdown_and_remove(service, database);
+        assert!(status.safe_confirmed);
     }
 
     #[test]

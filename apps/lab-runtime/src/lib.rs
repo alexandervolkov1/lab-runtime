@@ -7,6 +7,8 @@ pub mod application;
 pub mod build_identity;
 /// Strict bounded declarative deployment loading and validation.
 pub mod configuration;
+/// Semantic resource and validated property projections for the Application API.
+pub mod configuration_api;
 pub mod definition;
 /// Staged configuration diff and explicit apply lifecycle.
 pub mod deployment;
