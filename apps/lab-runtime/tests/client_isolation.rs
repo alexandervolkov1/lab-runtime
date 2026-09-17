@@ -171,6 +171,8 @@ fn incompatible_version_receives_bounded_error_then_only_that_socket_closes() {
         .unwrap();
     let error = read(&mut incompatible);
     assert_eq!(error["code"], "version_mismatch");
+    assert_eq!(error["category"], "protocol_error");
+    assert!(error["message"].as_str().unwrap().len() <= 256);
     assert_eq!(error["accepted"], false);
     let mut eof = String::new();
     assert_eq!(incompatible.read_line(&mut eof).unwrap(), 0);
@@ -183,6 +185,28 @@ fn incompatible_version_receives_bounded_error_then_only_that_socket_closes() {
         )["type"],
         "result"
     );
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
+
+#[test]
+fn unknown_operation_is_rejected_without_closing_the_healthy_session() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
+    let (addr, stop, join) = start();
+    let mut peer = connect(addr);
+    hello(&mut peer);
+    let rejected = send(
+        &mut peer,
+        json!({"v":1,"msg_id":"unknown","op":"not_a_runtime_operation","args":{}}),
+    );
+    assert_eq!(rejected["code"], "unsupported_operation");
+    assert_eq!(rejected["category"], "unsupported_operation");
+    assert_eq!(rejected["accepted"], false);
+    let healthy = send(
+        &mut peer,
+        json!({"v":1,"msg_id":"later","op":"discover","args":{}}),
+    );
+    assert_eq!(healthy["type"], "result");
     stop.store(true, Ordering::SeqCst);
     join.join().unwrap();
 }

@@ -14,10 +14,16 @@ pub const MAX_SCOPES: usize = 16;
 pub const MAX_PENDING: usize = 64;
 /// Hard maximum retained terminal outcomes across scopes.
 pub const MAX_TERMINAL: usize = 256;
-const MAX_PENDING_SCOPE: usize = 8;
-const MAX_TERMINAL_SCOPE: usize = 32;
-const TERMINAL_TTL: Duration = Duration::from_secs(600);
-const IDLE_SCOPE_TTL: Duration = Duration::from_secs(1800);
+/// Maximum accepted nonterminal operations retained by one scope.
+pub(crate) const MAX_PENDING_SCOPE: usize = 8;
+/// Maximum terminal outcomes retained by one scope.
+pub(crate) const MAX_TERMINAL_SCOPE: usize = 32;
+/// Finite terminal outcome retention after completion.
+pub(crate) const TERMINAL_TTL: Duration = Duration::from_secs(600);
+/// Finite detached-scope retention.
+pub(crate) const IDLE_SCOPE_TTL: Duration = Duration::from_secs(1800);
+/// Maximum serialized result/code bytes retained for one operation.
+pub(crate) const OUTCOME_SIZE_LIMIT: usize = 4_096;
 
 /// Complete typed mutation identity; connection/msg_id do not affect equality.
 #[derive(Clone, Debug, PartialEq)]
@@ -403,7 +409,7 @@ impl SessionStore {
             OperationState::FailedWithResult { code, detail } => code.len() + detail.len(),
             _ => return Err(SessionError::InvalidOutcome),
         };
-        if size > 4096 {
+        if size > OUTCOME_SIZE_LIMIT {
             return Err(SessionError::InvalidOutcome);
         }
         let scope = self

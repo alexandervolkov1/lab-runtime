@@ -13,6 +13,7 @@ use crate::{
     },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
     managed_executor::{MOVING_MEAN_IMPLEMENTATION, ManagedExecutor},
+    protocol::ProtocolFeatures,
     serial::{
         ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
         SerialParity,
@@ -591,6 +592,25 @@ fn configuration_affected(
     affected
 }
 impl ServiceHost {
+    /// Actual optional protocol domains supported by this frozen composition.
+    pub fn protocol_features(&self) -> ProtocolFeatures {
+        let deployment = self.deployment.as_ref().map(DeploymentLifecycle::active);
+        ProtocolFeatures {
+            recorder: self.host.recording_status().is_some(),
+            configuration: deployment.is_some(),
+            managed_source_reload: deployment.is_some_and(|active| {
+                active
+                    .effective()
+                    .dto
+                    .managed_components
+                    .iter()
+                    .any(|component| component.source.is_some())
+            }),
+            resource_reconnect: deployment
+                .is_some_and(|active| !active.effective().dto.resources.is_empty()),
+        }
+    }
+
     /// Bind a trusted already-safe host fixture on loopback, without changing its
     /// Core composition. This is local test/deployment wiring, never a wire op.
     pub fn startup_from_trusted_host(

@@ -65,7 +65,7 @@ fn duplicate_keys_at_any_level_depth_and_value_budgets_are_rejected() {
 }
 
 #[test]
-fn oversize_utf8_schema_version_and_unadvertised_output_commands_fail_closed() {
+fn oversize_utf8_schema_version_and_known_output_commands_fail_closed() {
     let mut oversize = hello();
     oversize.splice(0..0, vec![b' '; FRAME_LIMIT]);
     assert_eq!(decode_frame(&oversize).unwrap_err().code, "frame_too_large");
@@ -89,10 +89,9 @@ fn oversize_utf8_schema_version_and_unadvertised_output_commands_fail_closed() {
         "version_mismatch"
     );
     let direct_output = b"{\"v\":1,\"msg_id\":\"x\",\"op\":\"output_propose\",\"args\":{\"owner\":\"Automatic(1)\"}}\n";
-    assert_eq!(
-        decode_frame(direct_output).unwrap_err().code,
-        "unknown_operation"
-    );
+    let bounded_unknown = decode_frame(direct_output).unwrap();
+    assert_eq!(bounded_unknown.op, "output_propose");
+    assert!(bounded_unknown.request_id.is_none());
     let fake_evidence = b"{\"v\":1,\"msg_id\":\"x\",\"op\":\"controller_start\",\"request_id\":{\"scope\":\"abc\",\"seq\":\"1\"},\"args\":{\"controller\":\"1\",\"ReadbackVerified\":true}}\n";
     assert_eq!(
         decode_frame(fake_evidence).unwrap_err().code,
@@ -101,7 +100,7 @@ fn oversize_utf8_schema_version_and_unadvertised_output_commands_fail_closed() {
 }
 
 #[test]
-fn every_version_one_operation_has_an_explicit_known_name_without_raw_core_commands() {
+fn unknown_bounded_names_reach_application_rejection_without_raw_core_authority() {
     let request = decode_frame(&hello()).unwrap();
     assert_eq!(request.op, "hello");
     for prohibited in [
@@ -114,9 +113,8 @@ fn every_version_one_operation_has_an_explicit_known_name_without_raw_core_comma
         "manual_write",
     ] {
         let frame = format!("{{\"v\":1,\"msg_id\":\"x\",\"op\":\"{prohibited}\",\"args\":{{}}}}\n");
-        assert_eq!(
-            decode_frame(frame.as_bytes()).unwrap_err().code,
-            "unknown_operation"
-        );
+        let request = decode_frame(frame.as_bytes()).unwrap();
+        assert_eq!(request.op, prohibited);
+        assert!(request.request_id.is_none());
     }
 }

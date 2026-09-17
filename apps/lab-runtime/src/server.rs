@@ -5,9 +5,31 @@
 
 use crate::{
     application::Application,
+    protocol::{self, PublicError},
     service::ServiceHost,
     wire::{self, WireRequest},
 };
+
+fn rejection(msg_id: Option<&str>, code: &str) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "v":protocol::PROTOCOL_VERSION,
+        "type":"error",
+        "accepted":false,
+        "msg_id":msg_id
+    });
+    PublicError::from_internal_code(code).apply_to(&mut value);
+    value
+}
+
+fn encode_outgoing(value: &serde_json::Value) -> Vec<u8> {
+    wire::encode_frame(value).unwrap_or_else(|_| {
+        let fallback = rejection(
+            value.get("msg_id").and_then(serde_json::Value::as_str),
+            "response_too_large",
+        );
+        wire::encode_frame(&fallback).expect("fixed bounded protocol rejection")
+    })
+}
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, Read, Write},
@@ -21,12 +43,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_CLIENTS: usize = 8;
-const QUEUE: usize = 64;
-const CLIENT_IN: usize = 8;
-const CLIENT_OUT: usize = 8;
-const CLIENT_EVENTS: usize = 16;
-const SWEEP_BYTES: usize = 8192;
+/// Simultaneous loopback client bound.
+pub(crate) const MAX_CLIENTS: usize = 8;
+/// Fixed owner/reactor mailbox capacity in each direction.
+pub(crate) const QUEUE: usize = 64;
+/// Per-client requests admitted but not yet answered.
+pub(crate) const CLIENT_IN: usize = 8;
+/// Per-client reply frames awaiting socket delivery.
+pub(crate) const CLIENT_OUT: usize = 8;
+/// Per-client event frames awaiting socket delivery.
+pub(crate) const CLIENT_EVENTS: usize = 16;
+/// Byte budget handled by one nonblocking network pass.
+pub(crate) const SWEEP_BYTES: usize = 8192;
+/// Absolute hello, partial-frame, and blocked-write deadline.
+pub(crate) const CLIENT_DEADLINE: Duration = Duration::from_secs(2);
 
 enum Incoming {
     Request(u64, WireRequest),
@@ -152,17 +182,15 @@ impl Peer {
                                 .filter(|id| !id.is_empty() && id.len() <= 64)
                                 .map(str::to_owned)
                         });
-                    let rejection = serde_json::json!({"v":1,"type":"error","code":error.code,
-                        "message":error.message,"accepted":false,"msg_id":correlation});
-                    self.rejection = wire::encode_frame(&rejection).ok();
+                    let rejection = rejection(correlation.as_deref(), error.code);
+                    self.rejection = Some(encode_outgoing(&rejection));
                     self.closing = true;
                     return true;
                 }
             };
             if self.pending_ids.contains(&request.msg_id) {
-                let rejection = serde_json::json!({"v":1,"type":"error","code":"duplicate_msg_id",
-                    "message":"msg_id has a pending exchange","accepted":false,"msg_id":request.msg_id});
-                self.rejection = wire::encode_frame(&rejection).ok();
+                let rejection = rejection(Some(&request.msg_id), "duplicate_msg_id");
+                self.rejection = Some(encode_outgoing(&rejection));
                 self.closing = true;
                 return true;
             }
@@ -228,11 +256,11 @@ impl Peer {
     }
     fn timed_out(&self) -> bool {
         let now = Instant::now();
-        (!self.replied_hello && now.duration_since(self.handshake_since) >= Duration::from_secs(2))
+        (!self.replied_hello && now.duration_since(self.handshake_since) >= CLIENT_DEADLINE)
             || self
                 .partial_since
-                .is_some_and(|t| now.duration_since(t) >= Duration::from_secs(2))
-            || (self.queued() > 0 && now.duration_since(self.last_write) >= Duration::from_secs(2))
+                .is_some_and(|t| now.duration_since(t) >= CLIENT_DEADLINE)
+            || (self.queued() > 0 && now.duration_since(self.last_write) >= CLIENT_DEADLINE)
     }
 }
 
@@ -386,7 +414,7 @@ pub fn run(
             service.request_fatal_shutdown();
         }
         for (id, value) in app.poll_recording(&mut service) {
-            let frame = wire::encode_frame(&value)?;
+            let frame = encode_outgoing(&value);
             if outgoing_tx
                 .try_send(Outgoing::Reply {
                     connection: id,
@@ -402,7 +430,7 @@ pub fn run(
             }
         }
         for (id, value) in app.poll_history(&mut service) {
-            let frame = wire::encode_frame(&value)?;
+            let frame = encode_outgoing(&value);
             if outgoing_tx
                 .try_send(Outgoing::Reply {
                     connection: id,
@@ -450,7 +478,7 @@ pub fn run(
                 };
                 let hello = req.op == "hello";
                 for (index, value) in app.handle(&mut service, id, req).into_iter().enumerate() {
-                    let frame = wire::encode_frame(&value)?;
+                    let frame = encode_outgoing(&value);
                     let hello = hello && value["type"] == "result";
                     if outgoing_tx
                         .try_send(Outgoing::Reply {
@@ -477,7 +505,7 @@ pub fn run(
                     app.detach(&service, id);
                     closing.insert(id);
                 }
-                let frame = wire::encode_frame(&event)?;
+                let frame = encode_outgoing(&event);
                 if outgoing_tx
                     .try_send(Outgoing::Event {
                         connection: id,
@@ -513,14 +541,13 @@ pub fn run(
         if let Some(status) = service.shutdown_step()? {
             if terminal_since.is_none() {
                 for (id, value) in app.finish_shutdown(&mut service, status) {
-                    if let Ok(frame) = wire::encode_frame(&value) {
-                        let _ = outgoing_tx.try_send(Outgoing::Reply {
-                            connection: id,
-                            frame,
-                            consumed: false,
-                            hello: false,
-                        });
-                    }
+                    let frame = encode_outgoing(&value);
+                    let _ = outgoing_tx.try_send(Outgoing::Reply {
+                        connection: id,
+                        frame,
+                        consumed: false,
+                        hello: false,
+                    });
                 }
                 terminal_since = Some(Instant::now());
             }
@@ -736,5 +763,22 @@ mod bounded_peer_tests {
         ));
         stop.store(true, Ordering::Release);
         join.join().unwrap();
+    }
+
+    #[test]
+    fn oversized_application_result_becomes_one_bounded_correlated_rejection() {
+        let value = serde_json::json!({
+            "v":1,
+            "msg_id":"large-result",
+            "type":"result",
+            "result":{"records":vec!["x".repeat(512); 40]}
+        });
+        let frame = encode_outgoing(&value);
+        assert!(frame.len() <= wire::FRAME_LIMIT);
+        let response: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(response["msg_id"], "large-result");
+        assert_eq!(response["code"], "response_too_large");
+        assert_eq!(response["category"], "protocol_error");
+        assert_eq!(response["accepted"], false);
     }
 }

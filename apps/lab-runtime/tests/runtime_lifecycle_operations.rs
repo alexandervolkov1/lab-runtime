@@ -177,7 +177,7 @@ fn c8_c11_source_reload_and_model_restart_are_distinct_and_never_auto_start() {
 }
 
 #[test]
-fn c8_public_api_exposes_three_separate_deduplicated_operations() {
+fn c8_public_api_advertises_only_composed_lifecycle_operations() {
     let path = temporary_path();
     fs::write(&path, deployment("Bench", 100, 22.0)).unwrap();
     let arg = path.to_string_lossy().into_owned();
@@ -192,11 +192,15 @@ fn c8_public_api_exposes_three_separate_deduplicated_operations() {
     );
     let scope = hello[0]["result"]["scope"].as_str().unwrap();
     let capabilities = hello[0]["result"]["capabilities"].as_array().unwrap();
-    assert!(capabilities.contains(&json!("managed_component")));
-    assert!(capabilities.contains(&json!("managed_transform")));
-    assert!(!capabilities.contains(&json!("lua_source")));
+    let capability_names: Vec<_> = capabilities
+        .iter()
+        .map(|capability| capability["name"].as_str().unwrap())
+        .collect();
+    assert!(capability_names.contains(&"managed_components"));
+    assert!(!capability_names.contains(&"managed_source_reload"));
+    assert!(!capability_names.contains(&"lua_source"));
     let operations = hello[0]["result"]["operations"].as_array().unwrap();
-    assert!(operations.contains(&json!("reload_managed_sources")));
+    assert!(!operations.contains(&json!("reload_managed_sources")));
     assert!(operations.contains(&json!("restart_models")));
     assert!(!operations.contains(&json!("reload_managed_scripts")));
     let restart = application.handle(

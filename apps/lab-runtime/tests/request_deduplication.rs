@@ -157,3 +157,34 @@ fn scope_expiry_and_restart_identity_do_not_recreate_unknown_mutations() {
         Admission::ScopeUnknown
     );
 }
+
+#[test]
+fn one_accepted_operation_can_commit_exactly_one_terminal_outcome() {
+    let mut store = SessionStore::new(BOOT).unwrap();
+    let scope = store.open(None, 1, Duration::ZERO).unwrap().scope;
+    assert_eq!(
+        store.admit(&scope, 1, retune(40.0, 1), Duration::ZERO),
+        Admission::Accepted
+    );
+    store
+        .complete(
+            &scope,
+            1,
+            OperationState::Completed("revision=2".into()),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    assert_eq!(
+        store.complete(
+            &scope,
+            1,
+            OperationState::Failed("operation_failed".into()),
+            Duration::from_secs(2),
+        ),
+        Err(SessionError::InvalidOutcome)
+    );
+    assert_eq!(
+        store.status(&scope, 1),
+        Admission::Known(OperationState::Completed("revision=2".into()))
+    );
+}

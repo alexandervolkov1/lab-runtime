@@ -15,6 +15,8 @@ pub mod events;
 pub mod host;
 /// Compile-time managed implementation registry and shared bounded worker pool.
 pub mod managed_executor;
+/// Stable Application-protocol identity, operation registry, and public errors.
+pub mod protocol;
 /// Bounded durable-history storage adapter and host-owned recording ingress.
 pub mod recorder;
 /// Bounded worker-backed read-only Windows COM byte adapter.

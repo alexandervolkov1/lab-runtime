@@ -8,6 +8,7 @@ use crate::recorder::{
 };
 use crate::{
     host::Clock,
+    protocol::{self, PublicError},
     service::{LifecycleOperationError, ServiceHost},
     sessions::{Admission, Mutation, OperationState, SessionError, SessionStore},
     wire::{WireRequest, WireRequestId, decimal_u64},
@@ -16,8 +17,11 @@ use lab_core::control::{
     ControllerError, ControllerId, ControllerSnapshot, ControllerState, PidConfig,
 };
 use lab_core::managed::{ComponentId, ComponentState};
-use lab_core::output::{ActuatorId, DispatchOutcome, OutputOwner, OutputSnapshot, OutputState};
+use lab_core::output::{
+    ActuatorId, DispatchOutcome, OutputError, OutputOwner, OutputSnapshot, OutputState,
+};
 use lab_core::reference::{ReferenceId, ReferenceSnapshot};
+use lab_core::transport::TransportError;
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, ParameterDescriptor, ParameterId,
     ParameterRole, Query, QueryResult, SignalId, ValueSpec, WriteEffect,
@@ -479,26 +483,17 @@ impl Application {
                         .map_err(session_code)
                         .map(|opened| {
                             self.clients.insert(connection, opened.scope.clone());
-                            let mut capabilities = vec!["virtual","native_controller","ramp_reference",
-                                "managed_component","managed_source","managed_transform","safe_readback"];
-                            let mut operations = vec!["hello","discover","describe","latest","controller",
-                                "reference","component","output","runtime_snapshot","operation_status",
-                                "snapshot_page","snapshot_release","subscribe","unsubscribe","reference_retune",
-                                "controller_configure_pid","controller_start","controller_pause",
-                                "controller_resume","stage_configuration","apply_configuration",
-                                "reload_configuration","reload_managed_sources",
-                                "restart_models","reconnect_resource","runtime_shutdown"];
-                            if service.owner().recording_status().is_some() {
-                                capabilities.push("recorder_sqlite_v1");
-                                capabilities.push("history_raw_paged_v1");
-                                operations.extend(["recording_status","recording_start","recording_stop","experiment_annotate"]);
-                                operations.extend(["history_read","history_page","history_release"]);
-                            }
-                            json!({"boot_id":service.boot_id(),"v":1,"scope":opened.scope,
+                            let features = service.protocol_features();
+                            json!({"boot_id":service.boot_id(),"v":protocol::PROTOCOL_VERSION,
+                                "protocol":{"id":protocol::PROTOCOL_ID,
+                                    "version":protocol::PROTOCOL_VERSION},
+                                "application":{"api_version":protocol::APPLICATION_API_VERSION,
+                                    "package_version":env!("CARGO_PKG_VERSION")},
+                                "scope":opened.scope,
                                 "next_seq":opened.next_seq.to_string(),"state":"ready",
-                                "capabilities":capabilities,
-                                "operations":operations,
-                                "limits":{"clients":8,"scopes":16,"frame_bytes":16384},
+                                "capabilities":protocol::capabilities(features),
+                                "operations":protocol::supported_operations(features),
+                                "limits":protocol::limits(),
                                 "event_oldest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()},
                                 "event_latest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()}})
                         })
@@ -506,18 +501,23 @@ impl Application {
             }
         } else if !self.clients.contains_key(&connection) {
             Err("hello_required")
+        } else if protocol::operation_spec(&request.op).is_none_or(|operation| {
+            !protocol::operation_supported(operation, service.protocol_features())
+        }) {
+            Err("unsupported_operation")
         } else if request.request_id.is_some() {
             return self.handle_mutation(service, connection, request);
         } else {
             self.handle_query(service, connection, &request)
         };
         vec![match result {
-            Ok(value) => json!({"v":1,"msg_id":msg,"type":"result","result":value}),
+            Ok(value) => json!({"v":protocol::PROTOCOL_VERSION,"msg_id":msg,
+                "type":"result","result":value}),
             Err("event_gap") => {
-                json!({"v":1,"msg_id":msg,"type":"error","accepted":false,"code":"event_gap",
-                "message":"event_gap","resync_required":true,
-                "oldest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()},
-                "latest":{"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()}})
+                let mut response = error_reply(&msg, "event_gap");
+                response["oldest"] = json!({"boot_id":service.boot_id(),"seq":service.owner().event_log().oldest_cursor().to_string()});
+                response["latest"] = json!({"boot_id":service.boot_id(),"seq":service.owner().event_log().latest_cursor().to_string()});
+                response
             }
             Err(code) => error_reply(&msg, code),
         }]
@@ -914,9 +914,10 @@ impl Application {
             Ok(events) => events,
             Err(_) => {
                 self.subscriptions.remove(&connection);
-                return vec![
-                    json!({"v":1,"type":"error","code":"event_gap","resync_required":true}),
-                ];
+                let mut response = json!({"v":protocol::PROTOCOL_VERSION,
+                    "type":"error","accepted":false});
+                PublicError::from_code("event_gap").apply_to(&mut response);
+                return vec![response];
             }
         };
         let mut offered = Vec::new();
@@ -946,7 +947,7 @@ impl Application {
         sub.scan = scanned;
         if offered.is_empty() && scanned > initial_scan {
             offered.push(
-                json!({"v":1,"type":"subscription_progress","subscription":sub.token,
+                json!({"v":protocol::PROTOCOL_VERSION,"type":"subscription_progress","subscription":sub.token,
             "boot_id":service.boot_id(),"seq":scanned.to_string()}),
             );
         }
@@ -1871,13 +1872,22 @@ fn operation_state(s: OperationState) -> Value {
         OperationState::Completed(text) => {
             json!({"state":"completed","result":serde_json::from_str::<Value>(&text).unwrap_or(Value::Null)})
         }
-        OperationState::Failed(code) => json!({"state":"failed","code":code}),
-        OperationState::FailedWithResult { code, detail } => json!({"state":"failed","code":code,
-            "result":serde_json::from_str::<Value>(&detail).unwrap_or(Value::Null)}),
+        OperationState::Failed(code) => {
+            let mut value = json!({"state":"failed"});
+            PublicError::from_internal_code(&code).apply_to(&mut value);
+            value
+        }
+        OperationState::FailedWithResult { code, detail } => {
+            let mut value = json!({"state":"failed",
+                "result":serde_json::from_str::<Value>(&detail).unwrap_or(Value::Null)});
+            PublicError::from_internal_code(&code).apply_to(&mut value);
+            value
+        }
     }
 }
 fn operation_reply(msg: &str, rid: &WireRequestId, s: OperationState) -> Value {
-    let mut value = json!({"v":1,"msg_id":msg,"type":"operation","request_id":{"scope":rid.scope,"seq":rid.seq.to_string()}});
+    let mut value = json!({"v":protocol::PROTOCOL_VERSION,"msg_id":msg,
+        "type":"operation","request_id":{"scope":rid.scope,"seq":rid.seq.to_string()}});
     let state = operation_state(s);
     for (key, value_part) in state.as_object().expect("fixed state object") {
         value[key] = value_part.clone();
@@ -1885,7 +1895,10 @@ fn operation_reply(msg: &str, rid: &WireRequestId, s: OperationState) -> Value {
     value
 }
 fn error_reply(msg: &str, code: &str) -> Value {
-    json!({"v":1,"msg_id":msg,"type":"error","code":code,"message":code,"accepted":false})
+    let mut value = json!({"v":protocol::PROTOCOL_VERSION,"msg_id":msg,
+        "type":"error","accepted":false});
+    PublicError::from_internal_code(code).apply_to(&mut value);
+    value
 }
 fn session_code(e: SessionError) -> &'static str {
     match e {
@@ -1899,14 +1912,39 @@ fn domain_code(e: Error) -> &'static str {
     match e {
         Error::Controller(ControllerError::RevisionConflict) => "revision_conflict",
         Error::Controller(ControllerError::UnknownController) => "unknown_controller",
+        Error::Controller(ControllerError::UnknownReference) => "unknown_reference",
+        Error::Controller(
+            ControllerError::DuplicateController
+            | ControllerError::DuplicateReference
+            | ControllerError::InvalidConfiguration
+            | ControllerError::InvalidTickTime
+            | ControllerError::Algorithm
+            | ControllerError::RevisionExhausted,
+        ) => "invalid_configuration",
         Error::Controller(ControllerError::InvalidState) => "invalid_state",
         Error::Controller(ControllerError::InputUnavailable) => "input_unavailable",
         Error::Controller(ControllerError::StaleInput) => "stale_input",
         Error::Controller(ControllerError::Output) => "output_rejected",
+        Error::Output(OutputError::UnknownActuator) => "unknown_actuator",
+        Error::Output(OutputError::Busy) => "busy",
+        Error::Output(OutputError::Expired) => "timeout",
+        Error::Output(_) => "output_rejected",
         Error::UnknownInstrument(_) => "unknown_instrument",
         Error::UnknownParameter { .. } => "unknown_parameter",
         Error::UnknownSignal(_) => "unknown_signal",
-        Error::Transport(_) => "transport_unavailable",
+        Error::Transport(TransportError::UnknownResource) => "unknown_resource",
+        Error::Transport(
+            TransportError::QueueFull
+            | TransportError::ResourceLimit
+            | TransportError::ResourceBusy,
+        ) => "busy",
+        Error::Transport(
+            TransportError::InvalidTransaction
+            | TransportError::InvalidTime
+            | TransportError::CounterExhausted
+            | TransportError::DuplicateResource,
+        ) => "invalid_configuration",
+        Error::Transport(TransportError::ResourceUnavailable) => "transport_unavailable",
         Error::InvalidConfiguration(_) => "invalid_configuration",
         Error::RecordingUnavailable => "recording_unavailable",
         _ => "domain_rejected",

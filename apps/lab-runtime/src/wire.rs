@@ -14,12 +14,16 @@ use std::{
     io::{self, Write},
 };
 
+use crate::protocol::{self, OperationKind};
+
 /// Maximum complete NDJSON frame including its line feed.
 pub const FRAME_LIMIT: usize = 16_384;
 /// Maximum nested JSON arrays/objects admitted from any client.
 pub const DEPTH_LIMIT: usize = 16;
 /// Maximum lexical JSON values/object members in one frame.
 pub const VALUE_LIMIT: usize = 1_024;
+/// Maximum UTF-8 bytes in one admitted JSON string or object key.
+pub const STRING_LIMIT: usize = 512;
 
 /// Stable bounded protocol error, never a Rust enum discriminant on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,13 +94,13 @@ impl<'de> Deserialize<'de> for Unique {
                     .ok_or_else(|| E::custom("nonfinite_number"))
             }
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Unique, E> {
-                if value.len() > 512 {
+                if value.len() > STRING_LIMIT {
                     return Err(E::custom("string_too_large"));
                 }
                 Ok(Unique(Value::String(value.to_owned())))
             }
             fn visit_string<E: de::Error>(self, value: String) -> Result<Unique, E> {
-                if value.len() > 512 {
+                if value.len() > STRING_LIMIT {
                     return Err(E::custom("string_too_large"));
                 }
                 Ok(Unique(Value::String(value)))
@@ -121,7 +125,7 @@ impl<'de> Deserialize<'de> for Unique {
                 let mut seen = BTreeSet::new();
                 let mut out = Map::new();
                 while let Some(key) = access.next_key::<String>()? {
-                    if key.len() > 512 {
+                    if key.len() > STRING_LIMIT {
                         return Err(de::Error::custom("string_too_large"));
                     }
                     if !seen.insert(key.clone()) {
@@ -173,7 +177,7 @@ pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
         .get("v")
         .and_then(Value::as_u64)
         .ok_or(WireError::new("invalid_shape", "v must be integer"))?;
-    if v != 1 {
+    if v != u64::from(protocol::PROTOCOL_VERSION) {
         return Err(WireError::new(
             "version_mismatch",
             "only protocol version 1 is supported",
@@ -193,23 +197,21 @@ pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
             "invalid_shape",
             "op must be a bounded string",
         ))?;
-    let Some((mutating, keys)) = operation_keys(op) else {
-        return Err(WireError::new(
-            "unknown_operation",
-            "operation is not advertised in v1",
-        ));
-    };
+    let operation = protocol::operation_spec(op);
     let args = object
         .get("args")
         .ok_or(WireError::new("invalid_args", "args object is required"))?;
     let arg_object = args
         .as_object()
         .ok_or(WireError::new("invalid_args", "args must be an object"))?;
-    if allowed_keys(arg_object, keys).is_err() {
-        return Err(WireError::new("invalid_args", "unknown args field"));
+    if let Some(operation) = operation {
+        if allowed_keys(arg_object, operation.argument_fields).is_err() {
+            return Err(WireError::new("invalid_args", "unknown args field"));
+        }
+        validate_nested_args(op, arg_object)?;
     }
-    validate_nested_args(op, arg_object)?;
-    let request_id = if mutating {
+    let mutating = operation.is_some_and(|spec| spec.kind == OperationKind::Mutation);
+    let request_id = if mutating || (operation.is_none() && object.contains_key("request_id")) {
         let id = object
             .get("request_id")
             .and_then(Value::as_object)
@@ -303,55 +305,6 @@ fn allowed_keys(object: &Map<String, Value>, keys: &[&str]) -> Result<(), WireEr
     } else {
         Ok(())
     }
-}
-
-fn operation_keys(op: &str) -> Option<(bool, &'static [&'static str])> {
-    Some(match op {
-        "hello" => (false, &["scope"]),
-        "discover" | "runtime_snapshot" => (false, &[]),
-        "describe" => (false, &["instrument"]),
-        "latest" => (false, &["signal"]),
-        "controller" | "controller_start" | "controller_pause" | "controller_resume" => {
-            (op != "controller", &["controller"])
-        }
-        "reference" => (false, &["reference"]),
-        "component" => (false, &["component"]),
-        "output" => (false, &["actuator"]),
-        "operation_status" => (false, &["request_id"]),
-        "snapshot_page" => (false, &["snapshot", "index"]),
-        "snapshot_release" => (false, &["snapshot"]),
-        "subscribe" => (false, &["after", "filter"]),
-        "unsubscribe" => (false, &["subscription"]),
-        "reference_retune" => (true, &["reference", "expected_revision", "target", "rate"]),
-        "controller_configure_pid" => (true, &["controller", "expected_revision", "pid"]),
-        "runtime_shutdown" => (true, &[]),
-        "stage_configuration"
-        | "reload_configuration"
-        | "reload_managed_sources"
-        | "restart_models" => (true, &[]),
-        "apply_configuration" => (true, &["candidate_id", "expected_revision"]),
-        "reconnect_resource" => (true, &["resource", "expected_binding_generation"]),
-        "recording_status" => (false, &[]),
-        "recording_start" => (true, &["label"]),
-        "recording_stop" => (true, &["run_id"]),
-        "experiment_annotate" => (true, &["name", "data"]),
-        "history_read" => (
-            true,
-            &[
-                "mode",
-                "database_id",
-                "boot_id",
-                "run_id",
-                "signal",
-                "from_ns",
-                "to_ns",
-                "max_records",
-                "cursor",
-            ],
-        ),
-        "history_page" | "history_release" => (false, &["page_token"]),
-        _ => return None,
-    })
 }
 
 fn validate_nested_args(op: &str, args: &Map<String, Value>) -> Result<(), WireError> {
