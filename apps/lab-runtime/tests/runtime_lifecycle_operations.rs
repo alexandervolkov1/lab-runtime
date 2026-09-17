@@ -5,9 +5,10 @@ use lab_core::{
     control::{ControllerId, ControllerState},
     output::{ActuatorId, OutputCommand, OutputOwner, OutputResult, OutputState},
 };
-use lab_runtime::service::{LifecycleOperationError, ServiceHost, ServiceOptions};
 use lab_runtime::{
     application::Application,
+    host::Clock,
+    service::{LifecycleOperationError, ServiceHost, ServiceOptions},
     wire::{decode_frame, encode_frame},
 };
 use serde_json::json;
@@ -272,19 +273,20 @@ fn c6_pid_reload_pauses_warming_control_proves_safe_and_never_rearms() {
     let mut service =
         ServiceHost::startup(ServiceOptions::parse(&["--serve", "--config", &arg]).unwrap())
             .unwrap();
+    let at = service.clock().now();
     service
         .owner_mut()
         .command(Command::RefreshMeasurement {
             instrument: lab_core::InstrumentId::new(51),
             parameter: TEMPERATURE,
-            at: std::time::Duration::from_millis(1),
+            at,
         })
         .unwrap();
     service
         .owner_mut()
         .command(Command::StartController {
             controller: ControllerId::new(53),
-            at: std::time::Duration::from_millis(1),
+            at,
         })
         .unwrap();
     fs::write(&path, controlled_deployment(4.5)).unwrap();

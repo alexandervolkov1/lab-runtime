@@ -1208,6 +1208,7 @@ mod retirement_tests {
     fn shutdown_during_transient_retry_wait_is_finite() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let factory_attempts = attempts.clone();
+        let (attempted_tx, attempted_rx) = mpsc::sync_channel(0);
         let policy = OpenRetryPolicy::for_test(
             std::time::Instant::now() + Duration::from_secs(10),
             Duration::from_secs(5),
@@ -1216,12 +1217,26 @@ mod retirement_tests {
         let mut transport =
             ComTransport::with_retrying_device_factory(test_settings(), policy, move || {
                 factory_attempts.fetch_add(1, Ordering::AcqRel);
+                attempted_tx
+                    .send(())
+                    .expect("test must observe the first open attempt");
                 Err(SerialError::Disconnected)
             })
             .expect("one worker should spawn");
 
-        wait_until(|| attempts.load(Ordering::Acquire) == 1);
+        attempted_rx
+            .recv()
+            .expect("worker must publish the first open attempt");
         if transport.try_shutdown() == TransportShutdown::Pending {
+            // StopIntent is the authority; unpark is only deterministic test
+            // synchronization so the test does not exhaust a yield-count budget
+            // while the production worker is correctly inside its 10 ms poll.
+            transport
+                .worker
+                .as_ref()
+                .expect("pending shutdown retains the one worker")
+                .thread()
+                .unpark();
             wait_until(|| transport.try_shutdown() == TransportShutdown::Complete);
         }
         assert_eq!(attempts.load(Ordering::Acquire), 1);
