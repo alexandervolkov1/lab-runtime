@@ -3,14 +3,15 @@
 ## Current state
 
 ```text
-STATUS: READY_FOR_EXTERNAL_REVIEW
-Current phase: M8 external acceptance gate
-M9: NOT AUTHORIZED
+M8: ACCEPTED
+M9A: AUTHORIZED
+Current phase: M9A — neutral managed components and native Rust execution
 ```
 
-M7 Recorder/SQLite is externally accepted at `f3ff456`. M8 implementation and its
-final read-only hardware acceptance are complete. Production hardware code is the
-accepted `8da89ab` baseline; the final release-only correction changes tests and
+M7 Recorder/SQLite is externally accepted at `f3ff456`. M8 implementation, final
+read-only hardware acceptance and final software gates are externally accepted at
+`92aec535e7279ef9931247bd4ced190fc18ebebe`. Production hardware code is the accepted
+`8da89ab` baseline; the final release-only correction changed tests and
 coordination/reporting only.
 
 ## Preserved hardware evidence
@@ -35,8 +36,7 @@ examples/metakon-513-com5-prepared-reconnect-history.sqlite
 SHA-256 1396421e62b5a1abb834b4178689b3303277a88d46174e0353d2710c2ab17023
 ```
 
-Do not open COM5 or perform another hardware run unless a later review explicitly
-authorizes it.
+No further M8 hardware rerun is required. COM5 is not part of current work.
 
 ## Final release-test correction
 
@@ -56,6 +56,7 @@ actual Babashka tests, `bb test-client`, finite demo and diff checks all pass.
 
 ## Next step
 
-External M8 review only. Do not start M9A/M9B until M8 is explicitly accepted.
-Detailed chronological evidence is in
+Implement only the detailed M9A authorization in `ai/WORK.md`. M9B remains NOT
+AUTHORIZED until M9A receives explicit external acceptance; M10 and M11 remain
+future milestones. Detailed chronological M8 evidence remains in
 `docs/implementation/MILESTONE_8_REPORT.md`.

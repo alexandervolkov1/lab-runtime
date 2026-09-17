@@ -34,7 +34,7 @@ helpers such as `stage_standard_lua`, and `ManagedLuaSource`/`managed_lua_source
 provenance vocabulary. Historical SQLite evidence is never rewritten merely to
 rename that provenance.
 
-## Current: M8 external acceptance
+## Accepted: M8
 
 M8 already provides:
 
@@ -48,10 +48,8 @@ M8 already provides:
 - bounded reconnect diagnostics and corrected recovery/rebind logic;
 - one-worker transient `Disconnected` OS-open grace bounded by the original deadline.
 
-Current status:
-
 ```text
-READY_FOR_EXTERNAL_REVIEW
+M8: ACCEPTED
 ```
 
 The final real reconnect, Babashka independence, harmless live-safe change, clean
@@ -59,11 +57,15 @@ shutdown/history evidence and complete debug/release/rustdoc regression gates al
 passed. A release-only Recorder failure was classified and corrected as a test-only
 semantic synchronization defect; production hardware behavior is unchanged.
 
-Remaining: external M8 review only.
+No further M8 hardware rerun is required. COM5 is not part of current work.
 
-M9A is not authorized before external M8 acceptance.
+## Current: M9A — neutral managed components and native Rust execution
 
-## M9A — neutral managed components and native Rust execution
+```text
+M9A: AUTHORIZED
+Current phase: M9A — neutral managed components and native Rust execution
+M9B: NOT AUTHORIZED
+```
 
 Purpose: remove Lua-specific leakage from the shared managed-component boundary and
 make native Rust a first-class implementation of the retained language-neutral
@@ -81,7 +83,8 @@ Required work:
 - keep M5 Lua frozen except for bug/regression, safety/security and documentation
   corrections.
 
-M9A is not authorized until M8 is externally accepted.
+M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
+M11 remain future milestones.
 
 ## M9B — unified Application, emulator and presentation API
 

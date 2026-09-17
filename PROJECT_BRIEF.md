@@ -118,7 +118,7 @@ Not planned before v0.1:
 ### Native Rust components
 
 Native Rust components will receive a first-class implementation path through the
-same managed-component execution contract in M9A, after M8 external acceptance.
+same managed-component execution contract in the now-authorized M9A milestone.
 
 This gives a simple future migration:
 
@@ -348,13 +348,17 @@ an explicit accepted safety policy requires it.
 ## Current release path
 
 ```text
-M8  final real hardware acceptance
-M9A neutral managed-component boundary + first native Rust component path
-M9B unified Application + emulator + presentation/control/properties API + Babashka wrappers
-M10 GUI
-M11 hardening, documentation, tutorials, packaging
+M8  ACCEPTED
+M9A AUTHORIZED — neutral managed-component boundary + first native Rust component path
+M9B NOT AUTHORIZED until M9A acceptance
+M10 future GUI milestone
+M11 future hardening, documentation, tutorials and packaging milestone
 v0.1.0
 ```
+
+Current phase: M9A — neutral managed components and native Rust execution. The
+completed M8 gate requires no further hardware rerun; COM5 is not part of current
+work.
 
 The v0.1 documentation teaches native Rust managed components and the native
 virtual/emulator foundation plus Application API and Babashka use. It does not teach

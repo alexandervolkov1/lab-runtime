@@ -5,17 +5,19 @@
 Completed and accepted baseline:
 
 ```text
-M1-M7
+M1-M8
 ```
 
 Current phase:
 
 ```text
-M8 external acceptance review
-STATUS: READY_FOR_EXTERNAL_REVIEW
+M8: ACCEPTED
+M9A: AUTHORIZED
+Current phase: M9A — neutral managed components and native Rust execution
 ```
 
-M9A has not started.
+M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
+M11 remain future milestones.
 
 This plan is product direction, not automatic authorization to cross review gates.
 
@@ -125,8 +127,9 @@ Completed M8 gate evidence:
 12. clean shutdown and complete Recorder history;
 13. complete debug/release/fmt/Clippy/rustdoc/Babashka/client/demo gates.
 
-The next gate is external M8 review. M8 is not externally accepted yet. Do not
-start M9A until that review explicitly returns acceptance.
+External M8 review accepted this gate. No further M8 hardware rerun is required, and
+COM5 is not part of current work. Historical M8 reports and evidence remain
+immutable.
 
 ## M9A — neutral managed components and native Rust execution
 
@@ -149,7 +152,8 @@ Required acceptance:
   corrections;
 - historical SQLite evidence remains immutable.
 
-M9A starts only after external M8 acceptance.
+M9A is the current authorized implementation milestone. M9B remains blocked until
+M9A receives explicit external acceptance.
 
 ## M9B — unified Application / emulator / presentation API
 

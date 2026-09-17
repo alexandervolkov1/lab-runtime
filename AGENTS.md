@@ -24,17 +24,17 @@ context. Read them on demand. They do not override the active authorization.
 
 ## Current phase
 
-Current status:
-
 ```text
-STATUS: READY_FOR_EXTERNAL_REVIEW
+M8: ACCEPTED
+M9A: AUTHORIZED
+Current phase: M9A — neutral managed components and native Rust execution
 ```
 
-Final physical M8 acceptance and the final software gates have succeeded. Current
-authorized work is external M8 review only. No further COM5 or hardware rerun is
-authorized or required.
+Final physical M8 acceptance and the final software gates have succeeded. No further
+M8 hardware rerun is required, and COM5 is not part of current work.
 
-M9A remains NOT AUTHORIZED until M8 receives explicit external acceptance.
+M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
+M11 remain future milestones.
 
 ## Donor repository
 
@@ -135,9 +135,9 @@ Do not rename historical SQLite evidence merely to neutralize old Lua provenance
 Do not add a persistent Lua workspace, Lua application/scenario API, Lua GUI API,
 Lua REPL/editor or broader M5 scope.
 
-After external M8 acceptance, M9A may neutralize that interface leakage and add a
-first-class native Rust implementation path through the same contract, proving at
-least one small native model/filter/transform. Do not begin M9A now.
+M9A is authorized to neutralize that interface leakage and add a first-class native
+Rust implementation path through the same contract, proving at least one small
+native model/filter/transform. Detailed authorization belongs in `ai/WORK.md`.
 
 ## Virtual/emulator boundary
 

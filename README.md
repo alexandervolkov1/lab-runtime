@@ -9,17 +9,21 @@ local Application API.
 M1-M7 are complete. M7 Recorder/SQLite is externally accepted.
 
 M8 deployment/Windows-COM/reconnect work, final physical acceptance and final
-software gates are complete. The project is:
+software gates are accepted. The project is:
 
 ```text
-STATUS: READY_FOR_EXTERNAL_REVIEW
+M8: ACCEPTED
+M9A: AUTHORIZED
+Current phase: M9A — neutral managed components and native Rust execution
 ```
 
 The completed gate includes the successful real Metakon reconnect path, complete
 Recorder evidence and full debug/release/fmt/Clippy/rustdoc/Babashka/client/demo
-verification. No further COM5 or hardware rerun is authorized or required.
+verification. No further M8 hardware rerun is required, and COM5 is not part of
+current work.
 
-Do not start M9A before external M8 acceptance.
+M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
+M11 remain future milestones.
 
 ## Active project guidance
 
@@ -77,11 +81,11 @@ Clients do not own controller, transport, Recorder or output-safety lifetime.
 ## Current release direction
 
 ```text
-M8  external acceptance review
-M9A neutral managed-component boundary + native Rust component path
-M9B unified Application/emulator/presentation/control/properties API + Babashka wrappers
-M10 GUI
-M11 hardening + docs + packaging
+M8  ACCEPTED
+M9A AUTHORIZED — neutral managed-component boundary + native Rust component path
+M9B NOT AUTHORIZED until M9A acceptance
+M10 future GUI milestone
+M11 future hardening + docs + packaging milestone
 v0.1.0
 ```
 
