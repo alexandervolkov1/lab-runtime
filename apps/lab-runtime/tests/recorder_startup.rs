@@ -192,7 +192,7 @@ fn oversized_existing_archive_is_rejected_without_startup_mutation() {
 }
 
 #[test]
-fn public_recording_status_reports_cached_limits_quota_and_actual_wal_health() {
+fn public_recording_status_reports_semantic_state_without_storage_internals() {
     let path = temporary_database();
     let text = path.to_string_lossy();
     let options = ServiceOptions::parse(&[
@@ -237,38 +237,28 @@ fn public_recording_status_reports_cached_limits_quota_and_actual_wal_health() {
     let response = app.handle(&mut service, 1, frame);
     assert_eq!(response[0]["type"], "result");
     let health = &response[0]["result"];
-    assert_eq!(health["limits"]["records"], 1024);
-    assert_eq!(health["limits"]["groups"], 4);
-    assert_eq!(health["limits"]["bytes"], 4 * 1024 * 1024);
-    assert_eq!(
-        health["main_quota_bytes"],
-        (1024u64 * 1024 * 1024).to_string()
-    );
-    assert_eq!(
-        health["wal_threshold_bytes"],
-        (16u64 * 1024 * 1024).to_string()
-    );
-    let reported = health["wal_bytes"]
-        .as_str()
-        .unwrap()
-        .parse::<u64>()
-        .unwrap();
-    let sidecar = std::fs::metadata(path.with_extension("sqlite-wal"))
-        .unwrap()
-        .len();
-    assert!(reported > 0);
-    assert_eq!(
-        reported, sidecar,
-        "status must report actual worker-observed WAL bytes"
-    );
-    assert!(
-        health["main_logical_bytes"]
-            .as_str()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-            > 0
-    );
+    assert_eq!(health["configured"], true);
+    assert_eq!(health["available"], true);
+    assert_eq!(health["state"], "recording");
+    assert_eq!(health["accepting_facts"], true);
+    assert!(health["archive"]["id"].is_string());
+    assert!(health["active_run"]["run_no"].is_string());
+    assert!(health["active_interval"]["interval_no"].is_string());
+    assert_eq!(health["provenance"]["available"], true);
+    for internal in [
+        "limits",
+        "wal_bytes",
+        "wal_threshold_bytes",
+        "wal_checkpoints",
+        "main_logical_bytes",
+        "main_quota_bytes",
+        "first_error",
+    ] {
+        assert!(
+            health.get(internal).is_none(),
+            "leaked {internal}: {health:?}"
+        );
+    }
     service.request_shutdown().unwrap();
     let close_by = Instant::now() + Duration::from_secs(4);
     while service.shutdown_step().unwrap().is_none() {
@@ -361,13 +351,12 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
     .unwrap();
     let response = app.handle(&mut service, 1, frame);
     assert_eq!(
-        response[0]["result"]["wal_checkpoints"],
-        baseline.to_string()
-    );
-    assert_eq!(
-        response[0]["result"]["persisted_through_seq"],
+        response[0]["result"]["durability"]["persisted_through"],
         prefix.to_string()
     );
+    assert_eq!(response[0]["result"]["state"], "failed");
+    assert_eq!(response[0]["result"]["failure"]["code"], "recording_failed");
+    assert!(response[0]["result"].get("first_error").is_none());
     drop(app);
     drop(service);
     let remove_by = Instant::now() + Duration::from_secs(2);

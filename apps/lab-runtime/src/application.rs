@@ -3,13 +3,14 @@
 //! precede any attempt to send a reply.
 
 use crate::recorder::{
-    AnnotationRecord, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, RecordingPolicy,
-    RecordingState, RecordingStatus, RunsCursor, RunsPage, bounded_annotation_data,
+    AnnotationRecord, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, RecordingState,
+    RunsCursor, RunsPage, bounded_annotation_data,
 };
 use crate::{
     host::Clock,
     measurements::{current_json, sample_json, signal_id_json},
     protocol::{self, PublicError},
+    recorder_api,
     service::{LifecycleOperationError, ServiceHost},
     sessions::{Admission, Mutation, OperationState, SessionError, SessionStore},
     wire::{WireRequest, WireRequestId, decimal_u64},
@@ -262,6 +263,14 @@ impl Application {
         let result = if status.state == RecordingState::Failed {
             OperationState::Failed("recording_failed".into())
         } else {
+            let completion = if pending.start {
+                json!({"start_committed":true,"fact_admission_open":true,
+                    "provenance_committed":true})
+            } else {
+                json!({"accepted_facts_drained":true,"interval_sealed":true,
+                    "run_sealed":true,"transaction_committed":true,
+                    "writer_closed":false,"archive_boot_sealed":false})
+            };
             OperationState::Completed(
                 json!({
                     "database_id":service.owner().recording_database_id(),
@@ -269,7 +278,7 @@ impl Application {
                         "run_no":run_no.map(|number| number.to_string())},
                     "interval_id":{"boot_id":service.boot_id(),
                         "interval_no":interval_no.map(|number| number.to_string())},
-                    "durability":"committed"
+                    "completion":completion
                 })
                 .to_string(),
             )
@@ -570,15 +579,12 @@ impl Application {
                     return Err("history_page_expired");
                 }
             }
-            "recording_status" => {
-                let status = owner.recording_status().ok_or("recorder_disabled")?;
-                recording_status_json(
-                    status,
-                    owner.recording_database_id(),
-                    owner.recording_policy(),
-                    service.boot_id(),
-                )
-            }
+            "recording_status" => recorder_api::status_json(
+                owner.recording_status(),
+                owner.recording_database_id(),
+                owner.recording_policy(),
+                service.boot_id(),
+            ),
             "runtime_snapshot" => {
                 let cursor = owner.event_log().latest_cursor();
                 let mut records = owner.event_log().snapshot_records();
@@ -698,6 +704,7 @@ impl Application {
                         "output",
                         "operation",
                         "host",
+                        "recorder",
                     ]
                     .contains(&name)
                     {
@@ -1385,18 +1392,46 @@ impl Application {
                 .owner()
                 .recording_status()
                 .and_then(|status| status.interval_no);
-            let action = if self.pending_recording.is_some() {
-                Err(Error::InvalidConfiguration("recording lifecycle busy"))
+            let recorder_state = service
+                .owner()
+                .recording_status()
+                .map(|status| status.state);
+            let action: Result<(), &'static str> = if self.pending_recording.is_some() {
+                Err("busy")
             } else {
                 match &payload {
-                    Mutation::RecordingStart { label } => {
-                        service.owner_mut().start_recording(label, now)
+                    Mutation::RecordingStart { .. }
+                        if matches!(
+                            recorder_state,
+                            None | Some(RecordingState::Failed | RecordingState::Closed)
+                        ) =>
+                    {
+                        Err("recording_unavailable")
                     }
+                    Mutation::RecordingStart { .. }
+                        if recorder_state != Some(RecordingState::Idle) =>
+                    {
+                        Err("invalid_state")
+                    }
+                    Mutation::RecordingStart { label } => service
+                        .owner_mut()
+                        .start_recording(label, now)
+                        .map_err(domain_code),
                     Mutation::RecordingStop { boot_id, run_no } => {
-                        if boot_id != service.boot_id() || saved_run != Some(*run_no) {
-                            Err(Error::InvalidConfiguration("recording run mismatch"))
+                        if matches!(
+                            recorder_state,
+                            None | Some(RecordingState::Failed | RecordingState::Closed)
+                        ) {
+                            Err("recording_unavailable")
+                        } else if recorder_state != Some(RecordingState::Recording) {
+                            Err("invalid_state")
+                        } else if boot_id != service.boot_id() || saved_run != Some(*run_no) {
+                            Err("revision_conflict")
                         } else {
-                            service.owner_mut().stop_recording_at(now)
+                            service
+                                .owner_mut()
+                                .stop_recording_at(now)
+                                .map_err(domain_code)
                         }
                     }
                     _ => unreachable!(),
@@ -1415,8 +1450,8 @@ impl Application {
                     });
                     return vec![accepted];
                 }
-                Err(error) => {
-                    let failed = OperationState::Failed(domain_code(error).into());
+                Err(code) => {
+                    let failed = OperationState::Failed(code.into());
                     self.sessions
                         .complete(&scope, rid.seq, failed.clone(), service.clock().now())
                         .expect("admitted recording operation");
@@ -2390,55 +2425,6 @@ fn lower_hex_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn recording_status_json(
-    status: &RecordingStatus,
-    database_id: Option<&str>,
-    policy: Option<RecordingPolicy>,
-    boot_id: &str,
-) -> Value {
-    let state = match status.state {
-        RecordingState::Idle => "idle",
-        RecordingState::Starting => "starting",
-        RecordingState::Recording => "recording",
-        RecordingState::Stopping => "stopping",
-        RecordingState::Failed => "failed",
-        RecordingState::Closed => "closed",
-    };
-    let policy = match policy {
-        Some(RecordingPolicy::Required) => "required",
-        Some(RecordingPolicy::BestEffort) => "best-effort",
-        None => "disabled",
-    };
-    json!({"state":state,"policy":policy,"database_id":database_id,
-        "boot_id":boot_id,"run_id":status.run_no.map(|run_no|json!({
-            "boot_id":boot_id,"run_no":run_no.to_string()})),
-        "interval_id":status.interval_no.map(|interval_no|json!({
-            "boot_id":boot_id,"interval_no":interval_no.to_string()})),
-        "persisted_through_seq":status.persisted_through_sequence.to_string(),
-        "outstanding_records":status.outstanding_records,
-        "outstanding_bytes":status.outstanding_bytes,
-        "outstanding_groups":status.outstanding_groups,
-        "limits":{"records":status.limits.records,"bytes":status.limits.bytes,
-            "groups":status.limits.groups},
-        "main_logical_bytes":status.storage.as_ref().map(|health|
-            health.main_logical_bytes.to_string()),
-        "main_quota_bytes":status.storage.as_ref().map(|health|
-            health.main_quota_bytes.to_string()),
-        "wal_bytes":status.storage.as_ref().map(|health|
-            health.wal_bytes.to_string()),
-        "wal_threshold_bytes":status.storage.as_ref().map(|health|
-            health.wal_threshold_bytes.to_string()),
-        "wal_checkpoints":status.storage.as_ref().map(|health|
-            health.wal_checkpoints.to_string()),
-        "coverage":status.coverage,
-        "first_missing_fact_seq":status.first_missing_fact.map(|id|id.to_string()),
-        "failure_persisted":status.failure_persisted,
-        "terminal_seal_committed":status.terminal_seal_committed,
-        "worker_closed":status.worker_closed,
-        "first_error":status.first_error,
-        "confirmed_submission_ns":status.confirmed_submission.map(nanos)})
 }
 
 fn history_page_json(page: &HistoryPage, cursor_token: Option<&str>) -> Value {

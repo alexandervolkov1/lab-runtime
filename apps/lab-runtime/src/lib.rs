@@ -21,6 +21,8 @@ pub mod measurements;
 pub mod protocol;
 /// Bounded durable-history storage adapter and host-owned recording ingress.
 pub mod recorder;
+/// Semantic Recorder projections kept independent from its SQLite implementation.
+pub mod recorder_api;
 /// Bounded worker-backed read-only Windows COM byte adapter.
 pub mod serial;
 pub mod server;

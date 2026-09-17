@@ -68,7 +68,7 @@ fn hello_has_one_bounded_protocol_identity_and_authoritative_capabilities() {
         }) && capability["version"].is_u64()
             && capability["stability"].is_string()
     }));
-    assert!(!operations.iter().any(|op| op == "recording_status"));
+    assert!(operations.iter().any(|op| op == "recording_status"));
     assert!(!operations.iter().any(|op| op == "stage_configuration"));
 }
 

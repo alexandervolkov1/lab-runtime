@@ -149,7 +149,7 @@ pub const OPERATIONS: &[OperationSpec] = &[
         ResourceReconnect,
         ["resource", "expected_binding_generation"]
     ),
-    operation!("recording_status", Query, Recorder, []),
+    operation!("recording_status", Query, []),
     operation!("recording_start", Mutation, Recorder, ["label"]),
     operation!("recording_stop", Mutation, Recorder, ["run_id"]),
     operation!("experiment_annotate", Mutation, Recorder, ["name", "data"]),
@@ -290,9 +290,14 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         operation: "runtime_shutdown",
     },
     CapabilitySpec {
-        name: "recorder",
+        name: "recording_status",
         stability: "stable",
         operation: "recording_status",
+    },
+    CapabilitySpec {
+        name: "recording_control",
+        stability: "stable",
+        operation: "recording_start",
     },
     CapabilitySpec {
         name: "measurement_history",
@@ -369,6 +374,8 @@ pub fn limits() -> Value {
         "controller_result_records": 1,
         "pid_configuration_fields": 5,
         "controller_configuration_fields": 6,
+        "recorder":{"label_bytes":128,"status_records":1,
+            "event_bytes":events::EVENT_SIZE_LIMIT},
         "capabilities": CAPABILITY_LIMIT,
         "semantic_name_bytes": SEMANTIC_NAME_LIMIT,
         "error_message_bytes": ERROR_MESSAGE_LIMIT,

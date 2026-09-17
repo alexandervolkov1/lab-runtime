@@ -2641,6 +2641,11 @@ impl HostCore {
         if at < self.last_now {
             return Err(Error::InvalidConfiguration("recording stop time regressed"));
         }
+        // Move every already-committed Core fact into the Recorder FIFO before
+        // reserving the seal. Otherwise a fact can remain behind the public stop
+        // boundary merely because owner service has not reached its next drain.
+        self.admit_recording_facts(at);
+        self.poll_recorder(at);
         if self.recording_policy == Some(RecordingPolicy::Required)
             && (self.controllers_active() || !self.outputs_safe_for_required_stop())
         {
@@ -2756,7 +2761,8 @@ impl HostCore {
         let Some(worker) = self.recorder.as_mut() else {
             return;
         };
-        let prior = self.recording_status.as_ref().map(|s| s.state);
+        let previous = self.recording_status.clone();
+        let prior = previous.as_ref().map(|s| s.state);
         let status = worker.poll();
         let activated =
             prior != Some(RecordingState::Recording) && status.state == RecordingState::Recording;
@@ -2787,7 +2793,21 @@ impl HostCore {
             self.runtime.disable_recording_facts();
         }
         let recording = status.state == RecordingState::Recording;
+        let publish_lifecycle = crate::recorder_api::lifecycle_changed(previous.as_ref(), &status);
         self.recording_status = Some(status);
+        if publish_lifecycle {
+            let event_boot_id = self.event_log().boot_id().to_owned();
+            let data = crate::recorder_api::status_json(
+                self.recording_status.as_ref(),
+                self.recording_database_id(),
+                self.recording_policy,
+                &event_boot_id,
+            );
+            let archive_id = self.recording_database_id().map(str::to_owned);
+            let _ = self
+                .event_log_mut()
+                .recorder_state(now, archive_id.as_deref(), data);
+        }
         if recording {
             self.flush_deferred_safe_terminals(now);
             if let Some(worker) = self.recorder.as_mut() {

@@ -317,6 +317,15 @@ impl EventLog {
             None,
         )
     }
+    /// Publish a semantic Recorder lifecycle snapshot, never worker diagnostics.
+    pub fn recorder_state(
+        &mut self,
+        at: Duration,
+        archive_id: Option<&str>,
+        data: Value,
+    ) -> Result<(), EventError> {
+        self.append(at, "recorder", json!({"id":archive_id}), data, None)
+    }
     fn append(
         &mut self,
         at: Duration,
