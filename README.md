@@ -9,18 +9,19 @@ durable recording and a local Application API.
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: AUTHORIZED
-M9C+: NOT AUTHORIZED
-Current phase: M9B — complete and stabilize Application API
+M9B: READY_FOR_EXTERNAL_REVIEW
+M9C: NOT AUTHORIZED
+Current phase: M9B external review gate
 ```
 
 M8 physical read-only acceptance and M9A neutral/native managed-component execution
 are externally accepted. No additional M8 hardware run is required, and COM5 is not
 part of current work.
 
-M9B is the only authorized implementation milestone. It completes the useful
-laboratory and Runtime semantics exposed through one coherent local Application API.
-It does not add presentation state, a frontend, client SDK or scripting environment.
+M9B implementation and internal gates are complete and await external review. The
+coherent local Application API exposes laboratory and Runtime semantics without
+presentation state, a frontend, client SDK or scripting environment. M9C is not
+authorized.
 
 ## Product boundary
 

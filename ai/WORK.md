@@ -3,7 +3,7 @@
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: AUTHORIZED
+M9B: READY_FOR_EXTERNAL_REVIEW
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
@@ -12,13 +12,13 @@ M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
-M9B.9: NOT STARTED
-M9C+: NOT AUTHORIZED
-Current phase: M9B — complete and stabilize Application API
+M9B.9: COMPLETE
+M9C: NOT AUTHORIZED
+Current phase: M9B external review gate
 ```
 
-This is the only current implementation authorization. Do not begin M9C, M10, M11
-or M12 automatically.
+There is no further implementation authorization. Do not begin M9C, M10, M11 or
+M12 automatically. M9B awaits external review and is not self-accepted.
 
 The read-only M9B.1 audit is complete in
 `docs/implementation/MILESTONE_9B_API_AUDIT.md`. M9B.2 implemented the common
@@ -28,9 +28,9 @@ controller/PID operations; M9B.5 completed the semantic Recorder status, lifecyc
 event and durable-boundary API; M9B.6 completed resources, configuration/property
 and reconnect semantics; M9B.7 completed virtual instruments and external emulator
 publication; M9B.8 completed reconnect, resynchronization, backpressure and fault
-acceptance. These are recorded in
-`docs/implementation/MILESTONE_9B_REPORT.md`. Stop before M9B.9; a new instruction
-must authorize the next implementation slice.
+acceptance; M9B.9 consolidated the contract, limits and external-review checklist.
+These are recorded in `docs/implementation/MILESTONE_9B_REPORT.md`. Stop before
+M9C; explicit external acceptance and new authorization are required.
 
 ## Goal
 

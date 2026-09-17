@@ -11,12 +11,14 @@ M9B.5 Recorder Application API: COMPLETE
 M9B.6 resources / configuration / reconnect: COMPLETE
 M9B.7 virtual instruments / external emulator API: COMPLETE
 M9B.8 reconnect / resynchronization / fault acceptance: COMPLETE
-M9B.9: NOT STARTED
-M9C+: NOT AUTHORIZED
+M9B.9 consolidation / external-review preparation: COMPLETE
+M9B: READY_FOR_EXTERNAL_REVIEW
+M9C: NOT AUTHORIZED
 ```
 
-This report is cumulative through M9B.8. It does not claim that
-the complete M9B Application API is finished or externally accepted.
+This report is cumulative through M9B.9. The implementation and internal gates are
+complete and ready for external review; this report does not claim external
+acceptance.
 
 ## M9B.2 scope and architecture
 
@@ -735,6 +737,328 @@ capacity recovery, malformed isolation and process-level reconnect/shutdown. The
 history-cursor regression and all M9B.2-M9B.7 protocol, control, Recorder,
 configuration, resource/reconnect, emulator and process suites remain mandatory.
 
-M9B.9 remains deferred. No capacities were increased, no product operation was
-added, COM5 and hardware were not used, Lua was unchanged, M8 evidence was
-unchanged, and M9C was not started.
+That acceptance established the input to M9B.9. No capacities were increased, no
+product operation was added, COM5 and hardware were not used, Lua was unchanged,
+M8 evidence was unchanged, and M9C was not started.
+
+## M9B.9 final Application API contract and review preparation
+
+This section is the normative pre-v0.1 summary of the completed M9B Application
+API. The executable authority remains the single `OPERATIONS` registry in
+`protocol.rs`; framing validation and `hello` both consume that registry. A
+registry regression fixes the exact operation order, query/mutation classification
+and duplicate-free argument allowlists so this inventory cannot drift silently.
+
+The local protocol is newline-delimited JSON on loopback TCP. Every request carries
+protocol version `1`, a bounded `msg_id`, and an operation. `hello` establishes a
+bounded process-local scope and returns protocol identity
+`lab-runtime.application`, protocol version `1`, Application version `0.1-pre`,
+Runtime instance/boot identity, supported operations, capabilities and common
+limits. Numeric counters and nanosecond timestamps that may exceed interoperable
+JSON integer precision are encoded as decimal strings.
+
+### Authoritative operation inventory
+
+All request objects reject unknown fields. In the table, `args` lists the exact
+operation-specific field allowlist; omitted `args` means no operation-specific
+fields. Queries return one correlated `result` or a structured rejection. Mutations
+use the common session identity `(scope, seq)` and request `msg_id`: admission
+returns `accepted`, and every accepted identity reaches exactly one retained
+`completed` or `failed` terminal result. An operation that finishes in the same
+owner turn may deliver acceptance and terminal state together; Recorder, history,
+reconnect and shutdown work may finish later and is observable with
+`operation_status`. Socket loss discards delivery state, not accepted Runtime-owned
+work.
+
+| Query | Availability/capability | Exact `args` | Result contract |
+| --- | --- | --- | --- |
+| `hello` | always / protocol foundation | `scope` | protocol, instance, operations, capabilities and limits |
+| `discover` | always / `structured_discovery` | none | bounded discovery manifest and projection page descriptors |
+| `discovery_page` | always | `projection`, `index` | one bounded resource/instrument/signal/component page |
+| `describe` | always / `instrument_queries` | `instrument` | semantic instrument description and parameter descriptors |
+| `resource` | always / `resource_status` | `resource` | current resource lifecycle, generation, bindings and status |
+| `configuration_status` | always / `configuration_read` | none | active revision, source semantics, staged state and overlay count |
+| `configuration_properties` | always / `configuration_properties` | none | bounded property manifest/page descriptors |
+| `configuration_page` | always | `projection`, `index` | one bounded typed property page |
+| `latest` | always / `current_measurements` | `signal` | explicit current measurement for one stable signal |
+| `measurements_current` | always / `current_measurements` | none | frozen bounded current-measurement projection |
+| `measurements_page` | always | `projection`, `index` | one bounded current-measurement page |
+| `measurement_window` | always / `recent_measurement_history` | `signal`, `max_records` | ordered in-memory recent samples |
+| `controller` | always / `controller_status` | `controller` | current controller kind, lifecycle, bindings, configuration and failure |
+| `reference` | always / `reference_read_write` | `reference` | current Reference value, unit, validity and revision |
+| `component` | always / `managed_components` | `component` | current managed-component lifecycle and generation |
+| `output` | always / `output_status` | `actuator` | read-only semantic output/authority state |
+| `runtime_snapshot` | always / transitional `runtime_snapshot` | none | legacy frozen aggregate snapshot token |
+| `operation_status` | always / `operation_lifecycle` | `request_id` | retained pending or terminal mutation state |
+| `snapshot_page` | always | `snapshot`, `index` | bounded page from a frozen snapshot |
+| `snapshot_release` | always | `snapshot` | explicit connection-local snapshot release confirmation |
+| `subscribe` | always / `live_subscriptions` | `after`, `filter` | stable connection-local subscription identity and cursor |
+| `unsubscribe` | always | `subscription` | release confirmation |
+| `recording_status` | Recorder / `recording_status` | none | explicit configured/idle/recording/failed state, run and interval |
+| `history_page` | Recorder / `measurement_history` | `page_token` | one completed durable-history page |
+| `history_release` | Recorder / `measurement_history` | `page_token` | page/cursor release confirmation |
+
+| Mutation | Availability/capability | Exact `args` | Terminal result contract |
+| --- | --- | --- | --- |
+| `reference_configure` | always / `reference_read_write` | `reference`, `expected_revision`, `kind`, `value`, `target`, `rate` | committed Reference and new revision |
+| `reference_retune` | always / `reference_read_write` | `reference`, `expected_revision`, `target`, `rate` | committed ramp retune and revision |
+| `controller_configure_pid` | always / `controller_configuration` | `controller`, `expected_revision`, `pid` | validated PID configuration/revision |
+| `controller_configure` | always / `controller_configuration` | `controller`, `expected_revision`, `pid`, `ema`, `max_input_age_ns`, `max_tick_gap_ns`, `lease_lifetime_ns`, `proposal_ttl_ns` | atomically committed controller configuration/revision |
+| `controller_start` | always / `controller_lifecycle` | `controller` | authoritative started state |
+| `controller_pause` | always / `controller_lifecycle` | `controller` | authoritative paused state |
+| `controller_resume` | always / `controller_lifecycle` | `controller` | authoritative resumed state |
+| `controller_reset_failed` | always / `controller_lifecycle` | `controller` | validated failed-state reset; never implicit rearm |
+| `runtime_shutdown` | always / `runtime_shutdown` | none | finite Runtime shutdown completion |
+| `stage_configuration` | deployment configuration / `deployment_configuration` | none | validated candidate identity/base revision/effects |
+| `apply_configuration` | deployment configuration / `deployment_configuration` | `candidate_id`, `expected_revision` | committed deployment revision and effects |
+| `reload_configuration` | deployment configuration / `deployment_configuration` | none | validated and committed source reload revision |
+| `property_configure` | always / `configuration_write` | `target`, `property`, `value`, `expected_revision` | validated property commit/revision/effect |
+| `reload_managed_sources` | text-backed composition / transitional `managed_source_reload` | none | bounded managed implementation reload summary |
+| `emulator_publish` | emulator-writable target / `emulator_publication` | `signal`, `state`, `value`, `expected_generation` | committed Good/Unavailable virtual measurement |
+| `virtual_models_restart` | restartable native virtual model / `virtual_model_lifecycle` | none | Runtime-assigned restarted generations |
+| `reconnect_resource` | reconnectable physical resource / `resource_reconnect` | `resource`, `expected_binding_generation` | completed safe reconnect and authoritative generation |
+| `recording_start` | Recorder / `recording_control` | `label` | durably opened run/interval identity |
+| `recording_stop` | Recorder / `recording_control` | `run_id` | drained, sealed and cleanly closed run/interval |
+| `experiment_annotate` | Recorder / `recording_control` | `name`, `data` | durable bounded annotation identity |
+| `history_read` | Recorder / `measurement_history` | `mode`, `database_id`, `boot_id`, `run_id`, `signal`, `from_ns`, `to_ns`, `max_records`, `cursor` | accepted bounded durable-history job/page |
+
+Composition-gated operations are absent from `hello.operations` when their owning
+service or target class is absent. Capability advertisement is likewise derived
+from the supported operation set, not from a separately configured promise.
+
+### Capability inventory
+
+| Capability | Stability | Witness operation |
+| --- | --- | --- |
+| `operation_lifecycle` | stable | `operation_status` |
+| `structured_discovery` | stable | `discover` |
+| `live_subscriptions` | stable | `subscribe` |
+| `runtime_snapshot` | transitional | `runtime_snapshot` |
+| `current_measurements` | stable | `measurements_current` |
+| `recent_measurement_history` | stable | `measurement_window` |
+| `instrument_queries` | stable | `describe` |
+| `reference_read_write` | stable | `reference_configure` |
+| `controller_status` | stable | `controller` |
+| `controller_configuration` | stable | `controller_configure` |
+| `controller_lifecycle` | stable | `controller_start` |
+| `managed_components` | stable | `component` |
+| `output_status` | stable | `output` |
+| `runtime_shutdown` | stable | `runtime_shutdown` |
+| `recording_status` | stable | `recording_status` |
+| `recording_control` | stable | `recording_start` |
+| `measurement_history` | stable | `history_read` |
+| `resource_status` | stable | `resource` |
+| `configuration_read` | stable | `configuration_status` |
+| `configuration_properties` | stable | `configuration_properties` |
+| `configuration_write` | stable | `property_configure` |
+| `deployment_configuration` | stable | `stage_configuration` |
+| `managed_source_reload` | transitional | `reload_managed_sources` |
+| `resource_reconnect` | stable | `reconnect_resource` |
+| `virtual_instruments` | stable | `discover` |
+| `emulator_publication` | stable | `emulator_publish` |
+| `virtual_model_lifecycle` | stable | `virtual_models_restart` |
+
+The maximum is 32 advertised capabilities; the current complete composition uses
+27. No capability names SQLite, a serial adapter, a Rust type, a GUI or a client
+implementation.
+
+### Identity, current state and resynchronization
+
+| Identity | Public form and lifetime |
+| --- | --- |
+| resource, instrument, component, Reference, controller, actuator | semantic deployment/Runtime identity; stable across client connections, never an array index |
+| signal | `{instrument, parameter}` everywhere: discovery, current, history, events and emulator publication |
+| binding/configuration generation or revision | separate concurrency/fencing value; replacement never changes the meaning of object identity |
+| Runtime instance/boot | process-lifetime identity returned by `hello`; detects process replacement |
+| Recorder database, run and interval | durable archive/domain identity used by Recorder state and durable history, not a SQLite row address |
+| operation | `(scope, seq)` process-local dedup identity; `msg_id` only correlates delivery |
+| subscription, snapshot, history page/cursor | bounded connection-local delivery identity; invalid after detach/release/expiry |
+
+Current projections explicitly carry lifecycle/availability/quality rather than
+asking clients to infer state from a missing value. Measurements carry signal,
+optional value, unit, quality/status, observation/commit time and generation.
+References carry value, unit, validity, kind and revision. Controllers carry kind,
+lifecycle, signal/Reference/output bindings, configuration/revision and bounded
+failure. Recorder state carries configured/available state, lifecycle, archive,
+active run/interval and durable failure. Resources carry kind, physical/virtual
+classification, lifecycle, availability, binding generation, associated
+instruments, reconnect support and failure. Configuration exposes its committed
+revision, source/persistence semantics, staged state and typed property descriptors.
+Virtual instruments use those same resource, instrument, signal and property
+projections and additionally advertise publication only on explicitly writable
+virtual targets.
+
+Reconnect reconstruction is therefore explicit and stateless with respect to the
+old socket: `hello`, discovery, current measurements, References, controllers,
+Recorder, resources/configuration, optional history catch-up, then fresh
+subscriptions. Configuration overrides and experiment state are Runtime-owned.
+Runtime API changes do not edit deployment TOML automatically and do not survive a
+process restart unless the deployment/Recorder contract explicitly makes them
+durable.
+
+### History and subscription contracts
+
+Recent history and durable history intentionally have different contracts.
+
+| Contract | Recent Runtime history | Durable Recorder history |
+| --- | --- | --- |
+| Operation | `measurement_window` | `history_read` then `history_page`/`history_release` |
+| Source | committed bounded signal ring in memory | Recorder-owned sealed/committed archive prefix |
+| Ordering | deterministic oldest-to-newest | deterministic archive order with explicit cursor |
+| Page/request maximum | 128 samples | 128 records and 8 KiB encoded page |
+| Continuation | none; repeat against current ring | opaque bounded cursor tied to connection/scope/filter |
+| Disconnect | no retained delivery state | pending delivery/page/cursor removed; Recorder work/facts remain owned by Runtime |
+| Empty/end | success with empty records / no continuation | success with empty records or terminal page / no continuation |
+| Record semantics | value, unit, quality, times, generation | value, unit, quality, times, generation plus archive/run/interval correlation |
+| Completeness | bounded recent prefix; old samples evict | durable committed prefix subject to recorded gaps/sealing truth |
+
+The durable cursor is not a database schema or a promise of a live SQLite cursor.
+At most eight jobs, pages and retained continuations exist; continuation tokens
+expire, explicit release removes them, and disconnect removes connection-owned
+state. Reconnect starts a new explicit query.
+
+Each client has at most one subscription. Its filter has at most eight event kinds
+and sixteen targets. Public kinds cover semantic measurement/quality changes,
+Reference and controller state/configuration, Recorder lifecycle/failure,
+resource/configuration lifecycle and virtual-model lifecycle; private ticks and
+worker chatter are not events. Events use a monotonic process-local sequence and a
+1,024-record replay ring. A client event queue holds sixteen frames. If the replay
+cursor has fallen behind, `event_gap` carries `resync_required`; a peer that does
+not drain its bounded socket queue is detached. Neither case silently claims a
+complete stream. Recovery is:
+
+```text
+event_gap / disconnect
+-> query authoritative current state
+-> optionally query recent or durable history
+-> create a fresh subscription
+```
+
+Live events are not an infinitely reliable durable log. Unsubscribe and disconnect
+release the subscription and all connection-local delivery resources.
+
+### Mutations, errors and authority
+
+Validation and revision/generation conflicts occur before mutation; failed
+validation never partially commits. Accepted work is Runtime-owned and may outlive
+the requesting socket. Exact replay of `(scope, seq)` returns the retained outcome
+without a second mutation; a conflicting body for the same identity is rejected.
+Terminal outcomes are bounded and finite-retention, so `unknown` means no longer
+knowable, not permission to assume that an earlier physical or durable action did
+not occur.
+
+The stable public error categories are `invalid_request`,
+`unsupported_operation`, `invalid_configuration`, `revision_conflict`,
+`not_found`, `unavailable`, `transport_unavailable`, `recording_unavailable`,
+`timeout`, `capacity_exhausted`, `operation_failed`, and `protocol_error`.
+Specific categories are used for known validation, identity, conflict, transport,
+Recorder, deadline and capacity failures; `operation_failed` is the bounded
+fallback for an otherwise non-public internal failure. Messages are at most 256
+bytes and structured details at most 2,048 encoded bytes. Arbitrary Rust `Debug`,
+SQLite or serial/OS errors are not passed through. `protocol_error` includes
+instance replacement and explicit event gaps; resynchronization advice is a typed
+field, not message parsing.
+
+Runtime owns experiment state; clients are disposable requesters and observers.
+Clients cannot own or fabricate acquisition scheduling, Runtime generations, raw
+transports, transport completion, physical ACK, physical readback, safe evidence,
+`OutputLease`, `OutputAuthority`, controller lease state, Recorder workers or
+SQLite mutation. Emulator publication can commit only to deployment-declared
+virtual targets and is never physical evidence. Controller requests remain above
+the native proposal/OutputAuthority/final-recheck pipeline. Slow clients cannot
+backpressure required transport, acquisition, control, safety or Recorder work.
+
+### Authoritative published bounds
+
+| Resource | Limit and scope | Exhaustion behavior | Release |
+| --- | --- | --- | --- |
+| NDJSON frame / JSON depth / values / string | 16,384 bytes / 16 / 1,024 / 512 UTF-8 bytes per request | bounded protocol rejection or peer close for framing failure | frame completion/disconnect |
+| semantic name / error message / error details | 64 / 256 / 2,048 bytes | structured `invalid_request` or bounded fallback | request completion |
+| advertised capabilities | 32 per `hello` (27 current) | composition cannot advertise beyond bound | process composition |
+| clients | 8 loopback peers | new peer refused | disconnect/deadline |
+| owner mailboxes / network sweep / client deadline | 64 each direction / 8,192 bytes/pass / 2 seconds | admission pauses or affected peer detaches; owner never blocks | owner drain/detach |
+| request, reply and event queues | 8 / 8 / 16 per client | reads pause or affected peer detaches | delivery/disconnect |
+| scopes | 16 process-wide | `capacity_exhausted` | 1,800-second detached-scope expiry |
+| pending operations | 8/scope, 64 process-wide | `capacity_exhausted` (`busy`) | terminal completion/disconnect fences delivery only |
+| terminal outcomes | 32/scope, 256 process-wide; 4,096 bytes each | bounded eviction/unknown outcome | 600-second TTL/eviction |
+| frozen discovery/current snapshots | 64 records/page family, 8 KiB page | structured page/response capacity error | explicit release/expiry/disconnect |
+| Runtime instruments/resources/References/controllers | 64 / 8 / 64 / 64 | validated deployment/configuration capacity error | deployment replacement |
+| subscriptions / filter | 1/client; 8 kinds; 16 targets | `subscription_busy` or `invalid_request` | unsubscribe/gap/disconnect |
+| replay ring / event payload | 1,024 records / 4,096 bytes | explicit `event_gap`/`resync_required`; oversized event rejected | ring eviction/resync |
+| recent history | request maximum 128; signal ring maximum 4,096 (deployment may choose less) | request clamped/rejected by contract; oldest samples evict | ring eviction |
+| durable jobs / cached pages / cursors / page | 8 / 8 / 8 / 8 KiB; 128 records | `history_busy`, `capacity_exhausted`, or bounded-page error | terminal, release, TTL, disconnect |
+| configuration properties / page | 256 projection records / 64 records and 8 KiB | `capacity_exhausted` or bounded page error | snapshot/revision lifecycle |
+| staged candidates / runtime overlays | 1 / 32 | structured busy/capacity rejection | apply, replacement, 30-second candidate expiry |
+| emulator publication | 1 scalar record/request, 0 metadata strings, 8 pending/scope | validation or `capacity_exhausted`; never buffered unboundedly | synchronous terminal/session completion |
+| Recorder public label/status/event | 128-byte label / one status record / 4 KiB event | `invalid_request`, bounded error, or event gap | operation/event lifecycle |
+| Recorder ingress (not API delivery) | 4 causal groups, 1,024 records, 4 MiB total, 512 KiB/group; facts 256 / 256 KiB | existing truthful gap or required fail-closed contract | Recorder worker progress |
+
+These are hard bounds, not sizing suggestions. Shared global exhaustion is finite
+and explicit; connection-local exhaustion does not borrow native Runtime or
+Recorder capacity. M9B.9 did not increase any limit.
+
+### Generic extension and contract boundaries
+
+An ordinary native managed component adds implementation, registration,
+metadata/configuration and tests. Its output signal, current state, history,
+subscription and ordinary properties flow through the generic API without a new
+wire operation. An ordinary physical or virtual instrument similarly projects
+through discovery, signals, current/history/subscriptions and typed properties;
+only genuinely new domain actions justify a new operation. Existing moving-mean,
+property projection, virtual-publication and thermal-model regressions enforce
+these invariants.
+
+The contracts remain distinct:
+
+```text
+Application API != Recorder contract != SQLite schema
+```
+
+The Application API speaks in recording, archive, run, interval, status, durable
+history, gaps and provenance. It exposes no SQL tables, rows, WAL controls or
+database mutation. Likewise, no operation, capability or DTO defines workspace,
+plot, trace, button, panel, tab, color, layout, window or other presentation state.
+
+### Transitional pre-M9C surface
+
+| Artifact | Classification and M9C action |
+| --- | --- |
+| `reload_managed_sources` and `managed_source_reload` | transitional public surface for active text-backed Lua implementations; remove/review with Lua in M9C |
+| `lua.v1`, Lua source paths/configuration and `lab-lua` | active temporary implementation identity; remove in M9C without changing the neutral managed-component contract |
+| `runtime_snapshot` capability and snapshot query/page/release family | transitional aggregate used by pre-release acceptance clients; review/remove with obsolete client baggage in M9C while retaining domain-specific current queries |
+| `clients/babashka` and its process fixtures | regression evidence only, never a product API/client; remove in M9C |
+| historical Recorder provenance such as `managed_lua_source` | historical compatibility only; preserve immutable evidence rather than rewriting it |
+| `managed component`, implementation identity and generic provenance | legitimately generic; retain after Lua removal |
+| internal/historical `restart_models` spelling | not public; public semantic operation is `virtual_models_restart`; retain only where old durable evidence requires it |
+
+`recorder_sqlite_v1` and `history_raw_paged_v1` are not active public capability
+names. No M9C removal was performed in this milestone.
+
+### Acceptance evidence and external-review checklist
+
+M9B.8 established reconnect/current reconstruction, accepted-work independence,
+exact dedup replay, stale-delivery fencing, explicit subscription gaps, cursor and
+subscription cleanup, finite history/emulator pressure, Recorder/API isolation,
+malformed-peer containment, two-client isolation, committed native Runtime progress
+under pressure and finite process shutdown. The progress oracles were committed
+measurements/history/controller/Recorder facts rather than elapsed-loop guesses.
+
+One temporary Babashka Required-recorder optimized-load run produced an honest
+sealed gap. Its exact rerun passed and a later complete optimized suite passed. No
+production timeout or Recorder behavior was changed. The fixture is removed with
+Babashka in M9C; Recorder receives another hardening pass in M11.
+
+External review should verify: registry/inventory equality; capability composition;
+identity and generation separation; current-state reconstructability; recent versus
+durable history; gap recovery; mutation/dedup lifecycle; category-specific bounded
+errors; the bound table; virtual/physical and OutputAuthority separation; Recorder
+and SQLite separation; presentation exclusion; and the explicit M9C transition
+list. M9B is ready for that review but is not self-accepted.
+
+Final M9B.9 verification passed: the exact registry regression; focused protocol,
+real-process and M9B.8 fault-acceptance suites; `cargo fmt --all -- --check`;
+`cargo test --workspace`; `cargo test --workspace --release`; warning-denied
+workspace/all-target Clippy; and warning-denied workspace rustdoc. `git diff
+--check` passed. The M8 evidence paths and report have no diff from the M9B.9
+baseline. COM5 was not opened, no hardware test ran, Lua remains present, and M9C
+was not started.

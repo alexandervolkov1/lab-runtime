@@ -8,7 +8,7 @@ implementation authorization. This roadmap ends at v0.1.0.
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: AUTHORIZED
+M9B: READY_FOR_EXTERNAL_REVIEW
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
@@ -17,9 +17,9 @@ M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
-M9B.9: NOT STARTED
-M9C+: NOT AUTHORIZED
-Current phase: M9B — complete and stabilize Application API
+M9B.9: COMPLETE
+M9C: NOT AUTHORIZED
+Current phase: M9B external review gate
 ```
 
 Completed milestones M1-M9A established the domain, OutputAuthority, bounded
@@ -80,6 +80,9 @@ native virtual-model restart from managed-component lifecycle.
 M9B.8 completed adversarial reconnect/resynchronization, bounded-pressure and
 multi-client fault acceptance, including the final connection-local history-cursor
 bound.
+M9B.9 consolidated the source-derived operation/capability inventory, identity and
+lifecycle contracts, error taxonomy, authoritative limits, transition list and
+external-review checklist. M9B now awaits external review and is not self-accepted.
 
 ### Discovery
 

@@ -5,7 +5,7 @@
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: AUTHORIZED
+M9B: READY_FOR_EXTERNAL_REVIEW
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
@@ -14,13 +14,14 @@ M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
-M9B.9: NOT STARTED
-M9C+: NOT AUTHORIZED
-Current phase: M9B — complete and stabilize Application API
+M9B.9: COMPLETE
+M9C: NOT AUTHORIZED
+Current phase: M9B external review gate
 ```
 
-M9B is the only authorized implementation milestone. This plan does not authorize
-automatic milestone transitions. The roadmap ends at v0.1.0.
+M9B implementation and internal gates are complete and await external review. This
+plan does not authorize M9C or automatic milestone transitions. The roadmap ends at
+v0.1.0.
 
 ## v0.1 product definition
 
@@ -141,7 +142,8 @@ Completed M9B slices:
 - M9B.8 completed reconnect/resynchronization, adversarial bounded-pressure and
   multi-client isolation acceptance.
 
-M9B.9 and later M9B slices remain incomplete; M9B as a whole is not accepted.
+M9B.9 consolidated the complete Application API contract and external-review
+checklist. M9B is ready for external review and is not self-accepted.
 
 Required coverage:
 

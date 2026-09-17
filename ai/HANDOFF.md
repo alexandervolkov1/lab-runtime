@@ -5,7 +5,7 @@
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
-M9B: AUTHORIZED
+M9B: READY_FOR_EXTERNAL_REVIEW
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
@@ -14,13 +14,13 @@ M9B.5: COMPLETE
 M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
-M9B.9: NOT STARTED
-M9C+: NOT AUTHORIZED
-Current phase: M9B — complete and stabilize Application API
+M9B.9: COMPLETE
+M9C: NOT AUTHORIZED
+Current phase: M9B external review gate
 ```
 
-M9B is the only authorized implementation milestone. Do not begin M9C, cleanup,
-hardening, packaging or release work automatically.
+M9B implementation and internal gates are complete and await external review. Do
+not begin M9C, cleanup, hardening, packaging or release work automatically.
 
 ## Accepted baselines
 
@@ -107,7 +107,13 @@ M9B.8 acceptance is complete. Reconnect reconstruction, operation replay,
 slow-client gap recovery, subscription churn, emulator/Recorder pressure, malformed
 traffic and process-level client isolation passed. One connection-local durable
 history defect was fixed: continuation tokens are now capped at eight, one per
-connection, and released on disconnect. Stop before M9B.9.
+connection, and released on disconnect.
+
+M9B.9 is complete. The final report now contains the exact 46-operation and
+27-capability inventories, identity/current/history/subscription/mutation contracts,
+structured error taxonomy, authoritative bounds, authority and extensibility
+invariants, transitional M9C inputs and the external-review checklist. M9B awaits
+external review; stop before M9C.
 
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, protocol and integration tests.
