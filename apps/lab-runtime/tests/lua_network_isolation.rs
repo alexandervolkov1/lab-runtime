@@ -10,9 +10,9 @@ use lab_core::{
     transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_core::{Command, InstrumentId, Query, QueryResult, SignalId, TEMPERATURE};
-use lab_lua::{LuaSupervisor, WorkerBarrier};
 use lab_runtime::{
     application::Application,
+    managed_executor::{ManagedExecutor, WorkerBarrier},
     recorder::{
         RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState,
         WriterBarrier as SqliteBarrier,
@@ -29,7 +29,7 @@ use std::sync::atomic::AtomicUsize;
 static PROFILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn wait_pool_release() {
     let until = Instant::now() + Duration::from_secs(2);
-    while LuaSupervisor::active_workers() != 0 {
+    while ManagedExecutor::active_workers() != 0 {
         assert!(
             Instant::now() < until,
             "prior fixed-worker pool did not unwind"
@@ -131,7 +131,7 @@ fn managed_step(host: &mut HostCore, id: u64, at: Duration) {
 }
 
 #[test]
-fn standard_profile_prepares_two_real_lua_components_before_readiness_and_schedules_steps() {
+fn standard_profile_prepares_lua_and_native_components_before_readiness_and_schedules_steps() {
     let _guard = PROFILE_TEST_LOCK.lock().unwrap();
     let mut service = ServiceHost::startup(
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap(),
@@ -190,7 +190,7 @@ fn standard_profile_prepares_two_real_lua_components_before_readiness_and_schedu
 }
 
 #[test]
-fn two_real_lua_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recovery_alive() {
+fn two_managed_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recovery_alive() {
     let _guard = PROFILE_TEST_LOCK.lock().unwrap();
     let barrier = Arc::new(WorkerBarrier::new());
     let sqlite_barrier = SqliteBarrier::held();
@@ -222,19 +222,19 @@ fn two_real_lua_slots_and_held_sqlite_leave_socket_native_renewal_and_m3_recover
         host.command(Command::RegisterMetakon(metakon_fixture()))
             .unwrap();
         host.install_component_executor(Box::new(
-            LuaSupervisor::new_with_barrier(worker_barrier.clone()).unwrap(),
+            ManagedExecutor::new_with_barrier(worker_barrier.clone()).unwrap(),
         ))
         .unwrap();
-        host.stage_standard_lua(Duration::ZERO).unwrap();
+        host.stage_standard_components(Duration::ZERO).unwrap();
         let init = Instant::now();
-        while !host.source_lua_initialized() {
+        while !host.source_component_initialized() {
             host.command(Command::PollComponents { at: Duration::ZERO })
                 .unwrap();
             assert!(init.elapsed() < Duration::from_secs(2));
             thread::yield_now();
         }
         host.stage_standard_filter(Duration::ZERO).unwrap();
-        while !host.standard_lua_initialized() {
+        while !host.standard_components_initialized() {
             host.command(Command::PollComponents { at: Duration::ZERO })
                 .unwrap();
             assert!(init.elapsed() < Duration::from_secs(2));
@@ -448,19 +448,19 @@ fn managed_dependent_controller_fails_safe_while_independent_native_controller_c
     wait_pool_release();
     let barrier = Arc::new(WorkerBarrier::new());
     host.install_component_executor(Box::new(
-        LuaSupervisor::new_with_barrier(barrier.clone()).unwrap(),
+        ManagedExecutor::new_with_barrier(barrier.clone()).unwrap(),
     ))
     .unwrap();
-    host.stage_standard_lua(Duration::ZERO).unwrap();
+    host.stage_standard_components(Duration::ZERO).unwrap();
     let init = Instant::now();
-    while !host.source_lua_initialized() {
+    while !host.source_component_initialized() {
         host.command(Command::PollComponents { at: Duration::ZERO })
             .unwrap();
         assert!(init.elapsed() < Duration::from_secs(2));
         thread::yield_now();
     }
     host.stage_standard_filter(Duration::ZERO).unwrap();
-    while !host.standard_lua_initialized() {
+    while !host.standard_components_initialized() {
         host.command(Command::PollComponents { at: Duration::ZERO })
             .unwrap();
         assert!(init.elapsed() < Duration::from_secs(2));

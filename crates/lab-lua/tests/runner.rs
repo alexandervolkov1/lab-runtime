@@ -3,8 +3,8 @@
 use lab_core::{
     InstrumentId, TEMPERATURE, Unit,
     managed::{
-        ComponentDefinition, ComponentError, ComponentId, ComponentKind, ComponentManifest,
-        ComponentStatus, Correlation, Invocation, InvocationPhase, PlainData,
+        ComponentDefinition, ComponentError, ComponentId, ComponentImplementation, ComponentKind,
+        ComponentManifest, ComponentStatus, Correlation, Invocation, InvocationPhase, PlainData,
     },
 };
 use lab_lua::run_bounded;
@@ -31,7 +31,7 @@ fn job(source: &str, phase: InvocationPhase) -> Invocation {
             max_input_age: Duration::from_secs(2),
             history_capacity: 8,
         },
-        source: source.into(),
+        implementation: ComponentImplementation::text(lab_lua::IMPLEMENTATION_ID, source).unwrap(),
         config: PlainData::default(),
     };
     Invocation {
@@ -175,18 +175,9 @@ fn result_and_plain_state_limits_are_checked_independently_of_the_vm_heap() {
             .is_err()
         );
     }
-    let mut too_large = job(
-        "return function(ctx) return {state={},diagnostics={}} end",
-        InvocationPhase::Init,
-    );
-    too_large.definition.source.push_str(&" ".repeat(32 * 1024));
-    assert_eq!(
-        run_bounded(
-            &too_large,
-            Instant::now() + Duration::from_secs(1),
-            Arc::new(AtomicBool::new(false))
-        ),
-        Err(ComponentError::DataLimit)
+    assert!(
+        ComponentImplementation::text(lab_lua::IMPLEMENTATION_ID, " ".repeat(32 * 1024 + 1),)
+            .is_err()
     );
 }
 
@@ -232,7 +223,7 @@ fn real_host_call_budget_has_a_valid_boundary_and_fails_above_it() {
         if accepted {
             assert_eq!(result.unwrap().value, Some(42.0));
         } else {
-            assert_eq!(result, Err(ComponentError::HostCallLimit));
+            assert_eq!(result, Err(ComponentError::AdapterCallLimit));
         }
     }
 }
@@ -310,7 +301,7 @@ fn real_lua_heap_quota_and_text_only_parser_are_isolated() {
         Instant::now() + Duration::from_secs(1),
         Arc::new(AtomicBool::new(false)),
     );
-    assert_eq!(invalid, Err(ComponentError::Syntax));
+    assert_eq!(invalid, Err(ComponentError::InvalidImplementation));
 }
 
 #[test]
@@ -324,7 +315,7 @@ fn child_infinite_loop_quota_probe() {
         Instant::now() + Duration::from_secs(1),
         Arc::new(AtomicBool::new(false)),
     );
-    assert_eq!(result, Err(ComponentError::InstructionLimit));
+    assert_eq!(result, Err(ComponentError::ExecutionLimit));
 }
 
 #[test]

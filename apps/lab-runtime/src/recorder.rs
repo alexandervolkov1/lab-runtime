@@ -137,7 +137,7 @@ impl ConfigurationLifecycleRecord {
             "reload_configuration" | "apply_configuration" => {
                 self.committed_revision == self.base_revision.checked_add(1).unwrap_or(0)
             }
-            "reload_managed_scripts" | "restart_virtual_models" | "reconnect_resource" => {
+            "reload_managed_sources" | "restart_models" | "reconnect_resource" => {
                 self.committed_revision == self.base_revision
             }
             _ => false,
@@ -533,7 +533,7 @@ pub struct RunsPage {
 /// Exact already-loaded trusted source/definition bytes; a path is never reread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvenanceEntry {
-    /// Stable semantic class, such as `managed_lua_source`.
+    /// Stable semantic class, such as `managed_component_source`.
     pub kind: String,
     /// Exact byte encoding, such as `utf8` or `json_v1`.
     pub encoding: String,
@@ -1187,7 +1187,10 @@ impl SqliteStore {
                 || entry.encoding.len() > 64
                 || entry.content.is_empty()
                 || entry.content.len() > 64 * 1024
-                || (entry.kind == "managed_lua_source" && entry.content.len() > 32 * 1024)
+                || (matches!(
+                    entry.kind.as_str(),
+                    "managed_component_source" | "managed_lua_source"
+                ) && entry.content.len() > 32 * 1024)
             {
                 return Err(StorageError("invalid bounded provenance entry".into()));
             }

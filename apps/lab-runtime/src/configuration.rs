@@ -5,8 +5,15 @@
 //! returned bundle owns the exact admitted bytes so later activation never has
 //! to reread a mutable pathname for provenance.
 
-use crate::definition::{MAX_DEFINITION_BYTES, parse_definition_json};
-use lab_core::{AccessMode, ParameterRole, Unit, WriteEffect, instrument::KnownOperation};
+use crate::{
+    definition::{MAX_DEFINITION_BYTES, parse_definition_json},
+    managed_executor::MOVING_MEAN_IMPLEMENTATION,
+};
+use lab_core::{
+    AccessMode, ParameterRole, Unit, WriteEffect,
+    instrument::KnownOperation,
+    managed::{ComponentImplementationId, PlainData, PlainValue},
+};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -137,7 +144,7 @@ impl FrozenArtifact {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ArtifactKind {
     InstrumentDefinition,
-    ManagedLuaSource,
+    ManagedComponentSource,
 }
 
 /// Fully validated typed deployment used to build a staged Runtime candidate.
@@ -225,7 +232,7 @@ impl FrozenDeployment {
             (
                 match artifact.kind {
                     ArtifactKind::InstrumentDefinition => "instrument_definition",
-                    ArtifactKind::ManagedLuaSource => "managed_lua_source",
+                    ArtifactKind::ManagedComponentSource => "managed_component_source",
                 }
                 .into(),
                 "utf8".into(),
@@ -241,7 +248,10 @@ impl FrozenDeployment {
         let mut next = self.clone();
         let mut reader = FileArtifactReader;
         for component in &self.effective.dto.managed_components {
-            let path = self.resolved_path(&component.source)?;
+            let Some(declared) = component.source.as_deref() else {
+                continue;
+            };
+            let path = self.resolved_path(declared)?;
             let bytes = reader.read(&path, 32 * 1024)?;
             std::str::from_utf8(&bytes)
                 .map_err(|_| ConfigurationError::artifact("managed source must be UTF-8"))?;
@@ -249,7 +259,7 @@ impl FrozenDeployment {
                 .artifacts
                 .iter_mut()
                 .find(|artifact| {
-                    artifact.kind == ArtifactKind::ManagedLuaSource
+                    artifact.kind == ArtifactKind::ManagedComponentSource
                         && artifact.declared_path == path
                 })
                 .ok_or_else(|| ConfigurationError::artifact("managed source not frozen"))?;
@@ -270,13 +280,16 @@ impl FrozenDeployment {
     }
 
     /// Reuse active source bytes for unchanged managed declarations during a
-    /// configuration reload. Only the distinct script-reload operation rereads
+    /// configuration reload. Only the distinct source-reload operation rereads
     /// those mutable pathnames.
     pub(crate) fn reuse_unchanged_managed_sources(
         mut self,
         active: &Self,
     ) -> Result<Self, ConfigurationError> {
         for component in &self.effective.dto.managed_components {
+            let Some(declared) = component.source.as_deref() else {
+                continue;
+            };
             if !active
                 .effective
                 .dto
@@ -286,13 +299,13 @@ impl FrozenDeployment {
             {
                 continue;
             }
-            let candidate_path = self.resolved_path(&component.source)?;
-            let active_path = active.resolved_path(&component.source)?;
+            let candidate_path = self.resolved_path(declared)?;
+            let active_path = active.resolved_path(declared)?;
             let active_artifact = active
                 .artifacts
                 .iter()
                 .find(|artifact| {
-                    artifact.kind == ArtifactKind::ManagedLuaSource
+                    artifact.kind == ArtifactKind::ManagedComponentSource
                         && artifact.declared_path == active_path
                 })
                 .ok_or_else(|| ConfigurationError::artifact("active managed source missing"))?;
@@ -300,7 +313,7 @@ impl FrozenDeployment {
                 .artifacts
                 .iter_mut()
                 .find(|artifact| {
-                    artifact.kind == ArtifactKind::ManagedLuaSource
+                    artifact.kind == ArtifactKind::ManagedComponentSource
                         && artifact.declared_path == candidate_path
                 })
                 .ok_or_else(|| ConfigurationError::artifact("candidate managed source missing"))?;
@@ -478,13 +491,9 @@ pub fn parse_runtime_toml(
         }
     }
     for component in &dto.managed_components {
-        freeze_source(
-            base,
-            &component.source,
-            reader,
-            &mut artifacts,
-            &mut total_bytes,
-        )?;
+        if let Some(source) = &component.source {
+            freeze_source(base, source, reader, &mut artifacts, &mut total_bytes)?;
+        }
     }
     if artifacts.len() > MAX_DEPLOYMENT_ARTIFACTS || total_bytes > MAX_DEPLOYMENT_BYTES {
         return Err(ConfigurationError::TooLarge);
@@ -669,6 +678,29 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
         validate_key(&component.key)?;
         validate_display_name(&component.display_name)?;
         validate_period(component.period_ms, "component period")?;
+        ComponentImplementationId::new(component.implementation.clone())
+            .map_err(|_| ConfigurationError::invalid("invalid component implementation"))?;
+        component.plain_config()?;
+        match component.implementation.as_str() {
+            lab_lua::IMPLEMENTATION_ID if component.source.is_some() => {}
+            lab_lua::IMPLEMENTATION_ID => {
+                return Err(ConfigurationError::invalid("Lua component requires source"));
+            }
+            MOVING_MEAN_IMPLEMENTATION
+                if component.source.is_none()
+                    && component.input_instrument_id.is_some()
+                    && component.configured_window().is_some() => {}
+            MOVING_MEAN_IMPLEMENTATION => {
+                return Err(ConfigurationError::invalid(
+                    "native moving mean requires Transform input, no source and window 2..=64",
+                ));
+            }
+            _ => {
+                return Err(ConfigurationError::invalid(
+                    "unknown managed implementation",
+                ));
+            }
+        }
         if !component_ids.insert(component.id)
             || instrument_ids.contains(&component.instrument_id)
             || managed_inputs
@@ -933,7 +965,7 @@ fn freeze_source(
     std::str::from_utf8(&bytes)
         .map_err(|_| ConfigurationError::artifact("managed source must be UTF-8"))?;
     push_artifact(
-        ArtifactKind::ManagedLuaSource,
+        ArtifactKind::ManagedComponentSource,
         path,
         bytes,
         artifacts,
@@ -1282,10 +1314,62 @@ pub(crate) struct ManagedComponentDto {
     pub(crate) instrument_id: u64,
     pub(crate) key: String,
     pub(crate) display_name: String,
-    pub(crate) source: PathBuf,
+    pub(crate) implementation: String,
+    #[serde(default)]
+    pub(crate) source: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) config: BTreeMap<String, toml::Value>,
     #[serde(default)]
     pub(crate) input_instrument_id: Option<u64>,
     pub(crate) period_ms: u64,
+}
+
+impl ManagedComponentDto {
+    pub(crate) fn plain_config(&self) -> Result<PlainData, ConfigurationError> {
+        let mut fields = BTreeMap::new();
+        for (key, value) in &self.config {
+            let value = match value {
+                toml::Value::Integer(value) => PlainValue::Number(*value as f64),
+                toml::Value::Float(value) => PlainValue::Number(*value),
+                toml::Value::Boolean(value) => PlainValue::Boolean(*value),
+                toml::Value::String(value) => PlainValue::Text(value.clone()),
+                toml::Value::Array(values) => PlainValue::Numbers(
+                    values
+                        .iter()
+                        .map(|value| match value {
+                            toml::Value::Integer(value) => Ok(*value as f64),
+                            toml::Value::Float(value) => Ok(*value),
+                            _ => Err(ConfigurationError::invalid(
+                                "managed config arrays must contain numbers",
+                            )),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                _ => {
+                    return Err(ConfigurationError::invalid(
+                        "managed config values must be bounded PlainData leaves",
+                    ));
+                }
+            };
+            fields.insert(key.clone(), value);
+        }
+        let data = PlainData { fields };
+        data.validate()
+            .map_err(|_| ConfigurationError::invalid("invalid managed PlainData config"))?;
+        Ok(data)
+    }
+
+    pub(crate) fn configured_window(&self) -> Option<usize> {
+        if self.config.len() != 1 {
+            return None;
+        }
+        match self.config.get("window") {
+            Some(toml::Value::Integer(value)) if (2..=64).contains(value) => {
+                usize::try_from(*value).ok()
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

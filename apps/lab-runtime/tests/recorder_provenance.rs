@@ -8,8 +8,9 @@ use lab_core::{
         MetakonInstrumentConfig,
     },
     managed::{
-        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId, ComponentKind,
-        ComponentManifest, ComponentResult, ComponentStatus, Invocation, PlainData,
+        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId,
+        ComponentImplementation, ComponentKind, ComponentManifest, ComponentResult,
+        ComponentStatus, Invocation, PlainData,
     },
     metakon::crc,
     output::{
@@ -547,7 +548,7 @@ fn temporary_database() -> PathBuf {
 }
 
 #[test]
-fn serving_activation_records_exact_managed_sources_and_links_the_new_run() {
+fn serving_activation_records_neutral_lua_and_native_provenance_and_links_the_new_run() {
     let path = temporary_database();
     let path_text = path.to_string_lossy();
     let options = ServiceOptions::parse(&[
@@ -590,21 +591,42 @@ fn serving_activation_records_exact_managed_sources_and_links_the_new_run() {
     }
     drop(service);
     let db = rusqlite::Connection::open(&path).unwrap();
-    for source in [
-        lab_lua::fixtures::VIRTUAL_MODEL_SOURCE,
-        lab_lua::fixtures::MOVING_MEAN_SOURCE,
-    ] {
-        let hash = Sha256::digest(source.as_bytes());
-        let exact: Vec<u8> = db
-            .query_row(
-                "SELECT content FROM provenance_content \
-            WHERE kind='managed_lua_source' AND content_hash=?1",
-                [hash.as_slice()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(exact, source.as_bytes());
-    }
+    let source = lab_lua::fixtures::VIRTUAL_MODEL_SOURCE;
+    let hash = Sha256::digest(source.as_bytes());
+    let exact: Vec<u8> = db
+        .query_row(
+            "SELECT content FROM provenance_content \
+            WHERE kind='managed_component_source' AND content_hash=?1",
+            [hash.as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(exact, source.as_bytes());
+    let implementations: Vec<String> = db
+        .prepare(
+            "SELECT CAST(content AS TEXT) FROM provenance_content \
+             WHERE kind='managed_component_implementation' ORDER BY content",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(implementations.len(), 2);
+    let implementations: Vec<serde_json::Value> = implementations
+        .iter()
+        .map(|entry| serde_json::from_str(entry).unwrap())
+        .collect();
+    assert!(
+        implementations
+            .iter()
+            .any(|entry| entry["implementation"] == "lua.v1")
+    );
+    assert!(implementations.iter().any(|entry| {
+        entry["implementation"] == "native.moving_mean.v1"
+            && entry["artifact"] == "built_in"
+            && entry["config"]["window"]["value"] == 3.0
+    }));
     let (root, activation): (Vec<u8>, Vec<u8>) = db
         .query_row(
             "SELECT manifest_root_hash,activation_no FROM configurations LIMIT 1",
@@ -829,7 +851,11 @@ fn component_definition(id: u64) -> ComponentDefinition {
             max_input_age: Duration::from_secs(2),
             history_capacity: 1,
         },
-        source: "return function(ctx) return ctx end".into(),
+        implementation: ComponentImplementation::text(
+            "test.recorder.v1",
+            "return function(ctx) return ctx end",
+        )
+        .unwrap(),
         config: PlainData::default(),
     }
 }

@@ -480,14 +480,14 @@ impl Application {
                         .map(|opened| {
                             self.clients.insert(connection, opened.scope.clone());
                             let mut capabilities = vec!["virtual","native_controller","ramp_reference",
-                                "lua_source","lua_transform","safe_readback"];
+                                "managed_component","managed_source","managed_transform","safe_readback"];
                             let mut operations = vec!["hello","discover","describe","latest","controller",
                                 "reference","component","output","runtime_snapshot","operation_status",
                                 "snapshot_page","snapshot_release","subscribe","unsubscribe","reference_retune",
                                 "controller_configure_pid","controller_start","controller_pause",
                                 "controller_resume","stage_configuration","apply_configuration",
-                                "reload_configuration","reload_managed_scripts",
-                                "restart_virtual_models","reconnect_resource","runtime_shutdown"];
+                                "reload_configuration","reload_managed_sources",
+                                "restart_models","reconnect_resource","runtime_shutdown"];
                             if service.owner().recording_status().is_some() {
                                 capabilities.push("recorder_sqlite_v1");
                                 capabilities.push("history_raw_paged_v1");
@@ -739,6 +739,7 @@ impl Application {
                     .map(|(_, kind)| *kind)
                     .ok_or("unknown_component")?;
                 json!({"component":id.to_string(),"instrument":snapshot.instrument.get().to_string(),"kind":kind,
+                    "implementation":snapshot.implementation.as_str(),
                     "generation":snapshot.generation.to_string(),"revision":snapshot.revision.to_string(),
                     "state":match snapshot.state{ComponentState::Warming=>"warming",ComponentState::Ready=>"ready",ComponentState::Failed=>"failed"},
                     "good_steps":snapshot.good_steps,"pending":snapshot.pending.is_some(),"diagnostics":snapshot.diagnostics})
@@ -834,7 +835,15 @@ impl Application {
                 let components: Vec<_> = owner
                     .component_catalog()
                     .iter()
-                    .map(|(id, kind)| json!({"id":id.get().to_string(),"kind":kind}))
+                    .filter_map(|(id, kind)| {
+                        let QueryResult::Component(snapshot) =
+                            owner.query(Query::Component(*id)).ok()?
+                        else {
+                            return None;
+                        };
+                        Some(json!({"id":id.get().to_string(),"kind":kind,
+                            "implementation":snapshot.implementation.as_str()}))
+                    })
                     .collect();
                 json!({"instruments":list,"controllers":[{"id":"1","kind":"native_pid"}],
                     "references":[{"id":"1","kind":"ramp"}],"components":components,
@@ -1366,8 +1375,8 @@ fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, String)> {
             json!({"candidate_id":candidate_id.to_string(),
                 "expected_revision":expected_revision.to_string()}),
         ),
-        Mutation::ReloadManagedScripts => ("reload_managed_scripts", json!({})),
-        Mutation::RestartVirtualModels => ("restart_virtual_models", json!({})),
+        Mutation::ReloadManagedSources => ("reload_managed_sources", json!({})),
+        Mutation::RestartModels => ("restart_models", json!({})),
         Mutation::ReconnectResource {
             resource,
             expected_binding_generation,
@@ -1566,8 +1575,8 @@ fn typed_mutation(op: &str, args: &Value) -> Result<Mutation, &'static str> {
             candidate_id: id_field(args, "candidate_id")?,
             expected_revision: id_field(args, "expected_revision")?,
         },
-        "reload_managed_scripts" => Mutation::ReloadManagedScripts,
-        "restart_virtual_models" => Mutation::RestartVirtualModels,
+        "reload_managed_sources" => Mutation::ReloadManagedSources,
+        "restart_models" => Mutation::RestartModels,
         "reconnect_resource" => Mutation::ReconnectResource {
             resource: id_field(args, "resource")?,
             expected_binding_generation: id_field(args, "expected_binding_generation")?,
@@ -1665,15 +1674,15 @@ fn dispatch(
                 .map(|result| json!({"revision":result.revision.to_string()}))
                 .map_err(lifecycle_domain_error);
         }
-        Mutation::ReloadManagedScripts => {
+        Mutation::ReloadManagedSources => {
             return service
-                .reload_managed_scripts()
+                .reload_managed_sources()
                 .map(|()| json!({"reloaded":true}))
                 .map_err(lifecycle_domain_error);
         }
-        Mutation::RestartVirtualModels => {
+        Mutation::RestartModels => {
             return service
-                .restart_virtual_models()
+                .restart_models()
                 .map(|result| {
                     json!({"models":result.models.to_string(),
                     "generation":result.generation.to_string()})

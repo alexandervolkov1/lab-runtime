@@ -4,8 +4,8 @@ use lab_core::{
     Command, CommandResult, InstrumentId, Query, QueryResult, Runtime, SignalId, TEMPERATURE, Unit,
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
     managed::{
-        ComponentDefinition, ComponentId, ComponentKind, ComponentManifest, ComponentState,
-        PlainData, PlainValue,
+        ComponentDefinition, ComponentId, ComponentImplementation, ComponentKind,
+        ComponentManifest, ComponentState, PlainData, PlainValue,
     },
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputResult, OutputState,
@@ -15,10 +15,8 @@ use lab_core::{
     processing::EmaConfig,
     reference::{ReferenceConfig, ReferenceId},
 };
-use lab_lua::{
-    LuaSupervisor,
-    fixtures::{MOVING_MEAN_SOURCE, VIRTUAL_MODEL_SOURCE},
-};
+use lab_lua::fixtures::{MOVING_MEAN_SOURCE, VIRTUAL_MODEL_SOURCE};
+use lab_runtime::managed_executor::ManagedExecutor;
 use std::{
     thread,
     time::{Duration, Instant},
@@ -158,7 +156,7 @@ fn component(
             max_input_age: Duration::from_secs(2),
             history_capacity: 32,
         },
-        source: source.into(),
+        implementation: ComponentImplementation::text(lab_lua::IMPLEMENTATION_ID, source).unwrap(),
         config,
     }
 }
@@ -242,7 +240,7 @@ fn refresh_and_tick_native(runtime: &mut Runtime, at: u64) {
 fn lua_model_filter_native_authority_failure_reload_and_independent_control() {
     let mut runtime = Runtime::new();
     runtime
-        .install_component_executor(Box::new(LuaSupervisor::new().unwrap()))
+        .install_component_executor(Box::new(ManagedExecutor::new().unwrap()))
         .unwrap();
     let mut config = PlainData::default();
     config
@@ -535,8 +533,8 @@ fn lua_model_filter_native_authority_failure_reload_and_independent_control() {
     assert_eq!(filter.generation, 2);
     drop(runtime);
     let deadline = Instant::now() + Duration::from_secs(1);
-    while LuaSupervisor::active_workers() != 0 && Instant::now() < deadline {
+    while ManagedExecutor::active_workers() != 0 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(LuaSupervisor::active_workers(), 0);
+    assert_eq!(ManagedExecutor::active_workers(), 0);
 }

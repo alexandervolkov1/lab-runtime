@@ -4,9 +4,9 @@ use lab_core::{
     Command, InstrumentId, Query, QueryResult, Runtime, SampleQuality, SignalId, TEMPERATURE, Unit,
     Value, VirtualInstrumentConfig,
     managed::{
-        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId, ComponentKind,
-        ComponentManifest, ComponentResult, ComponentState, ComponentStatus, Invocation,
-        InvocationPhase, PlainData,
+        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId,
+        ComponentImplementation, ComponentKind, ComponentManifest, ComponentResult, ComponentState,
+        ComponentStatus, Invocation, InvocationPhase, PlainData,
     },
 };
 use std::{
@@ -81,7 +81,11 @@ fn definition(id: u64, rate: f64) -> ComponentDefinition {
             max_input_age: Duration::from_secs(2),
             history_capacity: 8,
         },
-        source: "return function(ctx) return ctx end".into(),
+        implementation: ComponentImplementation::text(
+            "test.fake.v1",
+            "return function(ctx) return ctx end",
+        )
+        .unwrap(),
         config,
     }
 }
@@ -763,20 +767,20 @@ fn trusted_plain_data_and_source_boundary_admission_is_atomic() {
     runtime
         .install_component_executor(Box::new(FakeExecutor(mailbox.clone())))
         .unwrap();
-    let mut too_long = definition(201, 1.0);
-    too_long.source = "x".repeat(lab_core::managed::MAX_SOURCE_BYTES + 1);
     assert!(
-        runtime
-            .command(Command::StageComponent {
-                definition: too_long,
-                replaces: None,
-                at: Duration::ZERO,
-            })
-            .is_err()
+        ComponentImplementation::text(
+            "test.fake.v1",
+            "x".repeat(lab_core::managed::MAX_IMPLEMENTATION_TEXT_BYTES + 1),
+        )
+        .is_err()
     );
     assert!(mailbox.lock().unwrap().submitted.is_empty());
     let mut exact = definition(201, 1.0);
-    exact.source = "x".repeat(lab_core::managed::MAX_SOURCE_BYTES);
+    exact.implementation = ComponentImplementation::text(
+        "test.fake.v1",
+        "x".repeat(lab_core::managed::MAX_IMPLEMENTATION_TEXT_BYTES),
+    )
+    .unwrap();
     runtime
         .command(Command::StageComponent {
             definition: exact,

@@ -9,8 +9,9 @@ use lab_core::{
         MetakonInstrumentConfig,
     },
     managed::{
-        ComponentDefinition, ComponentError, ComponentExecutor, ComponentId, ComponentKind,
-        ComponentManifest, Correlation, Invocation, PlainData,
+        ComponentDefinition, ComponentError, ComponentExecutor, ComponentId,
+        ComponentImplementation, ComponentKind, ComponentManifest, Correlation, Invocation,
+        PlainData,
     },
     metakon::crc,
     output::{
@@ -115,7 +116,11 @@ fn worker_barrier_allows_renewed_native_ticks_bus_recovery_and_rust_safe_before_
                     max_input_age: Duration::from_secs(2),
                     history_capacity: 8,
                 },
-                source: "return function(ctx) return ctx end".into(),
+                implementation: ComponentImplementation::text(
+                    "test.blocked.v1",
+                    "return function(ctx) return ctx end",
+                )
+                .unwrap(),
                 config: PlainData::default(),
             },
             replaces: None,

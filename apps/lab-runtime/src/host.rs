@@ -13,6 +13,7 @@ use crate::{
     configuration::{EvidenceDto, FrozenDeployment, InstrumentDto, ReferenceKindDto},
     definition::parse_definition_json,
     events::{EventError, EventLog},
+    managed_executor::MOVING_MEAN_IMPLEMENTATION,
 };
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
@@ -21,8 +22,9 @@ use lab_core::{
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
     instrument::{KnownOperation, MetakonBinding, MetakonInstrumentConfig},
     managed::{
-        ComponentDefinition, ComponentError, ComponentExecutor, ComponentId, ComponentKind,
-        ComponentManifest, ComponentState, PlainData, PlainValue,
+        ComponentDefinition, ComponentError, ComponentExecutor, ComponentId,
+        ComponentImplementation, ComponentKind, ComponentManifest, ComponentState, PlainData,
+        PlainValue,
     },
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputResult, SafeProfile,
@@ -40,8 +42,8 @@ use std::{
 const PLANT: InstrumentId = InstrumentId::new(1);
 const REFERENCE: ReferenceId = ReferenceId::new(1);
 const CONTROLLER: ControllerId = ControllerId::new(1);
-const LUA_SOURCE: ComponentId = ComponentId::new(201);
-const LUA_FILTER: ComponentId = ComponentId::new(202);
+const MANAGED_SOURCE: ComponentId = ComponentId::new(201);
+const MANAGED_FILTER: ComponentId = ComponentId::new(202);
 const DEPENDENT_PLANT: InstrumentId = InstrumentId::new(301);
 const DEPENDENT_CONTROLLER: ControllerId = ControllerId::new(2);
 const DEPENDENT_REFERENCE: ReferenceId = ReferenceId::new(2);
@@ -1625,10 +1627,15 @@ impl HostCore {
             .managed_components
             .get(index)
             .ok_or(Error::InvalidConfiguration("managed component index"))?;
-        let source = deployment
-            .artifact_bytes(&component.source)
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .ok_or(Error::InvalidConfiguration("frozen managed source missing"))?;
+        let implementation = if let Some(source_path) = &component.source {
+            let source = deployment
+                .artifact_bytes(source_path)
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .ok_or(Error::InvalidConfiguration("frozen managed source missing"))?;
+            ComponentImplementation::text(component.implementation.clone(), source)?
+        } else {
+            ComponentImplementation::built_in(component.implementation.clone())?
+        };
         let id = ComponentId::new(component.id);
         let kind = component
             .input_instrument_id
@@ -1646,16 +1653,20 @@ impl HostCore {
                 unit: Unit::CELSIUS,
                 min: -100.0,
                 max: 500.0,
-                warmup_samples: if component.input_instrument_id.is_some() {
-                    3
-                } else {
-                    1
-                },
+                warmup_samples: component.configured_window().unwrap_or_else(|| {
+                    if component.input_instrument_id.is_some() {
+                        3
+                    } else {
+                        1
+                    }
+                }),
                 max_input_age: Duration::from_secs(2),
                 history_capacity: 32,
             },
-            source: source.into(),
-            config: PlainData::default(),
+            implementation,
+            config: component
+                .plain_config()
+                .map_err(|_| Error::InvalidConfiguration("managed PlainData config"))?,
         };
         self.runtime.command(if replaces {
             Command::PrepareComponentReplacement {
@@ -2020,32 +2031,43 @@ impl HostCore {
             .to_string()
             .into_bytes(),
         );
-        let mut managed_source_indices = BTreeMap::new();
+        let mut managed_definition_indices = BTreeMap::new();
         for (id, _) in &self.components {
-            let source = if *id == LUA_SOURCE {
-                lab_lua::fixtures::VIRTUAL_MODEL_SOURCE
-            } else if *id == LUA_FILTER {
-                lab_lua::fixtures::MOVING_MEAN_SOURCE
-            } else {
-                return Err(Error::InvalidConfiguration("unknown loaded managed source"));
-            };
-            managed_source_indices.insert(*id, entries.len());
+            let definition = self
+                .runtime
+                .component_definition(*id)
+                .ok_or(Error::InvalidConfiguration("managed definition missing"))?;
+            managed_definition_indices.insert(*id, entries.len());
             push(
                 &mut entries,
-                "managed_lua_source",
-                "utf8",
-                source.as_bytes().to_vec(),
+                "managed_component_implementation",
+                "json_v1",
+                serde_json::json!({
+                    "component":id.get().to_string(),
+                    "implementation":definition.implementation.id().as_str(),
+                    "artifact":if definition.implementation.artifact().is_built_in(){
+                        "built_in"
+                    }else{
+                        "text"
+                    },
+                    "build":env!("CARGO_PKG_VERSION"),
+                    "config":plain_data_activation_json(&definition.config),
+                })
+                .to_string()
+                .into_bytes(),
             );
+            if let Some(source) = definition.implementation.artifact().text() {
+                push(
+                    &mut entries,
+                    "managed_component_source",
+                    "utf8",
+                    source.as_bytes().to_vec(),
+                );
+            }
         }
         push(
             &mut entries,
             "deployment_config",
-            "utf8",
-            b"not_present".to_vec(),
-        );
-        push(
-            &mut entries,
-            "lua_workspace",
             "utf8",
             b"not_present".to_vec(),
         );
@@ -2070,9 +2092,9 @@ impl HostCore {
                 };
                 (
                     snapshot.generation,
-                    *managed_source_indices
+                    *managed_definition_indices
                         .get(&id)
-                        .ok_or(Error::InvalidConfiguration("source baseline missing"))?,
+                        .ok_or(Error::InvalidConfiguration("component baseline missing"))?,
                 )
             } else {
                 (1, 1)
@@ -2174,11 +2196,12 @@ impl HostCore {
                 id:id.get().to_be_bytes().to_vec(),logical_key:format!("component:{}",id.get()),
                 label:format!("Managed component {}",id.get()),
                 descriptor:serde_json::json!({"instrument":snapshot.instrument.get().to_string(),
+                    "implementation":snapshot.implementation.as_str(),
                     "generation":snapshot.generation.to_string(),"state_revision":snapshot.revision.to_string(),
                     "committed_state":plain_data_activation_json(&snapshot.committed_state)})
                     .to_string(),unit_key:None,generation:Some(snapshot.generation),binding:None,
-                source_entry_index:*managed_source_indices.get(id)
-                    .ok_or(Error::InvalidConfiguration("component source index missing"))?});
+                source_entry_index:*managed_definition_indices.get(id)
+                    .ok_or(Error::InvalidConfiguration("component definition index missing"))?});
         }
         Ok((entries, objects))
     }
@@ -2765,10 +2788,12 @@ impl HostCore {
         self.runtime.install_component_executor(executor)
     }
 
-    /// Stage only the fixed trusted Lua Source; Core permits one staged init at a time.
-    pub fn stage_standard_lua(&mut self, at: Duration) -> Result<(), Error> {
+    /// Stage the fixed trusted source adapter; Core permits one staged init at a time.
+    pub fn stage_standard_components(&mut self, at: Duration) -> Result<(), Error> {
         if !self.components.is_empty() {
-            return Err(Error::InvalidConfiguration("Lua profile already staged"));
+            return Err(Error::InvalidConfiguration(
+                "managed profile already staged",
+            ));
         }
         let mut config = PlainData::default();
         config
@@ -2780,7 +2805,7 @@ impl HostCore {
                 schema_version: 1,
                 id,
                 instrument: InstrumentId::new(id.get()),
-                name: format!("Lua observation {}", id.get()),
+                name: format!("Managed observation {}", id.get()),
                 parameter: lab_core::TEMPERATURE,
                 kind,
                 unit: Unit::CELSIUS,
@@ -2792,31 +2817,39 @@ impl HostCore {
             };
         self.runtime.command(Command::StageComponent {
             definition: ComponentDefinition {
-                manifest: manifest(LUA_SOURCE, ComponentKind::Source, 1),
-                source: lab_lua::fixtures::VIRTUAL_MODEL_SOURCE.into(),
+                manifest: manifest(MANAGED_SOURCE, ComponentKind::Source, 1),
+                implementation: ComponentImplementation::text(
+                    lab_lua::IMPLEMENTATION_ID,
+                    lab_lua::fixtures::VIRTUAL_MODEL_SOURCE,
+                )?,
                 config,
             },
             replaces: None,
             at,
         })?;
-        self.events.track_component(LUA_SOURCE);
-        self.components.push((LUA_SOURCE, "source"));
+        self.events.track_component(MANAGED_SOURCE);
+        self.components.push((MANAGED_SOURCE, "source"));
         Ok(())
     }
 
     /// Stage the fixed one-input Transform only after Source init has committed.
     pub fn stage_standard_filter(&mut self, at: Duration) -> Result<(), Error> {
-        if !self.source_lua_initialized() {
-            return Err(Error::InvalidConfiguration("Lua Source init incomplete"));
+        if !self.source_component_initialized() {
+            return Err(Error::InvalidConfiguration(
+                "managed Source init incomplete",
+            ));
         }
         let manifest = ComponentManifest {
             schema_version: 1,
-            id: LUA_FILTER,
-            instrument: InstrumentId::new(LUA_FILTER.get()),
-            name: "Lua moving mean".into(),
+            id: MANAGED_FILTER,
+            instrument: InstrumentId::new(MANAGED_FILTER.get()),
+            name: "Native moving mean".into(),
             parameter: lab_core::TEMPERATURE,
             kind: ComponentKind::Transform {
-                input: SignalId::new(InstrumentId::new(LUA_SOURCE.get()), lab_core::TEMPERATURE),
+                input: SignalId::new(
+                    InstrumentId::new(MANAGED_SOURCE.get()),
+                    lab_core::TEMPERATURE,
+                ),
             },
             unit: Unit::CELSIUS,
             min: -100.0,
@@ -2828,39 +2861,44 @@ impl HostCore {
         self.runtime.command(Command::StageComponent {
             definition: ComponentDefinition {
                 manifest,
-                source: lab_lua::fixtures::MOVING_MEAN_SOURCE.into(),
-                config: PlainData::default(),
+                implementation: ComponentImplementation::built_in(MOVING_MEAN_IMPLEMENTATION)?,
+                config: PlainData {
+                    fields: BTreeMap::from([("window".into(), PlainValue::Number(3.0))]),
+                },
             },
             replaces: None,
             at,
         })?;
-        self.events.track_component(LUA_FILTER);
-        self.components.push((LUA_FILTER, "transform"));
+        self.events.track_component(MANAGED_FILTER);
+        self.components.push((MANAGED_FILTER, "transform"));
         Ok(())
     }
     /// The first real init result committed without any pending callback.
-    pub fn source_lua_initialized(&self) -> bool {
-        matches!(self.runtime.query(Query::Component(LUA_SOURCE)),Ok(QueryResult::Component(s))
+    pub fn source_component_initialized(&self) -> bool {
+        matches!(self.runtime.query(Query::Component(MANAGED_SOURCE)),Ok(QueryResult::Component(s))
             if matches!(s.state,ComponentState::Warming|ComponentState::Ready) && s.pending.is_none())
     }
 
     /// True only after both real init callbacks have committed and no job waits.
-    pub fn standard_lua_initialized(&self) -> bool {
-        [LUA_SOURCE,LUA_FILTER].iter().all(|id|matches!(self.runtime.query(Query::Component(*id)),
+    pub fn standard_components_initialized(&self) -> bool {
+        [MANAGED_SOURCE,MANAGED_FILTER].iter().all(|id|matches!(self.runtime.query(Query::Component(*id)),
             Ok(QueryResult::Component(snapshot)) if matches!(snapshot.state,ComponentState::Warming|ComponentState::Ready) && snapshot.pending.is_none()))
     }
 
     /// Start trusted managed cadence after bounded startup init completes.
-    pub fn activate_standard_lua(&mut self, at: Duration) -> Result<(), Error> {
-        if !self.standard_lua_initialized() {
+    pub fn activate_standard_components(&mut self, at: Duration) -> Result<(), Error> {
+        if !self.standard_components_initialized() {
             return Err(Error::InvalidConfiguration("managed init incomplete"));
         }
         let mut source = Periodic::new(Duration::from_millis(200));
         source.next_due = at;
-        self.plan.sources.push((LUA_SOURCE, source));
+        self.plan.sources.push((MANAGED_SOURCE, source));
         self.plan.transforms.push((
-            LUA_FILTER,
-            SignalId::new(InstrumentId::new(LUA_SOURCE.get()), lab_core::TEMPERATURE),
+            MANAGED_FILTER,
+            SignalId::new(
+                InstrumentId::new(MANAGED_SOURCE.get()),
+                lab_core::TEMPERATURE,
+            ),
         ));
         Ok(())
     }
@@ -2873,7 +2911,7 @@ impl HostCore {
     /// Add one trusted managed-input controller fixture after Transform init.
     /// It has a separate safe output; the independent native plant remains bound.
     pub fn add_managed_dependent_fixture(&mut self) -> Result<(), Error> {
-        if !self.standard_lua_initialized() {
+        if !self.standard_components_initialized() {
             return Err(Error::InvalidConfiguration(
                 "managed fixture requires committed Transform",
             ));
@@ -2939,7 +2977,10 @@ impl HostCore {
         self.runtime
             .command(Command::RegisterController(NativeControllerConfig {
                 id: DEPENDENT_CONTROLLER,
-                input: SignalId::new(InstrumentId::new(LUA_FILTER.get()), lab_core::TEMPERATURE),
+                input: SignalId::new(
+                    InstrumentId::new(MANAGED_FILTER.get()),
+                    lab_core::TEMPERATURE,
+                ),
                 output: actuator,
                 reference: DEPENDENT_REFERENCE,
                 ema: EmaConfig {
@@ -2971,7 +3012,10 @@ impl HostCore {
         ));
         self.plan.controllers.push((
             DEPENDENT_CONTROLLER,
-            SignalId::new(InstrumentId::new(LUA_FILTER.get()), lab_core::TEMPERATURE),
+            SignalId::new(
+                InstrumentId::new(MANAGED_FILTER.get()),
+                lab_core::TEMPERATURE,
+            ),
             Periodic::new(Duration::from_millis(200)),
         ));
         self.observe(self.last_now, None)?;

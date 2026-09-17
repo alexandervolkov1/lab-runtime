@@ -147,7 +147,7 @@ fn c5_live_reload_commits_one_revision_and_uses_frozen_candidate_bytes() {
 }
 
 #[test]
-fn c8_c11_script_reload_and_model_restart_are_distinct_and_never_auto_start() {
+fn c8_c11_source_reload_and_model_restart_are_distinct_and_never_auto_start() {
     let path = temporary_path();
     fs::write(&path, deployment("Bench", 100, 22.0)).unwrap();
     let arg = path.to_string_lossy().into_owned();
@@ -156,10 +156,10 @@ fn c8_c11_script_reload_and_model_restart_are_distinct_and_never_auto_start() {
             .unwrap();
 
     assert_eq!(
-        service.reload_managed_scripts(),
+        service.reload_managed_sources(),
         Err(LifecycleOperationError::NoManagedComponents)
     );
-    let restarted = service.restart_virtual_models().unwrap();
+    let restarted = service.restart_models().unwrap();
     assert_eq!(restarted.models, 1);
     assert_eq!(restarted.generation, 2);
     assert_eq!(service.loaded_configuration().unwrap().revision(), 1);
@@ -191,10 +191,18 @@ fn c8_public_api_exposes_three_separate_deduplicated_operations() {
         request(json!({"v":1,"msg_id":"h","op":"hello","args":{"scope":null}})),
     );
     let scope = hello[0]["result"]["scope"].as_str().unwrap();
+    let capabilities = hello[0]["result"]["capabilities"].as_array().unwrap();
+    assert!(capabilities.contains(&json!("managed_component")));
+    assert!(capabilities.contains(&json!("managed_transform")));
+    assert!(!capabilities.contains(&json!("lua_source")));
+    let operations = hello[0]["result"]["operations"].as_array().unwrap();
+    assert!(operations.contains(&json!("reload_managed_sources")));
+    assert!(operations.contains(&json!("restart_models")));
+    assert!(!operations.contains(&json!("reload_managed_scripts")));
     let restart = application.handle(
         &mut service,
         1,
-        request(json!({"v":1,"msg_id":"r","op":"restart_virtual_models",
+        request(json!({"v":1,"msg_id":"r","op":"restart_models",
             "request_id":{"scope":scope,"seq":"1"},"args":{}})),
     );
     assert_eq!(restart[0]["state"], "accepted");
@@ -203,7 +211,7 @@ fn c8_public_api_exposes_three_separate_deduplicated_operations() {
     let known = application.handle(
         &mut service,
         1,
-        request(json!({"v":1,"msg_id":"again","op":"restart_virtual_models",
+        request(json!({"v":1,"msg_id":"again","op":"restart_models",
             "request_id":{"scope":scope,"seq":"1"},"args":{}})),
     );
     assert_eq!(known.len(), 1);

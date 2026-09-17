@@ -69,6 +69,14 @@ fn descriptor_and_controller_configuration_report_exact_roles_units_and_limits()
         controller["result"]["config"]["max_tick_gap_ns"],
         "500000000"
     );
+    let discover = ask(&mut service, &mut app, "discover", json!({}));
+    let components = discover["result"]["components"].as_array().unwrap();
+    assert!(components.iter().any(|component| {
+        component["implementation"] == "lua.v1" && component["kind"] == "source"
+    }));
+    assert!(components.iter().any(|component| {
+        component["implementation"] == "native.moving_mean.v1" && component["kind"] == "transform"
+    }));
 }
 
 #[test]

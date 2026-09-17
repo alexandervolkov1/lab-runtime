@@ -2,7 +2,7 @@
 
 use lab_core::managed::{
     ComponentError, ComponentResult, ComponentStatus, Invocation, InvocationPhase,
-    MAX_SOURCE_BYTES, PlainData, PlainValue,
+    MAX_IMPLEMENTATION_TEXT_BYTES, PlainData, PlainValue,
 };
 use mlua::{ChunkMode, Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use std::{
@@ -31,15 +31,15 @@ fn budget(deadline: Instant, cancelled: &AtomicBool) -> mlua::Result<()> {
 fn map_error(error: &mlua::Error) -> ComponentError {
     match error {
         mlua::Error::MemoryError(_) => ComponentError::MemoryLimit,
-        mlua::Error::SyntaxError { .. } => ComponentError::Syntax,
+        mlua::Error::SyntaxError { .. } => ComponentError::InvalidImplementation,
         mlua::Error::RuntimeError(text) if text.starts_with("__lab_deadline__") => {
             ComponentError::Deadline
         }
         mlua::Error::RuntimeError(text) if text.starts_with("__lab_instruction__") => {
-            ComponentError::InstructionLimit
+            ComponentError::ExecutionLimit
         }
         mlua::Error::RuntimeError(text) if text.starts_with("__lab_calls__") => {
-            ComponentError::HostCallLimit
+            ComponentError::AdapterCallLimit
         }
         mlua::Error::CallbackError { cause, .. } => map_error(cause),
         _ => ComponentError::Executor,
@@ -474,7 +474,7 @@ fn evaluate(
         environment(lua, deadline, cancelled.clone(), calls).map_err(|error| map_error(&error))?;
     budget(deadline, &cancelled).map_err(|error| map_error(&error))?;
     let callback: Function = lua
-        .load(job.definition.source.as_str())
+        .load(source(job)?)
         .set_mode(ChunkMode::Text)
         .set_environment(guest)
         .eval()
@@ -485,6 +485,17 @@ fn evaluate(
     decode_result(table, job)
 }
 
+fn source(job: &Invocation) -> Result<&str, ComponentError> {
+    if job.definition.implementation.id().as_str() != crate::IMPLEMENTATION_ID {
+        return Err(ComponentError::InvalidConfiguration);
+    }
+    job.definition
+        .implementation
+        .artifact()
+        .text()
+        .ok_or(ComponentError::InvalidConfiguration)
+}
+
 /// Build, run, convert and dispose one fresh VM within the host's acceptance deadline.
 /// A stalled VM may outlive that deadline; only a fixed supervisor can quarantine it.
 pub fn run_bounded(
@@ -492,7 +503,8 @@ pub fn run_bounded(
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
 ) -> Result<ComponentResult, ComponentError> {
-    if job.definition.source.len() > MAX_SOURCE_BYTES || job.definition.source.is_empty() {
+    let source = source(job)?;
+    if source.len() > MAX_IMPLEMENTATION_TEXT_BYTES || source.is_empty() {
         return Err(ComponentError::DataLimit);
     }
     job.definition.config.validate()?;

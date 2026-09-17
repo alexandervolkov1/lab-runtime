@@ -20,7 +20,7 @@ fn lua_slots() -> MutexGuard<'static, ()> {
 }
 
 #[test]
-fn c9_c11_script_reload_and_model_restart_commit_distinct_durable_activations() {
+fn c9_c11_source_reload_and_model_restart_commit_distinct_durable_activations() {
     let _slots = lua_slots();
     let config = temporary_path("managed-recorded", "toml");
     let script = temporary_path("managed-recorded", "lua");
@@ -45,8 +45,18 @@ id=201
 instrument_id=201
 key="source"
 display_name="Configured source"
+implementation="lua.v1"
 source="{declared}"
 period_ms=100
+[[managed_components]]
+id=202
+instrument_id=202
+key="moving_mean"
+display_name="Native moving mean"
+implementation="native.moving_mean.v1"
+input_instrument_id=201
+period_ms=100
+config={{window=3}}
 "#
     );
     fs::write(&config, &toml).unwrap();
@@ -69,7 +79,7 @@ period_ms=100
     }
 
     fs::write(&script, source("generation two")).unwrap();
-    service.reload_managed_scripts().unwrap();
+    service.reload_managed_sources().unwrap();
     assert_eq!(
         service
             .owner()
@@ -78,12 +88,40 @@ period_ms=100
             .activation_generation,
         2
     );
+    let QueryResult::Component(native_after_source_reload) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(202)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(native_after_source_reload.generation, 2);
     assert_eq!(
         service.loaded_configuration().unwrap().active().toml_hash(),
         original_hash
     );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while service
+        .owner()
+        .recording_status()
+        .is_some_and(|status| status.outstanding_groups != 0)
+    {
+        assert!(Instant::now() < deadline);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
     fs::write(&script, "this mutable path is no longer valid Lua").unwrap();
-    assert_eq!(service.restart_virtual_models().unwrap().models, 1);
+    let restarted = service.restart_models();
+    assert_eq!(
+        restarted,
+        Ok(lab_runtime::service::RestartModelsResult {
+            models: 2,
+            generation: 3,
+        }),
+        "recording status: {:?}",
+        service.owner().recording_status()
+    );
     assert_eq!(
         service
             .owner()
@@ -100,6 +138,15 @@ period_ms=100
         panic!()
     };
     assert_eq!(component.generation, 3);
+    let QueryResult::Component(native) = service
+        .owner()
+        .query(Query::Component(ComponentId::new(202)))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(native.generation, 3);
+    assert_eq!(native.implementation.as_str(), "native.moving_mean.v1");
     assert_eq!(
         service.loaded_configuration().unwrap().active().toml_hash(),
         original_hash
@@ -146,7 +193,7 @@ end
 }
 
 #[test]
-fn c9_script_reload_changes_only_source_generation_and_resets_warmup() {
+fn c9_source_reload_changes_only_source_generation_and_resets_warmup() {
     let _slots = lua_slots();
     let config = temporary_path("managed", "toml");
     let script = temporary_path("managed", "lua");
@@ -168,6 +215,7 @@ id=201
 instrument_id=201
 key="source"
 display_name="Configured source"
+implementation="lua.v1"
 source="{declared}"
 period_ms=100
 "#
@@ -215,7 +263,7 @@ period_ms=100
     assert_eq!(before_explicit_reload.generation, 1);
     let configuration_hash = active.toml_hash();
 
-    service.reload_managed_scripts().unwrap();
+    service.reload_managed_sources().unwrap();
     let QueryResult::Component(second) = service
         .owner()
         .query(Query::Component(ComponentId::new(201)))
@@ -259,6 +307,7 @@ id=201
 instrument_id=201
 key="source"
 display_name="Configured source"
+implementation="lua.v1"
 source="{declared}"
 period_ms=100
 "#
@@ -270,7 +319,7 @@ period_ms=100
             .unwrap();
     fs::write(&script, "this is not valid Lua (").unwrap();
 
-    assert!(service.reload_managed_scripts().is_err());
+    assert!(service.reload_managed_sources().is_err());
     let QueryResult::Component(snapshot) = service
         .owner()
         .query(Query::Component(ComponentId::new(201)))
@@ -309,6 +358,7 @@ id=201
 instrument_id=201
 key="first"
 display_name="First source"
+implementation="lua.v1"
 source="{first}"
 period_ms=100
 [[managed_components]]
@@ -316,6 +366,7 @@ id=202
 instrument_id=202
 key="second"
 display_name="Second source"
+implementation="lua.v1"
 source="{second}"
 period_ms=100
 "#
@@ -328,7 +379,7 @@ period_ms=100
 
     fs::write(&first_script, source("first candidate")).unwrap();
     fs::write(&second_script, "invalid Lua candidate (").unwrap();
-    assert!(service.reload_managed_scripts().is_err());
+    assert!(service.reload_managed_sources().is_err());
     for id in [201, 202] {
         let QueryResult::Component(snapshot) = service
             .owner()
@@ -341,7 +392,7 @@ period_ms=100
     }
 
     fs::write(&second_script, source("second candidate")).unwrap();
-    service.reload_managed_scripts().unwrap();
+    service.reload_managed_sources().unwrap();
     for id in [201, 202] {
         let QueryResult::Component(snapshot) = service
             .owner()

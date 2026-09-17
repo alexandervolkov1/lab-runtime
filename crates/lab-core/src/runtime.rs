@@ -12,8 +12,7 @@ use crate::instrument::{
 use crate::managed::{
     CapturedInput, ComponentCompletion, ComponentDefinition, ComponentError, ComponentExecutor,
     ComponentId, ComponentKind, ComponentManifest, ComponentSnapshot, ComponentState,
-    ComponentStatus, Correlation, Invocation, InvocationPhase, MAX_COMPONENTS, MAX_SOURCE_BYTES,
-    PlainData,
+    ComponentStatus, Correlation, Invocation, InvocationPhase, MAX_COMPONENTS, PlainData,
 };
 use crate::metakon::{
     Address, ExpectedRead, MetakonType, MetakonValue, TemperatureReading, decode_ack, decode_read,
@@ -367,7 +366,7 @@ pub enum CommandResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Pure snapshot requests. Reading a query neither refreshes measurements nor advances time.
 pub enum Query {
-    /// Copy a committed component snapshot without evaluating its script.
+    /// Copy a committed component snapshot without evaluating its implementation.
     Component(ComponentId),
     /// Copy current output authority/evidence without executing watchdog work.
     Output(ActuatorId),
@@ -518,6 +517,7 @@ impl ManagedInstance {
         ComponentSnapshot {
             id: self.definition.manifest.id,
             instrument: self.definition.manifest.instrument,
+            implementation: self.definition.implementation.id().clone(),
             generation: self.generation,
             revision: self.revision,
             state: self.state,
@@ -2097,8 +2097,6 @@ impl Runtime {
         validate_name(&manifest.name)?;
         definition.config.validate()?;
         if manifest.schema_version != 1
-            || definition.source.is_empty()
-            || definition.source.len() > MAX_SOURCE_BYTES
             || !manifest.min.is_finite()
             || !manifest.max.is_finite()
             || manifest.min >= manifest.max
@@ -2920,6 +2918,14 @@ impl Runtime {
         self.prepared.contains_key(&id)
     }
 
+    /// Copy one committed bounded definition for trusted host composition/provenance.
+    /// This is not an Application query and never executes implementation code.
+    pub fn component_definition(&self, id: ComponentId) -> Option<ComponentDefinition> {
+        self.managed
+            .get(&id)
+            .map(|component| component.definition.clone())
+    }
+
     /// Whether the single managed init staging slot is currently occupied.
     pub fn component_prepare_pending(&self) -> bool {
         self.staged.is_some()
@@ -3681,7 +3687,7 @@ impl Runtime {
     }
 
     /// This explicit service needs host scheduling; a finite lease alone cannot send safe bytes.
-    /// It does not run EMA/PID or renew a native owner and never waits on a script VM.
+    /// It does not run EMA/PID or renew a native owner and never waits on component work.
     fn service_safety(&mut self, at: Duration) -> Result<(), Error> {
         self.service_required_recording_deadline(at);
         self.check_output_time(at)?;
@@ -4213,8 +4219,9 @@ fn map_reference_error(error: ReferenceError) -> ControllerError {
 mod managed_identity_tests {
     use super::*;
     use crate::managed::{
-        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId, ComponentKind,
-        ComponentManifest, ComponentResult, ComponentStatus, Correlation, Invocation, PlainData,
+        ComponentCompletion, ComponentDefinition, ComponentExecutor, ComponentId,
+        ComponentImplementation, ComponentKind, ComponentManifest, ComponentResult,
+        ComponentStatus, Correlation, Invocation, PlainData,
     };
 
     #[derive(Default)]
@@ -4258,7 +4265,11 @@ mod managed_identity_tests {
                 max_input_age: Duration::from_secs(2),
                 history_capacity: 8,
             },
-            source: "return function(ctx) return ctx end".into(),
+            implementation: ComponentImplementation::text(
+                "test.fake.v1",
+                "return function(ctx) return ctx end",
+            )
+            .unwrap(),
             config: PlainData::default(),
         };
         let mut runtime = Runtime::new();

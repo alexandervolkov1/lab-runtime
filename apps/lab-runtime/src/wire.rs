@@ -327,8 +327,8 @@ fn operation_keys(op: &str) -> Option<(bool, &'static [&'static str])> {
         "runtime_shutdown" => (true, &[]),
         "stage_configuration"
         | "reload_configuration"
-        | "reload_managed_scripts"
-        | "restart_virtual_models" => (true, &[]),
+        | "reload_managed_sources"
+        | "restart_models" => (true, &[]),
         "apply_configuration" => (true, &["candidate_id", "expected_revision"]),
         "reconnect_resource" => (true, &["resource", "expected_binding_generation"]),
         "recording_status" => (false, &[]),

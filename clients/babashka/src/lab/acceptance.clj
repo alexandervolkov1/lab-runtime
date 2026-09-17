@@ -68,8 +68,10 @@
   (let [connection (client/connect! port)]
     (try
       (let [discovery (client/discover! connection)
-            _ (when (not= (count (:components discovery)) 2)
-                (throw (ex-info "missing_real_lua_components" {})))
+            implementations (set (map :implementation (:components discovery)))
+            _ (when (not= implementations #{"lua.v1" "native.moving_mean.v1"})
+                (throw (ex-info "missing_managed_implementations"
+                                {:implementations implementations})))
             {:keys [signal actuator]} (or (plant-roles connection discovery)
                                           (throw (ex-info "plant_capability_missing" {})))
             controller (get-in discovery [:controllers 0 :id])

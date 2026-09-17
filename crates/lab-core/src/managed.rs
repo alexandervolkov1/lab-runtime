@@ -8,8 +8,10 @@ use std::{collections::BTreeMap, time::Duration};
 
 /// At most eight managed observation components may be registered per Runtime.
 pub const MAX_COMPONENTS: usize = 8;
-/// Source text is admitted by trusted deployment, never loaded from within a callback.
-pub const MAX_SOURCE_BYTES: usize = 32 * 1024;
+/// A text artifact is admitted by trusted deployment, never loaded from within a callback.
+pub const MAX_IMPLEMENTATION_TEXT_BYTES: usize = 32 * 1024;
+/// Stable implementation identifiers are small semantic names, not Rust type names.
+pub const MAX_IMPLEMENTATION_ID_BYTES: usize = 64;
 /// Bound on each persistent plain-data map, including keys and typed payloads.
 pub const MAX_PLAIN_BYTES: usize = 4096;
 
@@ -40,7 +42,7 @@ pub enum ComponentKind {
     },
 }
 
-/// Trusted immutable descriptor and processing policy; scripts cannot revise it.
+/// Trusted immutable descriptor and processing policy; implementations cannot revise it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComponentManifest {
     /// The only supported component-data schema version.
@@ -69,13 +71,106 @@ pub struct ComponentManifest {
     pub history_capacity: usize,
 }
 
-/// Immutable source and configuration selected by trusted local deployment.
+/// Stable semantic implementation identity selected by trusted host composition.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ComponentImplementationId(String);
+
+impl ComponentImplementationId {
+    /// Validate a bounded lowercase semantic identifier such as `native.moving_mean.v1`.
+    pub fn new(value: impl Into<String>) -> Result<Self, ComponentError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > MAX_IMPLEMENTATION_ID_BYTES
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-')
+            })
+        {
+            return Err(ComponentError::InvalidConfiguration);
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrow the stable wire/provenance representation.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Bounded implementation material carried through the neutral executor port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComponentImplementationArtifact {
+    /// A compile-time implementation needs no persisted executable text.
+    BuiltIn,
+    /// Bounded adapter-owned text whose language Core does not interpret.
+    Text(String),
+}
+
+impl ComponentImplementationArtifact {
+    /// Whether this artifact selects only compile-time trusted code.
+    pub const fn is_built_in(&self) -> bool {
+        matches!(self, Self::BuiltIn)
+    }
+
+    /// Borrow adapter-owned text when the selected implementation requires it.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::BuiltIn => None,
+            Self::Text(text) => Some(text),
+        }
+    }
+}
+
+/// Explicit implementation selection plus its bounded adapter artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComponentImplementation {
+    id: ComponentImplementationId,
+    artifact: ComponentImplementationArtifact,
+}
+
+impl ComponentImplementation {
+    /// Select one compile-time trusted implementation without executable source text.
+    pub fn built_in(id: impl Into<String>) -> Result<Self, ComponentError> {
+        Ok(Self {
+            id: ComponentImplementationId::new(id)?,
+            artifact: ComponentImplementationArtifact::BuiltIn,
+        })
+    }
+
+    /// Select one adapter implementation with a bounded nonempty text artifact.
+    pub fn text(id: impl Into<String>, text: impl Into<String>) -> Result<Self, ComponentError> {
+        let text = text.into();
+        if text.is_empty() {
+            return Err(ComponentError::InvalidConfiguration);
+        }
+        if text.len() > MAX_IMPLEMENTATION_TEXT_BYTES {
+            return Err(ComponentError::DataLimit);
+        }
+        Ok(Self {
+            id: ComponentImplementationId::new(id)?,
+            artifact: ComponentImplementationArtifact::Text(text),
+        })
+    }
+
+    /// Stable semantic implementation identity.
+    pub const fn id(&self) -> &ComponentImplementationId {
+        &self.id
+    }
+
+    /// Bounded opaque material interpreted only by the selected trusted adapter.
+    pub const fn artifact(&self) -> &ComponentImplementationArtifact {
+        &self.artifact
+    }
+}
+
+/// Immutable implementation, manifest and configuration selected by trusted composition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComponentDefinition {
     /// Validated shape and descriptor; no actuator role is expressible here.
     pub manifest: ComponentManifest,
-    /// Bounded UTF-8 text; the executor runs it in its own isolated job.
-    pub source: String,
+    /// Explicit trusted implementation selection; Core never interprets its artifact.
+    pub implementation: ComponentImplementation,
     /// Runtime-owned finite scalar configuration, copied per invocation.
     pub config: PlainData,
 }
@@ -145,7 +240,7 @@ impl PlainData {
     }
 }
 
-/// Typed bounded rejection; no unbounded Lua traceback crosses into Core.
+/// Typed bounded rejection; no unbounded implementation diagnostic crosses into Core.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComponentError {
     /// A referenced component was not committed.
@@ -162,14 +257,14 @@ pub enum ComponentError {
     InvalidResult,
     /// Host's independent 100-ms acceptance deadline expired.
     Deadline,
-    /// Lua allocator reached the accounted 8-MiB heap ceiling.
+    /// An implementation reached its accounted memory ceiling.
     MemoryLimit,
-    /// Top-level and callback execution exceeded the shared VM instruction budget.
-    InstructionLimit,
-    /// Trusted scalar host wrappers exceeded the 128-call budget.
-    HostCallLimit,
-    /// The supplied source could not compile as bounded text.
-    Syntax,
+    /// An implementation exceeded its bounded execution budget.
+    ExecutionLimit,
+    /// Trusted adapter calls exceeded their fixed invocation budget.
+    AdapterCallLimit,
+    /// The selected implementation artifact could not be admitted.
+    InvalidImplementation,
     /// The supplied nonblocking executor rejected or failed the job.
     Executor,
     /// Generation, state revision or attempt counter would wrap/reuse an identity.
@@ -191,7 +286,7 @@ pub enum InvocationPhase {
     Step,
 }
 
-/// Checked full-width correlation stays outside Lua to avoid numeric forgery.
+/// Checked full-width correlation stays outside implementation code to avoid forgery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Correlation {
     /// Unique process-local Runtime instance.
@@ -230,7 +325,7 @@ pub struct CapturedInput {
 /// Fully owned job, never a mutable Runtime reference or an output capability.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
-    /// Runtime-generated correlation, never supplied by the script.
+    /// Runtime-generated correlation, never supplied by implementation code.
     pub correlation: Correlation,
     /// Init or one Step.
     pub phase: InvocationPhase,
@@ -240,13 +335,13 @@ pub struct Invocation {
     pub state: PlainData,
     /// Core's authoritative explicit service/model time.
     pub at: Duration,
-    /// Checked model/input elapsed interval, not subtraction of rounded Lua numbers.
+    /// Checked model/input elapsed interval, not implementation-provided arithmetic.
     pub dt: Duration,
     /// One captured Good input for a Transform, absent for a Source.
     pub input: Option<CapturedInput>,
 }
 
-/// One script callback's status. Ready alone cannot bypass Rust validation.
+/// One component callback's status. Ready alone cannot bypass Rust validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComponentStatus {
     /// Initial state, never a Good sample.
@@ -277,7 +372,7 @@ pub struct ComponentResult {
 /// One owned, bounded terminal result or typed failure from an isolated worker.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComponentCompletion {
-    /// Exact job identity echoed by the trusted executor, not from Lua output.
+    /// Exact job identity echoed by the trusted executor, not component output.
     pub correlation: Correlation,
     /// Worker finished construction, conversion and cleanup before its deadline.
     pub timely: bool,
@@ -286,7 +381,7 @@ pub struct ComponentCompletion {
 }
 
 /// Nonblocking trusted adapter seam; two real slots and deterministic fake share it.
-/// None of these methods is exposed as a Lua callback or public client command.
+/// None of these methods is exposed as an implementation callback or public client command.
 pub trait ComponentExecutor: Send {
     /// Admit only if one bounded worker mailbox is free; never wait for its VM.
     fn try_submit(&mut self, job: Invocation) -> Result<(), ComponentError>;
@@ -325,6 +420,8 @@ pub struct ComponentSnapshot {
     pub id: ComponentId,
     /// Descriptor identity shared with generic measurement queries.
     pub instrument: InstrumentId,
+    /// Stable semantic implementation identity, independent of Rust type names.
+    pub implementation: ComponentImplementationId,
     /// Checked committed generation.
     pub generation: u64,
     /// Checked state revision.

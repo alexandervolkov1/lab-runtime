@@ -125,10 +125,10 @@ pub enum Mutation {
         /// Active deployment revision observed at stage time.
         expected_revision: u64,
     },
-    /// Reload only managed script sources; TOML and native models are unchanged.
-    ReloadManagedScripts,
-    /// Restart only configured virtual models; sources and TOML are not reread.
-    RestartVirtualModels,
+    /// Reload only managed implementation sources; TOML and built-ins are unchanged.
+    ReloadManagedSources,
+    /// Reinitialize configured managed components and native virtual models.
+    RestartModels,
     /// Explicitly replace one configured read-only resource session.
     ReconnectResource {
         /// Stable logical resource identity.

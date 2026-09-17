@@ -4,7 +4,8 @@ use lab_core::{
     Command, CommandResult, InstrumentId, Runtime, TEMPERATURE, Unit,
     managed::{
         ComponentCompletion, ComponentDefinition, ComponentError, ComponentExecutor, ComponentId,
-        ComponentKind, ComponentManifest, Correlation, Invocation, PlainData,
+        ComponentImplementation, ComponentKind, ComponentManifest, Correlation, Invocation,
+        PlainData,
     },
 };
 use std::{
@@ -53,7 +54,11 @@ fn source() -> ComponentDefinition {
             max_input_age: Duration::from_secs(1),
             history_capacity: 8,
         },
-        source: "return function(ctx) return ctx end".into(),
+        implementation: ComponentImplementation::text(
+            "test.stalled.v1",
+            "return function(ctx) return ctx end",
+        )
+        .unwrap(),
         config: PlainData::default(),
     }
 }

@@ -12,6 +12,7 @@ use crate::{
         ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
     },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
+    managed_executor::ManagedExecutor,
     serial::{
         ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
         SerialParity,
@@ -745,7 +746,7 @@ impl ServiceHost {
         {
             let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             let supervisor = loop {
-                match lab_lua::LuaSupervisor::new() {
+                match ManagedExecutor::new() {
                     Ok(supervisor) => break supervisor,
                     Err(ComponentError::Busy) if std::time::Instant::now() < init_deadline => {
                         std::thread::yield_now()
@@ -769,7 +770,7 @@ impl ServiceHost {
         } else if loaded.is_none() {
             let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             let supervisor = loop {
-                match lab_lua::LuaSupervisor::new() {
+                match ManagedExecutor::new() {
                     Ok(supervisor) => break supervisor,
                     Err(ComponentError::Busy) if std::time::Instant::now() < init_deadline => {
                         std::thread::yield_now()
@@ -778,8 +779,8 @@ impl ServiceHost {
                 }
             };
             host.install_component_executor(Box::new(supervisor))?;
-            host.stage_standard_lua(clock.now())?;
-            while !host.source_lua_initialized() {
+            host.stage_standard_components(clock.now())?;
+            while !host.source_component_initialized() {
                 if std::time::Instant::now() >= init_deadline {
                     let _ = host.begin_shutdown(&clock);
                     return Err(io::Error::other("managed Source init deadline").into());
@@ -788,7 +789,7 @@ impl ServiceHost {
                 std::thread::yield_now();
             }
             host.stage_standard_filter(clock.now())?;
-            while !host.standard_lua_initialized() {
+            while !host.standard_components_initialized() {
                 if std::time::Instant::now() >= init_deadline {
                     let _ = host.begin_shutdown(&clock);
                     return Err(io::Error::other("managed startup init deadline").into());
@@ -796,7 +797,7 @@ impl ServiceHost {
                 host.service(&clock)?;
                 std::thread::yield_now();
             }
-            host.activate_standard_lua(clock.now())?;
+            host.activate_standard_components(clock.now())?;
         }
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
         listener.set_nonblocking(true)?;
@@ -1254,7 +1255,7 @@ impl ServiceHost {
     }
 
     /// Reload managed sources independently of deployment and model restart.
-    pub fn reload_managed_scripts(&mut self) -> Result<(), LifecycleOperationError> {
+    pub fn reload_managed_sources(&mut self) -> Result<(), LifecycleOperationError> {
         let candidate = self
             .deployment
             .as_ref()
@@ -1262,13 +1263,41 @@ impl ServiceHost {
             .active()
             .reload_managed_sources()
             .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
-        let count = candidate.effective().dto.managed_components.len();
-        if count == 0 {
+        let components = &candidate.effective().dto.managed_components;
+        let mut affected_instruments: BTreeSet<_> = components
+            .iter()
+            .filter(|component| component.source.is_some())
+            .map(|component| component.instrument_id)
+            .collect();
+        loop {
+            let before = affected_instruments.len();
+            for component in components {
+                if component
+                    .input_instrument_id
+                    .is_some_and(|input| affected_instruments.contains(&input))
+                {
+                    affected_instruments.insert(component.instrument_id);
+                }
+            }
+            if affected_instruments.len() == before {
+                break;
+            }
+        }
+        let replacement_indices: Vec<_> = components
+            .iter()
+            .enumerate()
+            .filter_map(|(index, component)| {
+                affected_instruments
+                    .contains(&component.instrument_id)
+                    .then_some(index)
+            })
+            .collect();
+        if replacement_indices.is_empty() {
             return Err(LifecycleOperationError::NoManagedComponents);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut prepared = Vec::with_capacity(count);
-        for index in 0..count {
+        let mut prepared = Vec::with_capacity(replacement_indices.len());
+        for index in replacement_indices {
             let id = self
                 .host
                 .stage_configured_component(&candidate, index, true, self.clock.now())
@@ -1288,7 +1317,7 @@ impl ServiceHost {
             }
             prepared.push(id);
         }
-        let pending = self.begin_recorded_lifecycle("reload_managed_scripts", &candidate)?;
+        let pending = self.begin_recorded_lifecycle("reload_managed_sources", &candidate)?;
         if self
             .host
             .commit_prepared_components(prepared, self.clock.now())
@@ -1314,10 +1343,8 @@ impl ServiceHost {
         self.finish_recorded_lifecycle(pending)
     }
 
-    /// Restart configured native models without rereading TOML or managed sources.
-    pub fn restart_virtual_models(
-        &mut self,
-    ) -> Result<RestartModelsResult, LifecycleOperationError> {
+    /// Reinitialize configured models without rereading TOML or managed sources.
+    pub fn restart_models(&mut self) -> Result<RestartModelsResult, LifecycleOperationError> {
         let active = self
             .deployment
             .as_ref()
@@ -1362,7 +1389,7 @@ impl ServiceHost {
                 prepared.push(id);
             }
         }
-        let pending = self.begin_recorded_lifecycle("restart_virtual_models", &active)?;
+        let pending = self.begin_recorded_lifecycle("restart_models", &active)?;
         let mut models = 0usize;
         let mut generation = 0u64;
         if native != 0 {

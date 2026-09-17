@@ -3,8 +3,9 @@
 use lab_core::{
     InstrumentId, SignalId, TEMPERATURE, Unit,
     managed::{
-        CapturedInput, ComponentDefinition, ComponentId, ComponentKind, ComponentManifest,
-        ComponentStatus, Correlation, Invocation, InvocationPhase, PlainData, PlainValue,
+        CapturedInput, ComponentDefinition, ComponentId, ComponentImplementation, ComponentKind,
+        ComponentManifest, ComponentStatus, Correlation, Invocation, InvocationPhase, PlainData,
+        PlainValue,
     },
 };
 use lab_lua::{
@@ -55,7 +56,8 @@ fn invocation(
                 max_input_age: Duration::from_secs(2),
                 history_capacity: 8,
             },
-            source: source.into(),
+            implementation: ComponentImplementation::text(lab_lua::IMPLEMENTATION_ID, source)
+                .unwrap(),
             config,
         },
         state,

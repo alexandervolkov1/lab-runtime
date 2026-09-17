@@ -11,6 +11,8 @@ pub mod deployment;
 pub mod events;
 /// Explicit monotonic scheduling and trusted virtual host composition.
 pub mod host;
+/// Compile-time managed implementation registry and shared bounded worker pool.
+pub mod managed_executor;
 /// Bounded durable-history storage adapter and host-owned recording ingress.
 pub mod recorder;
 /// Bounded worker-backed read-only Windows COM byte adapter.
