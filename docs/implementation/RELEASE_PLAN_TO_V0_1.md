@@ -12,8 +12,9 @@ Current phase:
 
 ```text
 M8: ACCEPTED
-M9A: AUTHORIZED
-Current phase: M9A — neutral managed components and native Rust execution
+M9A: IMPLEMENTED
+STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
+Current phase: external M9A review
 ```
 
 M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
@@ -85,16 +86,15 @@ Existing M5 Lua is frozen for v0.1.
 
 M5 Lua is not currently known to violate the safety boundary. Its sandbox denies raw
 transport, OutputAuthority, physical ACK/readback/safe evidence and general Runtime
-mutability. The narrower pre-release issue is Lua-specific leakage into common
-interfaces, including `ComponentDefinition.source`, `lua_source`/`lua_transform`,
-`reload_managed_scripts`, helpers such as `stage_standard_lua`, and
-`ManagedLuaSource`/`managed_lua_source` deployment and provenance vocabulary.
+mutability. M9A moved Lua-specific implementation material behind the explicit
+`lua.v1` adapter and neutralized the common definition, public lifecycle and new
+provenance vocabulary.
 
 No persistent Lua workspace or Lua application/scenario API is required for v0.1.
 
-M9A adds a first-class native Rust implementation path through the same contract and
-proves at least one small native model/filter/transform. Neutralizing current names
-must not rewrite historical SQLite evidence merely to rename old Lua provenance.
+M9A added a first-class native Rust implementation path through the same contract and
+proved the bounded `native.moving_mean.v1` transform. Historical SQLite evidence was
+not rewritten merely to rename old Lua provenance.
 
 Optional complete Lua removal is post-v0.1 and requires replacement coverage.
 
@@ -139,7 +139,7 @@ Neutralize Lua-specific leakage from the common managed-component boundary and m
 native Rust a first-class executor path without weakening the established lifecycle
 or safety contract.
 
-Required acceptance:
+Completed implementation:
 
 - neutral common definition, capability, lifecycle and provenance vocabulary for new
   work;
@@ -147,13 +147,13 @@ Required acceptance:
   `ComponentExecutor`, `PlainData` and generation/revision/failure semantics;
 - native Rust registration and execution through the same validation, unit,
   bounded-state, bounded-execution, failure and replacement/reload rules;
-- at least one small native Rust model/filter/transform proved through the contract;
+- bounded native `MovingMean` proved through the contract;
 - M5 Lua remains frozen except for bug/regression, safety/security and documentation
   corrections;
 - historical SQLite evidence remains immutable.
 
-M9A is the current authorized implementation milestone. M9B remains blocked until
-M9A receives explicit external acceptance.
+M9A software gates are complete and the milestone awaits external review. M9B remains
+blocked until M9A receives explicit external acceptance.
 
 ## M9B — unified Application / emulator / presentation API
 

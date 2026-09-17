@@ -4,8 +4,9 @@
 
 ```text
 M8: ACCEPTED
-M9A: AUTHORIZED
-Current phase: M9A — neutral managed components and native Rust execution
+M9A: IMPLEMENTED
+STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
+Current phase: external M9A review
 ```
 
 M7 Recorder/SQLite is externally accepted at `f3ff456`. M8 implementation, final
@@ -54,9 +55,27 @@ Repeated exact release tests, repeated Recorder/reconnect release subsets, compl
 debug and release workspace suites, formatting, warning-denied Clippy and rustdoc,
 actual Babashka tests, `bb test-client`, finite demo and diff checks all pass.
 
+## M9A implementation
+
+Core now carries an explicit bounded `ComponentImplementation` (semantic ID plus
+`BuiltIn` or bounded `Text` artifact) instead of requiring source text. One common
+two-worker `ManagedExecutor` registry dispatches both frozen `lua.v1` and the native
+`native.moving_mean.v1` transform through the existing invocation, completion,
+validation, generation, revision and failure lifecycle.
+
+Deployment selection is explicit. Native `MovingMean` uses a 2..=64 sample window,
+bounded `PlainData` state, honest warm-up and unit preservation. Public capability,
+discovery and lifecycle vocabulary is neutral (`managed_component`,
+`reload_managed_sources`, `restart_models`). New provenance records neutral
+implementation/source identities; historical `managed_lua_source` archives remain
+unchanged.
+
+The complete debug/release/fmt/Clippy/rustdoc/Babashka/client/demo gates pass. The
+implementation report is `docs/implementation/MILESTONE_9A_REPORT.md`.
+
 ## Next step
 
-Implement only the detailed M9A authorization in `ai/WORK.md`. M9B remains NOT
-AUTHORIZED until M9A receives explicit external acceptance; M10 and M11 remain
-future milestones. Detailed chronological M8 evidence remains in
+Perform only external M9A review under `ai/WORK.md`. M9B remains NOT AUTHORIZED until
+M9A receives explicit external acceptance; M10 and M11 remain future milestones.
+Detailed chronological M8 evidence remains in
 `docs/implementation/MILESTONE_8_REPORT.md`.

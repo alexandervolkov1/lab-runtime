@@ -93,13 +93,10 @@ M5 Lua is not currently known to violate the safety boundary. Its existing sandb
 denies raw transport, OutputAuthority, physical ACK/readback/safe evidence and
 general Runtime mutability.
 
-The narrower pre-release problem is Lua-specific leakage into interfaces that should
-be language-neutral. Known examples include `ComponentDefinition.source: String`,
-public `lua_source`/`lua_transform` capabilities, `reload_managed_scripts`, generic
-lifecycle helpers such as `stage_standard_lua`, and deployment/provenance vocabulary
-such as `ManagedLuaSource`/`managed_lua_source`. M9A will address that vocabulary and
-add the native execution path; it must not rewrite historical SQLite evidence merely
-to rename old Lua provenance.
+M9A removed the Lua-specific leakage from common definitions, public capability and
+lifecycle names, trusted composition helpers and new provenance. Historical
+`managed_lua_source` SQLite evidence remains unchanged; new activations use neutral
+managed-component provenance.
 
 Allowed changes:
 
@@ -117,8 +114,9 @@ Not planned before v0.1:
 
 ### Native Rust components
 
-Native Rust components will receive a first-class implementation path through the
-same managed-component execution contract in the now-authorized M9A milestone.
+Native Rust components now have a first-class implementation path through the same
+managed-component execution contract. The reference implementation is the bounded
+`native.moving_mean.v1` transform; frozen Lua uses `lua.v1` through the same executor.
 
 This gives a simple future migration:
 
@@ -349,16 +347,15 @@ an explicit accepted safety policy requires it.
 
 ```text
 M8  ACCEPTED
-M9A AUTHORIZED — neutral managed-component boundary + first native Rust component path
+M9A READY_FOR_M9A_EXTERNAL_REVIEW — neutral boundary + native Rust path implemented
 M9B NOT AUTHORIZED until M9A acceptance
 M10 future GUI milestone
 M11 future hardening, documentation, tutorials and packaging milestone
 v0.1.0
 ```
 
-Current phase: M9A — neutral managed components and native Rust execution. The
-completed M8 gate requires no further hardware rerun; COM5 is not part of current
-work.
+Current phase: external M9A review. The completed M8 gate requires no further
+hardware rerun; COM5 is not part of current work.
 
 The v0.1 documentation teaches native Rust managed components and the native
 virtual/emulator foundation plus Application API and Babashka use. It does not teach

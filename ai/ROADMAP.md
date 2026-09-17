@@ -17,22 +17,20 @@ M7  Runtime-owned Recorder/SQLite + durable provenance/history
 
 M7 is externally accepted.
 
+M8 is externally accepted. M9A is implemented and waiting for external review.
+
 M5 Lua remains implemented but is frozen for v0.1.
 
 The language-neutral managed-component contract remains useful. Native Rust components
-will implement the same `Invocation -> ComponentResult` execution semantics through
-a first-class M9A path. The retained contract includes `Invocation`,
+implement the same `Invocation -> ComponentResult` execution semantics through
+the first-class M9A path. The retained contract includes `Invocation`,
 `ComponentResult`, `ComponentCompletion`, `ComponentExecutor`, `PlainData` and its
 generation/revision/failure semantics.
 
 M5 Lua is not currently known to violate the safety boundary: its sandbox denies raw
 transport, OutputAuthority, physical ACK/readback/safe evidence and general Runtime
-mutability. Its narrower pre-release problem is Lua-specific leakage into otherwise
-language-neutral interfaces, including `ComponentDefinition.source`, public
-`lua_source`/`lua_transform` capabilities, `reload_managed_scripts`, lifecycle
-helpers such as `stage_standard_lua`, and `ManagedLuaSource`/`managed_lua_source`
-provenance vocabulary. Historical SQLite evidence is never rewritten merely to
-rename that provenance.
+mutability. M9A removed its leakage from the common contract while preserving
+historical `managed_lua_source` SQLite evidence unchanged.
 
 ## Accepted: M8
 
@@ -59,27 +57,27 @@ semantic synchronization defect; production hardware behavior is unchanged.
 
 No further M8 hardware rerun is required. COM5 is not part of current work.
 
-## Current: M9A — neutral managed components and native Rust execution
+## Review: M9A — neutral managed components and native Rust execution
 
 ```text
-M9A: AUTHORIZED
-Current phase: M9A — neutral managed components and native Rust execution
+M9A: IMPLEMENTED
+STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
+Current phase: external M9A review
 M9B: NOT AUTHORIZED
 ```
 
-Purpose: remove Lua-specific leakage from the shared managed-component boundary and
-make native Rust a first-class implementation of the retained language-neutral
-contract.
+M9A removed Lua-specific leakage from the shared boundary and made native Rust a
+first-class implementation of the retained language-neutral contract.
 
-Required work:
+Completed work:
 
 - neutralize the common interface/capability/lifecycle vocabulary without rewriting
   historical Recorder evidence;
 - preserve `Invocation`, `ComponentResult`, `ComponentCompletion`,
   `ComponentExecutor`, `PlainData` and generation/revision/failure behavior;
-- add registration and execution for native Rust managed components through the same
+- added registration and execution for native Rust managed components through the same
   validation, bounded-state, bounded-execution and replacement lifecycle;
-- prove at least one small native Rust model/filter/transform through that contract;
+- proved the bounded native `MovingMean` transform through that contract;
 - keep M5 Lua frozen except for bug/regression, safety/security and documentation
   corrections.
 

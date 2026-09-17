@@ -13,8 +13,9 @@ software gates are accepted. The project is:
 
 ```text
 M8: ACCEPTED
-M9A: AUTHORIZED
-Current phase: M9A — neutral managed components and native Rust execution
+M9A: IMPLEMENTED
+STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
+Current phase: external M9A review
 ```
 
 The completed gate includes the successful real Metakon reconnect path, complete
@@ -48,15 +49,15 @@ demand.
 The Rust workspace currently contains:
 
 - `lab-core`: OS/GUI/storage/scripting-runtime-independent domain and safety logic;
-- `lab-lua`: existing bounded disposable M5 Lua component executor;
+- `lab-lua`: frozen bounded disposable Lua implementation adapter;
 - `lab-runtime`: host/application composition and adapters.
 
 M5 Lua remains present but frozen for v0.1.
 
-The managed-component execution boundary itself is language-neutral. Native Rust
-components become a first-class path through the same contract in M9A. M5 Lua is not
-currently known to violate the safety boundary; the planned cleanup concerns
-Lua-specific naming leaked into otherwise common interfaces.
+The managed-component execution boundary is language-neutral. M9A added explicit
+implementation identity/artifacts, one common bounded executor registry and the
+native `MovingMean` transform through the same `Invocation`/`ComponentResult`
+lifecycle. Frozen M5 Lua remains behind the `lua.v1` adapter.
 
 The existing native `VirtualInstrument` and `ThermalPlantInstrument` remain. M9B
 adds a validated emulator Application API around that foundation rather than
@@ -82,7 +83,7 @@ Clients do not own controller, transport, Recorder or output-safety lifetime.
 
 ```text
 M8  ACCEPTED
-M9A AUTHORIZED — neutral managed-component boundary + native Rust component path
+M9A READY_FOR_M9A_EXTERNAL_REVIEW — neutral boundary + native Rust path implemented
 M9B NOT AUTHORIZED until M9A acceptance
 M10 future GUI milestone
 M11 future hardening + docs + packaging milestone

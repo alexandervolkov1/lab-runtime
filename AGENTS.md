@@ -26,15 +26,16 @@ context. Read them on demand. They do not override the active authorization.
 
 ```text
 M8: ACCEPTED
-M9A: AUTHORIZED
-Current phase: M9A — neutral managed components and native Rust execution
+M9A: IMPLEMENTED
+STATUS: READY_FOR_M9A_EXTERNAL_REVIEW
+Current phase: external M9A review
 ```
 
 Final physical M8 acceptance and the final software gates have succeeded. No further
 M8 hardware rerun is required, and COM5 is not part of current work.
 
-M9B remains NOT AUTHORIZED until M9A receives explicit external acceptance. M10 and
-M11 remain future milestones.
+M9A implementation and software gates have succeeded. M9B remains NOT AUTHORIZED
+until M9A receives explicit external acceptance. M10 and M11 remain future milestones.
 
 ## Donor repository
 
@@ -124,20 +125,17 @@ corrections are allowed.
 
 M5 Lua is not currently known to violate the safety boundary. Its sandbox denies
 raw transport, OutputAuthority, physical ACK/readback/safe evidence and general
-Runtime mutability. The narrower pre-release issue is that Lua-specific implementation
-details leak into interfaces that should be language-neutral, including
-`ComponentDefinition.source`, `lua_source`/`lua_transform`,
-`reload_managed_scripts`, generic lifecycle helpers such as `stage_standard_lua`,
-and provenance vocabulary such as `ManagedLuaSource`/`managed_lua_source`.
+Runtime mutability. M9A moved it behind implementation identity `lua.v1`; common
+definitions, execution, public lifecycle vocabulary and new provenance are neutral.
 
 Do not rename historical SQLite evidence merely to neutralize old Lua provenance.
 
 Do not add a persistent Lua workspace, Lua application/scenario API, Lua GUI API,
 Lua REPL/editor or broader M5 scope.
 
-M9A is authorized to neutralize that interface leakage and add a first-class native
-Rust implementation path through the same contract, proving at least one small
-native model/filter/transform. Detailed authorization belongs in `ai/WORK.md`.
+M9A added the first-class `native.moving_mean.v1` path through the same bounded
+contract. Current authorization is external M9A review only; detailed review scope
+belongs in `ai/WORK.md`.
 
 ## Virtual/emulator boundary
 
