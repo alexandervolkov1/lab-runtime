@@ -6,11 +6,12 @@
 M9B.1 API audit: COMPLETE
 M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3 discovery / measurements / history / subscriptions: COMPLETE
-M9B.4: NOT STARTED
+M9B.4 Reference and controller/PID API: COMPLETE
+M9B.5: NOT STARTED
 M9C+: NOT AUTHORIZED
 ```
 
-This report is cumulative through M9B.3. It does not claim that
+This report is cumulative through M9B.4. It does not claim that
 the complete M9B Application API is finished or externally accepted.
 
 ## M9B.2 scope and architecture
@@ -188,10 +189,8 @@ not made part of the future product API.
 
 ## Deferred M9B work
 
-M9B.3 is complete. M9B.4 owns Reference/controller completeness.
-
-Later slices own Reference/controller completeness, Recorder projections,
-resource/configuration projections, emulator publication, full reconnect/resync and
+M9B.4 is complete. Later slices own Recorder projections,
+resource/configuration projections, emulator publication, full fault acceptance and
 the remaining operation-specific naming cleanup. `reload_managed_sources` and
 `restart_models` were deliberately not redesigned in M9B.2.
 
@@ -266,6 +265,81 @@ capability bounds, disconnect terminalization, no stale result delivery, and fre
 connection capacity. Existing protocol, session, durable-history, replay/gap, and
 slow-client suites remain regression gates.
 
-M9B.4 and later work remains deferred: complete Reference/controller API,
-Recorder public-contract refinements, resource/configuration lifecycle expansion,
-external emulator API, full adversarial fault acceptance, and final API freeze.
+## M9B.4 Reference and controller/PID Application API
+
+References retain their domain `ReferenceId` across discovery, `reference` current
+queries, mutations, and reference events. The bounded current DTO explicitly reports
+`kind`, `value`, engineering unit, `revision`, `status=valid`, configurability, and
+the last monotonic evaluation time; Ramp projections additionally report target and
+rate. `reference_configure` replaces the complete Fixed or Ramp policy while
+retaining identity and the deployment-defined unit. A Ramp starts at the current
+committed value. Core performs finite/rate validation, active-controller exclusion,
+and the expected-revision comparison before one atomic commit. Failed validation or
+revision conflict leaves the prior policy unchanged. The historical Ramp-only
+`reference_retune` remains as a compatible narrow operation but is no longer the
+advertised semantic capability.
+
+Controllers likewise retain `ControllerId` across discovery, current queries,
+operations, and events. The current projection reports `kind=pid`, lifecycle state,
+explicit valid/failed status, active and paused booleans, configuration revision,
+last tick/latest output, read-only input/Reference/output bindings, and the complete
+supported PID, EMA, freshness, tick-gap, lease-lifetime, and proposal-TTL policy.
+Bindings remain deployment-owned and are not rewritable through this slice. No
+worker, channel, lease token, transport object, or mutable Runtime storage is
+projected.
+
+`controller_configure` is the typed full-policy operation. It preserves the current
+bindings and engineering unit, requires an expected revision, parses duration and
+count fields as bounded decimal strings, and delegates all finite, numeric, timing,
+unit, lifecycle, and cross-reference validation to the existing atomic Core
+reconfigure command. It never starts or rearms a controller. The earlier
+`controller_configure_pid` remains a valid narrow update for existing callers; the
+capability advertises the coherent full configuration surface.
+
+The public lifecycle is exactly the lifecycle implemented by Core:
+`controller_start`, `controller_pause`, `controller_resume`, and
+`controller_reset_failed`. There is no invented Stop transition. Pause is the
+existing safe transition through OutputAuthority; resume returns through warmup;
+reset acknowledges a safely failed controller into Paused. Invalid states,
+unavailable/stale input, rejected output, invalid configuration, missing identity,
+and revision conflict use the bounded M9B.2 error taxonomy. An admitted transition
+is Runtime-owned and is not cancelled on client disconnect.
+
+The Application layer can request only these typed Runtime commands. Its registry
+contains no generic output mutation, accepts no lease/ACK/readback fields, and has
+no API for constructing an `OutputLease`. Native control still produces an
+`OutputProposal`; Core and OutputAuthority retain finite leases, epoch fencing,
+final pre-send authority checks, safe transitions, and ambiguous-write policy.
+Configuration and Reference changes preserve their existing durable operation
+intent and terminal provenance.
+
+Reference and controller events use the same complete projections as current-state
+queries. They remain snapshots of semantically relevant state rather than per-tick
+PID telemetry, and use M9B.3's bounded replay ring, per-client queue, explicit gap,
+and resynchronization rules. A reconnect reconstructs authoritative state with
+hello, discovery, Reference/controller/measurement current queries, and fresh
+subscriptions; controller state is never client-owned.
+
+Hello now advertises `reference_read_write`, `controller_status`,
+`controller_configuration`, and `controller_lifecycle`. Single-object Reference and
+controller results are bounded to one record. PID configuration has exactly five
+numeric fields; full controller policy has six bounded top-level groups. Common
+64-byte semantic identifiers, 512-byte strings, 1,024 JSON values, 16-KiB frames,
+4,096-byte events, operation/session limits, and subscription queue limits continue
+to apply. No client-controlled collection was added.
+
+Focused tests cover stable Reference/controller identity across discovery, current
+state and events; complete Reference projection; atomic finite/rate and revision
+validation; exact revision advancement; binding visibility; full PID/policy
+round-trip; invalid configuration and conflict atomicity; start/pause/resume and
+invalid transition behavior; disconnect-independent transitions; explicit failed
+reset; capability/result bounds; and rejection of forged lease/ACK input. Existing
+Core controller tests continue to cover scoped failure, reset success, generation
+and authority fencing, safe pause, finite leases, final authority recheck, and
+nonblocking control progress. Protocol, deduplication, lifecycle, subscription/gap,
+process, Recorder, and workspace suites remain regression gates.
+
+M9B.5 and later work remains deferred: Recorder public-contract refinements,
+resource/configuration/reconnect expansion, external emulator API, full adversarial
+fault acceptance, and final API freeze. No COM port or hardware path was opened, M8
+evidence was unchanged, and M9C was not started.
