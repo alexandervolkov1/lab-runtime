@@ -11,7 +11,8 @@ M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3: COMPLETE
 M9B.4: COMPLETE
 M9B.5: COMPLETE
-M9B.6: NOT STARTED
+M9B.6: COMPLETE
+M9B.7: NOT STARTED
 M9C+: NOT AUTHORIZED
 Current phase: M9B — complete and stabilize Application API
 ```
@@ -131,8 +132,10 @@ Completed M9B slices:
   boundary;
 - M9B.5 completed semantic Recorder status, start/stop, run/interval identity,
   failure and lifecycle-event surfaces without exposing SQLite implementation state.
+- M9B.6 completed resource status/discovery, generic typed property metadata and
+  validated live mutation, deployment candidate status and semantic reconnect state.
 
-M9B.6 and later M9B slices remain incomplete; M9B as a whole is not accepted.
+M9B.7 and later M9B slices remain incomplete; M9B as a whole is not accepted.
 
 Required coverage:
 

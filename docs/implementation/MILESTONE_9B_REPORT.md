@@ -8,11 +8,12 @@ M9B.2 protocol / error / operation foundation: COMPLETE
 M9B.3 discovery / measurements / history / subscriptions: COMPLETE
 M9B.4 Reference and controller/PID API: COMPLETE
 M9B.5 Recorder Application API: COMPLETE
-M9B.6: NOT STARTED
+M9B.6 resources / configuration / reconnect: COMPLETE
+M9B.7: NOT STARTED
 M9C+: NOT AUTHORIZED
 ```
 
-This report is cumulative through M9B.5. It does not claim that
+This report is cumulative through M9B.6. It does not claim that
 the complete M9B Application API is finished or externally accepted.
 
 ## M9B.2 scope and architecture
@@ -190,8 +191,7 @@ not made part of the future product API.
 
 ## Deferred M9B work
 
-M9B.5 is complete. Later slices own resource/configuration projections, emulator
-publication, full fault acceptance and
+M9B.6 is complete. Later slices own emulator publication, full fault acceptance and
 the remaining operation-specific naming cleanup. `reload_managed_sources` and
 `restart_models` were deliberately not redesigned in M9B.2.
 
@@ -415,7 +415,98 @@ final release-profile workspace rerun:
 passed. No serial code or timing threshold was changed; this remains evidence for
 later hardening rather than M9B.5 scope.
 
-M9B.6 and later work remains deferred: resource/configuration/reconnect expansion,
-external emulator API, full adversarial fault acceptance, and final API freeze. No
-COM port or hardware path was opened, M8 evidence was unchanged, and M9C was not
-started.
+## M9B.6 resources, validated configuration, and reconnect
+
+Resources now use one semantic projection in discovery, direct `resource` queries,
+runtime snapshots and lifecycle events. Stable logical resource ID is distinct from
+binding generation and transport recovery generation. The DTO reports semantic
+kind, physical/virtual classification, lifecycle and availability, bound instrument
+IDs, bounded status/failure, committed configuration revision and applicable
+reconnect/configuration capabilities. A configured local port name is deployment
+metadata only; no handle, file descriptor, worker, channel, serial crate type or raw
+open operation crosses the boundary.
+
+`configuration_status` reports whether declarative configuration is active, the
+committed revision, the SHA-256 identity of the trusted deployment source, source
+kind, the one retained staged candidate with base revision/expiry/typed effects, and
+the bounded count of process-local property overlays. `configuration_properties`
+is a deterministic frozen projection paged at 64 records and 8 KiB. Each descriptor
+has stable owner/property identity, scalar type/current value, engineering unit when
+applicable, access, trusted mutation class, constraints and revision. The projection
+is bounded to 256 records.
+
+Managed-component property projection consumes registration-owned metadata through
+one generic path. The existing native moving mean therefore exposes `window`, its
+integer 2..=64 constraint and `reinitialize` class without a component-specific wire
+operation. Other bounded scalar component configuration is projected generically;
+adding an ordinary registered native implementation does not require an Application
+dispatcher or operation change. Properties whose authoritative lifecycle does not
+yet support atomic live replacement remain honestly `deployment_only` rather than
+being presented as immediately writable.
+
+`property_configure` currently admits only Runtime-supported live instrument
+properties: display name (`live_safe`) and poll period (`ordinary_live`, 1..=60000
+ms). It accepts one typed scalar, stable target/property identity and expected
+deployment revision. Validation creates a fixed-topology immutable candidate and
+uses the existing one-slot `DeploymentLifecycle` stage/apply path, Recorder
+activation boundary and terminal operation semantics. Invalid type/range/target,
+deployment-only properties and conflicts cause no partial mutation. A successful
+commit advances the deployment revision once, leaves binding/signal generation
+unchanged, resets cadence from commit time without catch-up and never rearms output
+or a controller.
+
+Runtime property overlays do not edit TOML. The deployment file remains the
+persistent source selected at startup; a later file stage/reload can deliberately
+replace an overlay. Active provenance retains the exact source bytes and adds a
+bounded `runtime_configuration_overlay` JSON record so current effective state is
+not falsely attributed to rewritten TOML. Status and terminal results explicitly
+state that no deployment-source persistence occurred.
+
+File-backed `stage_configuration`, `apply_configuration` and
+`reload_configuration` remain the route for complete validated candidates and
+rebind-required changes. Stage results no longer expose Rust `Debug` names: effects
+are stable `live_safe`, `ordinary_live`, `reinitialize`, `transport_rebind`,
+`controller_rewarm`, `output_safe_barrier` and `restart_required` values. Apply
+retains candidate/base-revision/expiry fences, validation before disruption, safe
+barrier behavior, atomic committed revision and no automatic controller/output
+rearm. Existing software transport tests continue to prove live changes avoid
+generation churn, rebind advances generation, and stale generation work cannot
+commit.
+
+`reconnect_resource` remains exactly one semantic request using resource identity
+and expected binding generation. The accepted M8 sequence is unchanged: old worker
+retirement, one bounded candidate/open lifecycle, actual-open/settings readiness,
+compatibility probe, Core rebind/generation fence, durable lifecycle and acquisition
+release. Success is not reported before that boundary. Failures retain bounded typed
+stage/serial categories without OS strings; no raw port open, transport completion,
+ACK/readback, generation assignment or OutputAuthority path is exposed. Reconnect
+and configuration work is Runtime-owned and retained independently of requester
+connection lifetime.
+
+Resource and configuration events use the existing 1,024-record replay ring,
+4,096-byte event limit, sixteen-frame client queue and explicit gap/resync behavior.
+Reconnect reconstruction is hello, discovery, resource/configuration current state,
+other M9B current projections and fresh subscriptions. Slow clients never enter the
+transport/acquisition/control/Recorder delivery path.
+
+Capabilities are `resource_status`, `resource_reconnect`, `configuration_read`,
+`configuration_properties`, `configuration_write`, and `deployment_configuration`.
+Published configuration bounds are 256 property records, 64 records/8 KiB per page,
+one staged candidate retained for 30 seconds, 32 process-local overlays, common
+64-byte semantic names, 512-byte strings, 1,024 JSON values, 16-KiB frames and the
+existing operation/event/session limits.
+
+Focused tests cover stable resource identity across discovery/current/events,
+physical classification, binding versus transport generation, absence of handle
+authority, deterministic native-component property projection, lack of
+component-specific operations, live revision commit, unchanged generation,
+invalid/conflicting/deployment-only atomic rejection, bounded configuration events,
+disconnect/reconnect operation reconstruction, and existing software-only M8
+rebind/probe/stale-generation/failure behavior. Protocol, measurement discovery,
+subscription, configuration reload, Recorder and prior M9B suites remain regression
+gates.
+
+M9B.7 and later work remains deferred: external emulator API, target-specific
+virtual lifecycle separation, full adversarial fault acceptance, and final API
+freeze. No COM port or hardware path was opened, Lua was not removed, M8 evidence
+was unchanged, and M9C was not started.
