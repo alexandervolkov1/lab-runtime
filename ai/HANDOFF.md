@@ -21,7 +21,8 @@ M9D: ACCEPTED
 M10: AUTHORIZED
 M10.1: COMPLETE
 M10.2: COMPLETE
-M10.3: NOT STARTED
+M10.3: COMPLETE
+M10.4: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -33,7 +34,22 @@ startup zero, one authority-gated +10 percent controller command, strict ACK,
 separate matching register-6 readback, normal pause to verified zero, Recorder
 sealing and clean shutdown. M10.1 mapped the actual post-M9D codebase. M10.2 added
 behavior-preserving internal terminology and source architecture indexes while
-retaining historical Recorder compatibility. M10.3 has not started.
+retaining historical Recorder compatibility. M10.3 organized the Application API
+by semantic domain while preserving the accepted registry and wire contract. M10.4
+has not started.
+
+## M10.3 completion
+
+`application.rs` now owns only bounded Application state, hello/session admission,
+top-level routing, mutation lifecycle and shutdown correlation. Focused modules own
+discovery, References, controllers/output projections, virtual/emulator operations,
+delivery/subscriptions, typed mutation routing, common error mapping and asynchronous
+Recorder/history delivery. Existing `measurements.rs`, `recorder_api.rs` and
+`configuration_api.rs` now contain their corresponding API semantics.
+
+`protocol::OPERATIONS` remains the sole authoritative 42-operation registry. Its
+regression now freezes exact operation names, query/mutation kinds, availability,
+argument allowlists and capability witness mapping. M10.4 is not authorized.
 
 ## M10.2 completion
 

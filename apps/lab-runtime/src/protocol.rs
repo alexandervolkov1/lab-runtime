@@ -932,5 +932,106 @@ mod tests {
                 .enumerate()
                 .all(|(index, field)| !operation.argument_fields[..index].contains(field))
         }));
+
+        let registry_contract = OPERATIONS
+            .iter()
+            .map(|operation| {
+                format!(
+                    "{}|{:?}|{:?}|{}",
+                    operation.name,
+                    operation.kind,
+                    operation.availability,
+                    operation.argument_fields.join(",")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            registry_contract,
+            concat!(
+                "hello|Query|Always|scope\n",
+                "discover|Query|Always|\n",
+                "discovery_page|Query|Always|projection,index\n",
+                "describe|Query|Always|instrument\n",
+                "resource|Query|ResourceReconnect|resource\n",
+                "configuration_status|Query|Configuration|\n",
+                "configuration_properties|Query|Configuration|\n",
+                "configuration_page|Query|Configuration|projection,index\n",
+                "latest|Query|Always|signal\n",
+                "measurements_current|Query|Always|\n",
+                "measurements_page|Query|Always|projection,index\n",
+                "measurement_window|Query|Always|signal,max_records\n",
+                "controller|Query|Always|controller\n",
+                "reference|Query|Always|reference\n",
+                "component|Query|Always|component\n",
+                "output|Query|Always|actuator\n",
+                "operation_status|Query|Always|request_id\n",
+                "subscribe|Query|Always|after,filter\n",
+                "unsubscribe|Query|Always|subscription\n",
+                "reference_configure|Mutation|Always|reference,expected_revision,kind,value,target,rate\n",
+                "reference_retune|Mutation|Always|reference,expected_revision,target,rate\n",
+                "controller_configure_pid|Mutation|Always|controller,expected_revision,pid\n",
+                "controller_configure|Mutation|Always|controller,expected_revision,pid,ema,max_input_age_ns,max_tick_gap_ns,lease_lifetime_ns,proposal_ttl_ns\n",
+                "controller_start|Mutation|Always|controller\n",
+                "controller_pause|Mutation|Always|controller\n",
+                "controller_resume|Mutation|Always|controller\n",
+                "controller_reset_failed|Mutation|Always|controller\n",
+                "runtime_shutdown|Mutation|Always|\n",
+                "stage_configuration|Mutation|Configuration|\n",
+                "apply_configuration|Mutation|Configuration|candidate_id,expected_revision\n",
+                "reload_configuration|Mutation|Configuration|\n",
+                "property_configure|Mutation|Configuration|target,property,value,expected_revision\n",
+                "emulator_publish|Mutation|EmulatorPublication|signal,state,value,expected_generation\n",
+                "virtual_models_restart|Mutation|VirtualModelLifecycle|\n",
+                "reconnect_resource|Mutation|ResourceReconnect|resource,expected_binding_generation\n",
+                "recording_status|Query|Always|\n",
+                "recording_start|Mutation|Recorder|label\n",
+                "recording_stop|Mutation|Recorder|run_id\n",
+                "experiment_annotate|Mutation|Recorder|name,data\n",
+                "history_read|Mutation|Recorder|mode,database_id,boot_id,run_id,signal,from_ns,to_ns,max_records,cursor\n",
+                "history_page|Query|Recorder|page_token\n",
+                "history_release|Query|Recorder|page_token"
+            )
+        );
+        let capability_contract = CAPABILITIES
+            .iter()
+            .map(|capability| {
+                format!(
+                    "{}|{}|{}",
+                    capability.name, capability.stability, capability.operation
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            capability_contract,
+            concat!(
+                "operation_lifecycle|stable|operation_status\n",
+                "structured_discovery|stable|discover\n",
+                "live_subscriptions|stable|subscribe\n",
+                "current_measurements|stable|measurements_current\n",
+                "recent_measurement_history|stable|measurement_window\n",
+                "instrument_queries|stable|describe\n",
+                "reference_read_write|stable|reference_configure\n",
+                "controller_status|stable|controller\n",
+                "controller_configuration|stable|controller_configure\n",
+                "controller_lifecycle|stable|controller_start\n",
+                "managed_components|stable|component\n",
+                "output_status|stable|output\n",
+                "runtime_shutdown|stable|runtime_shutdown\n",
+                "recording_status|stable|recording_status\n",
+                "recording_control|stable|recording_start\n",
+                "measurement_history|stable|history_read\n",
+                "resource_status|stable|resource\n",
+                "configuration_read|stable|configuration_status\n",
+                "configuration_properties|stable|configuration_properties\n",
+                "configuration_write|stable|property_configure\n",
+                "deployment_configuration|stable|stage_configuration\n",
+                "resource_reconnect|stable|reconnect_resource\n",
+                "virtual_instruments|stable|discover\n",
+                "emulator_publication|stable|emulator_publish\n",
+                "virtual_model_lifecycle|stable|virtual_models_restart"
+            )
+        );
     }
 }

@@ -1,14 +1,18 @@
-//! Semantic resource and deployment-property projections for the Application API.
+//! Resource and deployment-configuration Application operations.
 //!
-//! The projection exposes validated laboratory configuration, never transport
-//! handles, staging buffers, or a generic filesystem/configuration input channel.
+//! Queries project validated laboratory configuration and resource state. Mutations
+//! enter the same staged deployment lifecycle used at startup; this module never
+//! exposes transport handles, staging buffers, or a generic filesystem input.
 
 use crate::{
-    configuration::{InstrumentDto, ManagedComponentDto, ResourceKindDto},
+    application::common::{id_field, lifecycle_domain_error},
+    configuration::{InstrumentDto, ManagedComponentDto, PropertyValue, ResourceKindDto},
+    protocol,
     service::ServiceHost,
+    sessions::{Mutation, PropertyMutationValue},
 };
 use lab_core::{
-    Query, QueryResult,
+    Error, Query, QueryResult,
     transport::{ExecutorState, ResourceId},
 };
 use serde_json::{Value, json};
@@ -343,4 +347,120 @@ pub(crate) fn resource_json(
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Decode one configuration/resource mutation after registry shape validation.
+pub(crate) fn decode_mutation(operation: &str, args: &Value) -> Result<Mutation, &'static str> {
+    Ok(match operation {
+        "reload_configuration" => Mutation::ReloadConfiguration,
+        "stage_configuration" => Mutation::StageConfiguration,
+        "apply_configuration" => Mutation::ApplyConfiguration {
+            candidate_id: id_field(args, "candidate_id")?,
+            expected_revision: id_field(args, "expected_revision")?,
+        },
+        "property_configure" => {
+            let target = args.get("target").ok_or("invalid_args")?;
+            let target_kind = target
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            let property = args
+                .get("property")
+                .and_then(Value::as_str)
+                .ok_or("invalid_args")?;
+            if target_kind.len() > protocol::SEMANTIC_NAME_LIMIT
+                || property.is_empty()
+                || property.len() > protocol::SEMANTIC_NAME_LIMIT
+            {
+                return Err("invalid_args");
+            }
+            let value = match args.get("value").ok_or("invalid_args")? {
+                Value::Number(value) => {
+                    PropertyMutationValue::Integer(value.as_i64().ok_or("invalid_args")?)
+                }
+                Value::String(value) => PropertyMutationValue::Text(value.clone()),
+                _ => return Err("invalid_args"),
+            };
+            Mutation::ConfigureProperty {
+                target_kind: target_kind.to_owned(),
+                target_id: id_field(target, "id")?,
+                property: property.to_owned(),
+                value,
+                expected_revision: id_field(args, "expected_revision")?,
+            }
+        }
+        "reconnect_resource" => Mutation::ReconnectResource {
+            resource: id_field(args, "resource")?,
+            expected_binding_generation: id_field(args, "expected_binding_generation")?,
+        },
+        _ => return Err("unsupported_operation"),
+    })
+}
+
+/// Apply an admitted configuration/resource mutation through `ServiceHost`.
+pub(crate) fn dispatch_mutation(
+    service: &mut ServiceHost,
+    mutation: Mutation,
+) -> Result<Value, Error> {
+    match mutation {
+        Mutation::ReloadConfiguration => service
+            .reload_configuration()
+            .map(|result| json!({"revision":result.revision.to_string()}))
+            .map_err(lifecycle_domain_error),
+        Mutation::StageConfiguration => service
+            .stage_configuration()
+            .map(|staged| {
+                let effects: Vec<_> = staged
+                    .diff()
+                    .effects()
+                    .iter()
+                    .map(|effect| effect.as_str())
+                    .collect();
+                json!({"candidate_id":staged.id().to_string(),
+                    "base_revision":staged.base_revision().to_string(),
+                    "expires_at_ns":staged.expires_at().as_nanos().to_string(),
+                    "effects":effects})
+            })
+            .map_err(lifecycle_domain_error),
+        Mutation::ApplyConfiguration {
+            candidate_id,
+            expected_revision,
+        } => service
+            .apply_staged_configuration(candidate_id, expected_revision)
+            .map(|result| json!({"revision":result.revision.to_string()}))
+            .map_err(lifecycle_domain_error),
+        Mutation::ConfigureProperty {
+            target_kind,
+            target_id,
+            property,
+            value,
+            expected_revision,
+        } => {
+            let value = match value {
+                PropertyMutationValue::Integer(value) => PropertyValue::Integer(value),
+                PropertyMutationValue::Text(value) => PropertyValue::Text(value),
+            };
+            service
+                .configure_property(&target_kind, target_id, &property, value, expected_revision)
+                .map(|result| {
+                    json!({"target":{"kind":target_kind,"id":target_id.to_string()},
+                    "property":property,"revision":result.revision.to_string(),
+                    "persisted_to_deployment_source":false})
+                })
+                .map_err(lifecycle_domain_error)
+        }
+        Mutation::ReconnectResource {
+            resource,
+            expected_binding_generation,
+        } => service
+            .reconnect_resource(resource, expected_binding_generation)
+            .map(|result| {
+                json!({"resource":result.resource_id.to_string(),
+                    "binding_generation":result.binding_generation.to_string()})
+            })
+            .map_err(lifecycle_domain_error),
+        _ => Err(Error::InvalidConfiguration(
+            "unexpected configuration mutation",
+        )),
+    }
 }

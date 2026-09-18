@@ -4,7 +4,9 @@
 //! A pure query never calls observe. Ring pressure evicts oldest records without
 //! pinning them for frozen API projections or subscribers.
 
-use crate::application::{controller_projection_json, nanos, output_json, reference_json};
+use crate::application::projections::{
+    controller_projection_json, nanos, output_json, reference_json,
+};
 use crate::measurements::sample_json;
 use lab_core::control::ControllerId;
 use lab_core::managed::{ComponentId, ComponentState};

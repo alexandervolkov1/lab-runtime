@@ -1,6 +1,17 @@
-//! Stable public measurement projections shared by current, window, and events.
+//! Measurement read-side operations and their stable public projections.
+//!
+//! `latest`, `measurements_current`, and `measurement_window` query committed
+//! Runtime signal buffers. They do not poll instruments and do not own history;
+//! durable Recorder history remains a separate API path.
 
-use lab_core::{MeasurementFailure, Sample, Value};
+use crate::{
+    application::common::{domain_code, id_field},
+    service::ServiceHost,
+};
+
+use lab_core::{
+    InstrumentId, MeasurementFailure, ParameterId, Query, QueryResult, Sample, SignalId, Value,
+};
 use serde_json::{Value as JsonValue, json};
 
 /// Encode one stable signal identity. Instrument and parameter positions are not identities.
@@ -69,4 +80,109 @@ pub fn current_json(
         },
         |sample| sample_json(sample, generation),
     )
+}
+
+/// Project one authoritative current signal selected by stable identity.
+pub(crate) fn latest(service: &ServiceHost, args: &JsonValue) -> Result<JsonValue, &'static str> {
+    let signal = args.get("signal").ok_or("invalid_args")?;
+    let instrument = id_field(signal, "instrument")?;
+    let parameter = id_field(signal, "parameter")?;
+    let owner = service.owner();
+    match owner
+        .query(Query::GetLatestSignal(SignalId::new(
+            InstrumentId::new(instrument),
+            ParameterId::new(parameter),
+        )))
+        .map_err(domain_code)?
+    {
+        QueryResult::Latest(sample) => {
+            let QueryResult::Descriptor(descriptor) = owner
+                .query(Query::DescribeInstrument(InstrumentId::new(instrument)))
+                .map_err(domain_code)?
+            else {
+                return Err("internal_error");
+            };
+            let descriptor = descriptor
+                .parameter(ParameterId::new(parameter))
+                .ok_or("unknown_parameter")?;
+            Ok(current_json(
+                descriptor.signal.ok_or("unknown_signal")?,
+                descriptor.unit,
+                sample.as_ref(),
+                owner.signal_generation(SignalId::new(
+                    InstrumentId::new(instrument),
+                    ParameterId::new(parameter),
+                )),
+            ))
+        }
+        _ => Err("internal_error"),
+    }
+}
+
+/// Build deterministic current-measurement records for one frozen projection.
+pub(crate) fn current_records(service: &ServiceHost) -> Result<Vec<JsonValue>, &'static str> {
+    let owner = service.owner();
+    let QueryResult::Instruments(instruments) =
+        owner.query(Query::Discover).map_err(domain_code)?
+    else {
+        return Err("internal_error");
+    };
+    let mut records = Vec::new();
+    for descriptor in instruments {
+        for parameter in descriptor
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.signal.is_some())
+        {
+            let signal = parameter.signal.expect("filtered above");
+            let QueryResult::Latest(latest) = owner
+                .query(Query::GetLatestSignal(signal))
+                .map_err(domain_code)?
+            else {
+                return Err("internal_error");
+            };
+            records.push(current_json(
+                signal,
+                parameter.unit,
+                latest.as_ref(),
+                owner.signal_generation(signal),
+            ));
+        }
+    }
+    Ok(records)
+}
+
+/// Project bounded recent in-memory signal history, never durable Recorder history.
+pub(crate) fn window(service: &ServiceHost, args: &JsonValue) -> Result<JsonValue, &'static str> {
+    let signal = args.get("signal").ok_or("invalid_args")?;
+    let signal = SignalId::new(
+        InstrumentId::new(id_field(signal, "instrument")?),
+        ParameterId::new(id_field(signal, "parameter")?),
+    );
+    let limit = args
+        .get("max_records")
+        .and_then(JsonValue::as_u64)
+        .ok_or("invalid_args")? as usize;
+    if !(1..=128).contains(&limit) {
+        return Err("invalid_args");
+    }
+    let owner = service.owner();
+    let QueryResult::Window(window) = owner
+        .query(Query::GetSignalWindow(signal))
+        .map_err(domain_code)?
+    else {
+        return Err("internal_error");
+    };
+    let total = window.len();
+    let start = total.saturating_sub(limit);
+    let rows = window[start..]
+        .iter()
+        .map(|sample| sample_json(sample, owner.signal_generation(signal)))
+        .collect::<Vec<_>>();
+    let result = json!({"signal":signal_id_json(signal),"ordering":"oldest_first",
+        "source":"runtime_recent","capacity":total.to_string(),"truncated":start>0,"rows":rows});
+    if serde_json::to_vec(&result).map_or(true, |bytes| bytes.len() > 8 * 1024) {
+        return Err("response_too_large");
+    }
+    Ok(result)
 }

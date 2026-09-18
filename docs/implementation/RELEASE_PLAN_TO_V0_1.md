@@ -244,8 +244,9 @@ accepted archive is `examples/metakon-513-m9d-write-smoke.sqlite`, SHA-256
 
 M10.1 completed the structural/studyability audit of the actual post-M9D codebase.
 M10.2 completed low-risk internal terminology cleanup, archaeological classification
-and source architecture indexes without changing accepted behavior. M10.3 has not
-started and requires separate authorization.
+and source architecture indexes without changing accepted behavior. M10.3 completed
+behavior-preserving Application API organization around the unchanged centralized
+42-operation registry. M10.4 has not started and requires separate authorization.
 
 Refactor only under test coverage, preserving behavior and safety:
 

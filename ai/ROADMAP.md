@@ -223,8 +223,10 @@ behavior and safety. Refactor only under test coverage.
 
 M10.1 completed the structural/studyability audit of the actual post-M9D codebase.
 M10.2 completed the separately authorized low-risk terminology, archaeological and
-source architecture-index slice without changing accepted behavior. M10.3 and later
-stages require their own authorization.
+source architecture-index slice without changing accepted behavior. M10.3 completed
+the separately authorized Application API physical organization while preserving the
+accepted registry/wire contract. M10.4 and later stages require their own
+authorization.
 
 Targets:
 
