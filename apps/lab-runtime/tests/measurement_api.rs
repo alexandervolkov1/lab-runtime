@@ -70,6 +70,16 @@ fn discovery_is_composition_derived_paged_and_uses_stable_signal_ids() {
 #[test]
 fn current_and_window_make_quality_unit_status_and_identity_explicit() {
     let (mut service, mut app, _) = setup();
+    let plant = service.owner().plant_id();
+    let at = service.clock().now() + Duration::from_millis(1);
+    service
+        .owner_mut()
+        .command(Command::RefreshMeasurement {
+            instrument: plant,
+            parameter: ParameterId::new(1),
+            at,
+        })
+        .unwrap();
     let current = ask(
         &mut service,
         &mut app,
