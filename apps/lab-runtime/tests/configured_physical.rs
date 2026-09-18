@@ -6,10 +6,14 @@ use lab_core::{
     transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
 };
 use lab_runtime::{
+    application::Application,
     configuration::{ArtifactReader, ConfigurationError, load_runtime_toml, parse_runtime_toml},
     deployment::{DeploymentLifecycle, DiffEffect},
     host::{Clock, HostCore},
+    service::{ServiceHost, ServiceOptions},
+    wire::{decode_frame, encode_frame},
 };
+use serde_json::{Value, json};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -158,6 +162,14 @@ fn response_for(address: u8, flag: u8, payload: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(payload);
     bytes.push(crc(&bytes));
     bytes
+}
+
+fn ask(service: &mut ServiceHost, application: &mut Application, request: Value) -> Vec<Value> {
+    application.handle(
+        service,
+        1,
+        decode_frame(&encode_frame(&request).unwrap()).unwrap(),
+    )
 }
 
 struct MultiReader;
@@ -310,6 +322,199 @@ fn c12_c17_configured_metakon_publishes_normal_signal_with_binding_identity() {
     };
     assert!((value - 23.4).abs() < 1.0e-9);
     assert_eq!(host.resource_records()[0]["target"]["id"], "7");
+}
+
+#[test]
+fn configured_metakon_fault_matrix_is_finite_truthful_and_generically_projected() {
+    #[derive(Clone, Copy)]
+    enum Fault {
+        BadCrc,
+        ShortFrame,
+        Silence,
+        Disconnect,
+    }
+
+    for (name, fault) in [
+        ("bad_crc", Fault::BadCrc),
+        ("short_frame", Fault::ShortFrame),
+        ("silence", Fault::Silence),
+        ("disconnect", Fault::Disconnect),
+    ] {
+        let mut bad_crc = temperature_response(999);
+        let last = bad_crc.len() - 1;
+        bad_crc[last] ^= 0xff;
+        let fault_response = match fault {
+            Fault::BadCrc => bad_crc,
+            Fault::ShortFrame => temperature_response(999)[..4].to_vec(),
+            Fault::Silence | Fault::Disconnect => Vec::new(),
+        };
+        let wire = Rc::new(RefCell::new(DisconnectWire {
+            responses: VecDeque::from([
+                channel_type_response(),
+                temperature_response(200),
+                fault_response,
+                temperature_response(333),
+            ]),
+            fail_reads_when_empty: matches!(fault, Fault::Disconnect),
+            ..DisconnectWire::default()
+        }));
+        let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(DisconnectingTransport(wire.clone())),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        let mut clock = TestClock::default();
+        host.begin_configured_probes(clock.now()).unwrap();
+        for milliseconds in [0, 10, 20, 30] {
+            clock.0 = Duration::from_millis(milliseconds);
+            host.service(&clock).unwrap();
+        }
+        assert!(host.configured_probes_ready().unwrap(), "{name}");
+        let signal = SignalId::new(
+            lab_core::InstrumentId::new(11),
+            lab_core::ParameterId::new(2),
+        );
+        let QueryResult::Latest(Some(good)) = host.query(Query::GetLatestSignal(signal)).unwrap()
+        else {
+            panic!("{name}: initial configured Good missing")
+        };
+        assert_eq!(good.value(), Some(&lab_core::Value::Float(20.0)), "{name}");
+
+        for milliseconds in (100..=800).step_by(10) {
+            clock.0 = Duration::from_millis(milliseconds);
+            host.service(&clock).unwrap();
+        }
+        let resource = &host.resource_records()[0]["data"];
+        assert_eq!(resource["state"], "offline", "{name}: {resource:?}");
+        assert_eq!(resource["generation"], "1", "{name}");
+        assert_eq!(resource["queue_len"], 0, "{name}");
+        let QueryResult::Latest(Some(failed)) = host.query(Query::GetLatestSignal(signal)).unwrap()
+        else {
+            panic!("{name}: terminal Unavailable missing")
+        };
+        assert_eq!(
+            failed.quality(),
+            lab_core::SampleQuality::Unavailable,
+            "{name}"
+        );
+        assert_eq!(failed.value(), None, "{name}");
+        assert_eq!(
+            failed.failure(),
+            Some(lab_core::MeasurementFailure::Transport),
+            "{name}"
+        );
+        assert_eq!(wire.borrow().writes, 3, "{name}: failed READ was retried");
+        assert_eq!(
+            wire.borrow().responses.len(),
+            1,
+            "{name}: a later frame crossed the failed transaction boundary"
+        );
+
+        clock.0 = Duration::from_secs(2);
+        host.service(&clock).unwrap();
+        assert_eq!(wire.borrow().writes, 3, "{name}: offline polling grew work");
+
+        let options =
+            ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"])
+                .unwrap();
+        let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let hello = ask(
+            &mut service,
+            &mut application,
+            json!({"v":1,"msg_id":"hello","op":"hello","args":{"scope":null}}),
+        );
+        assert_eq!(hello[0]["type"], "result", "{name}: {hello:?}");
+        let current = ask(
+            &mut service,
+            &mut application,
+            json!({"v":1,"msg_id":"current","op":"measurements_current","args":{}}),
+        );
+        let rows = current[0]["result"]["records"].as_array().unwrap();
+        let projected = rows
+            .iter()
+            .find(|row| row["signal"] == json!({"instrument":"11","parameter":"2"}))
+            .unwrap_or_else(|| panic!("{name}: configured signal absent: {current:?}"));
+        assert_eq!(projected["quality"], "unavailable", "{name}");
+        assert_eq!(projected["failure"], "transport", "{name}");
+        assert_eq!(projected["generation"], "1", "{name}");
+        let discovery = ask(
+            &mut service,
+            &mut application,
+            json!({"v":1,"msg_id":"discover","op":"discover","args":{}}),
+        );
+        let resources = discovery[0]["result"]["records"].as_array().unwrap();
+        let projected_resource = resources
+            .iter()
+            .find(|record| record["kind"] == "resource" && record["id"] == "7")
+            .unwrap_or_else(|| panic!("{name}: resource absent: {discovery:?}"));
+        assert_eq!(projected_resource["state"]["state"], "offline", "{name}");
+    }
+}
+
+#[test]
+fn malformed_compatibility_probe_never_releases_configured_acquisition() {
+    let mut bad_crc = channel_type_response();
+    let last = bad_crc.len() - 1;
+    bad_crc[last] ^= 0xff;
+    for (name, response) in [
+        ("bad_crc", bad_crc),
+        ("short_frame", channel_type_response()[..3].to_vec()),
+    ] {
+        let wire = Rc::new(RefCell::new(DisconnectWire {
+            responses: VecDeque::from([response, temperature_response(999)]),
+            ..DisconnectWire::default()
+        }));
+        let deployment = parse_runtime_toml(CONFIG, Path::new("C:/bench"), &mut Reader).unwrap();
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(DisconnectingTransport(wire.clone())),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        host.begin_configured_probes(Duration::ZERO).unwrap();
+        let mut clock = TestClock::default();
+        for milliseconds in (0..=700).step_by(10) {
+            clock.0 = Duration::from_millis(milliseconds);
+            host.service(&clock).unwrap();
+        }
+
+        assert!(host.configured_probes_ready().is_err(), "{name}");
+        assert_eq!(host.configured_binding_generation(11), Some(1), "{name}");
+        assert_eq!(host.configured_output_count(), 0, "{name}");
+        assert_eq!(
+            host.resource_records()[0]["data"]["state"],
+            "offline",
+            "{name}"
+        );
+        assert_eq!(
+            wire.borrow().writes,
+            1,
+            "{name}: ordinary READ escaped probe fence"
+        );
+        assert_eq!(
+            wire.borrow().responses.len(),
+            1,
+            "{name}: temperature frame was consumed after incompatible probe"
+        );
+        let QueryResult::Latest(latest) = host
+            .query(Query::GetLatestSignal(SignalId::new(
+                lab_core::InstrumentId::new(11),
+                lab_core::ParameterId::new(2),
+            )))
+            .unwrap()
+        else {
+            panic!("{name}: configured signal query changed kind")
+        };
+        assert!(
+            latest.as_ref().is_none_or(|sample| {
+                sample.quality() == lab_core::SampleQuality::Unavailable && sample.value().is_none()
+            }),
+            "{name}: malformed probe fabricated a Good temperature: {latest:?}"
+        );
+    }
 }
 
 #[test]
