@@ -32,6 +32,7 @@ struct Wire {
     last_output: i8,
     readback_offsets: VecDeque<i8>,
     suppress_readback: bool,
+    suppress_write_ack: bool,
     write_limits: VecDeque<usize>,
     fail_before_first_write: bool,
     started_writes: usize,
@@ -60,9 +61,11 @@ impl ByteTransport for MetakonFake {
         match bytes {
             [15, 0, 6, 1, 2, raw, _] => {
                 wire.last_output = *raw as i8;
-                let body = [15, 0, 6, 1];
-                wire.readable.extend(body);
-                wire.readable.push_back(crc(&body));
+                if !wire.suppress_write_ack {
+                    let body = [15, 0, 6, 1];
+                    wire.readable.extend(body);
+                    wire.readable.push_back(crc(&body));
+                }
             }
             [15, 0, 6, 0, _] if !wire.suppress_readback => {
                 let offset = wire.readback_offsets.pop_front().unwrap_or(0);
@@ -404,6 +407,52 @@ fn readback_timeout_is_ambiguous_and_never_retries_the_write() {
         writes_before_timeout
     );
     assert_eq!(wire.borrow().recoveries, 1);
+}
+
+#[test]
+fn missing_ack_fails_the_controller_as_soon_as_the_started_write_is_ambiguous() {
+    let (mut runtime, wire) = setup();
+    establish_safe(&mut runtime);
+    install_controller(&mut runtime);
+    wire.borrow_mut().suppress_write_ack = true;
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument: INPUT,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    runtime
+        .command(Command::TickController {
+            controller: CONTROLLER,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+
+    service(&mut runtime, 1_000);
+    let writes_before_timeout = wire.borrow().started_writes;
+    service(&mut runtime, 1_010);
+    service(&mut runtime, 1_011);
+
+    let ambiguous = output(&runtime);
+    assert_eq!(ambiguous.outcome, Some(DispatchOutcome::Ambiguous));
+    assert!(ambiguous.fault_latched);
+    assert!(ambiguous.lease.is_none());
+    let QueryResult::Controller(controller) = runtime.query(Query::Controller(CONTROLLER)).unwrap()
+    else {
+        panic!("unexpected controller query")
+    };
+    assert_eq!(controller.state, ControllerState::Failed);
+    assert!(controller.lease.is_none());
+
+    for at in 1_011..=1_030 {
+        service(&mut runtime, at);
+    }
+    assert_eq!(
+        wire.borrow().started_writes,
+        writes_before_timeout + 1,
+        "only the distinct safe transition may follow; the ambiguous nonzero WRITE is never retried"
+    );
 }
 
 #[test]

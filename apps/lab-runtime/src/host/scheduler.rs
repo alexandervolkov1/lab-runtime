@@ -153,13 +153,27 @@ impl HostCore {
                     .is_some_and(|sample| sample.quality() == SampleQuality::Good)
                     && latest != self.consumed.get(controller).cloned().flatten()
                 {
-                    self.runtime.command(Command::TickController {
+                    let outcome = self.runtime.command(Command::TickController {
                         controller: *controller,
                         at: clock.now(),
-                    })?;
+                    });
                     self.events
                         .observe(&self.runtime, clock.now(), None)
                         .map_err(event_domain_error)?;
+                    if let Err(error) = outcome {
+                        let QueryResult::Controller(after) =
+                            self.runtime.query(Query::Controller(*controller))?
+                        else {
+                            unreachable!()
+                        };
+                        // A tick-level input/output/algorithm fault is scoped once
+                        // Runtime has authoritatively failed the controller and
+                        // revoked its output. Errors without that fail-closed
+                        // transition still indicate an owner/configuration defect.
+                        if after.state != ControllerState::Failed {
+                            return Err(error);
+                        }
+                    }
                     self.consumed.insert(*controller, latest);
                     report.controller_ticks += 1;
                 }
