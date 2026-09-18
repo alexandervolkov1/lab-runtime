@@ -231,8 +231,10 @@ M10.3 completed behavior-preserving Application API organization by semantic dom
 M10.4 organized Runtime, Host and Service implementation modules without changing
 state ownership, scheduler order or accepted behavior. M10.5 organized the Recorder
 contract, bounded worker and SQLite storage without changing schema, lifecycle or
-durability; M10.6 has not started. The roadmap ends at v0.1.0; milestones do not
-cross review gates automatically.
+durability. M10.6 centralized trusted native-component registration and configured
+instrument composition without adding runtime plugins, protocols or API semantics;
+M10.7 has not started. The roadmap ends at v0.1.0; milestones do not cross review
+gates automatically.
 
 ## v0.1 identity
 

@@ -36,7 +36,9 @@ organized the Application API by semantic domain without changing the accepted
 42-operation contract. M10.4 organized Runtime, Host and Service orchestration into
 focused implementation modules without changing ownership or behavior. M10.5
 separated the Recorder semantic contract, bounded worker concerns and SQLite
-implementation without changing schema or durability. M10.6 has not started.
+implementation without changing schema or durability. M10.6 centralized native
+component registration and clarified the static physical-instrument composition
+path without adding plugins, protocols or API semantics. M10.7 has not started.
 
 ## Product boundary
 

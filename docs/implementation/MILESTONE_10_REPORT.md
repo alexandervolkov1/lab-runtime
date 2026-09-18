@@ -9,7 +9,8 @@ M10.2: COMPLETE
 M10.3: COMPLETE
 M10.4: COMPLETE
 M10.5: COMPLETE
-M10.6: NOT STARTED
+M10.6: COMPLETE
+M10.7: NOT STARTED
 M11+: NOT AUTHORIZED
 ```
 
@@ -31,6 +32,12 @@ M10.5 implementation baseline:
 
 ```text
 cbb8d562f7fb74705cc4711d51a8d993c151f0fc
+```
+
+M10.6 implementation baseline:
+
+```text
+77d2575ec9c165d9dd51a1d7bf289afcebeb3055
 ```
 
 ## M10.2 — terminology, archaeology and architecture indexes
@@ -712,3 +719,139 @@ M10.6 native component/instrument extension clarity has not started. Systematic
 visibility/rustdoc/test organization and every HIGH-risk change to ownership,
 scheduling, Recorder policy, schema, history protocol, OutputAuthority, transport
 or public API remain deferred. M11 remains unauthorized.
+
+## M10.6 — native component and instrument extension clarity
+
+M10.6 removes duplicated compile-time implementation selection and gives configured
+instrument kinds one obvious composition entry point. It adds no product component,
+instrument protocol, plugin mechanism or Application operation. Core remains
+implementation-neutral and Runtime remains the sole authoritative mutable owner.
+
+### Native component extension before and after
+
+Before M10.6, `native.moving_mean.v1` knowledge was repeated in
+`managed_executor.rs`, deployment validation and two Host composition paths. Its
+property metadata was generic at the API edge, but the implementation ID, window
+rules and manifest construction still had several independent matches/builders.
+
+The final static layout is:
+
+```text
+apps/lab-runtime/src/managed_executor.rs
+    bounded two-worker ComponentExecutor and extension recipe
+apps/lab-runtime/src/managed_executor/registry.rs
+    sole compile-time implementation lookup and definition composition dispatch
+apps/lab-runtime/src/managed_executor/moving_mean.rs
+    native.moving_mean.v1 metadata, manifest rules, validation and bounded algorithm
+apps/lab-runtime/src/managed_executor/reference_component.rs
+    cfg(test)-only second registration used as an extension oracle
+```
+
+One registration entry binds a stable `ComponentImplementationId` to property
+metadata, definition composition, invocation validation and its bounded runner.
+Deployment validation, configured Host staging and the demonstration profile all
+use that same registration. The generic configuration projection reads the same
+metadata; it has no moving-mean branch.
+
+To add an ordinary production native component, a developer now normally touches:
+
+```text
+1. managed_executor/<implementation>.rs
+   bounded implementation plus stable ID, properties, units, bounds and warm-up
+2. managed_executor/registry.rs
+   one explicit trusted registration entry and lookup arm
+3. focused implementation/registration tests
+4. deployment examples only when the product configuration should instantiate it
+```
+
+No `lab-core`, Application domain handler, history/subscription module, Recorder or
+SQLite edit is required. The `cfg(test)` `native.test.scale.v1` registration proves
+the real path with integer metadata, bounded `PlainData` state, init/step lifecycle
+and finite/unit validation. Through unchanged generic paths it appears in discovery
+and property projection, produces current/recent-history signals and emits a live
+subscription event. It adds no production feature or public operation.
+
+Native provenance also remains generic: Host recording enumerates committed
+component definitions and records their semantic implementation ID, configuration
+identity and the existing Runtime binary SHA-256. A new registration needs no
+component-specific Recorder fact, table or SQL.
+
+### Physical instrument extension model
+
+Configured instrument composition moved intact from the broad `HostCore` constructor
+to `host/instruments.rs`. The existing declarative `InstrumentDto` enum remains the
+explicit list of supported kinds, and one focused match now registers virtual
+measurements, native thermal plants and Metakon with Runtime and returns their
+schedules/probes/catalog projections. This is static Rust composition, not a
+universal codec trait or instrument framework.
+
+`HostCore` now retains a derived `physical_instruments` identity set for generic
+discovery classification. That avoids asking the Metakon binding table whether an
+instrument is physical; it does not duplicate instrument state or authority.
+Signals registered by any composition arm continue through Runtime descriptors and
+therefore automatically reach discovery, `measurements_current`, recent history,
+subscriptions, controller inputs and Recorder facts. Application, Recorder and
+SQLite contain no Metakon-specific signal exposure branch.
+
+Metakon-specific behavior intentionally remains where it belongs:
+
+- deployment definition/address/resource and protocol bounds in `configuration.rs`;
+- definition decoding in `definition.rs`;
+- codec and transaction semantics in `lab-core::metakon` and Runtime physical I/O;
+- Metakon poll/probe/output correlation in the existing scheduler/reconnect/safety
+  paths;
+- COM byte movement in the private serial adapter.
+
+No raw write capability was added to the extension seam. An output-capable adapter
+must still use controller `OutputProposal` → OutputAuthority → ResourceExecutor →
+final authority/generation recheck → protocol WRITE/ACK/readback. An input-only
+instrument needs no fake output hook.
+
+### Hypothetical Arduino furnace touch set
+
+An Arduino second-order furnace would require an Arduino-specific protocol/adapter
+module, one `InstrumentDto` variant with validation/property metadata, one
+composition arm in `host/instruments.rs`, its protocol-specific scheduling and
+completion/commit path, optional authority-gated output integration, deployment
+examples/definitions and focused tests. Ordinary temperature signals would use the
+existing generic Runtime/API/Recorder paths. It would not require edits to
+Application domain handlers, operation registry, generic history/subscription,
+Recorder internals or SQLite schema unless it introduced genuinely new domain
+semantics.
+
+### Behavior freeze and verification
+
+The production registry still contains only `native.moving_mean.v1`; the second
+component exists only in unit-test builds. The accepted 42 operations, 25
+capabilities, DTO/error/bounds behavior, scheduler order, moving-mean behavior,
+virtual models, emulator API, Recorder provenance/schema, Metakon read/write codec,
+OutputAuthority and transport encapsulation are unchanged.
+
+Final gates:
+
+```text
+cargo fmt --all -- --check                              PASS
+cargo test --workspace                                  PASS
+cargo test --workspace --release                        PASS
+cargo clippy --workspace --all-targets -- -D warnings   PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+                                                         PASS
+exact 42-operation / 25-capability registry regression   PASS
+native moving mean + second-registration oracle          PASS
+generic component property/API signal regressions        PASS
+measurement/discovery/history/subscription regressions   PASS
+M9B.8 fault acceptance                                   PASS
+M9D physical-output software suite                       PASS
+Recorder provenance compatibility                        PASS
+git diff --check                                         PASS
+```
+
+COM5 was not opened and no hardware test was performed. The accepted M8, post-M9C
+and M9D evidence files remain unchanged.
+
+### Deferred work
+
+M10.7 systematic visibility, rustdoc and test organization has not started. Dynamic
+plugins, scripting, automatic registration, a universal physical-instrument
+framework, Arduino protocol implementation and every semantic redesign remain out
+of scope. M11 remains unauthorized.

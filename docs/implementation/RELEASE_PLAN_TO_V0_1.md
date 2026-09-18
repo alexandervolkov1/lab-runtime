@@ -249,8 +249,10 @@ behavior-preserving Application API organization around the unchanged centralize
 42-operation registry. M10.4 organized Runtime, Host and Service implementation
 modules while preserving state ownership, scheduler order and lifecycle behavior.
 M10.5 organized the Recorder semantic contract, bounded worker and SQLite storage
-without changing schema, lifecycle or durability. M10.6 has not started and
-requires separate authorization.
+without changing schema, lifecycle or durability. M10.6 centralized trusted native
+component registration and configured instrument composition without adding plugins,
+protocols or public API semantics. M10.7 has not started and requires separate
+authorization.
 
 Refactor only under test coverage, preserving behavior and safety:
 

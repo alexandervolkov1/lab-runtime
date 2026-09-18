@@ -1,4 +1,4 @@
-# Current work — M10.5 Recorder/SQLite organization complete
+# Current work — M10.6 extension clarity complete
 
 ```text
 M8: ACCEPTED
@@ -13,7 +13,8 @@ M10.2: COMPLETE
 M10.3: COMPLETE
 M10.4: COMPLETE
 M10.5: COMPLETE
-M10.6: NOT STARTED
+M10.6: COMPLETE
+M10.7: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -54,8 +55,11 @@ and direct SQLite persistence into focused modules while preserving all lifecycl
 schema, transaction, provenance and history behavior. The implementation record is
 `docs/implementation/MILESTONE_10_REPORT.md`.
 
-M10.6 has not started and requires explicit authorization. No later M10 stage or M11
-work is authorized by completion of M10.5.
+M10.6 centralized the compile-time native component registry, proved a second
+test-only component through generic API surfaces, and extracted configured instrument
+composition into one explicit Host module. M10.7 has not started and requires
+explicit authorization. No later M10 stage or M11 work is authorized by completion
+of M10.6.
 
 M10 may split oversized or mixed modules by responsibility, improve internal names,
 remove safe dead compatibility/code, tighten public/private boundaries, improve

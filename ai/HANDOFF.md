@@ -24,7 +24,8 @@ M10.2: COMPLETE
 M10.3: COMPLETE
 M10.4: COMPLETE
 M10.5: COMPLETE
-M10.6: NOT STARTED
+M10.6: COMPLETE
+M10.7: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -41,7 +42,21 @@ by semantic domain while preserving the accepted registry and wire contract. M10
 organized Runtime, Host and Service orchestration without changing authoritative
 ownership, scheduler order or lifecycle behavior. M10.5 organized the Recorder
 semantic contract, bounded worker and SQLite implementation without changing
-schema, lifecycle or durability. M10.6 has not started.
+schema, lifecycle or durability. M10.6 centralized static native-component
+registration and configured instrument composition without changing public behavior.
+
+## M10.6 completion
+
+`managed_executor/registry.rs` is now the one explicit compile-time implementation
+selection/composition point. Moving-mean logic and metadata live together, and a
+real `cfg(test)` second registration proves generic discovery, property, current,
+recent-history and subscription surfaces without new Application/Recorder/SQLite
+branches. `host/instruments.rs` is the focused static composition match for declared
+instrument kinds; standard signals continue through generic Runtime projections.
+
+Core remains implementation-neutral. No plugin framework, physical protocol,
+Application operation, schema, scheduler, OutputAuthority or Metakon behavior was
+added or changed. M10.7 has not started and M11 remains unauthorized.
 
 ## M10.5 completion
 

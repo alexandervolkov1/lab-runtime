@@ -37,7 +37,8 @@ M10.2: COMPLETE
 M10.3: COMPLETE
 M10.4: COMPLETE
 M10.5: COMPLETE
-M10.6: NOT STARTED
+M10.6: COMPLETE
+M10.7: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -58,8 +59,9 @@ by semantic domain without changing its accepted 42-operation contract. M10.4
 physically organized Runtime, Host and Service orchestration while retaining the
 same owners and progression order. M10.5 physically organized the Recorder contract,
 bounded worker and SQLite implementation without changing schema or durability.
-M10.6 has not started. M11 and later milestones remain blocked behind explicit
-review gates.
+M10.6 centralized static native-component registration and configured instrument
+composition without adding plugins, protocols or public semantics. M10.7 has not
+started. M11 and later milestones remain blocked behind explicit review gates.
 
 ## Donor repository
 

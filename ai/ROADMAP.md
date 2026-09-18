@@ -228,7 +228,9 @@ the separately authorized Application API physical organization while preserving
 accepted registry/wire contract. M10.4 organized Runtime, Host and Service
 orchestration without changing owners, scheduling or accepted semantics. M10.5
 organized Recorder/SQLite implementation boundaries without changing schema or
-durability. M10.6 and later stages require separate authorization.
+durability. M10.6 centralized static native-component registration and configured
+instrument composition without adding plugin or protocol semantics. M10.7 and later
+stages require separate authorization.
 
 Targets:
 
