@@ -21,8 +21,8 @@ M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
+M10: READY_FOR_EXTERNAL_REVIEW
+Current phase: M10 — external re-review after property-projection correction
 M11+: NOT AUTHORIZED
 ```
 
@@ -231,7 +231,9 @@ organized Recorder/SQLite implementation boundaries without changing schema or
 durability. M10.6 centralized static native-component registration and configured
 instrument composition without adding plugin or protocol semantics. M10.7 completed
 the source-visibility, architectural rustdoc and test-navigation cleanup without
-changing behavior. M10.8 requires separate authorization.
+changing behavior. The first external review blocker was corrected by moving
+ordinary instrument property metadata out of the generic Application projection and
+into the configuration extension layer. M10 is ready for external re-review.
 
 Targets:
 

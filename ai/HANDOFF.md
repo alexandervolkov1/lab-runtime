@@ -18,7 +18,7 @@ M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: AUTHORIZED
+M10: READY_FOR_EXTERNAL_REVIEW
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
@@ -26,8 +26,8 @@ M10.4: COMPLETE
 M10.5: COMPLETE
 M10.6: COMPLETE
 M10.7: COMPLETE
-M10.8: NOT STARTED
-Current phase: M10 — core cleanup and studyability
+M10.8: READY_FOR_EXTERNAL_REVIEW
+Current phase: M10 — external re-review after property-projection correction
 M11+: NOT AUTHORIZED
 ```
 
@@ -71,7 +71,22 @@ the M9D shutdown/ambiguous-write, WriterBarrier and history-disconnect regressio
 oracles explicit.
 
 The Application registry, protocol, bounds, schema, scheduling and hardware-facing
-semantics are unchanged. M10.8 has not started and M11 remains unauthorized.
+semantics are unchanged.
+
+## M10 external-review correction
+
+The first M10 external review found one blocker: `configuration_api` enumerated
+`InstrumentDto` variants to build ordinary property records. The correction adds a
+neutral `InstrumentPropertySource` contract and typed metadata in the configuration
+layer. `InstrumentDto` owns its variant-specific property declaration;
+`configuration_api` now performs only generic JSON projection and has no production
+reference to `InstrumentDto`.
+
+Exact VirtualMeasurement, ThermalPlant and Metakon property DTOs are frozen by a
+focused regression. A second test-only property source proves the real generic
+projection seam. Existing property mutation/revision fencing, the 42-operation /
+25-capability registry and all accepted safety/storage behavior remain unchanged.
+M10 is ready for external re-review; M11 remains unauthorized.
 
 ## M10.5 completion
 

@@ -31,7 +31,7 @@ M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: AUTHORIZED
+M10: READY_FOR_EXTERNAL_REVIEW
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
@@ -39,8 +39,8 @@ M10.4: COMPLETE
 M10.5: COMPLETE
 M10.6: COMPLETE
 M10.7: COMPLETE
-M10.8: NOT STARTED
-Current phase: M10 — core cleanup and studyability
+M10.8: READY_FOR_EXTERNAL_REVIEW
+Current phase: M10 — external re-review after property-projection correction
 M11+: NOT AUTHORIZED
 ```
 
@@ -63,8 +63,11 @@ bounded worker and SQLite implementation without changing schema or durability.
 M10.6 centralized static native-component registration and configured instrument
 composition without adding plugins, protocols or public semantics. M10.7 tightened
 internal visibility, improved architectural source navigation and organized the
-regression-test map without changing behavior. M10.8 has not started. M11 and later
-milestones remain blocked behind explicit review gates.
+regression-test map without changing behavior. The first M10 external review found
+one instrument-property projection coupling; the configuration layer now owns
+neutral property metadata and the Application projection no longer enumerates
+instrument variants. M10 is ready for external re-review. M11 and later milestones
+remain blocked behind explicit review gates.
 
 ## Donor repository
 

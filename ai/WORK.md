@@ -1,4 +1,4 @@
-# Current work — M10.7 studyability cleanup complete
+# Current work — M10 ready for external re-review
 
 ```text
 M8: ACCEPTED
@@ -7,7 +7,7 @@ M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: AUTHORIZED
+M10: READY_FOR_EXTERNAL_REVIEW
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
@@ -15,8 +15,8 @@ M10.4: COMPLETE
 M10.5: COMPLETE
 M10.6: COMPLETE
 M10.7: COMPLETE
-M10.8: NOT STARTED
-Current phase: M10 — core cleanup and studyability
+M10.8: READY_FOR_EXTERNAL_REVIEW
+Current phase: M10 — external re-review after property-projection correction
 M11+: NOT AUTHORIZED
 ```
 
@@ -60,9 +60,13 @@ M10.6 centralized the compile-time native component registry, proved a second
 test-only component through generic API surfaces, and extracted configured instrument
 composition into one explicit Host module. M10.7 tightened internal visibility,
 removed an unused managed-executor test barrier, improved architectural rustdoc and
-made high-value regression oracles easy to locate. M10.8 has not started and requires
-explicit authorization. No later M10 stage or M11 work is authorized by completion
-of M10.7.
+made high-value regression oracles easy to locate. The first M10 external review
+found one blocker: the generic Application property projection enumerated concrete
+`InstrumentDto` variants. The correction moved typed neutral property metadata and
+the static provider seam into `configuration.rs`; `configuration_api` now converts
+that metadata without knowing concrete instrument variants. Exact current DTOs and
+a second test-only property provider are covered by focused regressions. M10 is ready
+for external re-review. M11 work is not authorized.
 
 M10 may split oversized or mixed modules by responsibility, improve internal names,
 remove safe dead compatibility/code, tighten public/private boundaries, improve

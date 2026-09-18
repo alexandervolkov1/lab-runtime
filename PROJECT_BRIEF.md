@@ -214,17 +214,17 @@ M9B  ACCEPTED — coherent bounded Application API
 M9C  ACCEPTED — Lua and obsolete client baggage removed
 POST-M9C HARDWARE SMOKE  PASS — supplementary real-device read path
 M9D  ACCEPTED — physical Metakon output integration
-M10  AUTHORIZED — Core cleanup and studyability
+M10  READY_FOR_EXTERNAL_REVIEW — Core cleanup and studyability
 M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
 M12  NOT AUTHORIZED — documentation, packaging and final release audit
 v0.1.0
 ```
 
-Current phase: M10 — core cleanup and studyability. M9D software integration,
-hardware acceptance and external review are complete. Final real-device acceptance
-proved verified startup zero, one authority-gated +10 percent controller command
-with strict ACK and separate matching register-6 readback, normal pause to verified
-zero, Recorder sealing and clean shutdown. The disconnected load means physical
+Current phase: M10 — external re-review after property-projection correction. M9D
+software integration, hardware acceptance and external review are complete. Final
+real-device acceptance proved verified startup zero, one authority-gated +10 percent
+controller command with strict ACK and separate matching register-6 readback,
+normal pause to verified zero, Recorder sealing and clean shutdown. The disconnected load means physical
 heater effect was not tested. M10.1 completed the structural/studyability audit and
 M10.2 completed low-risk terminology, archaeology and source architecture indexes.
 M10.3 completed behavior-preserving Application API organization by semantic domain.
@@ -234,8 +234,12 @@ contract, bounded worker and SQLite storage without changing schema, lifecycle o
 durability. M10.6 centralized trusted native-component registration and configured
 instrument composition without adding runtime plugins, protocols or API semantics;
 M10.7 tightened internal visibility and improved architectural rustdoc/test
-navigation without changing public behavior; M10.8 has not started. The roadmap
-ends at v0.1.0; milestones do not cross review gates automatically.
+navigation without changing public behavior. The first M10 external review found
+one Application/configuration coupling in physical-instrument property projection;
+the correction moved neutral metadata to the configuration layer and left the
+Application projector independent of concrete instrument variants. M10 is ready
+for external re-review. The roadmap ends at v0.1.0; milestones do not cross review
+gates automatically.
 
 ## v0.1 identity
 

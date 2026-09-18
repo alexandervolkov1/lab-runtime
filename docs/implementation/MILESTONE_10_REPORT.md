@@ -970,3 +970,89 @@ and M9D evidence files were not modified; the M9D archive still hashes to
 M10.8 structural acceptance/external review has not started. Broad semantic
 redesign, logging (M11), final tutorials/manuals (M12), GUI, scripting and every
 post-v0.1 feature remain out of scope and unauthorized.
+
+## M10 external-review correction — instrument property projection
+
+The first external M10 review blocked acceptance on one concrete extension-boundary
+coupling. `configuration_api::property_records` directly matched every
+`InstrumentDto` variant and constructed each instrument's public property metadata.
+Adding an ordinary instrument therefore required a new Application-specific branch
+even when it introduced no new Application semantics.
+
+### Corrected metadata ownership
+
+The configuration layer now owns a small neutral static model:
+
+- `InstrumentPropertyType` and `InstrumentPropertyValue` describe the scalar shape
+  and current validated deployment value;
+- `InstrumentPropertyUnit` and `InstrumentPropertyConstraints` describe units and
+  inclusive numeric bounds;
+- `InstrumentPropertyAccess` and `InstrumentPropertyMutation` retain the accepted
+  access and lifecycle classifications;
+- `InstrumentPropertyMetadata` groups those facts without JSON or wire DTOs;
+- `InstrumentPropertySource` is the compile-time projection seam implemented by
+  `InstrumentDto`.
+
+The one concrete-variant match now lives with `InstrumentDto` in `configuration.rs`,
+where adding a configuration kind already belongs. `configuration_api` consumes only
+`InstrumentPropertySource`, adds owner/revision identity and converts neutral values
+to the unchanged public JSON shape. It neither imports nor matches `InstrumentDto`
+in production code. Resource-to-instrument projection likewise uses the neutral
+configuration-layer `bound_resource_id` query rather than matching Metakon in the
+Application module.
+
+Dependency direction is now:
+
+```text
+instrument/configuration variant and validation
+→ neutral instrument property metadata
+→ generic configuration_api projection
+→ unchanged Application DTO
+```
+
+Property mutation remains the existing validated deployment clone/stage/apply path.
+No second configuration mechanism, mutation callback or dynamic instrument
+framework was introduced.
+
+### Extension oracle and Arduino touch set
+
+A test-only second `InstrumentPropertySource` reaches the same generic projector
+without adding an Application variant branch. A separate exact-contract regression
+freezes all existing VirtualMeasurement, ThermalPlant and Metakon property names,
+types, current values, units, access, mutation classes, constraints and revision
+projection. Existing integration tests continue to cover successful generic
+`property_configure`, atomic invalid-value rejection and revision conflict.
+
+An Arduino furnace would now touch its codec/typed transactions, an
+`InstrumentDto` configuration variant and its validation/property metadata,
+`host/instruments` composition, Arduino-specific scheduling/completion, optional
+OutputAuthority-gated output, deployment definitions and tests. Ordinary properties
+no longer require a `configuration_api` branch. Ordinary signals still require no
+Application handler, discovery/history/subscription special case, Recorder code or
+SQLite change.
+
+### Behavior freeze
+
+The public property DTOs, 42 operations, 25 capabilities, property mutation and
+revision semantics, scheduler, signals, Recorder/SQLite and M9D physical-output path
+are unchanged. Verification passed:
+
+```text
+cargo fmt --all -- --check                              PASS
+cargo test --workspace                                  PASS
+cargo test --workspace --release                        PASS
+cargo clippy --workspace --all-targets -- -D warnings   PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+                                                         PASS
+exact existing instrument property-contract regression  PASS
+second neutral instrument-property source regression     PASS
+configuration/resource API regressions                   PASS
+exact 42-operation / 25-capability registry regression   PASS
+M10.6 second native-component registration regression    PASS
+M9B.8 fault acceptance                                   PASS
+M9D physical-output software suite                       PASS
+all Recorder integration suites                          PASS
+```
+
+COM5 was not opened and no hardware test was performed. M10 is ready for external
+re-review. M11 and later milestones remain unauthorized.

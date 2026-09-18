@@ -18,8 +18,8 @@ M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
+M10: READY_FOR_EXTERNAL_REVIEW
+Current phase: M10 — external re-review after property-projection correction
 M11+: NOT AUTHORIZED
 ```
 
@@ -253,7 +253,9 @@ without changing schema, lifecycle or durability. M10.6 centralized trusted nati
 component registration and configured instrument composition without adding plugins,
 protocols or public API semantics. M10.7 tightened internal visibility and improved
 architectural rustdoc/regression navigation without changing accepted behavior.
-M10.8 has not started and requires separate authorization.
+The first external review blocker was corrected by moving physical-instrument
+property metadata from the generic Application projection to a neutral
+configuration-layer source. M10 is ready for external re-review.
 
 Refactor only under test coverage, preserving behavior and safety:
 
