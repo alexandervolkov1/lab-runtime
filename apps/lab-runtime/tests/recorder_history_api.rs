@@ -886,10 +886,10 @@ fn disconnected_held_history_job_cannot_publish_into_reused_client_capacity() {
             at: clock.now() + Duration::from_millis(1),
         })
         .unwrap();
-    while !barrier.reached() {
-        assert!(Instant::now() < deadline, "SQLite fact stage was not held");
-        std::thread::yield_now();
-    }
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "SQLite fact stage was not held"
+    );
 
     let mut app = Application::new(service.boot_id()).unwrap();
     let old_hello = app.handle(

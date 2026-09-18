@@ -42,11 +42,10 @@ fn exhausted_group_and_history_credits_still_deliver_one_reserved_gap_and_termin
         lineage: None,
     };
     worker.try_admit(vec![fact(1)]).unwrap();
-    let held_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < held_by);
-        std::thread::yield_now();
-    }
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "writer did not reach the held batch"
+    );
     for sequence in 2..=4 {
         worker.try_admit(vec![fact(sequence)]).unwrap();
     }
@@ -284,10 +283,10 @@ fn owner_assigns_contiguous_record_ids_to_a_whole_group_before_sqlite_commit() {
     assert_eq!(*assigned.start(), start_watermark + 1);
     assert_eq!(*assigned.end(), start_watermark + 2);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(barrier.reached(), "writer did not hold the assigned group");
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "writer did not hold the assigned group"
+    );
     assert_eq!(worker.poll().persisted_through_sequence, start_watermark);
     barrier.release();
     while worker.poll().outstanding_records != 0 && Instant::now() < deadline {
@@ -338,10 +337,7 @@ fn owner_clock_reservation_preserves_group_order_during_a_real_writer_hold() {
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !barrier.reached() && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(barrier.reached());
+    assert!(barrier.wait_until_reached(Duration::from_secs(3)));
     // Time passing only triggers the next owner poll. The stored clock row
     // and ID order below are the actual oracle for this periodic stimulus.
     std::thread::sleep(Duration::from_millis(1100));
@@ -502,10 +498,7 @@ fn two_causal_fact_groups_under_one_held_writer_use_one_bounded_batch_commit() {
         .try_admit_at(runtime.take_recording_facts(), Duration::from_millis(10))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(barrier.reached());
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     runtime
         .command(Command::RefreshMeasurement {
             instrument,
@@ -582,10 +575,10 @@ fn four_full_causal_groups_commit_exactly_the_256_record_batch_limit() {
             .try_admit_at(facts, Duration::from_millis(group + 1))
             .unwrap();
         if group == 0 {
-            while !barrier.reached() && Instant::now() < deadline {
-                std::thread::yield_now();
-            }
-            assert!(barrier.reached(), "first SQL stage was never held");
+            assert!(
+                barrier.wait_until_reached(Duration::from_secs(2)),
+                "first SQL stage was never held"
+            );
         }
     }
     let pending = worker.poll();
@@ -671,10 +664,10 @@ fn four_delayed_managed_lineage_groups_charge_nested_scratch_at_batch_peak() {
             .try_admit_at(facts, Duration::from_millis(group + 1))
             .unwrap();
         if group == 0 {
-            while !barrier.reached() && Instant::now() < deadline {
-                std::thread::yield_now();
-            }
-            assert!(barrier.reached(), "first managed SQL batch was not held");
+            assert!(
+                barrier.wait_until_reached(Duration::from_secs(2)),
+                "first managed SQL batch was not held"
+            );
         }
     }
     let pending = worker.poll();

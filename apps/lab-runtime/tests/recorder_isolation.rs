@@ -272,10 +272,10 @@ fn best_effort_m3_reaches_first_byte_while_sqlite_writer_is_held() {
         std::thread::yield_now();
     }
     queue_manual_m3(&mut host, actuator, Duration::from_millis(1), 65.0);
-    while !barrier.reached() {
-        assert!(Instant::now() < deadline, "SQLite fact stage was not held");
-        std::thread::yield_now();
-    }
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "SQLite fact stage was not held"
+    );
     host.command(Command::PollTransports {
         at: Duration::from_millis(1),
     })
@@ -340,10 +340,10 @@ fn required_deadline_safes_virtual_output_but_keeps_partial_m3_recovery_unknown(
     })
     .unwrap();
     queue_manual_m3(&mut host, m3, Duration::from_millis(1), 70.0);
-    while !barrier.reached() {
-        assert!(Instant::now() < deadline, "SQLite fact stage was not held");
-        std::thread::yield_now();
-    }
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "SQLite fact stage was not held"
+    );
     host.command(Command::PollTransports {
         at: Duration::from_millis(1),
     })
@@ -527,11 +527,7 @@ fn real_socket_queries_and_native_pid_progress_across_three_leases_with_writer_h
         );
     });
     let address = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    let reached_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < reached_by);
-        thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     let stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -658,11 +654,7 @@ fn nonreading_history_client_cannot_block_native_service_while_sqlite_is_held() 
         assert!(run(service, stop_thread).is_err());
     });
     let (address, database) = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    let reached_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < reached_by);
-        thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     let slow = TcpStream::connect(address).unwrap();
     slow.set_write_timeout(Some(Duration::from_secs(1)))
         .unwrap();

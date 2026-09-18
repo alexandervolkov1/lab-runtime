@@ -306,11 +306,10 @@ fn reconnect_probe_fact_precedes_durable_activation_and_later_good_temperature()
     );
     let mut clock = Clock::default();
     let offline_at = service_until_offline(&mut host, &mut clock);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "Recorder worker did not reach the held reconnect batch"
+    );
     let held = host.recording_status().unwrap();
     assert_eq!(held.outstanding_groups, 3, "{held:#?}");
     barrier.release();

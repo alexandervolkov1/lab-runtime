@@ -463,11 +463,7 @@ fn running_controller_shutdown_drains_held_measurement_before_final_safe_seal() 
             at: clock.now(),
         })
         .unwrap();
-    let held_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < held_by);
-        std::thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     assert!(
         service
             .owner()
@@ -559,11 +555,7 @@ fn public_shutdown_operation_waits_for_held_recorder_prefix_then_reports_durable
             at: clock.now(),
         })
         .unwrap();
-    let held_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < held_by);
-        std::thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     let frame = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
     let mut app = Application::new(service.boot_id()).unwrap();
     let hello = app.handle(
@@ -729,11 +721,8 @@ fn stop_and_finish_drain_all_four_accepted_groups_with_full_normal_credit() {
             .try_admit_at(runtime.take_recording_facts(), at)
             .unwrap();
         if n == 1 {
-            while !barrier.reached() && Instant::now() < deadline {
-                std::thread::yield_now();
-            }
             assert!(
-                barrier.reached(),
+                barrier.wait_until_reached(Duration::from_secs(2)),
                 "first actual SQLite batch never reached barrier"
             );
         }

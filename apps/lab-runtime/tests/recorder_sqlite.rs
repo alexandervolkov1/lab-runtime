@@ -78,11 +78,7 @@ fn explicit_stop_waits_for_held_pending_fact_and_reopens_its_wal_prefix_and_seal
             Duration::from_secs(1) + Duration::from_millis(1),
         )
         .unwrap();
-    let held_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < held_by);
-        std::thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     let pending = worker.poll();
     assert_eq!(pending.state, RecordingState::Stopping);
     assert_eq!(pending.outstanding_records, 1);
@@ -518,10 +514,7 @@ fn best_effort_observation_during_held_start_is_queued_behind_the_new_run_barrie
         .unwrap();
     host.start_recording("held start", Duration::ZERO).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() && Instant::now() < deadline {
-        std::thread::yield_now()
-    }
-    assert!(barrier.reached());
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     assert_eq!(
         host.recording_status().unwrap().state,
         RecordingState::Starting

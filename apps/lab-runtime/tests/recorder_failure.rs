@@ -128,10 +128,7 @@ fn accepted_prefix_commits_before_reserved_writable_ingress_gap_seal() {
     worker
         .try_admit_at(runtime.take_recording_facts(), Duration::from_millis(10))
         .unwrap();
-    while !barrier.reached() && Instant::now() < deadline {
-        std::thread::yield_now()
-    }
-    assert!(barrier.reached());
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     runtime
         .command(Command::RefreshMeasurement {
             instrument,
@@ -242,10 +239,7 @@ fn worker_panic_before_fact_sql_is_visible_without_a_fabricated_receipt() {
     worker
         .try_admit_at(runtime.take_recording_facts(), Duration::from_secs(1))
         .unwrap();
-    while !barrier.reached() {
-        assert!(Instant::now() < by);
-        std::thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     let failed = loop {
         let status = worker.poll();
         if status.worker_closed {

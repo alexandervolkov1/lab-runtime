@@ -282,10 +282,7 @@ fn required_worker_panic_faults_native_control_without_waiting_for_sql() {
         at: Duration::ZERO,
     })
     .unwrap();
-    while !barrier.reached() {
-        assert!(Instant::now() < by);
-        std::thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     while host.recording_status().unwrap().state != RecordingState::Failed {
         assert!(Instant::now() < by);
         host.service(&FakeClock(Duration::from_millis(10))).unwrap();

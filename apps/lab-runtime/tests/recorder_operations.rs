@@ -292,11 +292,7 @@ fn annotation_completion_reports_pending_ingress_before_a_held_sqlite_commit() {
     let duplicate = app.handle(&mut service, 1, frame(request));
     assert_eq!(duplicate.len(), 1);
     assert_eq!(duplicate[0]["result"]["record_seq"], reserved.to_string());
-    let held_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < held_by);
-        std::thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     assert_eq!(
         service
             .owner()
@@ -580,12 +576,8 @@ fn accepted_retune_and_terminal_outcome_survive_client_disconnect_and_sqlite_reo
     );
     assert_eq!(duplicate.len(), 1);
     assert_eq!(duplicate[0]["state"], "completed");
-    let reached_deadline = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() && Instant::now() < reached_deadline {
-        std::thread::yield_now();
-    }
     assert!(
-        barrier.reached(),
+        barrier.wait_until_reached(Duration::from_secs(2)),
         "writer never entered held operation commit"
     );
     assert_eq!(

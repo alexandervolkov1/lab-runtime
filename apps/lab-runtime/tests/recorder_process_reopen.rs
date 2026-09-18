@@ -204,11 +204,8 @@ fn child_holds_a_real_batch_at_selected_commit_stage() {
         })
         .unwrap();
     worker.try_admit(runtime.take_recording_facts()).unwrap();
-    while !barrier.reached() && Instant::now() < deadline {
-        thread::yield_now();
-    }
     assert!(
-        barrier.reached(),
+        barrier.wait_until_reached(Duration::from_secs(2)),
         "writer never reached the held batch stage"
     );
     assert_eq!(worker.poll().outstanding_records, 1);
@@ -261,11 +258,8 @@ fn child_commits_three_equal_time_history_rows_before_parent_kills_its_receipt()
         })
         .collect();
     worker.try_admit(facts).unwrap();
-    while !barrier.reached() && Instant::now() < deadline {
-        thread::yield_now();
-    }
     assert!(
-        barrier.reached(),
+        barrier.wait_until_reached(Duration::from_secs(2)),
         "three-row SQL commit never reached receipt barrier"
     );
     println!(

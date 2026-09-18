@@ -163,10 +163,7 @@ fn child_serves_with_a_recorder_writer_held_before_commit() {
             at: clock.now(),
         })
         .unwrap();
-    while !barrier.reached() {
-        assert!(Instant::now() < by);
-        thread::yield_now();
-    }
+    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
     println!(
         "M7_BLOCKED_SHUTDOWN_READY {} {} {}",
         service.bound_address(),
