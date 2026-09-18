@@ -1,0 +1,39 @@
+schema_version = 1
+
+[runtime]
+key = "metakon-513-m9d-read-preflight"
+display_name = "Metakon 513 M9D read-only preflight"
+
+[server]
+host = "127.0.0.1"
+port = 7420
+
+[recording]
+enabled = false
+policy = "best_effort"
+
+[[resources]]
+id = 1
+key = "metakon-513-bus"
+kind = "windows_com_read_only"
+port = "COM5"
+baud_rate = 9600
+data_bits = 8
+parity = "none"
+stop_bits = 1
+flow_control = "none"
+read_timeout_ms = 50
+write_timeout_ms = 50
+open_timeout_ms = 2000
+recovery_timeout_ms = 2000
+
+[[instruments]]
+id = 1
+key = "metakon-513-temperature"
+kind = "metakon"
+definition = "definitions/metakon-513-thermocouple.json"
+resource_id = 1
+address = 5
+poll_period_ms = 1000
+queue_timeout_ms = 1000
+transaction_timeout_ms = 1000
