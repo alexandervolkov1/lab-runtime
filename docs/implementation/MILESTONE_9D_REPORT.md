@@ -460,13 +460,109 @@ examples/metakon-513-post-m9c-smoke.sqlite
 SHA-256 098f2fdc31805cbcdfe46d04055a205c9f980fcf6955ccf8ede6043cbc00a9fc
 ```
 
+## External-review remediation
+
+The first external review found that an already-started safe WRITE could be sent
+again after its terminal result became ambiguous. The exact interleaving was:
+
+```text
+safe WRITE 0 accepts a nonempty byte prefix
+-> timeout / transport uncertainty
+-> recovery completes
+-> dispatch becomes Ambiguous
+-> the next safety-service turn sees safe_needed
+-> a second WRITE 0 is queued
+```
+
+The root cause was that `safe_needed` represented both the continuing safety
+obligation and permission to initiate another safe dispatch. Failure handling tried
+to suppress a retry by clearing that flag in one path, but recovery reasserted it;
+retaining the obligation therefore also re-enabled admission.
+
+`OutputAuthority` now retains two independent facts. `safe_needed` remains true,
+while the private `safe_resend_blocked` latch records that an already-started safe
+command has an unknown physical outcome. In that state the public snapshot is
+fault-latched, has no ordinary lease, reports `safe_confirmed = false` and retains
+the terminal `Ambiguous` outcome. Both automatic `begin` and trusted transport
+reservation reject another write. Repeated safety turns and repeated safe requests
+may advance lifecycle identity but cannot queue protocol bytes or rearm ordinary
+output. Epoch, generation and final-send fencing are unchanged.
+
+A failure definitively before the first byte does not set the latch and may use the
+existing later safe-delivery policy. A normal ACK followed by matching separate
+readback still confirms safe state. M9D does not add an automatic post-ambiguity
+read transaction: after transport recovery the current model has no explicit,
+identity-bound reconciliation operation that can safely distinguish a new evidence
+action from the ambiguous dispatch. It therefore fails closed until a fresh
+authority/rebind or a future explicit reconciliation policy. It neither clears the
+safety obligation nor claims safe state. Ordinary ambiguous nonzero output retains
+its existing rule: the nonzero command is never retried, and a distinct safe action
+is requested.
+
+The deterministic regression accepts a two-byte prefix of the safe frame, reaches
+timeout, completes recovery and terminalizes `Ambiguous`, then executes repeated
+safety turns and an additional safe request. The physical WRITE count stays exactly
+one, the executor queue stays empty, no lease or nonzero output appears,
+`safe_confirmed` remains false, generation fencing remains intact and transport
+shutdown completes finitely. A companion oracle proves that a failure before
+`send_started` can later deliver and verify safe zero. Existing M2 tests now retain
+the same obligation/block distinction for failed and ambiguous safe dispatches.
+
+The review also reported two unstable debug tests:
+
+* `control_api::lifecycle_uses_runtime_safe_path_and_disconnect_does_not_undo_transition`
+  observed `state = failed` instead of `completed`. It was an invalid timing
+  assumption: controller start validates input age against the authoritative service
+  clock, while workspace scheduling could age the fixture's startup sample beyond
+  500 ms. The fixture now services due native work immediately before start and
+  still requires the original completed lifecycle result.
+* `recorder_process_reopen::killed_retune_after_durable_acceptance_has_unknown_terminal_and_is_not_replayed`
+  reported `child did not reach held SQLite batch: Disconnected`. It was a harness
+  synchronization defect. The child spun on an atomic barrier while the parent used
+  an unrelated four-second scheduler timeout and discarded child stderr. The
+  WriterBarrier now signals its exact reached predicate with a condition variable;
+  the child retains its finite two-second hang guard, and the parent waits for either
+  the marker or process EOF and reports status/stderr.
+
+The two tests do not share production state or one production defect. Each passed
+10/10 in isolation after correction; their binaries passed together and with
+`--test-threads=1`. No sleep was enlarged, no assertion was weakened and the
+workspace was not serialized.
+
+Successive full-gate runs exposed three more pre-existing test assumptions of the
+same class. Recorder history and start/stop tests repeatedly serviced periodic
+producers while waiting for a storage predicate, allowing the tests themselves to
+exhaust the four-group bounded ingress under scheduler delay. They now wait on the
+durable Recorder state/FIFO ordering at a fixed authoritative Runtime instant. The
+measurement projection test now establishes its required Good sample explicitly
+instead of assuming the first scheduled refresh already ran. These are test-only
+corrections; the history and lifecycle tests each passed 20/20, as did the
+measurement precondition test.
+
+The successful physical archive remains applicable. That run contained zero
+ambiguous writes and zero mismatches, and all four writes reached strict ACK and
+separate matching readback. The correction changes only the unexercised ambiguous
+safe-WRITE branch; wire encoding, successful settlement, 0 -> +10 -> 0 evidence and
+shutdown semantics are unchanged. No additional hardware run was performed.
+
 ## Final verification and remaining gate
 
-After the final hardware run, formatting, complete debug and release workspace tests,
-Clippy with warnings denied, and rustdoc with warnings denied all passed. Focused
-M9B.8 fault acceptance, configured physical output, OutputAuthority/readback,
-Metakon codec, COM/Recorder shutdown and Runtime shutdown suites also passed.
+After external-review remediation, the following gates passed:
 
-The read-only shutdown blocker remains resolved, both harness defects remain
-historical diagnostic evidence, and final physical acceptance is complete. M9D is
-ready for external review. M10 remains unauthorized and was not started.
+```text
+cargo fmt --all -- --check
+cargo test --workspace                 PASS (two consecutive runs)
+cargo test --workspace --release       PASS
+cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+```
+
+The complete M9D physical-output suite passed 10 consecutive runs. Focused M2
+OutputAuthority, M3 Metakon transport, M4 controller, controller configuration,
+configured physical output, Runtime shutdown, COM/Recorder shutdown and M9B.8 fault
+acceptance suites passed. Historical M8, post-M9C and M9D archive hashes remain
+byte-identical; the M9D archive has no WAL/SHM.
+
+The read-only shutdown blocker remains resolved, the external-review blockers are
+corrected, and final physical acceptance remains valid. M9D is ready for external
+review. M10 remains unauthorized and was not started.

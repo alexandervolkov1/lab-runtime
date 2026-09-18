@@ -16,6 +16,23 @@ OutputAuthority architecture. The read-only shutdown correction is committed at
 `b6e1840`; the final focused, debug/release workspace, clippy and warning-denied
 rustdoc gates pass.
 
+The first external review found one safety defect and one unstable mandatory gate.
+An already-started ambiguous safe WRITE could be admitted again because the single
+`safe_needed` flag represented both the retained safety obligation and permission to
+send. The authority now retains the obligation while a separate private latch blocks
+all automatic or trusted resend admission, leaves safe state explicitly unconfirmed
+and prevents rearm. Failure before `send_started` may still use the existing safe
+delivery policy. No automatic post-ambiguity reconciliation was added.
+
+The reported controller and process-reopen failures were test synchronization
+defects: stale startup input under workspace delay, and polling/parent-timeout logic
+instead of the exact SQLite barrier predicate. Their corrected tests pass repeated,
+together and single-threaded runs. Three additional latent fixture assumptions found
+by the required consecutive workspace gates were corrected without changing product
+semantics. Two consecutive debug workspace runs and all other mandatory gates now
+pass. Exact interleavings, classifications and oracles are recorded in
+`docs/implementation/MILESTONE_9D_REPORT.md`.
+
 The final bounded COM5 acceptance used the production native-controller path. It
 proved startup safe-zero, one authority-gated +10 percent output, strict ACK,
 separate matching register-6 readback, immediate normal pause to verified zero,

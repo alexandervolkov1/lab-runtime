@@ -60,6 +60,24 @@ full process issued four register-6 writes (startup zero, +10, pause zero, shutd
 zero), with one nonzero, zero blind retries, zero ambiguous writes and zero
 mismatches. The load was disconnected; no physical-effect claim is made.
 
+The first external review blocker is remediated. An ambiguous already-started safe
+WRITE now retains the safety obligation but latches resend admission closed, reports
+fault-latched/unconfirmed state and cannot rearm or emit a second WRITE. A failure
+before first byte remains eligible for later delivery. No automatic ambiguous-write
+reconciliation was added; current behavior is deliberately fail-closed. The exact
+partial-prefix regression keeps the physical WRITE count at one through repeated
+safety turns.
+
+The reported debug failures were fixture synchronization defects, not one shared
+production fault. Controller start now refreshes due native work before its input-age
+check; the process-reopen harness waits on the exact SQLite barrier predicate and
+preserves child status/stderr. Additional latent Recorder/measurement fixture timing
+assumptions exposed while establishing the required two consecutive workspace runs
+were also corrected without changing product semantics. Both debug workspace runs,
+release, Clippy, warning-denied rustdoc and focused safety/fault/shutdown suites pass.
+The successful hardware evidence remains valid because it exercised no ambiguous or
+mismatching write, and no further COM5 run was performed.
+
 Clean M9D acceptance evidence:
 
 ```text
