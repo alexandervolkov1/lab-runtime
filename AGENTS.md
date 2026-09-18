@@ -30,14 +30,14 @@ M9A: ACCEPTED
 M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: READY_FOR_EXTERNAL_REVIEW
-M10: NOT AUTHORIZED
-Current phase: M9D — physical Metakon output integration
+M9D: ACCEPTED
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
 
 Final physical M8 acceptance and the supplementary post-M9C read smoke remain
-accepted. M9D software integration and its read-only shutdown correction are
+accepted. M9D software integration, hardware acceptance and external review are
 complete. Final real-device acceptance proved startup safe-zero, one authority-gated
 +10 percent controller output, distinct ACK and register-6 readback, normal pause to
 verified zero, Recorder sealing and clean finite shutdown. The heater/load remained
@@ -45,8 +45,9 @@ physically disconnected, so no physical-effect claim is made.
 
 M9A, M9B and M9C implementation and external review have succeeded. M9C removed
 active Lua, obsolete first-party client baggage and transitional source-reload /
-snapshot API. M10 is not authorized until M9D hardware acceptance and external
-review succeed. M11 and later milestones remain blocked behind explicit review gates.
+snapshot API. M10 is authorized, but implementation does not begin until the M10.1
+structural/studyability audit maps the post-M9D codebase. M11 and later milestones
+remain blocked behind explicit review gates.
 
 ## Donor repository
 

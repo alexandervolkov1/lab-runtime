@@ -12,9 +12,9 @@ M9A: ACCEPTED
 M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: READY_FOR_EXTERNAL_REVIEW
-M10: NOT AUTHORIZED
-Current phase: M9D — physical Metakon output integration
+M9D: ACCEPTED
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
 
@@ -29,8 +29,9 @@ connects physical Metakon output through the existing OutputAuthority architectu
 Its software gates and bounded real-device acceptance pass: startup safe-zero, one
 authority-gated +10 percent controller command, strict ACK, distinct matching
 register-6 readback, normal pause to zero, Recorder sealing and clean shutdown. The
-load was disconnected, so this does not claim physical heater effect. M10 remains
-unauthorized pending explicit M9D external acceptance.
+load was disconnected, so this does not claim physical heater effect. External
+review accepted M9D. M10 is authorized; its first task is the M10.1
+structural/studyability audit, which maps the post-M9D codebase before refactoring.
 
 ## Product boundary
 
@@ -86,8 +87,8 @@ Application API != Recorder contract != SQLite schema
 ```text
 M9B  complete and stabilize Application API
 M9C  remove Lua and obsolete client baggage
-M9D  physical Metakon output integration (ready for external review)
-M10  Core cleanup and studyability
+M9D  physical Metakon output integration (accepted)
+M10  Core cleanup and studyability (authorized; audit first)
 M11  Runtime / Recorder / logging / API hardening
 M12  documentation, packaging and final release audit
 v0.1.0

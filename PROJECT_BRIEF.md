@@ -124,15 +124,26 @@ OutputProposal
   ↓
 OutputAuthority
   ↓
-trusted operation mapping
+bounded ResourceExecutor
   ↓
-Transport
+final authority/generation recheck
+  ↓
+Metakon WRITE reg06
+  ↓
+strict ACK
+  ↓
+separate reg06 readback
 ```
 
 Keep requested, authorized, first possible output byte, acknowledged, readback and
-physical effect distinct. ACK is not readback. Timeout after possible transmission
-does not prove no physical effect. There is no blind retry after ambiguous output and
-no automatic rearm after safe transition, reload or reconnect.
+physical effect distinct. Physical writes require OutputAuthority; raw transport
+write bypass is not an ordinary production surface. Leases are finite and
+epoch/generation fencing is preserved. Authority is rechecked immediately before
+the first possible output byte. ACK is not readback, and readback is not physical
+effect. Timeout after send-started does not prove that no write occurred. There is
+no blind retry: an ambiguous started safe WRITE remains latched and non-retriable,
+the safe obligation remains recorded, and unresolved ambiguity prohibits normal
+output. Safe transition does not automatically rearm a controller.
 
 ## Virtual instruments and emulation
 
@@ -202,20 +213,21 @@ M9A  ACCEPTED — neutral managed components and native Rust execution
 M9B  ACCEPTED — coherent bounded Application API
 M9C  ACCEPTED — Lua and obsolete client baggage removed
 POST-M9C HARDWARE SMOKE  PASS — supplementary real-device read path
-M9D  READY_FOR_EXTERNAL_REVIEW — physical Metakon output integration
-M10  NOT AUTHORIZED — Core cleanup and studyability
+M9D  ACCEPTED — physical Metakon output integration
+M10  AUTHORIZED — Core cleanup and studyability
 M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
 M12  NOT AUTHORIZED — documentation, packaging and final release audit
 v0.1.0
 ```
 
-Current phase: M9D — physical Metakon output integration. Software integration and
-gates are complete. Final real-device acceptance proved verified startup zero, one
-authority-gated +10 percent controller command with strict ACK and separate matching
-register-6 readback, normal pause to verified zero, Recorder sealing and clean
-shutdown. The disconnected load means physical heater effect was not tested. M10
-remains blocked pending explicit M9D external acceptance. The roadmap ends at
-v0.1.0; milestones do not cross review gates automatically.
+Current phase: M10 — core cleanup and studyability. M9D software integration,
+hardware acceptance and external review are complete. Final real-device acceptance
+proved verified startup zero, one authority-gated +10 percent controller command
+with strict ACK and separate matching register-6 readback, normal pause to verified
+zero, Recorder sealing and clean shutdown. The disconnected load means physical
+heater effect was not tested. M10 is authorized, but begins with the M10.1
+structural/studyability audit before any refactoring. The roadmap ends at v0.1.0;
+milestones do not cross review gates automatically.
 
 ## v0.1 identity
 

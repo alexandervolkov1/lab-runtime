@@ -17,21 +17,44 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: READY_FOR_EXTERNAL_REVIEW
-M10: NOT AUTHORIZED
-Current phase: M9D — physical Metakon output integration
+M9D: ACCEPTED
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
-post-M9C real-device smoke passed. M9D software integration and the read-only
-shutdown correction are committed. Final real-device acceptance proved production
+post-M9C real-device smoke passed. M9D software integration, hardware acceptance and
+external review are complete. Final real-device acceptance proved production
 startup zero, one authority-gated +10 percent controller command, strict ACK,
 separate matching register-6 readback, normal pause to verified zero, Recorder
-sealing and clean shutdown. Do not begin M10 without explicit M9D external
-acceptance.
+sealing and clean shutdown. M10 is authorized, but refactoring does not begin until
+the M10.1 structural/studyability audit maps the actual post-M9D codebase.
 
-## M9D external review gate
+## M9D accepted physical-output architecture
+
+```text
+native controller
+→ OutputProposal
+→ OutputAuthority
+→ bounded ResourceExecutor
+→ final authority/generation recheck
+→ Metakon WRITE reg06
+→ strict ACK
+→ separate reg06 readback
+```
+
+Runtime remains the sole authoritative mutable owner. Physical writes require
+OutputAuthority, and raw transport write bypass is not part of the ordinary
+production surface. Finite leases, epoch/generation fencing and the final authority
+recheck before the first possible output byte remain mandatory. ACK, readback and
+physical effect are distinct. Timeout after send-started is not proof that no write
+occurred, so there is no blind retry. An ambiguous started safe WRITE remains
+latched and non-retriable while its safe obligation stays recorded; unresolved
+ambiguity prohibits normal output. Safe transition does not automatically rearm the
+controller.
+
+## M9D external review record
 
 The authority-gated WRITE/ACK/separate-readback path passed debug/release workspace
 tests, clippy and warning-denied rustdoc. The failed preflight exposed a
@@ -86,6 +109,10 @@ SHA-256 14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32
 size 221184 bytes
 WAL/SHM absent; SQLite integrity check ok
 ```
+
+The accepted hardware sequence was `0 → ACK → readback 0`, `+10 → ACK → readback
+10`, `0 → ACK → readback 0`, followed by clean shutdown. The load/heater was
+physically disconnected, so physical heater effect was intentionally not tested.
 
 ## Accepted baselines
 

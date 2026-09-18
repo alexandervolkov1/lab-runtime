@@ -17,9 +17,9 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: READY_FOR_EXTERNAL_REVIEW
-M10: NOT AUTHORIZED
-Current phase: M9D — physical Metakon output integration
+M9D: ACCEPTED
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
 
@@ -28,8 +28,9 @@ post-M9C real-device smoke passed. M9D software integration, the read-only shutd
 correction and final real-device write acceptance are complete. The final run proved
 verified startup zero, one authority-gated +10 percent command, strict ACK, separate
 matching register-6 readback, normal pause to verified zero, Recorder sealing and
-clean shutdown. M10 and later work are not authorized pending explicit M9D external
-acceptance. The roadmap ends at v0.1.0.
+clean shutdown. External review accepted M9D. M10 is authorized and begins with a
+structural/studyability audit before any refactoring; M11 and later work remain
+unauthorized. The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
 
@@ -227,7 +228,7 @@ clean shutdown. The apparent first failure was a harness interpretation defect: 
 intentional generation-2 Unavailable/Transport rebind baseline was not an ordinary
 poll result. No production or test change was required.
 
-## M9D — Physical Metakon output integration — READY FOR EXTERNAL REVIEW
+## M9D — Physical Metakon output integration — ACCEPTED
 
 The software path preserves controller proposals, OutputAuthority, final authority
 recheck, bounded Metakon WRITE, strict ACK and distinct register-6 readback. Debug
@@ -235,9 +236,15 @@ and release workspace tests plus warning-denied lint/docs pass. The read-only
 shutdown correction is proven. Final COM5 acceptance used the production path for
 startup zero, exactly one +10 percent nonzero controller command and normal pause to
 zero; every command was ACKed and separately read back, Recorder evidence sealed and
-shutdown completed with no unfinished transport. M9D awaits external review.
+shutdown completed with no unfinished transport. External review accepted M9D. The
+accepted archive is `examples/metakon-513-m9d-write-smoke.sqlite`, SHA-256
+`14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32`.
 
-## M10 — Core cleanup and studyability — NOT AUTHORIZED
+## M10 — Core cleanup and studyability — AUTHORIZED
+
+M10 implementation does not start immediately. The first task is `M10.1
+structural/studyability audit`, which maps the actual post-M9D codebase before any
+refactoring.
 
 Refactor only under test coverage, preserving behavior and safety:
 

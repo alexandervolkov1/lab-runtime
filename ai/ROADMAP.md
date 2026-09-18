@@ -20,9 +20,9 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: READY_FOR_EXTERNAL_REVIEW
-M10: NOT AUTHORIZED
-Current phase: M9D — physical Metakon output integration
+M9D: ACCEPTED
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
 
@@ -206,7 +206,7 @@ post-v0.1 roadmap. It is simplification, not substitution. External review accep
 the milestone. A supplementary post-M9C read-only Metakon smoke then confirmed the
 accepted hardware-facing behavior without production or test changes.
 
-## M9D — Physical Metakon output integration — READY FOR EXTERNAL REVIEW
+## M9D — Physical Metakon output integration — ACCEPTED
 
 The production path uses the existing OutputAuthority, bounded transport executor,
 strict ACK and separate register-6 readback. The read-only shutdown correction and
@@ -214,13 +214,16 @@ all software gates pass. Final real-device acceptance proved startup safe-zero, 
 authority-gated +10 percent controller command, matching ACK/readback, normal pause
 to verified zero, sealed Recorder evidence and clean finite shutdown. The
 heater/load was physically disconnected, so register command/readback is proven but
-physical heater effect is not claimed. M9D now awaits external review; M10 remains
-unauthorized.
+physical heater effect is not claimed. External review accepted M9D.
 
-## M10 — Core cleanup and studyability — NOT AUTHORIZED
+## M10 — Core cleanup and studyability — AUTHORIZED
 
 Goal: make the repository unusually easy to understand and study while preserving
 behavior and safety. Refactor only under test coverage.
+
+Implementation does not start immediately. M10.1 is a structural/studyability audit
+of the actual post-M9D codebase; it maps responsibilities, seams and candidate
+cleanup before any refactoring is authorized as a concrete slice.
 
 Targets:
 
