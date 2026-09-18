@@ -34,7 +34,9 @@ M11.3: COMPLETE
 M11.4: COMPLETE
 M11.5: COMPLETE
 M11.6: COMPLETE
-M11.7: NOT STARTED
+M11.7: COMPLETE
+Developer-preview technical gate: PASSED
+M11.8: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -63,7 +65,14 @@ M11.6 consolidated the accepted bounded Application/process pressure model. The
 real TCP path now has explicit malformed/oversized and eight-client churn oracles;
 the earlier one-off nonreader timeout was traced to a test admission race and fixed
 with an owner-channel predicate. Public API, capacities and production semantics are
-unchanged. No M11.7 work has started.
+unchanged.
+
+M11.7 consolidated the engineering failure/bounds matrix and passed the internal
+developer-preview technical gate. Three release runs each completed 2,000 monotonic
+acquisition/controller turns and eight sealed Recorder cycles; diagnostic rotation
+remained at four 4 MiB files; and key acquisition/output/crash/client/shutdown suites
+passed three focused repetitions. No production defect was found. M11.8 external
+review has not started.
 
 ## M10.6 completion
 
@@ -113,8 +122,9 @@ scheduling, optional authority-gated output and tests.
 ## M11 authorization
 
 M11 is authorized as the final major technical hardening milestone before the
-developer-preview/reference phase. M11.1-M11.6 are complete. M11.7 has not started,
-and M12 and later work remain unauthorized.
+developer-preview/reference phase. M11.1-M11.7 are complete and the internal
+technical gate passed. M11.8 external review has not started; M12 and later work
+remain unauthorized.
 
 ## M10.5 completion
 

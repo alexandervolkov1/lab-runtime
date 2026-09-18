@@ -20,8 +20,9 @@ POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
 M11: AUTHORIZED
-M11.1-M11.6: COMPLETE
-M11.7: NOT STARTED
+M11.1-M11.7: COMPLETE
+Developer-preview technical gate: PASSED
+M11.8: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```

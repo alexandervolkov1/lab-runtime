@@ -1,5 +1,161 @@
 # Milestone 11 implementation report
 
+## M11.7 — consolidated failure matrix, bounded soak and preview gate
+
+### Status and scope
+
+```text
+M8-M10: ACCEPTED
+M11.1-M11.7: COMPLETE
+Developer-preview technical gate: PASSED
+M11.8: NOT STARTED
+M12+: NOT AUTHORIZED
+```
+
+M11.7 consolidated the implemented M11.1-M11.6 contracts into
+`MILESTONE_11_FAILURE_MATRIX.md`, ran opt-in bounded qualification workloads and
+repeated the most important lifecycle/fault suites. It found no new production
+correctness, safety, concurrency or durability defect. Production Rust, public API,
+SQLite schema, scheduler, OutputAuthority and hardware definitions did not change;
+the only Rust additions are ignored test workloads. COM5 was not opened and no
+hardware test ran.
+
+### Qualification workloads and repetition
+
+The new `preview_soak` uses `HostCore::virtual_demo`, the real scheduler/controller,
+BestEffort `RecorderWorker` and a temporary SQLite archive. Each run advances a test
+monotonic clock through 2,000 100-ms scheduling opportunities and eight independent
+recording start/fact/stop cycles. Recorder pressure is controlled only through its
+authoritative outstanding-group predicate; no sleep is used as a correctness
+barrier. All three release runs produced exactly 2,000 controller ticks and at least
+2,000 measurements, sealed eight complete runs and intervals, passed
+`PRAGMA integrity_check`, removed WAL/SHM on close and shut down finitely.
+
+The stable observation per run was:
+
+```text
+scheduled turns                 2,000
+controller ticks                2,000
+durable measurements            2,000
+SQLite main-file size           5,541,888 bytes
+sealed complete runs/intervals  8 / 8
+release repetitions             3 / 3 PASS
+```
+
+This is growth sanity, not a storage-density or performance promise. The archive
+grew with the intended facts without accidental multiplicative growth. Exact RSS,
+handle and thread-count thresholds were deliberately not invented. Capacity return,
+closed worker connections, absent SQLite sidecars and process/test termination are
+the less brittle lifecycle predicates. No monotonic resource leak was observed
+across repetitions.
+
+The production diagnostic rotation policy was exercised beyond six 4-MiB file
+windows. Each of three release runs retained exactly four files and 16,777,216
+bytes, never more than the documented 16-MiB bound. Existing held-writer pressure
+tests separately prove the 1,024-entry queue is lossy/nonblocking and that Recorder
+and native progress do not depend on log delivery.
+
+Focused release suites were then run three complete passes each:
+
+```text
+configured physical acquisition/reconnect  45 tests across 3 passes
+configured physical output/no-auto-rearm     6 tests across 3 passes
+Recorder process kill/reopen                30 tests across 3 passes
+real TCP client isolation/churn             24 tests across 3 passes
+M9B.8 combined pressure                     15 tests across 3 passes
+Runtime shutdown                            21 tests across 3 passes
+```
+
+The process-kill passes consistently retained only the committed prefix, reopened
+with interrupted/unknown-tail lifecycle, passed SQLite integrity and never restored
+controller authority. The configured passes preserved one current generation,
+stale-completion fencing, explicit reconnect, safe establishment and no automatic
+controller rearm. Client passes returned admission/session resources and preserved
+healthy-peer/native progress. These repetitions supplement, rather than replace,
+the default deterministic workspace matrix.
+
+The first full release gate exposed one test-harness race in
+`disconnected_completion_terminalizes_each_dead_slot_once`. A panicking worker
+decrements the test-only active-worker counter immediately before its thread function
+returns, so the test could observe global count zero a few instructions before
+`JoinHandle::is_finished`—the separate production shutdown predicate—became true.
+No slot, correlation or owner state was leaked: the dead slot had already emitted
+its single terminal completion and rejected new admission. The oracle now waits on
+the production predicate directly instead of assuming the two observations are
+atomic. No timeout was enlarged and no production behavior changed; the corrected
+release oracle passed 20/20 focused repetitions before the full gate was rerun.
+
+### Combined pressure, cadence and shutdown
+
+The long-run composition combines periodic acquisition, controller work, Recorder
+admission/receipts and Application-readable state. M9B.8 and Recorder-isolation
+oracles supply the concurrent normal/noisy client, emulator, history, held-SQLite
+and subscription-pressure dimensions; managed-executor panic/pressure and diagnostic
+held-writer tests supply the remaining independent workers. Their common progress
+predicates are committed measurement generation, controller ticks/live lease,
+Recorder committed prefix and transport/safety completion—not elapsed-time hope.
+
+The accepted cadence remains deadline-from-schedule with missed periodic slots
+coalesced to the actual owner turn. It prevents backlog replay and obvious cumulative
+schedule slip, but does not claim hard real-time execution or a maximum latency under
+OS/device overload. The three 2,000-turn runs reached every intended test-clock
+sample and controller opportunity.
+
+Shutdown coverage spans idle and recording states, connected/slow clients, full
+subscription queues, killed/hung managed capacity, pending/timeout transports,
+ambiguous output, Recorder failure/lock and diagnostic pressure. Cleanup remains
+finite and truthful: missing safe, transport, worker or Recorder evidence yields an
+unsuccessful status rather than a stronger claim. Diagnostic flush remains a
+separate best-effort tail.
+
+### Matrix, bounds and evidence boundary
+
+`MILESTONE_11_FAILURE_MATRIX.md` is the authoritative engineering input for later
+preview/reference documentation. It contains the common failure columns, exact
+`GUARANTEED`/`BEST EFFORT`/`NOT GUARANTEED` legend, the subsystem bounds master
+table, soak classification and preview criteria. Important active bounds include
+eight clients, 64-message reactor mailboxes, 16-KiB NDJSON frames, 64 global pending
+mutations, two fixed managed workers, 32 ordinary ResourceExecutor entries plus the
+reserved safe lane, four Recorder ingress groups/four MiB, a 1,024-entry diagnostic
+queue and four 4-MiB diagnostic files.
+
+Recorder/SQLite remains durable experiment history; rotated diagnostic text remains
+lossy troubleshooting material. No state transition, Recorder receipt or acceptance
+oracle depends on a diagnostic line being retained.
+
+The accepted M9D evidence remains unchanged at SHA-256
+`14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32`.
+
+### Residual limitations and preview decision
+
+Residual limitations are recorded rather than promoted to guarantees: no multi-day
+unattended soak, physical disk-full test, real power-loss validation, exhaustive
+OS/USB-driver faults, hardware fault-injection Arduino, hard real-time guarantee,
+remote/network security model or final release-polished documentation. M9D did not
+test physical heater effect because the load was disconnected.
+
+Arduino is not required before developer preview. Software oracles already establish
+the normative CRC/frame/timeout/disconnect, ambiguous WRITE, ACK/readback, fencing,
+no-retry and recovery semantics. An Arduino fault emulator can add later physical
+USB/serial evidence but is not required to define those semantics.
+
+The internal engineering result is:
+
+```text
+M11.7 PREVIEW GATE PASSED
+```
+
+M11 remains subject to M11.8 external review and is not marked accepted here.
+
+### Verification
+
+The final candidate passed the two ignored bounded soaks, all focused repetitions,
+formatting, debug/release workspace suites, warning-denied Clippy, warning-denied
+rustdoc and `git diff --check`. The workspace matrix includes M11.2 acquisition and
+managed-executor faults, M11.3 output/no-auto-rearm, M11.4 Recorder/crash, M11.5
+diagnostics, M11.6 Application pressure, M9B.8, M9D software output and the exact
+42-operation/25-capability registry. No hardware evidence was regenerated.
+
 ## M11.6 — Application, client, emulator, and process pressure hardening
 
 ### Status and scope

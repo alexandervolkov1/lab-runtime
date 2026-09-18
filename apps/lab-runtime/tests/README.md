@@ -15,6 +15,11 @@ importance.
   `resource_configuration_api`, `definitions` and `com_recorder_shutdown`.
 - Recorder/SQLite: every `recorder_*` binary covers a distinct durability,
   provenance, history, failure, isolation, time, reopen or shutdown invariant.
+- Bounded preview qualification: `preview_soak` is an ignored, opt-in test that
+  drives 2,000 monotonic acquisition/controller turns across eight Recorder cycles,
+  then checks sealing, SQLite integrity and clean sidecar removal. The ignored
+  diagnostic rotation soak is in `diagnostics::test_support`. These take the real
+  bounded paths but stay out of ordinary `cargo test` latency.
 
 High-value historical oracles are intentionally retained:
 
@@ -32,3 +37,10 @@ High-value historical oracles are intentionally retained:
 
 Fault barriers and fake transports are test seams only. They do not grant Runtime,
 transport-write or SQLite authority to Application clients or managed components.
+
+Run the bounded preview workloads explicitly with:
+
+```powershell
+cargo test -p lab-runtime --release --test preview_soak -- --ignored --nocapture
+cargo test -p lab-runtime --release --lib production_rotation_retains_exactly_the_documented_storage_window -- --ignored --nocapture
+```

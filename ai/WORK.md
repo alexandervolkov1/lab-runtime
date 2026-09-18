@@ -1,4 +1,4 @@
-# Current work — M11.6 Application/process pressure hardening
+# Current work — M11.7 developer-preview technical gate
 
 ```text
 M8: ACCEPTED
@@ -15,7 +15,9 @@ M11.3 controller / OutputAuthority recovery and physical-output faults: COMPLETE
 M11.4 Recorder / SQLite / crash and filesystem hardening: COMPLETE
 M11.5 bounded diagnostic logging: COMPLETE
 M11.6 Application/client/emulator/process pressure hardening: COMPLETE
-M11.7: NOT STARTED
+M11.7 consolidated failure matrix / bounded soak / preview gate: COMPLETE
+Developer-preview technical gate: PASSED
+M11.8 external review: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -65,7 +67,7 @@ The accepted guarantees include:
 - an Arduino-like instrument is confined to instrument-specific configuration,
   protocol, composition, scheduling, optional authority-gated output and tests.
 
-## Completed M11.1-M11.6 and next gate
+## Completed M11.1-M11.7 and next gate
 
 M11.1 inspected the accepted post-M10 codebase and recorded the normative fault
 model, guarantee levels, bounds, missing coverage, diagnostic-logging gap and
@@ -111,9 +113,17 @@ M11.6 is complete. It re-audited all Application/process capacities, expanded th
 real TCP malformed/oversized matrix, proved exact eight-client admission and repeated
 capacity recovery, and removed a test-harness race by synchronizing synthetic event
 pressure with actual reactor admission. M9B.8 subscription/resync, deduplication,
-history, emulator, multi-client and native-progress contracts remain unchanged. The
-next possible slice is M11.7, but it has not started. M12 and later milestones remain
-unauthorized.
+history, emulator, multi-client and native-progress contracts remain unchanged.
+
+M11.7 is complete and its internal developer-preview technical gate passed. The
+authoritative engineering matrix is
+`docs/implementation/MILESTONE_11_FAILURE_MATRIX.md`. Three bounded release soaks
+each completed 2,000 acquisition/controller turns and eight clean Recorder cycles;
+three production-retention soaks held diagnostics to exactly four 4 MiB files; and
+configured acquisition/output, process-kill/reopen, client-isolation, M9B.8 and
+shutdown suites passed three focused release repetitions. No production defect or
+semantic change was found. M11 still requires M11.8 external review; M12 and later
+milestones remain unauthorized.
 
 The completed audit covers:
 
@@ -147,5 +157,4 @@ operations, new Recorder schema features, final tutorials or polished M12 releas
 documentation. The planned educational Arduino furnace is outside M11 unless it is
 separately authorized as test infrastructure.
 
-Do not begin M11.7 or make production/test changes automatically. M12 and later
-milestones remain unauthorized.
+Do not begin M11.8 automatically. M12 and later milestones remain unauthorized.
