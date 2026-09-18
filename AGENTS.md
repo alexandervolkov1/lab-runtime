@@ -31,17 +31,10 @@ M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: READY_FOR_EXTERNAL_REVIEW
-M10.1: COMPLETE
-M10.2: COMPLETE
-M10.3: COMPLETE
-M10.4: COMPLETE
-M10.5: COMPLETE
-M10.6: COMPLETE
-M10.7: COMPLETE
-M10.8: READY_FOR_EXTERNAL_REVIEW
-Current phase: M10 — external re-review after property-projection correction
-M11+: NOT AUTHORIZED
+M10: ACCEPTED
+M11: AUTHORIZED
+Current phase: M11 — runtime / Recorder / logging / API hardening
+M12+: NOT AUTHORIZED
 ```
 
 Final physical M8 acceptance and the supplementary post-M9C read smoke remain
@@ -66,8 +59,13 @@ internal visibility, improved architectural source navigation and organized the
 regression-test map without changing behavior. The first M10 external review found
 one instrument-property projection coupling; the configuration layer now owns
 neutral property metadata and the Application projection no longer enumerates
-instrument variants. M10 is ready for external re-review. M11 and later milestones
-remain blocked behind explicit review gates.
+instrument variants. External review accepted M10: Runtime remains the sole
+authoritative mutable experiment owner, the Application and Recorder/SQLite layers
+are clearer, extension paths are static and generic, and the accepted public and
+hardware-facing behavior is unchanged. M11 is authorized, but implementation does
+not begin until the M11.1 hardening and failure-model audit maps the exact fault
+matrix, missing tests, diagnostic-logging gap and implementation sequence. M12 and
+later milestones remain blocked behind explicit review gates.
 
 ## Donor repository
 

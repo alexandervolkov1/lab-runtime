@@ -1,4 +1,4 @@
-# Current work — M10 ready for external re-review
+# Current work — M11.1 hardening and failure-model audit
 
 ```text
 M8: ACCEPTED
@@ -7,17 +7,11 @@ M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: READY_FOR_EXTERNAL_REVIEW
-M10.1: COMPLETE
-M10.2: COMPLETE
-M10.3: COMPLETE
-M10.4: COMPLETE
-M10.5: COMPLETE
-M10.6: COMPLETE
-M10.7: COMPLETE
-M10.8: READY_FOR_EXTERNAL_REVIEW
-Current phase: M10 — external re-review after property-projection correction
-M11+: NOT AUTHORIZED
+M10: ACCEPTED
+M11: AUTHORIZED
+M11.1 hardening and failure-model audit: AUTHORIZED — NOT STARTED
+Current phase: M11 — runtime / Recorder / logging / API hardening
+M12+: NOT AUTHORIZED
 ```
 
 M9D software integration, physical acceptance and external review are complete. Its
@@ -42,59 +36,65 @@ readback 0` and clean shutdown. The load/heater was physically disconnected, so
 physical heater effect was intentionally not tested. Existing M8, post-M9C and M9D
 archives remain immutable.
 
-## Completed slice
+## M10 accepted guarantees
 
-`M10.1 structural/studyability audit` is complete. Its authoritative design record is
-`docs/implementation/MILESTONE_10_STRUCTURE_AUDIT.md`. M10.2 implemented its
-low-risk terminology, archaeological and source-index slice. M10.3 organized the
-Application facade, delivery/operation lifecycle and semantic domain handlers while
-preserving the authoritative 42-operation registry and public wire contract. M10.4
-split Runtime, HostCore and ServiceHost implementations by orchestration
-responsibility while retaining the exact structs, fields, owners and progression
-order. M10.5 separated semantic Recorder types, the single bounded `RecorderWorker`
-and direct SQLite persistence into focused modules while preserving all lifecycle,
-schema, transaction, provenance and history behavior. The implementation record is
-`docs/implementation/MILESTONE_10_REPORT.md`.
+M10 is externally accepted. It made Runtime, HostCore and ServiceHost ownership and
+progression easier to navigate without changing owners; organized the Application
+API by semantic domain; physically separated the Recorder semantic contract from
+SQLite implementation; clarified acquisition, output-safety and extension paths;
+and tightened internal visibility and architectural rustdoc.
 
-M10.6 centralized the compile-time native component registry, proved a second
-test-only component through generic API surfaces, and extracted configured instrument
-composition into one explicit Host module. M10.7 tightened internal visibility,
-removed an unused managed-executor test barrier, improved architectural rustdoc and
-made high-value regression oracles easy to locate. The first M10 external review
-found one blocker: the generic Application property projection enumerated concrete
-`InstrumentDto` variants. The correction moved typed neutral property metadata and
-the static provider seam into `configuration.rs`; `configuration_api` now converts
-that metadata without knowing concrete instrument variants. Exact current DTOs and
-a second test-only property provider are covered by focused regressions. M10 is ready
-for external re-review. M11 work is not authorized.
+The accepted guarantees include:
 
-M10 may split oversized or mixed modules by responsibility, improve internal names,
-remove safe dead compatibility/code, tighten public/private boundaries, improve
-rustdoc on architectural seams, make main paths easier to follow, simplify native
-instrument/component extension where semantics remain unchanged, and reorganize
-tests for readability without reducing coverage.
+- Runtime remains the sole authoritative mutable experiment owner;
+- HostCore composes bounded scheduling and adapter/Recorder orchestration, while
+  ServiceHost owns process/deployment/reconnect/shutdown progression;
+- the public Application contract remains exactly 42 operations and 25 capabilities;
+- public protocol, error, bounds/backpressure and reconnect semantics are unchanged;
+- Recorder schema, durability, provenance and historical compatibility are unchanged;
+- scheduler ordering and all M9D OutputAuthority/Metakon behavior are unchanged;
+- native-component registration is centralized, explicit and compile-time;
+- ordinary instrument properties and signals need no generic Application, Recorder,
+  history, subscription or SQLite changes;
+- an Arduino-like instrument is confined to instrument-specific configuration,
+  protocol, composition, scheduling, optional authority-gated output and tests.
 
-M10 must preserve:
+## Authorized next task
 
-- the accepted 42-operation Application API and its capability/error/bounds
-  semantics;
-- periodic acquisition and physical/virtual instrument behavior;
-- native managed components and Reference/controller/PID behavior;
-- OutputAuthority and all accepted M9D physical-output semantics;
-- Recorder schema, semantics and provenance;
-- reconnect/generation fencing, API backpressure and client isolation;
-- the emulator safety boundary and all hardware-facing Metakon behavior.
+M11 is authorized, but implementation does not start immediately. The first task is
+`M11.1 — hardening and failure-model audit`. It must inspect the accepted post-M10
+codebase and produce, before any production change:
 
-M10 must not add product features, change public Application API semantics or the
-SQLite schema, redesign scheduling or OutputAuthority, change transport/protocol
-behavior, add GUI/Presentation or scripting, add the M11 logging subsystem, or begin
-the final tutorials/documentation work planned for M12.
+- an exact fault matrix for acquisition, control/safety, Recorder/storage and the
+  Application/process boundary;
+- the immediate Runtime action, controller/output response, retry/no-retry rule,
+  Recorder/API result and recovery/rearm rule for each important failure;
+- a classification of relevant guarantees as `GUARANTEED`, `BEST EFFORT` or
+  `NOT GUARANTEED`;
+- an inventory of missing or weak fault/adversarial tests;
+- the diagnostic-logging gap and a bounded logging design covering levels,
+  destination, size, rotation/retention, startup/shutdown, failures and collection;
+- a small, ordered M11 implementation sequence with explicit risk and verification.
 
-Runtime remains the sole authoritative mutable owner. Physical writes require
-OutputAuthority; raw transport write bypass is not an ordinary production surface.
-Finite leases, epoch/generation fencing and final authority recheck before the first
-possible output byte remain mandatory. ACK is not readback, readback is not physical
-effect, and timeout after send-started is not proof that no write occurred. There is
-no blind retry. An ambiguous started safe WRITE remains latched and non-retriable,
-its safe obligation remains recorded, unresolved ambiguity prohibits normal output,
-and safe transition does not automatically rearm the controller.
+The audit must cover periodic acquisition, monotonic cadence/drift, bounded queues,
+slow or hung transport, reconnect, starvation resistance and finite shutdown;
+controller timing, stale/unavailable input, leases, epoch/generation fencing,
+OutputAuthority, ambiguous WRITE, ACK/readback mismatch, safe transition and rearm;
+Recorder ingress, durable failure, gaps/sealing, provenance, history pressure,
+SQLite locking/failure/integrity and clean/crash-close expectations; and malformed or
+slow clients, capacity pressure, reconnect/resync, subscription overflow, history or
+emulator pressure, multi-client isolation and finite server shutdown.
+
+Recorder remains durable scientific/audit history. Diagnostic logging is a separate
+bounded troubleshooting mechanism; routine worker, TCP and debug messages must not
+become unbounded Recorder facts.
+
+M11 is hardening, not feature development. Do not add GUI/Presentation, scripting,
+a Clojure client, an Arduino production instrument, new public convenience
+operations, new Recorder schema features, final tutorials or polished M12 release
+documentation. The planned educational Arduino furnace is outside M11 unless it is
+separately authorized as test infrastructure.
+
+M11.1 has not started. Do not begin the audit or make production/test changes
+automatically; wait for the separate M11.1 task. M12 and later milestones remain
+unauthorized.

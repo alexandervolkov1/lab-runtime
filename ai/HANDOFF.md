@@ -18,7 +18,7 @@ M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: READY_FOR_EXTERNAL_REVIEW
+M10: ACCEPTED
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
@@ -26,9 +26,11 @@ M10.4: COMPLETE
 M10.5: COMPLETE
 M10.6: COMPLETE
 M10.7: COMPLETE
-M10.8: READY_FOR_EXTERNAL_REVIEW
-Current phase: M10 — external re-review after property-projection correction
-M11+: NOT AUTHORIZED
+M10.8: COMPLETE
+M11: AUTHORIZED
+M11.1 hardening and failure-model audit: AUTHORIZED — NOT STARTED
+Current phase: M11 — runtime / Recorder / logging / API hardening
+M12+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
@@ -86,7 +88,19 @@ Exact VirtualMeasurement, ThermalPlant and Metakon property DTOs are frozen by a
 focused regression. A second test-only property source proves the real generic
 projection seam. Existing property mutation/revision fencing, the 42-operation /
 25-capability registry and all accepted safety/storage behavior remain unchanged.
-M10 is ready for external re-review; M11 remains unauthorized.
+The focused external re-review accepted M10. Ordinary instrument properties and
+signals no longer require generic Application branches, and an Arduino-like adapter
+is confined to instrument-specific configuration, protocol, composition,
+scheduling, optional authority-gated output and tests.
+
+## M11 authorization
+
+M11 is authorized as the final major technical hardening milestone before the
+developer-preview/reference phase. The first task is `M11.1 — hardening and
+failure-model audit`. It must inspect the accepted post-M10 system and produce the
+exact fault matrix, missing-test inventory, diagnostic-logging gap and ordered
+implementation plan before any production change. M11.1 has not started. M12 and
+later work remain unauthorized.
 
 ## M10.5 completion
 
@@ -344,6 +358,7 @@ environment. Testing uses Rust, protocol and integration tests.
 M9C removed active Lua, executable-text configuration, source reload, the transitional
 snapshot family and the Babashka client. The final registry has 42 operations and 25
 capabilities. Neutral Rust/process tests retain managed-component and client-isolation
-coverage; historical Recorder provenance compatibility remains. M10 may now improve
-structure and studyability without changing accepted semantics. M11-M12 remain
-blocked. The roadmap ends at v0.1.0.
+coverage; historical Recorder provenance compatibility remains. M10 improved
+structure and studyability without changing accepted semantics and is externally
+accepted. M11 is authorized with M11.1 audit first; M12 remains blocked. The roadmap
+ends at v0.1.0.

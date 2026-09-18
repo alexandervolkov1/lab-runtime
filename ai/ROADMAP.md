@@ -21,9 +21,10 @@ M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: READY_FOR_EXTERNAL_REVIEW
-Current phase: M10 — external re-review after property-projection correction
-M11+: NOT AUTHORIZED
+M10: ACCEPTED
+M11: AUTHORIZED
+Current phase: M11 — runtime / Recorder / logging / API hardening
+M12+: NOT AUTHORIZED
 ```
 
 Completed milestones M1-M9A established the domain, OutputAuthority, bounded
@@ -216,7 +217,7 @@ to verified zero, sealed Recorder evidence and clean finite shutdown. The
 heater/load was physically disconnected, so register command/readback is proven but
 physical heater effect is not claimed. External review accepted M9D.
 
-## M10 — Core cleanup and studyability — AUTHORIZED
+## M10 — Core cleanup and studyability — ACCEPTED
 
 Goal: make the repository unusually easy to understand and study while preserving
 behavior and safety. Refactor only under test coverage.
@@ -233,7 +234,9 @@ instrument composition without adding plugin or protocol semantics. M10.7 comple
 the source-visibility, architectural rustdoc and test-navigation cleanup without
 changing behavior. The first external review blocker was corrected by moving
 ordinary instrument property metadata out of the generic Application projection and
-into the configuration extension layer. M10 is ready for external re-review.
+into the configuration extension layer. Focused external re-review accepted M10.
+Runtime ownership, the 42-operation / 25-capability contract, scheduler order,
+Recorder/SQLite semantics and M9D physical-output behavior remain unchanged.
 
 Targets:
 
@@ -267,12 +270,15 @@ M10 must not add product features, alter the accepted Application API, change
 Recorder schema for readability, redesign controller/output safety, change the
 Metakon protocol, add presentation or scripting, or weaken bounds/backpressure.
 Further hardware testing is not required unless a later structural change
-unexpectedly touches hardware-facing semantics. M11 and later work remains
-unauthorized.
+unexpectedly touches hardware-facing semantics.
 
-## M11 — Runtime / Recorder / logging / API hardening
+## M11 — Runtime / Recorder / logging / API hardening — AUTHORIZED
 
 Perform a systematic release-hardening pass.
+
+Implementation does not start immediately. M11.1 first audits the accepted post-M10
+system and records the exact fault matrix, missing tests, diagnostic-logging gap and
+ordered implementation sequence. M12 and later work remain unauthorized.
 
 ### Acquisition
 

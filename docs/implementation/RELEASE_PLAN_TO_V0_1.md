@@ -18,9 +18,10 @@ M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: READY_FOR_EXTERNAL_REVIEW
-Current phase: M10 — external re-review after property-projection correction
-M11+: NOT AUTHORIZED
+M10: ACCEPTED
+M11: AUTHORIZED
+Current phase: M11 — runtime / Recorder / logging / API hardening
+M12+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
@@ -28,9 +29,9 @@ post-M9C real-device smoke passed. M9D software integration, the read-only shutd
 correction and final real-device write acceptance are complete. The final run proved
 verified startup zero, one authority-gated +10 percent command, strict ACK, separate
 matching register-6 readback, normal pause to verified zero, Recorder sealing and
-clean shutdown. External review accepted M9D. M10 is authorized and begins with a
-structural/studyability audit before any refactoring; M11 and later work remain
-unauthorized. The roadmap ends at v0.1.0.
+clean shutdown. External review accepted M9D and M10. M11 is authorized and begins
+with an audit-only hardening and failure-model pass before any production change;
+M12 and later work remain unauthorized. The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
 
@@ -240,7 +241,7 @@ shutdown completed with no unfinished transport. External review accepted M9D. T
 accepted archive is `examples/metakon-513-m9d-write-smoke.sqlite`, SHA-256
 `14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32`.
 
-## M10 — Core cleanup and studyability — AUTHORIZED
+## M10 — Core cleanup and studyability — ACCEPTED
 
 M10.1 completed the structural/studyability audit of the actual post-M9D codebase.
 M10.2 completed low-risk internal terminology cleanup, archaeological classification
@@ -255,7 +256,14 @@ protocols or public API semantics. M10.7 tightened internal visibility and impro
 architectural rustdoc/regression navigation without changing accepted behavior.
 The first external review blocker was corrected by moving physical-instrument
 property metadata from the generic Application projection to a neutral
-configuration-layer source. M10 is ready for external re-review.
+configuration-layer source. Focused external re-review accepted M10. Runtime remains
+the sole authoritative mutable experiment owner; HostCore/ServiceHost responsibilities
+are clearer without ownership changes; Application is organized by semantic domain;
+and Recorder semantics are physically separated from SQLite implementation. Native
+component registration is centralized and static. Ordinary instrument properties
+and signals require no generic Application, Recorder or SQLite changes. The exact
+42-operation / 25-capability contract, public errors and bounds, scheduler ordering,
+Recorder/SQLite behavior and M9D OutputAuthority/Metakon semantics are unchanged.
 
 Refactor only under test coverage, preserving behavior and safety:
 
@@ -279,7 +287,13 @@ reconnect/generation fencing and all accepted hardware-facing behavior. It must 
 add features, presentation or scripting; change API semantics or the Metakon
 protocol; redesign safety; or change Recorder schema merely for readability.
 
-## M11 — Runtime / Recorder / logging / API hardening
+## M11 — Runtime / Recorder / logging / API hardening — AUTHORIZED
+
+M11 implementation does not start immediately. `M11.1 — hardening and failure-model
+audit` first maps the accepted post-M10 acquisition, control/safety, Recorder/storage
+and Application/process failure behavior. It must produce the exact fault matrix,
+missing-test inventory, diagnostic-logging gap and ordered implementation sequence
+before production changes.
 
 ### Acquisition
 

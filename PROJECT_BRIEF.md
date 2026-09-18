@@ -214,13 +214,13 @@ M9B  ACCEPTED — coherent bounded Application API
 M9C  ACCEPTED — Lua and obsolete client baggage removed
 POST-M9C HARDWARE SMOKE  PASS — supplementary real-device read path
 M9D  ACCEPTED — physical Metakon output integration
-M10  READY_FOR_EXTERNAL_REVIEW — Core cleanup and studyability
-M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
+M10  ACCEPTED — Core cleanup and studyability
+M11  AUTHORIZED — Runtime/Recorder/logging/API hardening
 M12  NOT AUTHORIZED — documentation, packaging and final release audit
 v0.1.0
 ```
 
-Current phase: M10 — external re-review after property-projection correction. M9D
+Current phase: M11 — Runtime / Recorder / logging / API hardening. M9D
 software integration, hardware acceptance and external review are complete. Final
 real-device acceptance proved verified startup zero, one authority-gated +10 percent
 controller command with strict ACK and separate matching register-6 readback,
@@ -237,9 +237,12 @@ M10.7 tightened internal visibility and improved architectural rustdoc/test
 navigation without changing public behavior. The first M10 external review found
 one Application/configuration coupling in physical-instrument property projection;
 the correction moved neutral metadata to the configuration layer and left the
-Application projector independent of concrete instrument variants. M10 is ready
-for external re-review. The roadmap ends at v0.1.0; milestones do not cross review
-gates automatically.
+Application projector independent of concrete instrument variants. External review
+accepted M10 with authoritative ownership, the 42-operation / 25-capability API,
+scheduler ordering, Recorder/SQLite semantics and M9D output behavior unchanged.
+M11 is authorized, but its first task is the audit-only M11.1 hardening and
+failure-model audit before any production implementation. M12 remains unauthorized.
+The roadmap ends at v0.1.0; milestones do not cross review gates automatically.
 
 ## v0.1 identity
 

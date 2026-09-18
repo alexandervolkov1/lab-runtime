@@ -13,9 +13,10 @@ M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
-M11+: NOT AUTHORIZED
+M10: ACCEPTED
+M11: AUTHORIZED
+Current phase: M11 — runtime / Recorder / logging / API hardening
+M12+: NOT AUTHORIZED
 ```
 
 M8 physical read-only acceptance and M9A neutral/native managed-component execution
@@ -40,7 +41,10 @@ implementation without changing schema or durability. M10.6 centralized native
 component registration and clarified the static physical-instrument composition
 path without adding plugins, protocols or API semantics. M10.7 tightened internal
 visibility, architectural rustdoc and regression-test navigation without changing
-public behavior. M10.8 has not started.
+public behavior. The focused external re-review accepted M10 after neutral
+instrument property metadata removed concrete-instrument knowledge from the generic
+Application projection. M11 is authorized; its first task is the audit-only M11.1
+hardening and failure-model audit before implementation begins.
 
 ## Product boundary
 
@@ -97,9 +101,9 @@ Application API != Recorder contract != SQLite schema
 M9B  complete and stabilize Application API
 M9C  remove Lua and obsolete client baggage
 M9D  physical Metakon output integration (accepted)
-M10  Core cleanup and studyability (authorized; audit first)
-M11  Runtime / Recorder / logging / API hardening
-M12  documentation, packaging and final release audit
+M10  Core cleanup and studyability (accepted)
+M11  Runtime / Recorder / logging / API hardening (authorized; audit first)
+M12  documentation, packaging and final release audit (not authorized)
 v0.1.0
 ```
 
