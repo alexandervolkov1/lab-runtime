@@ -17,6 +17,15 @@ fn frame(value: Value) -> WireRequest {
     decode_frame(&encode_frame(&value).unwrap()).unwrap()
 }
 
+#[derive(Clone, Copy)]
+struct FrozenClock(Duration);
+
+impl Clock for FrozenClock {
+    fn now(&self) -> Duration {
+        self.0
+    }
+}
+
 fn temporary_database() -> PathBuf {
     let mut entropy = [0u8; 16];
     getrandom::fill(&mut entropy).unwrap();
@@ -401,11 +410,11 @@ fn recording_start_returns_accepted_before_durable_completion_and_duplicate_does
     let duplicate = app.handle(&mut service, 1, frame(request));
     assert_eq!(duplicate.len(), 1);
     assert_eq!(duplicate[0]["state"], "accepted");
+    let start_at = service.clock().now();
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut terminal = Vec::new();
     while terminal.is_empty() && Instant::now() < deadline {
-        let clock = service.clock_copy();
-        service.owner_mut().service(&clock).unwrap();
+        service.owner_mut().service(&FrozenClock(start_at)).unwrap();
         terminal = app.poll_recording(&mut service);
         std::thread::yield_now();
     }
@@ -428,13 +437,13 @@ fn recording_start_returns_accepted_before_durable_completion_and_duplicate_does
             "request_id":{"scope":scope,"seq":"2"},"args":{"run_id":run_id}
         })),
     );
-    assert_eq!(stop.len(), 1);
+    assert_eq!(stop.len(), 1, "stop={stop:?}");
     assert_eq!(stop[0]["state"], "accepted");
+    let stop_at = service.clock().now();
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut stop_terminal = Vec::new();
     while stop_terminal.is_empty() && Instant::now() < deadline {
-        let clock = service.clock_copy();
-        service.owner_mut().service(&clock).unwrap();
+        service.owner_mut().service(&FrozenClock(stop_at)).unwrap();
         stop_terminal = app.poll_recording(&mut service);
         std::thread::yield_now();
     }
