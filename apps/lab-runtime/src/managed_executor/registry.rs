@@ -151,6 +151,9 @@ mod tests {
 
     #[test]
     fn second_registration_reaches_generic_api_surfaces_without_domain_handlers() {
+        let _executor_guard = super::super::EXECUTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let path = temporary_path();
         fs::write(
             &path,
