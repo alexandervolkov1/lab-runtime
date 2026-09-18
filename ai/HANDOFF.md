@@ -17,14 +17,28 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
+M9D: HARDWARE ACCEPTANCE BLOCKED
+M10: NOT AUTHORIZED
+Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
-post-M9C real-device smoke passed. M10 is authorized only for structural cleanup and
-studyability. Do not begin M11, packaging or release work automatically.
+post-M9C real-device smoke passed. M9D software integration is committed, but the
+required real-device write acceptance did not begin: the read-only preflight ended
+with `transports_closed = false` and one unfinished transport. Do not issue a
+physical write or begin M10 without a new explicit decision.
+
+## M9D blocked hardware gate
+
+Software HEAD `ea49a61715e94dfd559a5d360e928410e0116b82` contains the
+authority-gated WRITE/ACK/separate-readback path and passed debug/release workspace
+tests, clippy and warning-denied rustdoc. Read-only COM5 acquisition proved channel
+type 3 and four generation-1 Good temperature samples at 28.0 degrees Celsius.
+Shutdown then failed twice with `unfinished_transports = 1` and
+`transports_closed = false`, including after an authoritative idle observation.
+Both processes exited nonzero and released COM5. No Metakon WRITE was attempted and
+no M9D SQLite archive exists. See `docs/implementation/MILESTONE_9D_REPORT.md`.
 
 ## Accepted baselines
 
@@ -55,7 +69,8 @@ SHA-256 1396421e62b5a1abb834b4178689b3303277a88d46174e0353d2710c2ab17023
 The successful archive proves real generation-1 acquisition, device-off transition,
 one explicit reconnect, bounded transient open retry, generation-2 compatibility and
 acquisition, durable lifecycle ordering, zero outputs/gaps and clean shutdown. No
-further M8 hardware rerun is required. COM5 is not part of current work.
+further M8 hardware rerun is required. M9D used COM5 only for the bounded read-only
+preflight described above and stopped before any output write.
 
 The supplementary post-M9C read-only smoke is recorded in
 `docs/implementation/POST_M9C_HARDWARE_SMOKE.md`. Its clean acceptance archive is:

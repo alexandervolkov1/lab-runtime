@@ -20,8 +20,9 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
+M9D: HARDWARE ACCEPTANCE BLOCKED
+M10: NOT AUTHORIZED
+Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
 ```
 
@@ -205,7 +206,15 @@ post-v0.1 roadmap. It is simplification, not substitution. External review accep
 the milestone. A supplementary post-M9C read-only Metakon smoke then confirmed the
 accepted hardware-facing behavior without production or test changes.
 
-## M10 — Core cleanup and studyability — AUTHORIZED
+## M9D — Physical Metakon output integration — HARDWARE ACCEPTANCE BLOCKED
+
+The production path is implemented through the existing OutputAuthority, bounded
+transport executor, strict ACK and separate register-6 readback. All software gates
+pass. The mandatory real-device read-only preflight acquired valid data but failed
+finite transport closure twice before any output write. M9D cannot enter external
+review until that blocker is classified and a clean write acceptance run succeeds.
+
+## M10 — Core cleanup and studyability — NOT AUTHORIZED
 
 Goal: make the repository unusually easy to understand and study while preserving
 behavior and safety. Refactor only under test coverage.

@@ -30,20 +30,21 @@ M9A: ACCEPTED
 M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
+M9D: HARDWARE ACCEPTANCE BLOCKED
+M10: NOT AUTHORIZED
+Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
 ```
 
-Final physical M8 acceptance, the final software gates and the supplementary
-post-M9C real-device smoke have succeeded. No further hardware rerun is required,
-and COM5 is not part of current work.
+Final physical M8 acceptance and the supplementary post-M9C read smoke remain
+accepted. M9D software integration is complete, but its real-device write acceptance
+is blocked because the prerequisite read-only preflight did not close the transport
+cleanly. No physical output write was attempted.
 
 M9A, M9B and M9C implementation and external review have succeeded. M9C removed
 active Lua, obsolete first-party client baggage and transitional source-reload /
-snapshot API. M10 is authorized only for structural cleanup and studyability while
-preserving accepted product semantics. M11 and later milestones remain blocked
-behind explicit review gates.
+snapshot API. M10 is not authorized until M9D hardware acceptance and external
+review succeed. M11 and later milestones remain blocked behind explicit review gates.
 
 ## Donor repository
 

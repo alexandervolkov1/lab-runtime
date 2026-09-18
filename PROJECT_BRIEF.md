@@ -202,16 +202,17 @@ M9A  ACCEPTED — neutral managed components and native Rust execution
 M9B  ACCEPTED — coherent bounded Application API
 M9C  ACCEPTED — Lua and obsolete client baggage removed
 POST-M9C HARDWARE SMOKE  PASS — supplementary real-device read path
-M10  AUTHORIZED — Core cleanup and studyability
+M9D  HARDWARE ACCEPTANCE BLOCKED — physical Metakon output integration
+M10  NOT AUTHORIZED — Core cleanup and studyability
 M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
 M12  NOT AUTHORIZED — documentation, packaging and final release audit
 v0.1.0
 ```
 
-Current phase: M10 — core cleanup and studyability. M10 is structural work only and
-must preserve accepted product, hardware-facing, safety, Recorder and Application
-API semantics. The roadmap ends at v0.1.0; milestones do not cross review gates
-automatically.
+Current phase: M9D — physical Metakon output integration. Software integration and
+gates are complete, but the real-device prerequisite stopped at an incomplete
+read-only transport shutdown before any physical write. M10 remains blocked. The
+roadmap ends at v0.1.0; milestones do not cross review gates automatically.
 
 ## v0.1 identity
 

@@ -17,14 +17,16 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M10: AUTHORIZED
-Current phase: M10 — core cleanup and studyability
+M9D: HARDWARE ACCEPTANCE BLOCKED
+M10: NOT AUTHORIZED
+Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
-post-M9C real-device smoke passed. M10 is the only authorized implementation
-milestone; this plan does not authorize automatic transition to M11 or later work.
+post-M9C real-device smoke passed. M9D software integration is complete, but its
+hardware gate stopped on incomplete transport shutdown during read-only preflight;
+no physical write occurred. M10 and later work are not authorized.
 The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
@@ -223,7 +225,15 @@ clean shutdown. The apparent first failure was a harness interpretation defect: 
 intentional generation-2 Unavailable/Transport rebind baseline was not an ordinary
 poll result. No production or test change was required.
 
-## M10 — Core cleanup and studyability — AUTHORIZED
+## M9D — Physical Metakon output integration — HARDWARE ACCEPTANCE BLOCKED
+
+The software path preserves controller proposals, OutputAuthority, final authority
+recheck, bounded Metakon WRITE, strict ACK and distinct register-6 readback. Debug
+and release workspace tests plus warning-denied lint/docs pass. Real-device
+acceptance remains blocked because the mandatory read-only preflight could not close
+the transport finitely; no output command was sent.
+
+## M10 — Core cleanup and studyability — NOT AUTHORIZED
 
 Refactor only under test coverage, preserving behavior and safety:
 
