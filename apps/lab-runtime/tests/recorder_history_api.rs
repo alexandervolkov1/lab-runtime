@@ -23,6 +23,16 @@ use std::{
 fn frame(value: Value) -> WireRequest {
     decode_frame(&encode_frame(&value).unwrap()).unwrap()
 }
+
+#[derive(Clone, Copy)]
+struct FrozenClock(Duration);
+
+impl Clock for FrozenClock {
+    fn now(&self) -> Duration {
+        self.0
+    }
+}
+
 fn temporary_database() -> PathBuf {
     let mut entropy = [0u8; 16];
     getrandom::fill(&mut entropy).unwrap();
@@ -718,14 +728,22 @@ fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
         "args":{"label":"history API"}})),
     );
     assert_eq!(start[0]["state"], "accepted");
+    let activation_at = service.clock().now();
     let deadline = Instant::now() + Duration::from_secs(2);
-    while service.owner().recording_status().unwrap().run_no.is_none() && Instant::now() < deadline
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording
+        && Instant::now() < deadline
     {
-        let clock = service.clock_copy();
-        service.owner_mut().service(&clock).unwrap();
+        service
+            .owner_mut()
+            .service(&FrozenClock(activation_at))
+            .unwrap();
         let _ = app.poll_recording(&mut service);
         std::thread::yield_now();
     }
+    assert_eq!(
+        service.owner().recording_status().unwrap().state,
+        RecordingState::Recording
+    );
     let start_watermark = service
         .owner()
         .recording_status()
@@ -757,19 +775,11 @@ fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
         "refresh was not admitted into Recorder: {:?}",
         service.owner().recording_status()
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while service
-        .owner()
-        .recording_status()
-        .unwrap()
-        .persisted_through_sequence
-        <= start_watermark
-        && Instant::now() < deadline
-    {
-        let clock = service.clock_copy();
-        service.owner_mut().service(&clock).unwrap();
-        std::thread::yield_now();
-    }
+    // The measurement group was admitted before this history job. Both use the
+    // Recorder worker's bounded FIFO, so completing the job is the authoritative
+    // proof that the preceding group was committed before the SQL query ran.
+    // Servicing the whole Runtime here would create unrelated periodic groups
+    // while waiting and could make the test itself exhaust bounded ingress.
     let status = app.handle(
         &mut service,
         1,
