@@ -6,7 +6,7 @@ use lab_runtime::{
 };
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
     sync::{
         Arc, Mutex,
@@ -207,6 +207,69 @@ fn unknown_operation_is_rejected_without_closing_the_healthy_session() {
         json!({"v":1,"msg_id":"later","op":"discover","args":{}}),
     );
     assert_eq!(healthy["type"], "result");
+    stop.store(true, Ordering::SeqCst);
+    join.join().unwrap();
+}
+
+#[test]
+fn malformed_utf8_json_shape_and_oversized_frames_are_scoped_to_the_bad_socket() {
+    let _gate = TEST_SERVICE_GATE.lock().unwrap();
+    let (addr, stop, join) = start();
+    let mut healthy = connect(addr);
+    hello(&mut healthy);
+    let malformed: [(&[u8], &str); 5] = [
+        (&[0xff, b'\n'], "invalid_utf8"),
+        (b"{not-json}\n", "invalid_json"),
+        (b"\n", "invalid_json"),
+        (
+            b"{\"v\":1,\"msg_id\":\"bad\",\"op\":\"discover\",\"args\":{},\"extra\":true}\n",
+            "unknown_field",
+        ),
+        (
+            b"{\"v\":1,\"msg_id\":\"bad\",\"op\":\"latest\",\"args\":{\"signal\":\"wrong\"}}\n",
+            "invalid_args",
+        ),
+    ];
+    for (frame, code) in malformed {
+        let mut bad = connect(addr);
+        bad.get_mut().write_all(frame).unwrap();
+        let rejected = read(&mut bad);
+        assert_eq!(rejected["code"], code);
+        assert_eq!(rejected["accepted"], false);
+        assert!(serde_json::to_vec(&rejected).unwrap().len() < lab_runtime::wire::FRAME_LIMIT);
+        let mut eof = String::new();
+        assert_eq!(bad.read_line(&mut eof).unwrap(), 0);
+        assert_eq!(
+            send(
+                &mut healthy,
+                json!({"v":1,"msg_id":format!("healthy-{code}"),"op":"discover","args":{}})
+            )["type"],
+            "result"
+        );
+    }
+
+    let mut oversized = connect(addr);
+    oversized
+        .get_mut()
+        .write_all(&vec![b'x'; lab_runtime::wire::FRAME_LIMIT])
+        .unwrap();
+    let mut byte = [0u8; 1];
+    match oversized.get_mut().read(&mut byte) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            ) => {}
+        outcome => panic!("oversized-frame socket remained usable: {outcome:?}"),
+    }
+    assert_eq!(
+        send(
+            &mut healthy,
+            json!({"v":1,"msg_id":"after-oversized","op":"discover","args":{}})
+        )["type"],
+        "result"
+    );
     stop.store(true, Ordering::SeqCst);
     join.join().unwrap();
 }

@@ -705,7 +705,16 @@ mod bounded_peer_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
-        let stream = TcpStream::connect(addr).unwrap();
+        let mut stream = TcpStream::connect(addr).unwrap();
+        // TCP connect completion does not prove the nonblocking reactor has assigned
+        // connection 1. Observing its request is the authoritative admission barrier.
+        stream
+            .write_all(b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n")
+            .unwrap();
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Request(1, request) if request.op == "hello"
+        ));
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -742,7 +751,16 @@ mod bounded_peer_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
-        let nonreader = TcpStream::connect(addr).unwrap();
+        let mut nonreader = TcpStream::connect(addr).unwrap();
+        // Without this barrier an early synthetic event is correctly discarded as
+        // stale, and the test can then wait forever for a detach it never caused.
+        nonreader
+            .write_all(b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n")
+            .unwrap();
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Request(1, request) if request.op == "hello"
+        ));
         for _ in 0..=CLIENT_EVENTS {
             to_net
                 .send(Outgoing::Event {
@@ -786,6 +804,63 @@ mod bounded_peer_tests {
         reader.read_line(&mut line).unwrap();
         assert!(line.contains("live"));
         assert!(!line.contains("stale"));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn eight_client_admission_and_repeated_disconnect_release_exact_reactor_capacity() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(64);
+        let (_to_net, from_owner) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let hello = b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n";
+        let mut admitted = VecDeque::new();
+        for expected in 1..=MAX_CLIENTS as u64 {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(hello).unwrap();
+            assert!(matches!(
+                from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Incoming::Request(id, request) if id == expected && request.op == "hello"
+            ));
+            admitted.push_back((expected, stream));
+        }
+
+        let mut refused = TcpStream::connect(addr).unwrap();
+        refused
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        refused.write_all(hello).unwrap();
+        let mut byte = [0u8; 1];
+        match refused.read(&mut byte) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted
+                ) => {}
+            outcome => panic!("capacity-refused socket remained usable: {outcome:?}"),
+        }
+
+        for expected in (MAX_CLIENTS as u64 + 1)..=(MAX_CLIENTS as u64 + 16) {
+            let (old_id, old) = admitted.pop_front().unwrap();
+            drop(old);
+            assert!(matches!(
+                from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Incoming::Detach(id) if id == old_id
+            ));
+            let mut replacement = TcpStream::connect(addr).unwrap();
+            replacement.write_all(hello).unwrap();
+            assert!(matches!(
+                from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Incoming::Request(id, request) if id == expected && request.op == "hello"
+            ));
+            admitted.push_back((expected, replacement));
+        }
         stop.store(true, Ordering::Release);
         join.join().unwrap();
     }
