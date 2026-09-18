@@ -6,7 +6,10 @@
 
 use crate::{
     application::common::{id_field, lifecycle_domain_error},
-    configuration::{InstrumentDto, ManagedComponentDto, PropertyValue, ResourceKindDto},
+    configuration::{
+        InstrumentPropertyConstraints, InstrumentPropertyMetadata, InstrumentPropertySource,
+        InstrumentPropertyValue, ManagedComponentDto, PropertyValue, ResourceKindDto,
+    },
     protocol,
     service::ServiceHost,
     sessions::{Mutation, PropertyMutationValue},
@@ -74,139 +77,7 @@ pub(crate) fn property_records(service: &ServiceHost) -> Result<Vec<Value>, &'st
         ));
     }
     for instrument in &dto.instruments {
-        let owner = json!({"kind":"instrument","id":instrument.id().to_string()});
-        match instrument {
-            InstrumentDto::VirtualMeasurement {
-                display_name,
-                poll_period_ms,
-                base_temperature,
-                measurement_enabled,
-                external_publication,
-                ..
-            } => {
-                records.push(property(
-                    &owner,
-                    "display_name",
-                    "text",
-                    json!(display_name),
-                    (None, "read_write", "live_safe"),
-                    &revision,
-                ));
-                records.push(property(
-                    &owner,
-                    "poll_period_ms",
-                    "integer",
-                    json!(poll_period_ms),
-                    (
-                        Some(json!({"minimum":1,"maximum":60000})),
-                        "read_write",
-                        "ordinary_live",
-                    ),
-                    &revision,
-                ));
-                records.push(property(
-                    &owner,
-                    "base_temperature",
-                    "number",
-                    json!(base_temperature),
-                    (
-                        Some(json!({"minimum":-100.0,"maximum":100.0})),
-                        "deployment_only",
-                        "reinitialize",
-                    ),
-                    &revision,
-                ));
-                records.push(property(
-                    &owner,
-                    "measurement_enabled",
-                    "boolean",
-                    json!(measurement_enabled),
-                    (None, "deployment_only", "reinitialize"),
-                    &revision,
-                ));
-                records.push(property(
-                    &owner,
-                    "external_publication",
-                    "boolean",
-                    json!(external_publication),
-                    (None, "read_only", "reinitialize"),
-                    &revision,
-                ));
-            }
-            InstrumentDto::ThermalPlant {
-                display_name,
-                poll_period_ms,
-                ambient_temperature,
-                initial_temperature,
-                gain_per_percent,
-                time_constant_ms,
-                ..
-            } => {
-                records.push(property(
-                    &owner,
-                    "display_name",
-                    "text",
-                    json!(display_name),
-                    (None, "read_write", "live_safe"),
-                    &revision,
-                ));
-                records.push(property(
-                    &owner,
-                    "poll_period_ms",
-                    "integer",
-                    json!(poll_period_ms),
-                    (
-                        Some(json!({"minimum":1,"maximum":60000})),
-                        "read_write",
-                        "ordinary_live",
-                    ),
-                    &revision,
-                ));
-                for (id, current, unit) in [
-                    (
-                        "ambient_temperature",
-                        json!(ambient_temperature),
-                        Some(json!({"id":"degC","symbol":"°C"})),
-                    ),
-                    (
-                        "initial_temperature",
-                        json!(initial_temperature),
-                        Some(json!({"id":"degC","symbol":"°C"})),
-                    ),
-                    ("gain_per_percent", json!(gain_per_percent), None),
-                    (
-                        "time_constant_ms",
-                        json!(time_constant_ms),
-                        Some(json!({"id":"ms","symbol":"ms"})),
-                    ),
-                ] {
-                    let mut record = property(
-                        &owner,
-                        id,
-                        "number",
-                        current,
-                        (None, "deployment_only", "reinitialize"),
-                        &revision,
-                    );
-                    record["unit"] = unit.unwrap_or(Value::Null);
-                    records.push(record);
-                }
-            }
-            InstrumentDto::Metakon { poll_period_ms, .. } => {
-                records.push(property(
-                    &owner,
-                    "poll_period_ms",
-                    "integer",
-                    json!(poll_period_ms),
-                    (
-                        Some(json!({"minimum":1,"maximum":60000})),
-                        "read_write",
-                        "ordinary_live",
-                    ),
-                    &revision,
-                ));
-            }
-        }
+        project_instrument_properties(instrument, &revision, &mut records);
     }
     for component in &dto.managed_components {
         component_properties(component, &revision, &mut records);
@@ -216,6 +87,55 @@ pub(crate) fn property_records(service: &ServiceHost) -> Result<Vec<Value>, &'st
     }
     records.sort_by_key(Value::to_string);
     Ok(records)
+}
+
+fn project_instrument_properties(
+    source: &impl InstrumentPropertySource,
+    revision: &str,
+    records: &mut Vec<Value>,
+) {
+    let owner = json!({"kind":"instrument","id":source.instrument_id().to_string()});
+    for metadata in source.property_metadata() {
+        records.push(project_instrument_property(&owner, metadata, revision));
+    }
+}
+
+fn project_instrument_property(
+    owner: &Value,
+    metadata: InstrumentPropertyMetadata<'_>,
+    revision: &str,
+) -> Value {
+    let current = match metadata.current {
+        InstrumentPropertyValue::Text(value) => json!(value),
+        InstrumentPropertyValue::Unsigned(value) => json!(value),
+        InstrumentPropertyValue::Number(value) => json!(value),
+        InstrumentPropertyValue::Boolean(value) => json!(value),
+    };
+    let constraints = metadata.constraints.map(|constraints| match constraints {
+        InstrumentPropertyConstraints::Integer { minimum, maximum } => {
+            json!({"minimum":minimum,"maximum":maximum})
+        }
+        InstrumentPropertyConstraints::Number { minimum, maximum } => {
+            json!({"minimum":minimum,"maximum":maximum})
+        }
+    });
+    let mut record = property(
+        owner,
+        metadata.id,
+        metadata.value_type.as_str(),
+        current,
+        (
+            constraints,
+            metadata.access.as_str(),
+            metadata.mutation.as_str(),
+        ),
+        revision,
+    );
+    record["unit"] = metadata.unit.map_or(
+        Value::Null,
+        |unit| json!({"id":unit.id,"symbol":unit.symbol}),
+    );
+    record
 }
 
 fn component_properties(component: &ManagedComponentDto, revision: &str, records: &mut Vec<Value>) {
@@ -318,9 +238,7 @@ pub(crate) fn resource_json(
         .dto
         .instruments
         .iter()
-        .filter(|instrument| {
-            matches!(instrument, InstrumentDto::Metakon { resource_id: bound, .. } if *bound == resource_id)
-        })
+        .filter(|instrument| instrument.bound_resource_id() == Some(resource_id))
         .map(|instrument| instrument.id().to_string())
         .collect::<Vec<_>>();
     let kind = match resource.kind {
@@ -464,3 +382,6 @@ pub(crate) fn dispatch_mutation(
         )),
     }
 }
+
+#[cfg(test)]
+mod instrument_property_projection_tests;

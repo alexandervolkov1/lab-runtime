@@ -1302,6 +1302,109 @@ pub(crate) enum FlowControlDto {
     Hardware,
 }
 
+/// Language-neutral scalar shape of one configured instrument property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstrumentPropertyType {
+    Text,
+    Integer,
+    Number,
+    Boolean,
+}
+
+impl InstrumentPropertyType {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Integer => "integer",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+        }
+    }
+}
+
+/// Current property value retained by the validated deployment configuration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum InstrumentPropertyValue<'a> {
+    Text(&'a str),
+    Unsigned(u64),
+    Number(f64),
+    Boolean(bool),
+}
+
+/// Optional inclusive numeric constraints for one instrument property.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum InstrumentPropertyConstraints {
+    Integer { minimum: i64, maximum: i64 },
+    Number { minimum: f64, maximum: f64 },
+}
+
+/// Language-neutral engineering unit projected for a configured property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InstrumentPropertyUnit {
+    pub(crate) id: &'static str,
+    pub(crate) symbol: &'static str,
+}
+
+/// Whether the accepted generic configuration operation may mutate a property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstrumentPropertyAccess {
+    ReadOnly,
+    ReadWrite,
+    DeploymentOnly,
+}
+
+impl InstrumentPropertyAccess {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::ReadWrite => "read_write",
+            Self::DeploymentOnly => "deployment_only",
+        }
+    }
+}
+
+/// Runtime lifecycle consequence of changing a configured property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstrumentPropertyMutation {
+    LiveSafe,
+    OrdinaryLive,
+    Reinitialize,
+}
+
+impl InstrumentPropertyMutation {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::LiveSafe => "live_safe",
+            Self::OrdinaryLive => "ordinary_live",
+            Self::Reinitialize => "reinitialize",
+        }
+    }
+}
+
+/// Neutral configured property description owned by an instrument configuration.
+///
+/// This type deliberately contains no JSON or Application DTO. The generic
+/// Application projection adds owner identity and configuration revision later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InstrumentPropertyMetadata<'a> {
+    pub(crate) id: &'static str,
+    pub(crate) value_type: InstrumentPropertyType,
+    pub(crate) current: InstrumentPropertyValue<'a>,
+    pub(crate) unit: Option<InstrumentPropertyUnit>,
+    pub(crate) access: InstrumentPropertyAccess,
+    pub(crate) mutation: InstrumentPropertyMutation,
+    pub(crate) constraints: Option<InstrumentPropertyConstraints>,
+}
+
+/// Static configuration-layer seam consumed by the generic property projection.
+///
+/// Adding an instrument kind extends this layer and Host composition; it does not
+/// add a concrete-instrument branch to the Application API.
+pub(crate) trait InstrumentPropertySource {
+    fn instrument_id(&self) -> u64;
+    fn property_metadata(&self) -> Vec<InstrumentPropertyMetadata<'_>>;
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum InstrumentDto {
@@ -1375,6 +1478,14 @@ impl InstrumentDto {
         }
     }
 
+    /// Deployment resource used by a physical adapter, if this kind has one.
+    pub(crate) fn bound_resource_id(&self) -> Option<u64> {
+        match self {
+            Self::Metakon { resource_id, .. } => Some(*resource_id),
+            Self::VirtualMeasurement { .. } | Self::ThermalPlant { .. } => None,
+        }
+    }
+
     // Exclude display and cadence fields that have explicitly live semantics.
     fn without_live_fields(&self) -> String {
         match self {
@@ -1414,6 +1525,160 @@ impl InstrumentDto {
                 "metakon:{id}:{key}:{}:{resource_id}:{address}:{queue_timeout_ms}:{transaction_timeout_ms}",
                 definition.display()
             ),
+        }
+    }
+}
+
+impl InstrumentPropertySource for InstrumentDto {
+    fn instrument_id(&self) -> u64 {
+        self.id()
+    }
+
+    fn property_metadata(&self) -> Vec<InstrumentPropertyMetadata<'_>> {
+        const MILLISECONDS: InstrumentPropertyUnit = InstrumentPropertyUnit {
+            id: "ms",
+            symbol: "ms",
+        };
+        const CELSIUS: InstrumentPropertyUnit = InstrumentPropertyUnit {
+            id: "degC",
+            symbol: "°C",
+        };
+        const POLL_BOUNDS: InstrumentPropertyConstraints = InstrumentPropertyConstraints::Integer {
+            minimum: 1,
+            maximum: 60_000,
+        };
+
+        match self {
+            Self::VirtualMeasurement {
+                display_name,
+                poll_period_ms,
+                base_temperature,
+                measurement_enabled,
+                external_publication,
+                ..
+            } => vec![
+                InstrumentPropertyMetadata {
+                    id: "display_name",
+                    value_type: InstrumentPropertyType::Text,
+                    current: InstrumentPropertyValue::Text(display_name),
+                    unit: None,
+                    access: InstrumentPropertyAccess::ReadWrite,
+                    mutation: InstrumentPropertyMutation::LiveSafe,
+                    constraints: None,
+                },
+                InstrumentPropertyMetadata {
+                    id: "poll_period_ms",
+                    value_type: InstrumentPropertyType::Integer,
+                    current: InstrumentPropertyValue::Unsigned(*poll_period_ms),
+                    unit: Some(MILLISECONDS),
+                    access: InstrumentPropertyAccess::ReadWrite,
+                    mutation: InstrumentPropertyMutation::OrdinaryLive,
+                    constraints: Some(POLL_BOUNDS),
+                },
+                InstrumentPropertyMetadata {
+                    id: "base_temperature",
+                    value_type: InstrumentPropertyType::Number,
+                    current: InstrumentPropertyValue::Number(*base_temperature),
+                    unit: None,
+                    access: InstrumentPropertyAccess::DeploymentOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: Some(InstrumentPropertyConstraints::Number {
+                        minimum: -100.0,
+                        maximum: 100.0,
+                    }),
+                },
+                InstrumentPropertyMetadata {
+                    id: "measurement_enabled",
+                    value_type: InstrumentPropertyType::Boolean,
+                    current: InstrumentPropertyValue::Boolean(*measurement_enabled),
+                    unit: None,
+                    access: InstrumentPropertyAccess::DeploymentOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: None,
+                },
+                InstrumentPropertyMetadata {
+                    id: "external_publication",
+                    value_type: InstrumentPropertyType::Boolean,
+                    current: InstrumentPropertyValue::Boolean(*external_publication),
+                    unit: None,
+                    access: InstrumentPropertyAccess::ReadOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: None,
+                },
+            ],
+            Self::ThermalPlant {
+                display_name,
+                poll_period_ms,
+                ambient_temperature,
+                initial_temperature,
+                gain_per_percent,
+                time_constant_ms,
+                ..
+            } => vec![
+                InstrumentPropertyMetadata {
+                    id: "display_name",
+                    value_type: InstrumentPropertyType::Text,
+                    current: InstrumentPropertyValue::Text(display_name),
+                    unit: None,
+                    access: InstrumentPropertyAccess::ReadWrite,
+                    mutation: InstrumentPropertyMutation::LiveSafe,
+                    constraints: None,
+                },
+                InstrumentPropertyMetadata {
+                    id: "poll_period_ms",
+                    value_type: InstrumentPropertyType::Integer,
+                    current: InstrumentPropertyValue::Unsigned(*poll_period_ms),
+                    unit: Some(MILLISECONDS),
+                    access: InstrumentPropertyAccess::ReadWrite,
+                    mutation: InstrumentPropertyMutation::OrdinaryLive,
+                    constraints: Some(POLL_BOUNDS),
+                },
+                InstrumentPropertyMetadata {
+                    id: "ambient_temperature",
+                    value_type: InstrumentPropertyType::Number,
+                    current: InstrumentPropertyValue::Number(*ambient_temperature),
+                    unit: Some(CELSIUS),
+                    access: InstrumentPropertyAccess::DeploymentOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: None,
+                },
+                InstrumentPropertyMetadata {
+                    id: "initial_temperature",
+                    value_type: InstrumentPropertyType::Number,
+                    current: InstrumentPropertyValue::Number(*initial_temperature),
+                    unit: Some(CELSIUS),
+                    access: InstrumentPropertyAccess::DeploymentOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: None,
+                },
+                InstrumentPropertyMetadata {
+                    id: "gain_per_percent",
+                    value_type: InstrumentPropertyType::Number,
+                    current: InstrumentPropertyValue::Number(*gain_per_percent),
+                    unit: None,
+                    access: InstrumentPropertyAccess::DeploymentOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: None,
+                },
+                InstrumentPropertyMetadata {
+                    id: "time_constant_ms",
+                    value_type: InstrumentPropertyType::Number,
+                    current: InstrumentPropertyValue::Unsigned(*time_constant_ms),
+                    unit: Some(MILLISECONDS),
+                    access: InstrumentPropertyAccess::DeploymentOnly,
+                    mutation: InstrumentPropertyMutation::Reinitialize,
+                    constraints: None,
+                },
+            ],
+            Self::Metakon { poll_period_ms, .. } => vec![InstrumentPropertyMetadata {
+                id: "poll_period_ms",
+                value_type: InstrumentPropertyType::Integer,
+                current: InstrumentPropertyValue::Unsigned(*poll_period_ms),
+                unit: Some(MILLISECONDS),
+                access: InstrumentPropertyAccess::ReadWrite,
+                mutation: InstrumentPropertyMutation::OrdinaryLive,
+                constraints: Some(POLL_BOUNDS),
+            }],
         }
     }
 }
