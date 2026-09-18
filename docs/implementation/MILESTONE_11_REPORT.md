@@ -1,8 +1,195 @@
 # Milestone 11 implementation report
 
-## M11.2 — acquisition, managed-executor lifecycle and starvation hardening
+## M11.3 — controller, OutputAuthority and physical-output recovery hardening
 
 ### Status and scope
+
+```text
+M8-M10: ACCEPTED
+M11.1-M11.2: COMPLETE
+M11.3: COMPLETE
+M11.4: NOT STARTED
+M12+: NOT AUTHORIZED
+```
+
+M11.3 consolidated the accepted controller/OutputAuthority/Metakon rules into one
+recovery model and added the missing configured end-to-end oracle. It did not
+redesign OutputAuthority, add a retry policy, alter Metakon bytes, add an
+Application operation, change Recorder/SQLite, or use hardware.
+
+### Consolidated recovery model
+
+The accepted sequence is now tested as one policy rather than only as isolated
+state-machine properties:
+
+```text
+normal physical control
+-> send-started output or resource fault
+-> old lease/epoch/generation revoked
+-> controller Failed
+-> safe obligation retained
+-> explicit resource reconnect and compatibility probe
+-> fresh OutputAuthority instance and confirmed safe readback
+-> controller still Failed
+-> fresh Good input still does not rearm
+-> explicit reset_failed
+-> Paused
+-> explicit resume and warm-up
+-> fresh lease on the current authority/generation
+-> normal physical output may resume
+```
+
+Transport recovery and input recovery are evidence, not output permission:
+
+```text
+resource Ready != input Good != controller armed != output authorized
+```
+
+`reset_failed` is accepted only after the current authority is safely Disarmed. It
+clears algorithm memory and moves `Failed -> Paused`; it does not acquire a lease.
+`resume` is the separate deliberate rearm action and enters Warming. Only accepted
+warm-up on distinct fresh observations acquires a new finite automatic lease.
+
+### Physical WRITE fault matrix
+
+| Fault point | Authoritative result | Automatic resend | Recovery |
+|---|---|---|---|
+| Rejected or failed before `send_started` | No physical-byte claim; reservation is released | Ordinary intent is not resurrected. An unstarted safe obligation may use the existing later-delivery policy | Later bounded safety service or explicit lifecycle correction |
+| Nonzero WRITE started, no valid ACK | Outcome is Ambiguous after the bounded recovery boundary; lease is revoked, controller becomes Failed and a distinct safe obligation is requested | **No** retry of the ambiguous WRITE | Establish a clean/rebind boundary and safe evidence, then explicit controller recovery |
+| ACK succeeds, readback is unavailable/invalid | ACK remains visible, readback is absent, failure is Unavailable, outcome is Ambiguous, controller fails | **No** blind nonzero resend | Safe transition; reconnect if the resource cannot recover; explicit rearm |
+| ACK succeeds, readback mismatches | Reported value and Mismatch remain visible, outcome is Failed, controller fails | **No** repeat of the original nonzero WRITE. Existing policy may issue a distinct safe WRITE because the readback positively reports a non-safe register value | Matching safe readback, then explicit controller recovery |
+| ACK and matching readback | Outcome is ReadbackVerified; a current controller lease may renew | No duplicate WRITE | Normal bounded control continues |
+| Safe WRITE becomes ambiguous after start | `safe_obligation_pending=true`, `ambiguous_safe_resend_blocked=true`, `safe_confirmed=false`, FaultLatched | **No** automatic safe resend, including repeated safety turns or another safe request | A validated rebind creates a fresh authority/safe-establishment lifecycle; it still does not rearm the controller |
+
+The distinctions remain normative:
+
+```text
+requested
+!= authorized
+!= send_started
+!= ACK
+!= readback
+!= physical_effect
+```
+
+Matching register readback is software evidence about reg06, not proof of heater or
+other physical effect.
+
+### Configured resource-loss and no-auto-rearm oracle
+
+`tests/configured_physical_output.rs` now drives the output-enabled frozen deployment
+through `HostCore`, the same configured reconnect primitives used by
+`ServiceHost::reconnect_resource`, and the real Runtime/ResourceExecutor/Metakon
+path. Its byte adapter is test-only.
+
+The oracle proves:
+
+1. startup probe, safe-zero ACK/readback and controller preparation succeed;
+2. the controller obtains a finite lease and produces a verified nonzero output;
+3. the next nonzero WRITE is applied by the fake device, but its ACK is suppressed
+   and transport recovery fails;
+4. the resource becomes Offline, output is fault-latched with an unconfirmed safe
+   obligation, and the controller is Failed with no lease;
+5. the old-generation ambiguous nonzero frame is never sent again;
+6. explicit retirement/rebind advances binding generation 1 to 2, then the
+   compatibility probe and a new authority-gated safe-zero ACK/readback succeed;
+7. ordinary acquisition resumes and publishes a fresh Good measurement, but
+   multiple owner turns produce no nonzero WRITE and the controller stays Failed;
+8. only `reset_failed` followed by `resume` and normal warm-up can produce another
+   nonzero WRITE; the resulting lease has a different authority-instance identity
+   from the retired lease.
+
+Existing `ServiceHost::reconnect_resource` tests continue to freeze the surrounding
+operation lifecycle: old-worker retirement, actual-open Ready, compatibility probe,
+Core generation fence, durable lifecycle commit and acquisition release. The new
+oracle exercises the output-enabled host half deterministically without opening an
+OS COM port.
+
+### Scoped controller-fault correction
+
+The new oracle found one production defect in `host/scheduler.rs`. Runtime already
+made an unsuccessful scheduled physical tick fail closed: it set the controller to
+`Failed`, revoked its lease, requested safe output and emitted controller/output
+facts. Host then propagated the returned tick error as an owner failure. In a real
+process that could unnecessarily escalate a correctly contained controller/output
+fault into fatal service shutdown.
+
+Host now consumes a tick error only after querying the authoritative Runtime state
+and proving that the same controller is `Failed`. That is the existing scoped
+domain transition. If Runtime did not reach `Failed`—for example because of a clock,
+configuration or owner invariant error—Host still propagates the error. Scheduler
+phase order, cadence and controller semantics are unchanged.
+
+### Lease, epoch and generation fencing
+
+The new configured oracle proves a fresh authority instance after rebind. Existing
+M2/M3/M4 regressions continue to prove that:
+
+- lease expiry is exclusive and immediately prevents renewal/final send;
+- revocation advances the epoch and removes pending ordinary authority;
+- a queued stale proposal fails the final authority check before byte zero;
+- a binding/mapping generation replacement fences old queued work and completion;
+- a late old dispatch cannot confirm a newer safe epoch;
+- reconnect never reconstructs an old controller lease.
+
+No reconnect, elapsed time, fresh measurement, ACK or readback implicitly performs
+controller rearm.
+
+### Timing faults, shutdown and visibility
+
+Existing controller suites cover unavailable and stale input, exact lease expiry,
+excessive tick gap, invalid algorithm/configuration results and unavailable output.
+All converge on Failed control plus the existing safe transition; recovery remains
+`safe evidence -> reset_failed -> resume`.
+
+Existing shutdown acceptance covers active and warming control, ambiguous/unconfirmed
+physical safety, offline/recovering transports, `TransportShutdown::Pending`,
+Recorder flush/failure and unfinished managed workers. Shutdown continues bounded
+owner turns, never reports safe merely because zero was requested, and returns an
+unsuccessful terminal status when physical ambiguity or cleanup remains. It does not
+hide an unresolved safe obligation.
+
+No new durable fact or schema was required. Existing facts retain controller
+lifecycle and correlated output Requested, Authorized, SendStarted, ACK, readback,
+mismatch, TransportUncertain, Ambiguous, SafeRequested and safe evidence stages.
+The existing Application projection exposes resource state/generation, controller
+state/lease absence, and output state, fault latch, safe confirmation, in-flight,
+ACK/readback/failure/outcome. A client can therefore distinguish “resource
+recovered” from “controller not rearmed” and “safe confirmed/unconfirmed” without
+private Runtime fields or a new operation.
+
+### Verification
+
+Concurrency/safety-sensitive oracles were repeated independently:
+
+```text
+configured ambiguous-output -> reconnect -> no-auto-rearm   10/10 PASS
+ambiguous safe WRITE -> no automatic resend                 10/10 PASS
+```
+
+Focused suites passed for M2/M3 transport fencing, M4 controller lifecycle and
+timing, M9D physical output, configured acquisition/reconnect/output, Host
+scheduling, controller API projections, Recorder evidence/isolation/provenance and
+finite shutdown.
+
+Full gates passed:
+
+```text
+cargo fmt --all -- --check                                 PASS
+cargo test --workspace                                     PASS
+cargo test --workspace --release                           PASS
+cargo clippy --workspace --all-targets -- -D warnings      PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps PASS
+```
+
+Both workspace matrices retained the exact 42-operation/25-capability registry,
+M9B.8 fault acceptance, M11.2 configured acquisition matrix, all Recorder suites
+and the M9D output matrix. No hardware test ran. The accepted M9D evidence archive
+and hash remain unchanged.
+
+## M11.2 — acquisition, managed-executor lifecycle and starvation hardening
+
+### Status at M11.2 completion and scope
 
 ```text
 M8-M10: ACCEPTED
@@ -232,11 +419,12 @@ No capacity was increased and no unbounded fallback was added.
 
 ### Deferred work
 
-M11.3 remains the separate combined control/output recovery gate, especially
-ambiguity plus reconnect plus proof of no automatic rearm. Recorder/platform
-hardening remains M11.4, bounded diagnostic logging remains M11.5, and additional
-full-process capacity/soak work remains M11.6-M11.7. No logging subsystem or Arduino
-support was started in M11.2.
+At M11.2 completion, M11.3 remained the separate combined control/output recovery
+gate, especially ambiguity plus reconnect plus proof of no automatic rearm. That
+gate is now complete in the M11.3 section above. Recorder/platform hardening remains
+M11.4, bounded diagnostic logging remains M11.5, and additional full-process
+capacity/soak work remains M11.6-M11.7. No logging subsystem or Arduino support was
+started in M11.2.
 
 ### Verification
 
