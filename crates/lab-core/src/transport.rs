@@ -259,6 +259,7 @@ pub(crate) enum TransportEvent {
         response: Option<Vec<u8>>,
     },
     OutputUncertain {
+        id: TransactionId,
         intent: OutputIntent,
         dispatch: DispatchId,
     },
@@ -665,6 +666,7 @@ impl ResourceExecutor {
             TransactionKind::Output(output) => {
                 if let Some(dispatch) = output.dispatch {
                     self.events.push_back(TransportEvent::OutputUncertain {
+                        id: active.transaction.id,
                         intent: output.intent,
                         dispatch,
                     });

@@ -473,6 +473,8 @@ pub struct Runtime {
     outputs: BTreeMap<ActuatorId, OutputAuthority>,
     resources: BTreeMap<ResourceId, ResourceExecutor>,
     pending_reads: BTreeMap<(ResourceId, TransactionId), PendingRead>,
+    pending_output_writes: BTreeMap<(ResourceId, TransactionId), Duration>,
+    pending_output_readbacks: BTreeMap<(ResourceId, TransactionId), PendingOutputReadback>,
     unsettled_outputs: BTreeMap<ResourceId, (OutputIntent, crate::output::DispatchId)>,
     output_time: Duration,
     transport_time: Duration,
@@ -495,6 +497,14 @@ struct PendingRead {
     binding_generation: u64,
     mapping_revision: u64,
     failure_published: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PendingOutputReadback {
+    intent: OutputIntent,
+    dispatch: crate::output::DispatchId,
+    expected: ExpectedRead,
+    scale: f64,
 }
 
 struct ManagedInstance {
@@ -1530,57 +1540,9 @@ impl Runtime {
                 at,
                 queue_ttl,
                 timeout,
-            } => {
-                self.check_transport_time(at)?;
-                let deadline = at
-                    .checked_add(queue_ttl)
-                    .ok_or(TransportError::InvalidTransaction)?;
-                let instrument = self
-                    .metakon_instruments
-                    .get(&actuator.instrument())
-                    .ok_or(OutputError::UnknownActuator)?;
-                let definition = instrument
-                    .definition
-                    .parameter_definition(actuator.parameter())
-                    .filter(|definition| definition.operation == KnownOperation::Output)
-                    .ok_or(OutputError::UnknownActuator)?;
-                let binding = instrument.binding;
-                let authority = self
-                    .outputs
-                    .get_mut(&actuator)
-                    .ok_or(OutputError::UnknownActuator)?;
-                let intent = authority.reserve_transport(
-                    at,
-                    deadline,
-                    self.output_attempts.get(&actuator).copied(),
-                    binding.binding_generation,
-                    binding.mapping_revision,
-                )?;
-                let raw = encode_scaled_i8(&Value::Float(intent.value), definition.scale)?;
-                let address = Address::new(binding.device, binding.channel, 6);
-                let request = encode_write(address, MetakonValue::I8(raw))?;
-                let enqueue = self
-                    .resources
-                    .get_mut(&binding.resource)
-                    .ok_or(TransportError::UnknownResource)
-                    .and_then(|executor| {
-                        executor.enqueue_output(
-                            request.as_bytes(),
-                            5,
-                            at,
-                            deadline,
-                            timeout,
-                            intent,
-                        )
-                    });
-                match enqueue {
-                    Ok(transaction) => Ok(CommandResult::TransportQueued(transaction)),
-                    Err(error) => {
-                        authority.abort_transport(intent);
-                        Err(error.into())
-                    }
-                }
-            }
+            } => self
+                .queue_metakon_output(actuator, at, queue_ttl, timeout)
+                .map(CommandResult::TransportQueued),
             Command::PollTransports { at } => {
                 self.poll_transports(at)?;
                 Ok(CommandResult::TransportsPolled)
@@ -1595,8 +1557,10 @@ impl Runtime {
                 at,
             } => {
                 if self.controllers.values().any(|controller| {
-                    controller.state == ControllerState::Warming
-                        && controller.config.output.instrument() == instrument
+                    matches!(
+                        controller.state,
+                        ControllerState::Warming | ControllerState::Running
+                    ) && controller.config.output.instrument() == instrument
                 }) {
                     return Err(OutputError::Busy.into());
                 }
@@ -1618,8 +1582,13 @@ impl Runtime {
                     .filter(|parameter| parameter.role == crate::ParameterRole::Actuator)
                     .collect();
                 match (outputs.as_slice(), binding.expected_output_unit) {
-                    ([], None) => {}
-                    ([output], Some(unit)) if output.unit == unit => {}
+                    ([], None)
+                        if binding.output_queue_ttl.is_none()
+                            && binding.output_timeout.is_none() => {}
+                    ([output], Some(unit))
+                        if output.unit == unit
+                            && binding.output_queue_ttl.is_some()
+                            && binding.output_timeout.is_some() => {}
                     _ => {
                         return Err(Error::InvalidConfiguration(
                             "output binding unit does not match descriptor",
@@ -1679,6 +1648,10 @@ impl Runtime {
                         binding.mapping_revision,
                     );
                 }
+                self.pending_output_writes
+                    .retain(|(resource, _), _| *resource != binding.resource);
+                self.pending_output_readbacks
+                    .retain(|_, pending| pending.intent.actuator.instrument() != instrument);
                 self.outputs.extend(replacements);
                 Ok(CommandResult::Registered(instrument))
             }
@@ -1706,32 +1679,33 @@ impl Runtime {
                         "stale or invalid Metakon replacement",
                     ));
                 }
-                if current
-                    .descriptor
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter.role == crate::ParameterRole::Actuator)
-                    || self.controllers.values().any(|controller| {
-                        matches!(
-                            controller.state,
-                            ControllerState::Warming | ControllerState::Running
-                        ) && (controller.config.input.instrument() == id
-                            || controller.config.output.instrument() == id)
-                    })
-                {
+                if self.controllers.values().any(|controller| {
+                    matches!(
+                        controller.state,
+                        ControllerState::Warming | ControllerState::Running
+                    ) && (controller.config.input.instrument() == id
+                        || controller.config.output.instrument() == id)
+                }) {
                     return Err(OutputError::Busy.into());
                 }
                 let mut candidate = MetakonInstrument::new(config)?;
-                if candidate
+                let replacements: Vec<_> = candidate
                     .descriptor
                     .parameters
                     .iter()
-                    .any(|parameter| parameter.role == crate::ParameterRole::Actuator)
-                {
-                    return Err(Error::InvalidConfiguration(
-                        "M8 Metakon replacement must remain read-only",
-                    ));
-                }
+                    .filter(|parameter| parameter.role == crate::ParameterRole::Actuator)
+                    .map(|parameter| {
+                        let actuator = ActuatorId::new(id, parameter.id);
+                        Ok((
+                            actuator,
+                            OutputAuthority::new(
+                                actuator,
+                                parameter.value_spec.clone(),
+                                parameter.unit,
+                            )?,
+                        ))
+                    })
+                    .collect::<Result<_, Error>>()?;
                 let binding = candidate.binding;
                 let descriptors: Vec<_> = candidate
                     .descriptor
@@ -1752,7 +1726,12 @@ impl Runtime {
                 }
                 self.pending_reads
                     .retain(|_, pending| pending.instrument != id);
+                self.pending_output_writes
+                    .retain(|(resource, _), _| *resource != binding.resource);
+                self.pending_output_readbacks
+                    .retain(|_, pending| pending.intent.actuator.instrument() != id);
                 self.metakon_instruments.insert(id, candidate);
+                self.outputs.extend(replacements);
                 for sample in invalidated {
                     self.recording_facts.measurement(
                         sample,
@@ -2108,9 +2087,12 @@ impl Runtime {
         if config.pid.output_min < min
             || config.pid.output_max > max
             || !self.outputs.contains_key(&config.output)
-            || !self
+            || (!self
                 .thermal_plants
                 .contains_key(&config.output.instrument())
+                && !self
+                    .metakon_instruments
+                    .contains_key(&config.output.instrument()))
         {
             return Err(ControllerError::InvalidConfiguration.into());
         }
@@ -3068,29 +3050,40 @@ impl Runtime {
                     .lease
                     .expect("Running controller owns its last token");
                 let output = controller.config.output;
-                let delivery = self.deliver_simulated(
-                    output,
-                    OutputProposal {
-                        lease,
-                        value: Value::Float(pid.output),
-                        unit,
-                        ttl,
-                    },
-                    at,
-                );
+                let proposal = OutputProposal {
+                    lease,
+                    value: Value::Float(pid.output),
+                    unit,
+                    ttl,
+                };
+                let physical = self.metakon_instruments.contains_key(&output.instrument());
+                let delivery = if physical {
+                    self.deliver_physical(output, proposal, at)
+                } else {
+                    self.deliver_simulated(output, proposal, at)
+                };
                 match delivery {
                     Ok(()) => {
-                        let renewal = self
-                            .outputs
-                            .get_mut(&output)
-                            .ok_or(Error::from(OutputError::UnknownActuator))
-                            .and_then(|authority| {
-                                authority.renew_native(lease, controller.config.lease_lifetime, at)
-                            });
-                        if let Ok(replacement) = renewal {
-                            controller.lease = Some(replacement);
+                        let renewal = if physical {
+                            Ok(lease)
+                        } else {
+                            self.outputs
+                                .get_mut(&output)
+                                .ok_or(Error::from(OutputError::UnknownActuator))
+                                .and_then(|authority| {
+                                    authority.renew_native(
+                                        lease,
+                                        controller.config.lease_lifetime,
+                                        at,
+                                    )
+                                })
+                        };
+                        if let Ok(current_or_replacement) = renewal {
+                            controller.lease = Some(current_or_replacement);
                             controller.last_tick = Some(at);
-                            controller.latest_output = Some(pid);
+                            if !physical {
+                                controller.latest_output = Some(pid);
+                            }
                             Ok(CommandResult::ControllerUpdated(controller.snapshot()))
                         } else {
                             let _ = self.fail_controller(&mut controller, at);
@@ -3298,7 +3291,12 @@ impl Runtime {
                 // A previously revoked controller cannot mutate a subsequent owner.
                 return Ok(CommandResult::ControllerUpdated(controller.snapshot()));
             }
-            self.complete_simulated_safe(controller.config.output, at)?;
+            if self
+                .thermal_plants
+                .contains_key(&controller.config.output.instrument())
+            {
+                self.complete_simulated_safe(controller.config.output, at)?;
+            }
             Ok(CommandResult::ControllerUpdated(controller.snapshot()))
         })();
         self.controllers.insert(id, controller);
@@ -3357,7 +3355,14 @@ impl Runtime {
         } else {
             return Ok(());
         }
-        self.complete_simulated_safe(controller.config.output, at)
+        if self
+            .thermal_plants
+            .contains_key(&controller.config.output.instrument())
+        {
+            self.complete_simulated_safe(controller.config.output, at)
+        } else {
+            Ok(())
+        }
     }
 
     fn control_input(
@@ -3463,6 +3468,48 @@ impl Runtime {
                 at,
             );
         }
+    }
+
+    fn deliver_physical(
+        &mut self,
+        actuator: ActuatorId,
+        proposal: OutputProposal,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let attempt_id = self.allocate_output_attempt()?;
+        self.outputs
+            .get_mut(&actuator)
+            .ok_or(OutputError::UnknownActuator)?
+            .command(OutputCommand::Propose(proposal), at)?;
+        self.output_attempts.insert(actuator, attempt_id);
+        self.recording_facts.output_correlated(
+            actuator,
+            crate::recording::OutputStage::Requested,
+            self.outputs
+                .get(&actuator)
+                .and_then(|output| output.snapshot().requested),
+            at,
+            crate::recording::OutputEvidenceSource::None,
+            Some(attempt_id),
+            None,
+        );
+        self.require_recording_open(at)?;
+        let binding = self
+            .metakon_instruments
+            .get(&actuator.instrument())
+            .ok_or(OutputError::UnknownActuator)?
+            .binding;
+        self.queue_metakon_output(
+            actuator,
+            at,
+            binding.output_queue_ttl.ok_or(Error::InvalidConfiguration(
+                "physical output timing missing",
+            ))?,
+            binding.output_timeout.ok_or(Error::InvalidConfiguration(
+                "physical output timing missing",
+            ))?,
+        )?;
+        Ok(())
     }
 
     fn deliver_simulated(
@@ -3785,6 +3832,33 @@ impl Runtime {
         for actuator in virtual_safe {
             let _ = self.complete_simulated_safe(actuator, at);
         }
+        let physical_safe: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|(actuator, authority)| {
+                self.metakon_instruments
+                    .contains_key(&actuator.instrument())
+                    && authority.snapshot().state == crate::output::OutputState::SafePending
+                    && authority.snapshot().in_flight.is_none()
+            })
+            .filter_map(|(actuator, _)| {
+                self.metakon_instruments
+                    .get(&actuator.instrument())
+                    .and_then(|instrument| {
+                        Some((
+                            *actuator,
+                            instrument.binding.output_queue_ttl?,
+                            instrument.binding.output_timeout?,
+                        ))
+                    })
+            })
+            .collect();
+        for (actuator, queue_ttl, timeout) in physical_safe {
+            // A previously admitted safe transaction owns the authority's single
+            // reservation and returns Busy here. Before send-start, other bounded
+            // admission failures leave the safe request available for a later turn.
+            let _ = self.queue_metakon_output(actuator, at, queue_ttl, timeout);
+        }
         // Every M3 resource gets one bounded recovery/dispatch opportunity.
         self.poll_transports(at)
     }
@@ -3811,6 +3885,83 @@ impl Runtime {
         }
         self.transport_time = at;
         Ok(())
+    }
+
+    fn queue_metakon_output(
+        &mut self,
+        actuator: ActuatorId,
+        at: Duration,
+        queue_ttl: Duration,
+        timeout: Duration,
+    ) -> Result<TransactionId, Error> {
+        self.check_transport_time(at)?;
+        let deadline = at
+            .checked_add(queue_ttl)
+            .ok_or(TransportError::InvalidTransaction)?;
+        let instrument = self
+            .metakon_instruments
+            .get(&actuator.instrument())
+            .ok_or(OutputError::UnknownActuator)?;
+        let scale = instrument
+            .definition
+            .parameter_definition(actuator.parameter())
+            .filter(|definition| definition.operation == KnownOperation::Output)
+            .ok_or(OutputError::UnknownActuator)?
+            .scale;
+        let binding = instrument.binding;
+        let intent = self
+            .outputs
+            .get_mut(&actuator)
+            .ok_or(OutputError::UnknownActuator)?
+            .reserve_transport(
+                at,
+                deadline,
+                self.output_attempts.get(&actuator).copied(),
+                binding.binding_generation,
+                binding.mapping_revision,
+            )?;
+        let raw = match encode_scaled_i8(&Value::Float(intent.value), scale) {
+            Ok(raw) => raw,
+            Err(error) => {
+                self.outputs
+                    .get_mut(&actuator)
+                    .expect("authority reserved the intent")
+                    .abort_transport(intent);
+                return Err(error.into());
+            }
+        };
+        let address = Address::new(binding.device, binding.channel, 6);
+        let request = match encode_write(address, MetakonValue::I8(raw)) {
+            Ok(request) => request,
+            Err(error) => {
+                self.outputs
+                    .get_mut(&actuator)
+                    .expect("authority reserved the intent")
+                    .abort_transport(intent);
+                return Err(error.into());
+            }
+        };
+        let enqueue = self
+            .resources
+            .get_mut(&binding.resource)
+            .ok_or(TransportError::UnknownResource)
+            .and_then(|executor| {
+                executor.enqueue_output(request.as_bytes(), 5, at, deadline, timeout, intent)
+            });
+        match enqueue {
+            Ok(transaction) => {
+                self.pending_output_writes
+                    .insert((binding.resource, transaction), timeout);
+                Ok(transaction)
+            }
+            Err(error) => {
+                self.outputs
+                    .get_mut(&actuator)
+                    .expect("authority reserved the intent")
+                    .abort_transport(intent);
+                Err(error.into())
+            }
+        }
     }
 
     fn poll_transports(&mut self, at: Duration) -> Result<(), Error> {
@@ -3936,8 +4087,16 @@ impl Runtime {
             }
             TransportEvent::ReadFenced { id } => {
                 self.pending_reads.remove(&(resource, id));
+                if let Some(pending) = self.pending_output_readbacks.remove(&(resource, id)) {
+                    self.fail_output_readback(resource, pending, at)?;
+                }
             }
             TransportEvent::ReadTerminal { record, response } => {
+                if let Some(pending) = self.pending_output_readbacks.remove(&(resource, record.id))
+                {
+                    self.handle_output_readback(resource, pending, record, response, at)?;
+                    return Ok(());
+                }
                 let Some(pending) = self.pending_reads.remove(&(resource, record.id)) else {
                     return Ok(());
                 };
@@ -3970,7 +4129,12 @@ impl Runtime {
                 }
                 self.record_pending_sample_at(&pending, at);
             }
-            TransportEvent::OutputUncertain { intent, dispatch } => {
+            TransportEvent::OutputUncertain {
+                id,
+                intent,
+                dispatch,
+            } => {
+                self.pending_output_writes.remove(&(resource, id));
                 if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                     authority.transport_uncertain(dispatch)?;
                     self.recording_facts.output_transport(
@@ -3989,6 +4153,7 @@ impl Runtime {
                 record,
                 response,
             } => {
+                let readback_timeout = self.pending_output_writes.remove(&(resource, record.id));
                 let Some(dispatch) = dispatch else {
                     if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.abort_transport(intent);
@@ -4013,11 +4178,16 @@ impl Runtime {
                         .is_some_and(|bytes| decode_ack(bytes, address).is_ok())
                     {
                         if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
-                            authority.complete_transport(
-                                dispatch,
-                                crate::output::DispatchOutcome::Acknowledged,
-                                at,
-                            )?;
+                            let requires_readback = authority.requires_readback()?;
+                            if requires_readback {
+                                authority.acknowledge_transport(dispatch, at)?;
+                            } else {
+                                authority.complete_transport(
+                                    dispatch,
+                                    crate::output::DispatchOutcome::Acknowledged,
+                                    at,
+                                )?;
+                            }
                             self.recording_facts.output_transport(
                                 intent,
                                 resource,
@@ -4030,6 +4200,64 @@ impl Runtime {
                                 crate::recording::OutputEvidenceSource::TransportProtocol,
                                 Some(dispatch),
                             );
+                            if requires_readback {
+                                let timeout =
+                                    readback_timeout.ok_or(Error::InvalidConfiguration(
+                                        "physical output readback timeout missing",
+                                    ))?;
+                                let expected =
+                                    ExpectedRead::new(address, MetakonType::I8, true, true);
+                                let request = encode_read(address)?;
+                                let deadline = at
+                                    .checked_add(timeout)
+                                    .ok_or(TransportError::InvalidTransaction)?;
+                                let transaction = self
+                                    .resources
+                                    .get_mut(&resource)
+                                    .expect("executor reinserted before event handling")
+                                    .enqueue_read(
+                                        request.as_bytes(),
+                                        expected.frame_len(),
+                                        at,
+                                        deadline,
+                                        timeout,
+                                        false,
+                                        intent.binding_generation,
+                                        intent.mapping_revision,
+                                    );
+                                match transaction {
+                                    Ok(transaction) => {
+                                        let scale = self
+                                            .metakon_instruments
+                                            .get(&intent.actuator.instrument())
+                                            .and_then(|instrument| {
+                                                instrument.definition.parameter_definition(
+                                                    intent.actuator.parameter(),
+                                                )
+                                            })
+                                            .map(|definition| definition.scale)
+                                            .ok_or(OutputError::UnknownActuator)?;
+                                        self.pending_output_readbacks.insert(
+                                            (resource, transaction),
+                                            PendingOutputReadback {
+                                                intent,
+                                                dispatch,
+                                                expected,
+                                                scale,
+                                            },
+                                        );
+                                    }
+                                    Err(_) => {
+                                        let pending = PendingOutputReadback {
+                                            intent,
+                                            dispatch,
+                                            expected,
+                                            scale: 1.0,
+                                        };
+                                        self.fail_output_readback(resource, pending, at)?;
+                                    }
+                                }
+                            }
                         }
                     } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.transport_uncertain(dispatch)?;
@@ -4084,6 +4312,143 @@ impl Runtime {
             }
             TransportEvent::BoundaryFailed => {}
         }
+        Ok(())
+    }
+
+    fn handle_output_readback(
+        &mut self,
+        resource: ResourceId,
+        pending: PendingOutputReadback,
+        record: crate::transport::TransactionRecord,
+        response: Option<Vec<u8>>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let current_binding = self
+            .metakon_instruments
+            .get(&pending.intent.actuator.instrument())
+            .map(|instrument| instrument.binding);
+        let current = current_binding.is_some_and(|binding| {
+            binding.resource == resource
+                && binding.binding_generation == pending.intent.binding_generation
+                && binding.mapping_revision == pending.intent.mapping_revision
+        });
+        if !current {
+            return Ok(());
+        }
+        if record.outcome != TransactionOutcome::Completed {
+            return self.fail_output_readback(resource, pending, at);
+        }
+        let decoded = response
+            .as_deref()
+            .ok_or(crate::metakon::CodecError::WrongLength)
+            .and_then(|bytes| decode_read(bytes, pending.expected));
+        let MetakonValue::I8(raw) = (match decoded {
+            Ok(value) => value,
+            Err(_) => {
+                self.fail_output_readback(resource, pending, at)?;
+                self.resources
+                    .get_mut(&resource)
+                    .expect("executor reinserted before event handling")
+                    .protocol_failure()?;
+                return Ok(());
+            }
+        }) else {
+            self.fail_output_readback(resource, pending, at)?;
+            return Ok(());
+        };
+        let reported = f64::from(raw) * pending.scale;
+        let matched = self
+            .outputs
+            .get_mut(&pending.intent.actuator)
+            .ok_or(OutputError::UnknownActuator)?
+            .complete_transport_readback(pending.dispatch, reported, at)?;
+        self.recording_facts.output_transport_value(
+            pending.intent,
+            resource,
+            if matched {
+                if pending.intent.safe {
+                    crate::recording::OutputStage::SafeReadbackVerified
+                } else {
+                    crate::recording::OutputStage::ReadbackVerified
+                }
+            } else {
+                crate::recording::OutputStage::Failed
+            },
+            at,
+            crate::recording::OutputEvidenceSource::TransportProtocol,
+            Some(pending.dispatch),
+            reported,
+        );
+        if !pending.intent.safe {
+            self.settle_controller_after_physical_readback(pending.intent.actuator, matched, at)?;
+        }
+        Ok(())
+    }
+
+    fn fail_output_readback(
+        &mut self,
+        resource: ResourceId,
+        pending: PendingOutputReadback,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if let Some(authority) = self.outputs.get_mut(&pending.intent.actuator) {
+            authority.fail_transport_readback(pending.dispatch, at)?;
+            self.recording_facts.output_transport(
+                pending.intent,
+                resource,
+                crate::recording::OutputStage::Ambiguous,
+                at,
+                crate::recording::OutputEvidenceSource::TransportProtocol,
+                Some(pending.dispatch),
+            );
+        }
+        if !pending.intent.safe {
+            self.settle_controller_after_physical_readback(pending.intent.actuator, false, at)?;
+        }
+        Ok(())
+    }
+
+    fn settle_controller_after_physical_readback(
+        &mut self,
+        actuator: ActuatorId,
+        matched: bool,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let controller = self.controllers.iter().find_map(|(id, controller)| {
+            (controller.state == ControllerState::Running
+                && controller.config.output == actuator
+                && controller.lease.is_some())
+            .then_some(*id)
+        });
+        let Some(id) = controller else {
+            return Ok(());
+        };
+        let mut controller = self.controllers.remove(&id).expect("controller was found");
+        let renewal = if matched {
+            let lease = controller
+                .lease
+                .expect("running physical controller owns lease");
+            self.outputs
+                .get_mut(&actuator)
+                .ok_or(OutputError::UnknownActuator)?
+                .renew_native(lease, controller.config.lease_lifetime, at)
+        } else {
+            Err(OutputError::StaleLease.into())
+        };
+        if let Ok(replacement) = renewal {
+            controller.lease = Some(replacement);
+            controller.latest_output = controller.pid.snapshot().latest;
+        } else {
+            self.fail_controller(&mut controller, at)?;
+            self.recording_facts.controller(
+                id,
+                controller.state,
+                controller.config_revision,
+                None,
+                at,
+            );
+        }
+        self.controllers.insert(id, controller);
         Ok(())
     }
 

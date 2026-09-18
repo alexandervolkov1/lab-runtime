@@ -122,6 +122,8 @@ fn m3_time_fixture() -> (
                 binding_generation: 1,
                 mapping_revision: 1,
                 expected_output_unit: Some(Unit::PERCENT),
+                output_queue_ttl: Some(Duration::from_secs(1)),
+                output_timeout: Some(Duration::from_millis(100)),
             },
             history_capacity: 2,
         }))

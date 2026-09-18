@@ -83,6 +83,8 @@ fn config(generation: u64, revision: u64) -> MetakonInstrumentConfig {
             binding_generation: generation,
             mapping_revision: revision,
             expected_output_unit: Some(Unit::PERCENT),
+            output_queue_ttl: Some(Duration::from_secs(1)),
+            output_timeout: Some(Duration::from_millis(100)),
         },
         history_capacity: 2,
     }

@@ -2368,6 +2368,10 @@ pub(crate) fn output_json(s: OutputSnapshot) -> Value {
         "fault_latched":s.fault_latched,"safe_confirmed":s.safe_confirmed,"pending":s.pending,
         "in_flight":s.in_flight.is_some(),"requested":s.requested,"sent":observation(s.sent),
         "acknowledged":observation(s.acknowledged),"readback":observation(s.readback),
+        "reported_readback":observation(s.reported_readback),
+        "readback_failure":s.readback_failure.map(|failure|match failure {
+            lab_core::output::OutputReadbackFailure::Mismatch=>"mismatch",
+            lab_core::output::OutputReadbackFailure::Unavailable=>"unavailable"}),
         "outcome":s.outcome.map(|o|match o {DispatchOutcome::Acknowledged=>"acknowledged",DispatchOutcome::ReadbackVerified=>"readback_verified",
             DispatchOutcome::Failed=>"failed",DispatchOutcome::Ambiguous=>"ambiguous"})})
 }

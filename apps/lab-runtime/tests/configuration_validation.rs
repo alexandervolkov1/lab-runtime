@@ -255,6 +255,7 @@ fn c1_repository_example_deployments_parse_with_the_production_loader() {
         "runtime.virtual.toml",
         "runtime.metakon-read-only.toml",
         "runtime.metakon-513-com5.toml",
+        "runtime.metakon-513-com5-output.toml",
     ] {
         let deployment = load_runtime_toml(&examples.join(name)).unwrap();
         assert!(!deployment.toml_bytes().is_empty());
@@ -380,7 +381,7 @@ fn c4_largest_admitted_instrument_graph_composes_and_the_next_object_is_rejected
 }
 
 #[test]
-fn c4_physical_output_definition_and_duplicate_com_binding_are_rejected() {
+fn c4_unqualified_physical_output_and_duplicate_com_binding_are_rejected() {
     let base = Path::new("C:/lab/config");
     let writable = br#"{
       "schema_version":1,"profile":"metakon-5x3-v1","id":11,"name":"Output",
@@ -392,7 +393,7 @@ fn c4_physical_output_definition_and_duplicate_com_binding_are_rejected() {
     let mut writable_reader = reader_with_definition(base, "metakon.json", writable);
     let error = parse_runtime_toml(&physical_config("metakon.json"), base, &mut writable_reader)
         .unwrap_err();
-    assert!(error.to_string().contains("read-only"));
+    assert!(error.to_string().contains("windows_com"));
 
     let mut duplicate = physical_config("metakon.json");
     duplicate.extend_from_slice(

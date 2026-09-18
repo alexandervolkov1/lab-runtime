@@ -732,7 +732,11 @@ impl ServiceHost {
             HostCore::virtual_demo()?
         };
         host.set_boot_id(&boot_id);
-        if !host.shutdown_status().safe_confirmed {
+        if !host.shutdown_status().safe_confirmed
+            && loaded
+                .as_ref()
+                .is_none_or(|deployment| deployment.effective().dto.resources.is_empty())
+        {
             return Err(io::Error::other("startup safe evidence unavailable").into());
         }
         if let Some(deployment) = loaded.as_ref()
@@ -756,6 +760,37 @@ impl ServiceHost {
                 host.service(&clock)?;
                 std::thread::yield_now();
             }
+            host.request_configured_physical_safe(clock.now())?;
+            let output_maximum_ms = deployment
+                .effective()
+                .dto
+                .instruments
+                .iter()
+                .filter_map(|instrument| match instrument {
+                    crate::configuration::InstrumentDto::Metakon {
+                        queue_timeout_ms,
+                        transaction_timeout_ms,
+                        ..
+                    } => Some(
+                        queue_timeout_ms
+                            .saturating_add(transaction_timeout_ms.saturating_mul(2))
+                            .saturating_add(500),
+                    ),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(1);
+            let output_deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(output_maximum_ms);
+            while !host.configured_physical_outputs_safe()? {
+                if std::time::Instant::now() >= output_deadline {
+                    let _ = host.begin_shutdown(&clock);
+                    return Err(io::Error::other("configured physical safe deadline").into());
+                }
+                host.service(&clock)?;
+                std::thread::yield_now();
+            }
+            host.prepare_configured_physical_controllers()?;
         }
         if let Some(deployment) = loaded.as_ref()
             && !deployment.effective().dto.managed_components.is_empty()
@@ -1659,6 +1694,51 @@ impl ServiceHost {
                     .as_mut()
                     .expect("diagnostic initialized")
                     .stage = ReconnectStage::ProbeFailed;
+                let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::OwnerFailure);
+            }
+            std::thread::yield_now();
+        }
+        if self
+            .host
+            .request_configured_physical_safe(self.clock.now())
+            .is_err()
+        {
+            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            self.cancel_recorded_lifecycle(pending);
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
+        let output_wait_ms = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .filter_map(|instrument| match instrument {
+                crate::configuration::InstrumentDto::Metakon {
+                    resource_id: bound,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } if *bound == resource_id => Some(
+                    queue_timeout_ms
+                        .saturating_add(transaction_timeout_ms.saturating_mul(2))
+                        .saturating_add(500),
+                ),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(1);
+        let output_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(output_wait_ms);
+        while !self
+            .host
+            .configured_physical_outputs_safe()
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?
+        {
+            if std::time::Instant::now() >= output_deadline
+                || self.host.service(&self.clock).is_err()
+            {
                 let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);

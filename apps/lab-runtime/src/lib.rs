@@ -25,8 +25,8 @@ pub mod protocol;
 pub mod recorder;
 /// Semantic Recorder projections kept independent from its SQLite implementation.
 pub mod recorder_api;
-/// Bounded worker-backed read-only Windows COM byte adapter.
-pub mod serial;
+/// Bounded worker-backed Windows COM byte adapter, private to trusted host orchestration.
+pub(crate) mod serial;
 pub mod server;
 /// Startup ownership, loopback binding and process-local boot identity.
 pub mod service;

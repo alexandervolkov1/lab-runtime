@@ -359,6 +359,8 @@ fn activation_binding_and_rebound_output_rows_reconstruct_exact_m3_provenance() 
             binding_generation: 1,
             mapping_revision: 1,
             expected_output_unit: Some(Unit::PERCENT),
+            output_queue_ttl: Some(Duration::from_secs(1)),
+            output_timeout: Some(Duration::from_millis(100)),
         },
         history_capacity: 2,
     }))
@@ -436,6 +438,8 @@ fn activation_binding_and_rebound_output_rows_reconstruct_exact_m3_provenance() 
             binding_generation: 2,
             mapping_revision: 2,
             expected_output_unit: Some(Unit::PERCENT),
+            output_queue_ttl: Some(Duration::from_secs(1)),
+            output_timeout: Some(Duration::from_millis(100)),
         },
         at: Duration::from_millis(2),
     })

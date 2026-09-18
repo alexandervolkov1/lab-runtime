@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "profile": "metakon-5x3-v1",
+  "id": 1,
+  "name": "Metakon 513 temperature and bounded output",
+  "parameters": [
+    {
+      "id": 1,
+      "name": "channel_type",
+      "value_type": "integer",
+      "unit": { "id": "1", "symbol": "1" },
+      "min": 0,
+      "max": 255,
+      "role": "diagnostic",
+      "access": "read_only",
+      "operation": "channel_type",
+      "scale": 1,
+      "write_effect": "none"
+    },
+    {
+      "id": 2,
+      "name": "temperature",
+      "value_type": "float",
+      "unit": { "id": "degC", "symbol": "°C" },
+      "min": -999.0,
+      "max": 9999.0,
+      "role": "measurement",
+      "access": "read_only",
+      "operation": "temperature",
+      "scale": 1.0,
+      "write_effect": "none"
+    },
+    {
+      "id": 3,
+      "name": "output_power",
+      "value_type": "float",
+      "unit": { "id": "percent", "symbol": "%" },
+      "min": -100.0,
+      "max": 100.0,
+      "role": "actuator",
+      "access": "read_write",
+      "operation": "output",
+      "scale": 1.0,
+      "write_effect": "output_affecting"
+    }
+  ]
+}

@@ -401,6 +401,33 @@ impl FactOutbox {
         source: OutputEvidenceSource,
         dispatch_id: Option<DispatchId>,
     ) {
+        self.output_transport_value(
+            intent,
+            resource,
+            stage,
+            at,
+            source,
+            dispatch_id,
+            intent.value,
+        );
+    }
+
+    /// Record a transport-correlated value that differs from the authorized
+    /// command, such as an explicit mismatching register readback.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit transport/readback correlation"
+    )]
+    pub(crate) fn output_transport_value(
+        &mut self,
+        intent: OutputIntent,
+        resource: ResourceId,
+        stage: OutputStage,
+        at: Duration,
+        source: OutputEvidenceSource,
+        dispatch_id: Option<DispatchId>,
+        value: f64,
+    ) {
         self.push(128, |sequence| RecordingFact::Output {
             sequence,
             actuator: intent.actuator,
@@ -412,7 +439,7 @@ impl FactOutbox {
             binding_generation: Some(intent.binding_generation),
             mapping_revision: Some(intent.mapping_revision),
             stage,
-            value: Some(intent.value),
+            value: Some(value),
             source,
             at,
         });

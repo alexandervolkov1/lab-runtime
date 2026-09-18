@@ -224,6 +224,15 @@ pub enum DispatchOutcome {
     Ambiguous,
 }
 
+/// Why a separately acknowledged physical write did not obtain matching readback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputReadbackFailure {
+    /// The device reported a finite register value different from the authorized value.
+    Mismatch,
+    /// No valid current-generation readback was obtained within the bounded transaction.
+    Unavailable,
+}
+
 /// Latest delivery observation at a specific monotonic time, not durable history.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputObservation {
@@ -258,6 +267,11 @@ pub struct OutputSnapshot {
     pub acknowledged: Option<OutputObservation>,
     /// Readback for the latest send; ACK alone leaves this absent.
     pub readback: Option<OutputObservation>,
+    /// Actual register value reported after ACK, including a mismatching value.
+    /// This is register evidence, not proof of a physical effect.
+    pub reported_readback: Option<OutputObservation>,
+    /// Explicit failure of the separate physical readback phase, if any.
+    pub readback_failure: Option<OutputReadbackFailure>,
     /// Latest terminal result; cleared when another send starts.
     pub outcome: Option<DispatchOutcome>,
 }

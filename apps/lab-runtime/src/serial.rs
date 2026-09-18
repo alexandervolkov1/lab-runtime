@@ -1,4 +1,4 @@
-//! Bounded read-only COM worker implementing the existing M3 byte boundary.
+//! Bounded COM worker implementing the existing M3 byte boundary.
 //!
 //! The Runtime owner calls only nonblocking [`lab_core::transport::ByteTransport`]
 //! attempts. One
@@ -65,7 +65,8 @@ pub struct ComSettings {
 }
 
 impl ComSettings {
-    /// Validate the common no-flow-control settings used by the first bench.
+    /// Validate the common no-flow-control settings used by transport tests.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn new_read_only(
         resource_id: u64,
@@ -344,6 +345,7 @@ impl ComTransport {
     ///
     /// This constructor is a trusted Rust test/composition seam and is not
     /// exported through the wire protocol.
+    #[cfg(test)]
     pub fn with_device(
         settings: ComSettings,
         device: impl SerialDevice,
@@ -465,6 +467,7 @@ impl ComTransport {
     ///
     /// This trusted composition call is only admissible after the old request is
     /// terminal. It is explicitly not ACK, readback or physical-safe evidence.
+    #[cfg(test)]
     pub fn confirm_operator_reset_boundary(&mut self) -> Result<(), SerialError> {
         self.drain_completion();
         if self.pending || self.fault.is_none() || self.state == ComState::Closing {
@@ -623,6 +626,9 @@ impl ByteTransport for ComTransport {
         TransportShutdown::Complete
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl Drop for ComTransport {
     fn drop(&mut self) {

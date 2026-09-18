@@ -1,7 +1,7 @@
 //! C12-C15 software acceptance for the bounded read-only COM adapter.
 
+use super::{ComSettings, ComTransport, SerialDevice, SerialError, SerialParity};
 use lab_core::transport::{ByteTransport, RecoveryStatus, TransportIoError, TransportShutdown};
-use lab_runtime::serial::{ComSettings, ComTransport, SerialDevice, SerialError, SerialParity};
 use std::{
     collections::VecDeque,
     sync::{
@@ -240,10 +240,7 @@ fn c19_disconnected_com_worker_retires_cooperatively_without_owner_join() {
     assert_eq!(error, TransportIoError::Disconnected);
     assert_eq!(transport.try_recover().unwrap(), RecoveryStatus::Pending);
     wait_for(|| (transport.try_shutdown() == TransportShutdown::Complete).then_some(()));
-    assert_eq!(
-        transport.snapshot().state,
-        lab_runtime::serial::ComState::Closed
-    );
+    assert_eq!(transport.snapshot().state, super::ComState::Closed);
 }
 
 struct BlockingReadDevice {

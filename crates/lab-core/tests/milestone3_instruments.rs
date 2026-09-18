@@ -60,6 +60,8 @@ fn data_config(id: u64, unit: Unit, expected_unit: Unit) -> MetakonInstrumentCon
             binding_generation: 1,
             mapping_revision: 1,
             expected_output_unit: Some(expected_unit),
+            output_queue_ttl: Some(Duration::from_secs(1)),
+            output_timeout: Some(Duration::from_millis(100)),
         },
         history_capacity: 4,
     }

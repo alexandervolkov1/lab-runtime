@@ -10,7 +10,7 @@ use crate::{
     managed_executor::MOVING_MEAN_IMPLEMENTATION,
 };
 use lab_core::{
-    AccessMode, ParameterRole, Unit, WriteEffect,
+    AccessMode, ParameterRole, Unit, ValueSpec, WriteEffect,
     instrument::KnownOperation,
     managed::{ComponentImplementationId, PlainData, PlainValue},
 };
@@ -516,6 +516,7 @@ pub fn parse_runtime_toml(
             freeze_definition(base, definition, reader, &mut artifacts, &mut total_bytes)?;
         }
     }
+    validate_frozen_metakon_definitions(&dto, base, &artifacts)?;
     if artifacts.len() > MAX_DEPLOYMENT_ARTIFACTS || total_bytes > MAX_DEPLOYMENT_BYTES {
         return Err(ConfigurationError::TooLarge);
     }
@@ -613,9 +614,6 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
         validate_key(&resource.key)?;
         if !resource_ids.insert(resource.id) || !resource_keys.insert(resource.key.clone()) {
             return Err(ConfigurationError::invalid("duplicate resource identity"));
-        }
-        if resource.kind != ResourceKindDto::WindowsComReadOnly {
-            return Err(ConfigurationError::invalid("unsupported resource kind"));
         }
         let normalized = normalize_port(&resource.port)?;
         if !ports.insert(normalized) {
@@ -825,6 +823,8 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
                     if *id == safe.instrument_id
                         && safe.parameter_id == lab_core::HEATER_POWER.get()
             )
+        }) || dto.instruments.iter().any(|instrument| {
+            matches!(instrument, InstrumentDto::Metakon { id, .. } if *id == safe.instrument_id)
         });
         if !eligible_native_output || safe.min < 0.0 || safe.max > 100.0 {
             return Err(ConfigurationError::invalid(
@@ -951,16 +951,6 @@ fn freeze_definition(
     definition
         .validate()
         .map_err(|error| ConfigurationError::artifact_text(&error.to_string()))?;
-    if definition.parameters.iter().any(|parameter| {
-        parameter.access != AccessMode::ReadOnly
-            || parameter.role == ParameterRole::Actuator
-            || parameter.write_effect == WriteEffect::OutputAffecting
-            || parameter.operation == KnownOperation::Output
-    }) {
-        return Err(ConfigurationError::artifact(
-            "physical M8 definition must be read-only",
-        ));
-    }
     push_artifact(
         ArtifactKind::InstrumentDefinition,
         path,
@@ -968,6 +958,110 @@ fn freeze_definition(
         artifacts,
         total,
     )
+}
+
+fn validate_frozen_metakon_definitions(
+    dto: &DeploymentDto,
+    base: &Path,
+    artifacts: &[FrozenArtifact],
+) -> Result<(), ConfigurationError> {
+    for instrument in &dto.instruments {
+        let InstrumentDto::Metakon {
+            id,
+            definition,
+            resource_id,
+            ..
+        } = instrument
+        else {
+            continue;
+        };
+        let path = resolve_artifact(base, definition)?;
+        let artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.declared_path == path)
+            .ok_or_else(|| ConfigurationError::artifact("frozen definition missing"))?;
+        let text = std::str::from_utf8(&artifact.bytes)
+            .map_err(|_| ConfigurationError::artifact("definition must be UTF-8"))?;
+        let definition = parse_definition_json(text)
+            .map_err(|error| ConfigurationError::artifact_text(&error.to_string()))?;
+        let output = definition
+            .parameters
+            .iter()
+            .find(|parameter| parameter.operation == KnownOperation::Output);
+        if let Some(output) = output {
+            let resource = dto
+                .resources
+                .iter()
+                .find(|resource| resource.id == *resource_id)
+                .expect("resource cross-reference validated before artifacts");
+            if resource.kind != ResourceKindDto::WindowsCom {
+                return Err(ConfigurationError::invalid(
+                    "writable Metakon output requires windows_com resource",
+                ));
+            }
+            if output.access != AccessMode::ReadWrite
+                || output.role != ParameterRole::Actuator
+                || output.write_effect != WriteEffect::OutputAffecting
+                || output.unit != Unit::PERCENT
+                || output.scale != 1.0
+                || output.value_spec
+                    != (ValueSpec::Float {
+                        min: -100.0,
+                        max: 100.0,
+                    })
+            {
+                return Err(ConfigurationError::artifact(
+                    "Metakon register 6 must be read/write signed percent -100..=100 at scale 1",
+                ));
+            }
+            let safe = dto
+                .safe_profiles
+                .iter()
+                .find(|safe| safe.instrument_id == *id && safe.parameter_id == output.id.get())
+                .ok_or_else(|| {
+                    ConfigurationError::invalid("physical Metakon output lacks safe profile")
+                })?;
+            if safe.safe_value != 0.0
+                || safe.min < -100.0
+                || safe.max > 100.0
+                || safe.required_evidence != EvidenceDto::Readback
+            {
+                return Err(ConfigurationError::invalid(
+                    "physical Metakon output requires safe zero and readback evidence",
+                ));
+            }
+        }
+        for controller in &dto.controllers {
+            if controller.input_instrument_id == *id {
+                let input = definition
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.id.get() == controller.input_parameter_id)
+                    .ok_or_else(|| {
+                        ConfigurationError::invalid("unknown physical controller input")
+                    })?;
+                let reference = dto
+                    .references
+                    .iter()
+                    .find(|reference| reference.id == controller.reference_id)
+                    .expect("Reference cross-reference validated before artifacts");
+                if input.role != ParameterRole::Measurement || input.unit.id() != reference.unit_id
+                {
+                    return Err(ConfigurationError::invalid(
+                        "physical controller input metadata mismatch",
+                    ));
+                }
+            }
+            if controller.output_instrument_id == *id
+                && output.is_none_or(|output| output.id.get() != controller.output_parameter_id)
+            {
+                return Err(ConfigurationError::invalid(
+                    "controller physical output is not Metakon register 6",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn push_artifact(
@@ -1173,6 +1267,7 @@ pub(crate) struct ResourceDto {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ResourceKindDto {
     WindowsComReadOnly,
+    WindowsCom,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]

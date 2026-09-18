@@ -58,6 +58,8 @@ impl OutputAuthority {
                 sent: None,
                 acknowledged: None,
                 readback: None,
+                reported_readback: None,
+                readback_failure: None,
                 outcome: None,
             },
             pending: None,
@@ -195,6 +197,10 @@ impl OutputAuthority {
         self.profile
             .as_ref()
             .ok_or(OutputError::InvalidProfile.into())
+    }
+
+    pub(crate) fn requires_readback(&self) -> Result<bool, Error> {
+        Ok(self.profile()?.required_evidence == EvidenceLevel::Readback)
     }
 
     fn bind(&mut self, profile: SafeProfile) -> Result<OutputResult, Error> {
@@ -344,6 +350,8 @@ impl OutputAuthority {
         // Old readback must not masquerade as evidence for this newer send.
         self.snapshot.acknowledged = None;
         self.snapshot.readback = None;
+        self.snapshot.reported_readback = None;
+        self.snapshot.readback_failure = None;
         self.snapshot.outcome = None;
         Ok(OutputResult::Dispatched(dispatch))
     }
@@ -549,6 +557,8 @@ impl OutputAuthority {
         });
         self.snapshot.acknowledged = None;
         self.snapshot.readback = None;
+        self.snapshot.reported_readback = None;
+        self.snapshot.readback_failure = None;
         self.snapshot.outcome = None;
         Ok(dispatch.id)
     }
@@ -569,6 +579,68 @@ impl OutputAuthority {
             return Err(OutputError::UnknownDispatch.into());
         }
         self.request_safe(true)
+    }
+
+    /// Record a strict protocol ACK while retaining the dispatch for the distinct
+    /// physical register-readback phase.
+    pub(crate) fn acknowledge_transport(
+        &mut self,
+        id: DispatchId,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let dispatch = self
+            .snapshot
+            .in_flight
+            .ok_or(OutputError::UnknownDispatch)?;
+        if dispatch.id != id {
+            return Err(OutputError::UnknownDispatch.into());
+        }
+        self.snapshot.acknowledged = Some(OutputObservation {
+            value: dispatch.value,
+            at,
+        });
+        self.snapshot.outcome = Some(DispatchOutcome::Acknowledged);
+        Ok(())
+    }
+
+    /// Complete physical output only when the separately read register matches
+    /// the immutable authorized value. A mismatch remains visible and fails safe.
+    pub(crate) fn complete_transport_readback(
+        &mut self,
+        id: DispatchId,
+        reported: f64,
+        at: Duration,
+    ) -> Result<bool, Error> {
+        let dispatch = self
+            .snapshot
+            .in_flight
+            .ok_or(OutputError::UnknownDispatch)?;
+        if dispatch.id != id || !reported.is_finite() {
+            return Err(OutputError::UnknownDispatch.into());
+        }
+        self.snapshot.reported_readback = Some(OutputObservation {
+            value: reported,
+            at,
+        });
+        if reported == dispatch.value {
+            self.complete(id, DispatchOutcome::ReadbackVerified, at)?;
+            Ok(true)
+        } else {
+            self.snapshot.readback_failure = Some(OutputReadbackFailure::Mismatch);
+            self.complete(id, DispatchOutcome::Failed, at)?;
+            Ok(false)
+        }
+    }
+
+    /// Settle a bounded readback failure without forgetting the preceding ACK.
+    pub(crate) fn fail_transport_readback(
+        &mut self,
+        id: DispatchId,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.snapshot.readback_failure = Some(OutputReadbackFailure::Unavailable);
+        self.complete(id, DispatchOutcome::Ambiguous, at)
+            .map(|_| ())
     }
 
     /// Apply a settled transport result through the same M2 evidence state machine.

@@ -499,6 +499,11 @@ impl HostCore {
                             "read-only Metakon definition lacks compatibility probe",
                         ))?
                         .id;
+                    let output_unit = definition
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.operation == KnownOperation::Output)
+                        .map(|parameter| parameter.unit);
                     runtime.command(Command::RegisterMetakon(MetakonInstrumentConfig {
                         definition,
                         binding: MetakonBinding {
@@ -507,7 +512,11 @@ impl HostCore {
                             channel: 0,
                             binding_generation: 1,
                             mapping_revision: 1,
-                            expected_output_unit: None,
+                            expected_output_unit: output_unit,
+                            output_queue_ttl: output_unit
+                                .map(|_| Duration::from_millis(*queue_timeout_ms)),
+                            output_timeout: output_unit
+                                .map(|_| Duration::from_millis(*transaction_timeout_ms)),
                         },
                         history_capacity: 64,
                     }))?;
@@ -552,30 +561,32 @@ impl HostCore {
                 at: Duration::ZERO,
                 command: OutputCommand::BindProfile(profile.clone()),
             })?;
-            runtime.command(Command::Output {
-                actuator,
-                at: Duration::ZERO,
-                command: OutputCommand::RequestSafe,
-            })?;
-            let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
+            if runtime.metakon_binding(actuator.instrument()).is_none() {
                 runtime.command(Command::Output {
                     actuator,
                     at: Duration::ZERO,
-                    command: OutputCommand::BeginDispatch,
-                })?
-            else {
-                return Err(Error::InvalidConfiguration(
-                    "configured safe dispatch unavailable",
-                ));
-            };
-            runtime.command(Command::Output {
-                actuator,
-                at: Duration::ZERO,
-                command: OutputCommand::Complete {
-                    dispatch_id: dispatch.id(),
-                    outcome: DispatchOutcome::ReadbackVerified,
-                },
-            })?;
+                    command: OutputCommand::RequestSafe,
+                })?;
+                let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
+                    runtime.command(Command::Output {
+                        actuator,
+                        at: Duration::ZERO,
+                        command: OutputCommand::BeginDispatch,
+                    })?
+                else {
+                    return Err(Error::InvalidConfiguration(
+                        "configured safe dispatch unavailable",
+                    ));
+                };
+                runtime.command(Command::Output {
+                    actuator,
+                    at: Duration::ZERO,
+                    command: OutputCommand::Complete {
+                        dispatch_id: dispatch.id(),
+                        outcome: DispatchOutcome::ReadbackVerified,
+                    },
+                })?;
+            }
             outputs.push(actuator);
             active_safety_profiles.push((actuator, profile));
         }
@@ -648,7 +659,12 @@ impl HostCore {
                 lease_lifetime: Duration::from_millis(controller.lease_lifetime_ms),
                 proposal_ttl: Duration::from_millis(controller.proposal_ttl_ms),
             }))?;
-            runtime.command(Command::PrepareController(id))?;
+            if runtime
+                .metakon_binding(InstrumentId::new(controller.output_instrument_id))
+                .is_none()
+            {
+                runtime.command(Command::PrepareController(id))?;
+            }
             controllers.push((
                 id,
                 input,
@@ -969,6 +985,17 @@ impl HostCore {
                 binding,
                 at,
             })?;
+            for (actuator, profile) in self
+                .active_safety_profiles
+                .iter()
+                .filter(|(actuator, _)| actuator.instrument() == instrument)
+            {
+                self.runtime.command(Command::Output {
+                    actuator: *actuator,
+                    at,
+                    command: OutputCommand::BindProfile(profile.clone()),
+                })?;
+            }
         }
         for probe in &mut self.configured_probes {
             if self
@@ -1004,6 +1031,8 @@ impl HostCore {
                 definition,
                 resource_id,
                 address,
+                queue_timeout_ms,
+                transaction_timeout_ms,
                 ..
             } = instrument
             else {
@@ -1044,6 +1073,11 @@ impl HostCore {
                     "read-only Metakon definition lacks compatibility probe",
                 ))?
                 .id;
+            let output_unit = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.operation == KnownOperation::Output)
+                .map(|parameter| parameter.unit);
             replacements.push((
                 InstrumentId::new(*id),
                 MetakonInstrumentConfig {
@@ -1060,7 +1094,11 @@ impl HostCore {
                             .mapping_revision
                             .checked_add(1)
                             .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
-                        expected_output_unit: None,
+                        expected_output_unit: output_unit,
+                        output_queue_ttl: output_unit
+                            .map(|_| Duration::from_millis(*queue_timeout_ms)),
+                        output_timeout: output_unit
+                            .map(|_| Duration::from_millis(*transaction_timeout_ms)),
                     },
                     history_capacity: 64,
                 },
@@ -1094,6 +1132,17 @@ impl HostCore {
                 expected_mapping_revision: old.mapping_revision,
                 at,
             })?;
+            for (actuator, profile) in self
+                .active_safety_profiles
+                .iter()
+                .filter(|(actuator, _)| actuator.instrument() == instrument)
+            {
+                self.runtime.command(Command::Output {
+                    actuator: *actuator,
+                    at,
+                    command: OutputCommand::BindProfile(profile.clone()),
+                })?;
+            }
             let read = self
                 .plan
                 .metakon_reads
@@ -1177,6 +1226,89 @@ impl HostCore {
             }
         }
         Ok(true)
+    }
+
+    /// Request the configured physical safe procedure only after compatibility
+    /// probes have established the intended Metakon profile. The next bounded
+    /// safety turns use the normal OutputAuthority/write/ACK/readback path.
+    pub fn request_configured_physical_safe(&mut self, at: Duration) -> Result<(), Error> {
+        if !self.configured_probes_ready()? {
+            return Err(Error::InvalidConfiguration(
+                "physical output compatibility probe is not ready",
+            ));
+        }
+        for actuator in self.outputs.clone() {
+            if self
+                .runtime
+                .metakon_binding(actuator.instrument())
+                .is_none()
+            {
+                continue;
+            }
+            let QueryResult::Output(snapshot) = self.runtime.query(Query::Output(actuator))? else {
+                unreachable!()
+            };
+            if snapshot.state == lab_core::output::OutputState::Unverified {
+                self.runtime.command(Command::Output {
+                    actuator,
+                    at,
+                    command: OutputCommand::RequestSafe,
+                })?;
+            }
+        }
+        self.observe(at, None)
+    }
+
+    /// True only when every configured physical output has matching readback of
+    /// its safe value and no lease remains.
+    pub fn configured_physical_outputs_safe(&self) -> Result<bool, Error> {
+        for actuator in &self.outputs {
+            if self
+                .runtime
+                .metakon_binding(actuator.instrument())
+                .is_none()
+            {
+                continue;
+            }
+            let QueryResult::Output(snapshot) = self.runtime.query(Query::Output(*actuator))?
+            else {
+                unreachable!()
+            };
+            if !snapshot.safe_confirmed || snapshot.lease.is_some() || snapshot.in_flight.is_some()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Prepare deferred physical controllers only after their output has trusted
+    /// safe readback. Registration itself never acquires a lease.
+    pub fn prepare_configured_physical_controllers(&mut self) -> Result<(), Error> {
+        for (controller, _, _) in &self.plan.controllers {
+            let QueryResult::Controller(snapshot) =
+                self.runtime.query(Query::Controller(*controller))?
+            else {
+                unreachable!()
+            };
+            if snapshot.state != ControllerState::Created {
+                continue;
+            }
+            let QueryResult::ControllerConfig(config) =
+                self.runtime.query(Query::ControllerConfig(*controller))?
+            else {
+                unreachable!()
+            };
+            if self
+                .runtime
+                .metakon_binding(config.output.instrument())
+                .is_some()
+            {
+                self.runtime
+                    .command(Command::PrepareController(*controller))?;
+            }
+        }
+        Ok(())
     }
 
     /// Inspect only the compatibility probes bound to one reconnecting resource.
@@ -1365,11 +1497,27 @@ impl HostCore {
             }
         }
         for actuator in self.outputs.clone() {
-            self.runtime.command(Command::Output {
-                actuator,
-                at,
-                command: OutputCommand::RequestSafe,
-            })?;
+            let physical = self
+                .runtime
+                .metakon_binding(actuator.instrument())
+                .is_some();
+            let QueryResult::Output(before) = self.runtime.query(Query::Output(actuator))? else {
+                unreachable!()
+            };
+            if !before.safe_confirmed && before.state != lab_core::output::OutputState::SafePending
+            {
+                self.runtime.command(Command::Output {
+                    actuator,
+                    at,
+                    command: OutputCommand::RequestSafe,
+                })?;
+            }
+            if physical {
+                continue;
+            }
+            if before.safe_confirmed {
+                continue;
+            }
             let CommandResult::Output(OutputResult::Dispatched(dispatch)) =
                 self.runtime.command(Command::Output {
                     actuator,

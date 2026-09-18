@@ -189,6 +189,12 @@ pub struct MetakonBinding {
     pub mapping_revision: u64,
     /// Trusted expected actuator unit; must match the descriptor exactly.
     pub expected_output_unit: Option<Unit>,
+    /// Finite queue lifetime used when a native controller or safe transition
+    /// submits this physical output. Read-only bindings keep this absent.
+    pub output_queue_ttl: Option<std::time::Duration>,
+    /// Finite write and subsequent readback timeout for the physical output.
+    /// Read-only bindings keep this absent.
+    pub output_timeout: Option<std::time::Duration>,
 }
 
 /// Atomic registration candidate for one logical Metakon instrument.
@@ -223,11 +229,22 @@ impl MetakonInstrument {
             .filter(|parameter| parameter.role == ParameterRole::Actuator)
             .collect();
         match (outputs.as_slice(), config.binding.expected_output_unit) {
-            ([], None) => {}
-            ([output], Some(expected)) if output.unit == expected => {}
+            ([], None)
+                if config.binding.output_queue_ttl.is_none()
+                    && config.binding.output_timeout.is_none() => {}
+            ([output], Some(expected))
+                if output.unit == expected
+                    && config
+                        .binding
+                        .output_queue_ttl
+                        .is_some_and(valid_output_duration)
+                    && config
+                        .binding
+                        .output_timeout
+                        .is_some_and(valid_output_duration) => {}
             _ => {
                 return Err(Error::InvalidConfiguration(
-                    "output binding unit does not match descriptor",
+                    "output binding unit/timing does not match descriptor",
                 ));
             }
         }
@@ -248,4 +265,8 @@ impl MetakonInstrument {
     pub(crate) fn configured(&self) -> Vec<(ParameterId, crate::Value)> {
         Vec::new()
     }
+}
+
+fn valid_output_duration(value: std::time::Duration) -> bool {
+    !value.is_zero() && value <= crate::transport::MAX_TRANSACTION_DURATION
 }

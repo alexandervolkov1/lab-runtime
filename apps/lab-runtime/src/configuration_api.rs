@@ -321,6 +321,7 @@ pub(crate) fn resource_json(
         .collect::<Vec<_>>();
     let kind = match resource.kind {
         ResourceKindDto::WindowsComReadOnly => "serial_read_only",
+        ResourceKindDto::WindowsCom => "serial",
     };
     let binding_generation = service
         .owner()

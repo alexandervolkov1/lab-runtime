@@ -94,6 +94,8 @@ fn config() -> MetakonInstrumentConfig {
             binding_generation: 1,
             mapping_revision: 1,
             expected_output_unit: None,
+            output_queue_ttl: None,
+            output_timeout: None,
         },
         history_capacity: 4,
     }
