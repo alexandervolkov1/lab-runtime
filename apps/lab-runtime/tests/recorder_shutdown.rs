@@ -80,7 +80,19 @@ fn shutdown_seals_active_interval_and_closes_worker_before_reporting_flush_succe
         RecordingState::Closed
     );
     drop(service);
+    assert!(
+        !path.with_extension("sqlite-wal").exists(),
+        "successful Recorder close must not leave an active WAL sidecar"
+    );
+    assert!(
+        !path.with_extension("sqlite-shm").exists(),
+        "successful Recorder close must not leave an active SHM sidecar"
+    );
     let archive = rusqlite::Connection::open(&path).unwrap();
+    let integrity: String = archive
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
     let sealed_boots: i64 = archive
         .query_row(
             "SELECT COUNT(*) FROM runtime_boots WHERE state='sealed'",
@@ -94,12 +106,21 @@ fn shutdown_seals_active_interval_and_closes_worker_before_reporting_flush_succe
     );
     let sealed_intervals: i64 = archive
         .query_row(
-            "SELECT COUNT(*) FROM recording_intervals WHERE state='sealed'",
+            "SELECT COUNT(*) FROM recording_intervals
+             WHERE state='sealed' AND coverage='complete'",
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(sealed_intervals, 1);
+    let sealed_runs: i64 = archive
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE state='sealed' AND coverage='complete'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sealed_runs, 1);
     let (exit_summary, ended_wall): (String, Option<i64>) = archive
         .query_row(
             "SELECT exit_summary,ended_wall_us FROM runtime_boots WHERE state='sealed'",

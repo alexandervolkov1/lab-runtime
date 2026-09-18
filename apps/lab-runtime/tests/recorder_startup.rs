@@ -142,6 +142,108 @@ fn explicit_unopenable_storage_fails_startup_before_readiness_for_both_policies(
 }
 
 #[test]
+fn external_sqlite_writer_lock_fails_within_the_busy_bound_without_starting_a_boot() {
+    let path = temporary_database();
+    let first_boot = "10101010101010101010101010101010";
+    let mut original =
+        lab_runtime::recorder::SqliteStore::open_with_boot(&path, first_boot).unwrap();
+    original.finish_boot(Duration::ZERO).unwrap();
+    original.close().unwrap();
+
+    let external = rusqlite::Connection::open(&path).unwrap();
+    external
+        .execute_batch(
+            "BEGIN EXCLUSIVE;
+             UPDATE schema_version SET schema_version=schema_version WHERE singleton=1;",
+        )
+        .unwrap();
+    let started = Instant::now();
+    let error = match lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "20202020202020202020202020202020",
+    ) {
+        Ok(_) => panic!("an externally locked archive must not gain a second storage owner"),
+        Err(error) => error,
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the configured 100 ms SQLite busy bound was not finite: {error}"
+    );
+    let boots: i64 = external
+        .query_row("SELECT COUNT(*) FROM runtime_boots", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(boots, 1, "failed open must not create a half-started boot");
+    external.execute_batch("ROLLBACK").unwrap();
+    drop(external);
+
+    let mut reopened = lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "30303030303030303030303030303030",
+    )
+    .unwrap();
+    reopened.finish_boot(Duration::ZERO).unwrap();
+    reopened.close().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn readonly_windows_archive_fails_startup_for_both_policies_without_mutation() {
+    let path = temporary_database();
+    let mut original = lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "40404040404040404040404040404040",
+    )
+    .unwrap();
+    original.finish_boot(Duration::ZERO).unwrap();
+    original.close().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions).unwrap();
+
+    let text = path.to_string_lossy();
+    for policy in ["required", "best-effort"] {
+        let options = ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            text.as_ref(),
+            "--record-policy",
+            policy,
+        ])
+        .unwrap();
+        let started = Instant::now();
+        assert!(
+            ServiceHost::startup(options).is_err(),
+            "a read-only archive must not be presented as ready under {policy} policy"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "read-only startup must fail finitely under {policy} policy"
+        );
+    }
+
+    std::fs::set_permissions(&path, original_permissions).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "failed read-only opens must not rewrite the accepted archive"
+    );
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let boots: i64 = archive
+        .query_row("SELECT COUNT(*) FROM runtime_boots", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(boots, 1);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn oversized_existing_archive_is_rejected_without_startup_mutation() {
     let path = temporary_database();
     let mut store = lab_runtime::recorder::SqliteStore::open_with_boot(

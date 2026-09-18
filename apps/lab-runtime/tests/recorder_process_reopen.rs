@@ -31,6 +31,45 @@ fn temporary_database() -> PathBuf {
     std::env::temp_dir().join(format!("lab-m7-process-reopen-{suffix}.sqlite"))
 }
 
+fn assert_integrity_ok(path: &PathBuf) {
+    let archive = rusqlite::Connection::open(path).unwrap();
+    let result: String = archive
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(result, "ok", "offline SQLite integrity check failed");
+}
+
+fn assert_crashed_lifecycle_is_unsealed(path: &PathBuf, boot: &str) {
+    let archive = rusqlite::Connection::open(path).unwrap();
+    let boot_id = boot_bytes(boot);
+    let boot_state: String = archive
+        .query_row(
+            "SELECT state FROM runtime_boots WHERE boot_id=?1",
+            [&boot_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let run: (String, String) = archive
+        .query_row(
+            "SELECT state,coverage FROM runs WHERE boot_id=?1",
+            [&boot_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let interval: (String, String) = archive
+        .query_row(
+            "SELECT state,coverage FROM recording_intervals WHERE boot_id=?1",
+            [&boot_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(boot_state, "active");
+    assert_eq!(run, ("recording".into(), "complete".into()));
+    assert_eq!(interval, ("recording".into(), "complete".into()));
+    // Coverage has not observed a known gap, but the active lifecycle rows are
+    // unsealed: structural readability is not semantic completeness.
+}
+
 #[test]
 fn child_holds_real_retune_terminal_after_durable_acceptance() {
     let Some(path) = std::env::var_os("LAB_M7_ACCEPTED_ONLY_DB") else {
@@ -343,6 +382,8 @@ fn killed_equal_time_archive_pages_exactly_the_committed_prefix_under_a_new_boot
 fn killed_process_a_reopens_in_b_without_promoting_uncommitted_work() {
     let path = temporary_database();
     let (old_boot, database_id) = kill_held_child(&path, "before_commit", "M7_PRECOMMIT_REACHED ");
+    assert_integrity_ok(&path);
+    assert_crashed_lifecycle_is_unsealed(&path, &old_boot);
     let new_boot = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     assert_ne!(old_boot, new_boot);
     let mut reopened = SqliteStore::open_with_boot(&path, new_boot).unwrap();
@@ -423,6 +464,14 @@ fn killed_process_a_reopens_in_b_without_promoting_uncommitted_work() {
 fn killed_process_after_commit_reopens_committed_row_without_a_receipt() {
     let path = temporary_database();
     let (old_boot, database_id) = kill_held_child(&path, "after_commit", "M7_POSTCOMMIT_REACHED ");
+    let mut wal_path = path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    assert!(
+        std::fs::metadata(PathBuf::from(wal_path)).unwrap().len() > 0,
+        "a killed post-commit writer must leave its committed WAL available to SQLite"
+    );
+    assert_integrity_ok(&path);
+    assert_crashed_lifecycle_is_unsealed(&path, &old_boot);
     let new_boot = "abababababababababababababababab";
     assert_ne!(old_boot, new_boot);
     let mut reopened = SqliteStore::open_with_boot(&path, new_boot).unwrap();
@@ -459,6 +508,7 @@ fn killed_process_after_commit_reopens_committed_row_without_a_receipt() {
         committed
     );
     drop(archive);
+    assert_integrity_ok(&path);
     std::fs::remove_file(path).unwrap();
 }
 
