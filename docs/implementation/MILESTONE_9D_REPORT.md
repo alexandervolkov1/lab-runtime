@@ -13,8 +13,10 @@ M9D was inserted before M10 to complete the audited partial Metakon output path
 without changing the accepted OutputAuthority architecture. The software path and
 the read-only preflight correction are complete. M9D is not ready for external
 review because its real-device write acceptance stopped on a harness failure before
-the controller or any nonzero proposal was started. The production startup safe-zero
-completed, but the requested nonzero and final safe-transition sequence was not run.
+the controller or any nonzero proposal was started. A corrected attempt reached the
+first Application API output query, but a second over-strict harness assertion again
+stopped before controller start. Production safe-zero completed; the requested
+nonzero and controller-pause sequence was not run.
 
 ## Software implementation
 
@@ -248,6 +250,69 @@ clean acceptance path remains absent:
 examples/metakon-513-m9d-write-smoke.sqlite: absent
 ```
 
+### Corrected harness attempt
+
+The reserved `$args` collision was removed and the exact request/response helper was
+validated without COM5 against the virtual Runtime. A normal offline run exercised
+hello, queries, Recorder start/stop, reference and PID configuration DTOs,
+controller start/pause and clean shutdown. A second offline run injected a failure
+after controller start and proved the harness cleanup path performed pause, Recorder
+stop and Runtime shutdown with exit code 0.
+
+Exactly one newly authorized physical run then used that helper. Production startup
+again completed safe-zero WRITE/ACK/separate-readback before readiness, and the
+previous parameter-binding defect was gone: the first Application API output query
+returned successfully. Its truthful settled snapshot was:
+
+```text
+state: disarmed
+safe_confirmed: true
+epoch: 2
+sent: 0 at 170000500 ns
+acknowledged: 0 at 310000200 ns
+readback: 0 at 310000200 ns
+reported_readback: 0 at 310000200 ns
+outcome: readback_verified
+requested: null
+pending: false
+in_flight: false
+```
+
+The harness incorrectly required `requested = 0` after settlement and required the
+readback timestamp to be strictly greater than the ACK timestamp. Current Runtime
+semantics clear the pending requested value after settlement, and two distinct
+semantic stages may be committed in one owner turn with the same monotonic timestamp.
+The separate `acknowledged` and `readback` fields and ordered Recorder stages, not a
+strict timestamp inequality, establish their distinction. This was another harness
+interpretation defect, not a Runtime, serial, protocol or device failure.
+
+The harness stopped before Recorder start, reference/PID mutation, controller start,
+lease acquisition or any nonzero proposal. Its accepted cleanup used normal
+`runtime_shutdown`, which requested and verified safe zero again before closing the
+transport. Therefore this attempt issued two physical writes, both register-6 zero:
+startup safe-zero and shutdown safe-zero. Nonzero, ambiguous and mismatching writes
+were all zero. The process exited 0 and released COM5.
+
+The second diagnostic archive is cleanly closed but is not acceptance evidence:
+
+```text
+examples/metakon-513-m9d-write-smoke-failed-2.sqlite
+size: 196608 bytes
+SHA-256: cac2639d34b0158cad3844598876c96dabe568c343adca2104fa6d11c473d915
+WAL: absent
+SHM: absent
+SQLite integrity check: ok
+boot: b7a6db20096b443db5276d27fc530dce, sealed
+coverage: complete
+final output: disarmed, safe_confirmed, readback 0
+resource: offline with zero unfinished transport work
+runs/operation events/controller events/output events/gaps: 0
+```
+
+The lack of output-event rows is expected because the harness failed before starting
+the recording run; the sealed boot exit summary retains the final safe state. No
+third hardware attempt was made.
+
 ## Preserved evidence
 
 Historical M8 evidence remained byte-identical:
@@ -264,8 +329,9 @@ The post-M9C read-smoke archive was not modified.
 
 ## Remaining gate
 
-The read-only shutdown blocker remains resolved. A fresh explicit decision is needed
-before retrying the bounded production-path sequence: startup safe-zero, one
-authorized +10, normal safe transition to zero, ACK plus distinct register-6
-readback, Recorder seal and clean shutdown. M9D remains blocked from external review
-and M10 remains unauthorized.
+The read-only shutdown blocker remains resolved. Both physical attempts stopped on
+harness defects before controller start, with only verified zero writes. A fresh
+explicit decision is needed before retrying the bounded production-path sequence:
+startup safe-zero, one authorized +10, normal safe transition to zero, ACK plus
+distinct register-6 readback, Recorder seal and clean shutdown. M9D remains blocked
+from external review and M10 remains unauthorized.

@@ -26,9 +26,11 @@ M11+: NOT AUTHORIZED
 M9B and M9C implementation and external review are accepted. The supplementary
 post-M9C real-device smoke passed. M9D software integration and the read-only
 shutdown correction are committed. The authorized write acceptance stopped on a
-harness defect after production startup safe-zero and before controller start or any
-nonzero proposal. Do not retry a physical write or begin M10 without a new explicit
-decision.
+harness defect after production startup safe-zero and before controller start. A
+newly authorized corrected attempt reached the output API, but stopped on an
+over-strict snapshot assertion before controller start or any nonzero proposal.
+Normal shutdown verified zero and exited cleanly. Do not retry a physical write or
+begin M10 without a new explicit decision.
 
 ## M9D blocked hardware gate
 
@@ -42,7 +44,11 @@ temperature samples, zero unfinished transports, clean shutdown and exit 0. No
 nonzero Metakon WRITE was attempted. A later acceptance attempt completed one
 startup safe-zero WRITE/ACK/readback, then its PowerShell harness failed before the
 first API query. Its unsealed WAL archive is failure evidence, not M9D acceptance
-evidence. See `docs/implementation/MILESTONE_9D_REPORT.md`.
+evidence. The corrected harness passed offline validation and reached the real output
+query, but rejected a valid settled snapshot because `requested` was null and ACK
+and readback shared one owner timestamp. Cleanup performed another verified zero and
+clean shutdown. No controller or nonzero output ran; the second sealed archive is
+also diagnostic only. See `docs/implementation/MILESTONE_9D_REPORT.md`.
 
 ## Accepted baselines
 

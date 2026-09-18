@@ -40,8 +40,10 @@ Final physical M8 acceptance and the supplementary post-M9C read smoke remain
 accepted. M9D software integration and its read-only shutdown correction are
 complete, but its real-device write acceptance is incomplete. The corrected
 read-only COM5 preflight closed cleanly. A later attempt completed production
-startup safe-zero but stopped on a harness defect before controller start or any
-nonzero proposal.
+startup safe-zero but stopped on a harness defect before controller start. A
+corrected attempt reached the real output query, then stopped on another harness
+interpretation defect. Normal cleanup verified zero; no controller or nonzero
+proposal ran.
 
 M9A, M9B and M9C implementation and external review have succeeded. M9C removed
 active Lua, obsolete first-party client baggage and transitional source-reload /

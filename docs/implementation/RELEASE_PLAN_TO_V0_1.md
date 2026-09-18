@@ -27,8 +27,9 @@ M9B and M9C implementation and external review are accepted. The supplementary
 post-M9C real-device smoke passed. M9D software integration is complete, but its
 real-device write acceptance is incomplete. The read-only transport shutdown blocker
 was corrected and verified on COM5. A later attempt completed startup safe-zero but
-stopped on a harness defect before nonzero output. M10 and later work are not
-authorized.
+stopped on a harness defect before nonzero output. A corrected attempt reached the
+real output query, then stopped on another harness interpretation defect; normal
+cleanup verified zero and closed cleanly. M10 and later work are not authorized.
 The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
@@ -235,7 +236,9 @@ and release workspace tests plus warning-denied lint/docs pass. The read-only
 preflight shutdown defect was corrected under the existing finite bound and a real
 COM5 rerun closed with zero unfinished transports. A write-acceptance attempt sent
 only the production startup safe-zero and stopped on a harness defect before
-controller start. Real-device acceptance remains blocked pending a newly authorized
+controller start. A corrected attempt passed offline validation but rejected a valid
+settled safe-zero API snapshot; shutdown safely verified zero again. No nonzero
+output occurred. Real-device acceptance remains blocked pending a newly authorized
 complete run.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED

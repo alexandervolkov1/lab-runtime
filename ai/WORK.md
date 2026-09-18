@@ -27,9 +27,14 @@ transports, clean shutdown and process exit 0.
 The authorized acceptance attempt completed exactly one production startup
 safe-zero WRITE/ACK/readback and then stopped on a PowerShell harness parameter
 binding defect before any API query, controller start or nonzero proposal. No
-nonzero write occurred. The unsealed WAL archive is preserved only as failure
-evidence; no M9D acceptance archive exists. Do not retry physical output testing,
-declare M9D ready for review, or begin M10 without a new explicit decision.
+nonzero write occurred. A newly authorized corrected attempt passed offline normal
+and injected-failure validation, then reached the real output query. It stopped on a
+second harness interpretation defect: settled `requested` is null and distinct ACK
+and readback stages may share one owner timestamp. Normal shutdown verified zero
+again and exited cleanly. Across the second attempt there were two zero writes and
+no controller/nonzero activity. Both diagnostic archives are preserved; no M9D
+acceptance archive exists. Do not retry physical output testing, declare M9D ready
+for review, or begin M10 without a new explicit decision.
 
 The bounded evidence and exact software gate results are in
 `docs/implementation/MILESTONE_9D_REPORT.md`. Historical M8 and post-M9C evidence

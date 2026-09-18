@@ -215,7 +215,10 @@ terminalization defect, corrected under the existing finite deadline in `b6e1840
 A corrected read-only COM5 run acquired valid data and closed cleanly with zero
 unfinished transports. A subsequent authorized write attempt completed startup
 safe-zero, then stopped on a harness defect before controller start or nonzero
-output. M9D cannot enter external review until a newly authorized clean write
+output. A corrected attempt passed offline validation and reached the output query,
+but another harness interpretation error rejected a valid settled safe-zero snapshot.
+Its normal cleanup verified zero and exited cleanly; controller/nonzero output still
+did not run. M9D cannot enter external review until a newly authorized clean write
 acceptance run succeeds.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED
