@@ -9,7 +9,8 @@ POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
 M11: AUTHORIZED
-M11.1 hardening and failure-model audit: AUTHORIZED — NOT STARTED
+M11.1 hardening and failure-model audit: COMPLETE
+M11 implementation: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -59,11 +60,25 @@ The accepted guarantees include:
 - an Arduino-like instrument is confined to instrument-specific configuration,
   protocol, composition, scheduling, optional authority-gated output and tests.
 
-## Authorized next task
+## Completed audit and next gate
 
-M11 is authorized, but implementation does not start immediately. The first task is
-`M11.1 — hardening and failure-model audit`. It must inspect the accepted post-M10
-codebase and produce, before any production change:
+M11.1 inspected the accepted post-M10 codebase and recorded the normative fault
+model, guarantee levels, bounds, missing coverage, diagnostic-logging gap and
+ordered implementation sequence in
+`docs/implementation/MILESTONE_11_HARDENING_AUDIT.md`.
+
+The audit found that accepted acquisition, control/OutputAuthority, Recorder and
+Application failure behavior is already strongly bounded and regression-tested.
+The highest-priority remaining work is a bounded diagnostic log, a combined
+physical loss/ambiguity-reconnect-no-rearm oracle, explicit managed-worker death
+handling, targeted configured transport/SQLite/process pressure coverage and
+bounded soak acceptance.
+
+M11 implementation has not started. The next possible slice is M11.2, but it is not
+authorized by this audit task and must wait for a separate instruction. M12 and
+later milestones remain unauthorized.
+
+The completed audit covers:
 
 - an exact fault matrix for acquisition, control/safety, Recorder/storage and the
   Application/process boundary;
@@ -76,7 +91,7 @@ codebase and produce, before any production change:
   destination, size, rotation/retention, startup/shutdown, failures and collection;
 - a small, ordered M11 implementation sequence with explicit risk and verification.
 
-The audit must cover periodic acquisition, monotonic cadence/drift, bounded queues,
+It covers periodic acquisition, monotonic cadence/drift, bounded queues,
 slow or hung transport, reconnect, starvation resistance and finite shutdown;
 controller timing, stale/unavailable input, leases, epoch/generation fencing,
 OutputAuthority, ambiguous WRITE, ACK/readback mismatch, safe transition and rearm;
@@ -95,6 +110,5 @@ operations, new Recorder schema features, final tutorials or polished M12 releas
 documentation. The planned educational Arduino furnace is outside M11 unless it is
 separately authorized as test infrastructure.
 
-M11.1 has not started. Do not begin the audit or make production/test changes
-automatically; wait for the separate M11.1 task. M12 and later milestones remain
-unauthorized.
+Do not begin M11.2 or make production/test changes automatically. M12 and later
+milestones remain unauthorized.
