@@ -965,7 +965,14 @@ impl ServiceHost {
             let flush_expired = self
                 .recorder_flush_since
                 .is_some_and(|at| now.duration_since(at) >= std::time::Duration::from_secs(2));
-            if status.recorder_flushed || flush_expired {
+            // A nonblocking transport retirement normally needs another owner
+            // turn to observe the worker's terminal completion. Do not freeze
+            // that ordinary Pending state as a failed terminal merely because
+            // Recorder is already flushed. The existing absolute flush grace
+            // remains the finite bound for a genuinely stuck transport.
+            if (status.recorder_flushed && (status.transports_closed || !status.safe_confirmed))
+                || flush_expired
+            {
                 self.terminal = Some(status);
             }
         }

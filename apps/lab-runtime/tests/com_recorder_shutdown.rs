@@ -10,6 +10,10 @@ use lab_runtime::{
 };
 use std::{
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -58,6 +62,79 @@ fn c19_clean_and_stalled_transport_shutdown_are_finite_and_distinct() {
         assert_eq!(status.transports_closed, completes);
         assert_eq!(status.exit_success, completes);
     }
+}
+
+struct OneTurnShutdownTransport(Arc<AtomicUsize>);
+
+impl ByteTransport for OneTurnShutdownTransport {
+    fn try_write(&mut self, _: &[u8]) -> Result<usize, TransportIoError> {
+        Ok(0)
+    }
+
+    fn try_read(&mut self, _: &mut [u8]) -> Result<usize, TransportIoError> {
+        Ok(0)
+    }
+
+    fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+        Ok(RecoveryStatus::Pending)
+    }
+
+    fn try_shutdown(&mut self) -> TransportShutdown {
+        if self.0.fetch_add(1, Ordering::AcqRel) == 0 {
+            TransportShutdown::Pending
+        } else {
+            TransportShutdown::Complete
+        }
+    }
+}
+
+#[test]
+fn service_does_not_freeze_a_one_turn_transport_retirement_as_terminal_failure() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.register_transport(
+        ResourceId::new(89),
+        Box::new(OneTurnShutdownTransport(attempts.clone())),
+    )
+    .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    service.request_shutdown().unwrap();
+
+    assert!(service.shutdown_step().unwrap().is_none());
+    assert_eq!(attempts.load(Ordering::Acquire), 1);
+    assert_eq!(service.owner().shutdown_status().unfinished_transports, 1);
+
+    let terminal = service.shutdown_step().unwrap().unwrap();
+    assert_eq!(attempts.load(Ordering::Acquire), 2);
+    assert_eq!(terminal.unfinished_transports, 0);
+    assert!(terminal.transports_closed);
+    assert!(terminal.exit_success);
+}
+
+#[test]
+fn service_retains_a_finite_deadline_for_a_transport_that_never_retires() {
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.register_transport(ResourceId::new(90), Box::new(ShutdownTransport(false)))
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    service.request_shutdown().unwrap();
+
+    let started = Instant::now();
+    let terminal = loop {
+        if let Some(status) = service.shutdown_step().unwrap() {
+            break status;
+        }
+        assert!(started.elapsed() < Duration::from_millis(2_500));
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert_eq!(terminal.unfinished_transports, 1);
+    assert!(!terminal.transports_closed);
+    assert!(!terminal.exit_success);
 }
 
 fn temporary_database() -> PathBuf {
