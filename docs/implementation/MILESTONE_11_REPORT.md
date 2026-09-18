@@ -85,6 +85,16 @@ the production predicate directly instead of assuming the two observations are
 atomic. No timeout was enlarged and no production behavior changed; the corrected
 release oracle passed 20/20 focused repetitions before the full gate was rerun.
 
+The subsequent combined debug-plus-release gate exposed another test-only deadline
+race in `recorder_shutdown_process`: the child used a two-second WriterBarrier wait
+inside the parent's separate four-second readiness deadline. Under suite load the
+child's tighter deadline could expire and close the readiness channel even though
+the parent still had time and owned cleanup. The duplicate child deadline was
+removed; it now waits on the authoritative Condvar predicate while the parent keeps
+the single finite deadline and `ChildGuard` kill boundary. Production Recorder and
+shutdown deadlines did not change. The corrected release process oracle passed
+20/20 focused repetitions.
+
 ### Combined pressure, cadence and shutdown
 
 The long-run composition combines periodic acquisition, controller work, Recorder
