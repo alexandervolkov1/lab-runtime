@@ -226,8 +226,9 @@ M10.2 completed the separately authorized low-risk terminology, archaeological a
 source architecture-index slice without changing accepted behavior. M10.3 completed
 the separately authorized Application API physical organization while preserving the
 accepted registry/wire contract. M10.4 organized Runtime, Host and Service
-orchestration without changing owners, scheduling or accepted semantics. M10.5 and
-later stages require separate authorization.
+orchestration without changing owners, scheduling or accepted semantics. M10.5
+organized Recorder/SQLite implementation boundaries without changing schema or
+durability. M10.6 and later stages require separate authorization.
 
 Targets:
 

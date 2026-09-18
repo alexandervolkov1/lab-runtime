@@ -34,8 +34,9 @@ review accepted M9D. M10.1 completed the post-M9D structural audit; M10.2 comple
 behavior-preserving terminology, archaeology and source architecture indexes. M10.3
 organized the Application API by semantic domain without changing the accepted
 42-operation contract. M10.4 organized Runtime, Host and Service orchestration into
-focused implementation modules without changing ownership or behavior. M10.5 has
-not started.
+focused implementation modules without changing ownership or behavior. M10.5
+separated the Recorder semantic contract, bounded worker concerns and SQLite
+implementation without changing schema or durability. M10.6 has not started.
 
 ## Product boundary
 

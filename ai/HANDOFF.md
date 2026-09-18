@@ -23,7 +23,8 @@ M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
 M10.4: COMPLETE
-M10.5: NOT STARTED
+M10.5: COMPLETE
+M10.6: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -38,7 +39,24 @@ behavior-preserving internal terminology and source architecture indexes while
 retaining historical Recorder compatibility. M10.3 organized the Application API
 by semantic domain while preserving the accepted registry and wire contract. M10.4
 organized Runtime, Host and Service orchestration without changing authoritative
-ownership, scheduler order or lifecycle behavior. M10.5 has not started.
+ownership, scheduler order or lifecycle behavior. M10.5 organized the Recorder
+semantic contract, bounded worker and SQLite implementation without changing
+schema, lifecycle or durability. M10.6 has not started.
+
+## M10.5 completion
+
+Recorder semantic history/provenance types now live apart from SQLite. The one
+`RecorderWorker` remains the host-side lifecycle/credit owner; its lifecycle,
+ingress, bounded history jobs, exclusive storage loop and fault injection are
+physically discoverable modules. `SqliteStore` remains the sole direct SQLite
+implementation and is organized into open/recovery, unchanged schema, writes,
+history, provenance and encoding.
+
+All Recorder integration binaries, process-reopen, Required/failure, held-writer,
+shutdown and canonical `WriterBarrier` lost-wake regressions pass. The 42-operation
+API, schema, transactions, run/interval/provenance semantics and historical
+`managed_lua_source`/`managed_component_source` compatibility are unchanged. M10.6
+is not authorized.
 
 ## M10.4 completion
 
@@ -51,7 +69,7 @@ discoverable. `ServiceHost` still owns startup/process lifecycle; configuration,
 reconnect and finite shutdown progression now have focused implementation modules.
 
 The safety-first service order, reconnect generation fence and M9D shutdown handling
-of non-terminal `TransportShutdown::Pending` are unchanged. M10.5 is not authorized.
+of non-terminal `TransportShutdown::Pending` are unchanged.
 
 ## M10.3 completion
 

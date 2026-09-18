@@ -8,7 +8,8 @@ M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
 M10.4: COMPLETE
-M10.5: NOT STARTED
+M10.5: COMPLETE
+M10.6: NOT STARTED
 M11+: NOT AUTHORIZED
 ```
 
@@ -24,6 +25,12 @@ M10.4 implementation baseline:
 
 ```text
 99676df6bb8cc119e55143376debd3fb4a1a4da2
+```
+
+M10.5 implementation baseline:
+
+```text
+cbb8d562f7fb74705cc4711d51a8d993c151f0fc
 ```
 
 ## M10.2 — terminology, archaeology and architecture indexes
@@ -511,3 +518,197 @@ M10.5 Recorder internal organization has not started. Native component/instrumen
 extension simplification, systematic visibility/rustdoc/test organization and all
 HIGH-risk ownership, scheduler, OutputAuthority, transport, protocol and schema
 changes remain deferred. M11 remains unauthorized.
+
+## M10.5 — Recorder / SQLite physical organization
+
+M10.5 reorganized the existing Recorder implementation without changing its state
+owners, queues, SQL, schema, transactions or public projections. Before this slice,
+`recorder.rs` mixed the semantic contract with open/recovery, schema declarations,
+write transactions, history reads and provenance SQL in 3,533 lines, while
+`recorder/worker.rs` mixed the host-side lifecycle, ingress accounting, history-job
+mailboxes, fault controls and the storage loop in 2,336 lines.
+
+### Final Recorder module tree
+
+```text
+crates/lab-core/src/recording.rs
+    authoritative semantic RecordingFact outbox and Required-policy gate
+
+apps/lab-runtime/src/recorder.rs
+    semantic Recorder contract and public module index
+apps/lab-runtime/src/recorder/history.rs
+    durable-history filters, cursors, rows and bounded pages
+apps/lab-runtime/src/recorder/provenance.rs
+    semantic content/build provenance entries and object snapshots
+apps/lab-runtime/src/recorder/time.rs
+    monotonic-to-wall-clock recording anchors
+
+apps/lab-runtime/src/recorder/worker.rs
+    one RecorderWorker owner, finite channel protocol and worker construction
+apps/lab-runtime/src/recorder/worker/lifecycle.rs
+    activation, start/stop/finish, receipts, sealing state and failure propagation
+apps/lab-runtime/src/recorder/worker/ingress.rs
+    causal-group, operation and annotation admission/credit
+apps/lab-runtime/src/recorder/worker/history.rs
+    bounded history/run job admission, result mailboxes and cancellation
+apps/lab-runtime/src/recorder/worker/storage_loop.rs
+    exclusive SQLite command execution and durability receipts
+apps/lab-runtime/src/recorder/worker/fault_injection.rs
+    WriterBarrier and its canonical mutex/Condvar regression oracle
+```
+
+`RecorderWorker` remains the single host-side owner of lifecycle projections,
+reserved record identities, ingress charge, history-job credit and the worker
+channel. Only the existing storage thread owns `SqliteStore` and may block on SQL.
+No stateful manager, backend trait, queue, capacity or thread was added.
+
+### Final SQLite module tree
+
+```text
+apps/lab-runtime/src/recorder/sqlite/mod.rs
+    SqliteStore state, settings, health and storage error boundary
+apps/lab-runtime/src/recorder/sqlite/open.rs
+    open, compatibility validation, recovery and storage budget checks
+apps/lab-runtime/src/recorder/sqlite/schema.rs
+    the unchanged version-one DDL and schema identity checks
+apps/lab-runtime/src/recorder/sqlite/write.rs
+    run/interval lifecycle, fact transactions, gaps, checkpoints and seals
+apps/lab-runtime/src/recorder/sqlite/history.rs
+    bounded indexed run and measurement history reads
+apps/lab-runtime/src/recorder/sqlite/provenance.rs
+    immutable activation/content/object-snapshot transactions
+apps/lab-runtime/src/recorder/sqlite/encoding.rs
+    checked SQLite identity, scalar and JSON encoding/decoding helpers
+```
+
+The split uses the existing `SqliteStore` directly; it does not introduce an ORM,
+repository abstraction, generic persistence trait or alternate backend. Table and
+column spellings, PRAGMAs, SQL statements, transaction boundaries and the schema
+version are unchanged.
+
+### Frozen lifecycle and boundedness
+
+An absent Host Recorder remains `unconfigured`. An opened worker starts `Idle`;
+`request_start*` moves the owner projection to `Starting` until the durable start,
+boundary and provenance receipt confirms `Recording`. Ordinary admission is then
+bounded by the unchanged four causal groups, 1,024 records and 4 MiB accounted
+bytes, with the same per-group limit and reserved lifecycle slots. Capacity is
+reserved before try-send and released only by a durability receipt.
+
+`request_stop*` closes ordinary admission by entering `Stopping`, queues the stop
+behind the accepted FIFO prefix, and reaches `Idle` only after the interval and run
+are sealed and that transaction is committed. A successful stop still does not
+destroy the writer or claim a terminal boot seal. `request_finish*` separately
+commits the boot seal and closes the SQLite connection before `Closed` becomes
+visible. `Failed` remains sticky and Required recording continues to fail closed.
+
+Boot, run, interval and record identities retain their checked meanings. The owner
+continues to expose only the committed receipted prefix; a post-commit process loss
+can still be recovered from SQLite without fabricating an owner receipt. Gaps retain
+their first-known-loss identity, reason and coverage meaning, and neither an
+unsealed tail nor a failed close is reported as complete.
+
+### Representative paths
+
+Measurement recording:
+
+```text
+Runtime semantic RecordingFact (lab-core/recording.rs)
+→ host/recording.rs admission boundary
+→ recorder/worker/ingress.rs finite causal-group reservation
+→ recorder/worker/storage_loop.rs exclusive worker dispatch
+→ recorder/sqlite/write.rs one SQLite fact transaction + checkpoint
+→ lifecycle receipt releases the owner-side charge
+```
+
+Recorder start and stop:
+
+```text
+Application recorder handler (recorder_api.rs / application/recorder.rs)
+→ host/recording.rs orchestration
+→ recorder/worker/lifecycle.rs start or stop barrier
+→ recorder/worker/storage_loop.rs FIFO execution
+→ recorder/sqlite/write.rs durable boundary/seal transaction
+→ lifecycle receipt and unchanged public RecordingStatus projection
+```
+
+Durable history:
+
+```text
+Application history_read
+→ bounded operation/session job
+→ host/recording.rs
+→ recorder/worker/history.rs eight-slot admission/cancellation
+→ recorder/worker/storage_loop.rs
+→ recorder/sqlite/history.rs indexed frozen-checkpoint page
+→ bounded raw page and existing Application projection/cursor
+```
+
+Provenance:
+
+```text
+frozen activation/configuration identity
+→ recorder/provenance.rs semantic entries and object snapshots
+→ recorder/worker/lifecycle.rs activation command
+→ recorder/worker/storage_loop.rs
+→ recorder/sqlite/provenance.rs content-addressed transaction
+```
+
+The public `recorder_api.rs` facade and M10.4 `host/recording.rs` orchestration were
+not turned into persistence modules: neither contains table knowledge or SQL.
+Recent Runtime history remains distinct from durable Recorder history.
+
+### Historical compatibility and test isolation
+
+The active native provenance kind `managed_component_source` and historical
+`managed_lua_source` reader acceptance remain together in
+`recorder/sqlite/provenance.rs`. Historical operation facts, including removed
+source-reload/model-restart vocabulary already present in archives, remain opaque
+durable facts rather than active API operations. No archive, migration or evidence
+file was rewritten.
+
+`WriterBarrier` moved intact to `worker/fault_injection.rs`. Its `held` and `reached`
+predicate remains protected by one mutex and Condvar; predicate mutation occurs
+under that mutex and waiting uses the canonical predicate loop. The storage worker
+is the only participant that may wait there; Runtime ownership and production
+scheduling do not depend on this fault seam. The boundary lost-wake oracle passed
+repeated execution after the move.
+
+### Behavior freeze and verification
+
+The 42-operation registry, 25 capabilities, public error/bounds/status DTOs,
+history cursors and response shapes are unchanged. Schema DDL, provenance hashes,
+WAL/SHM behavior, durability confirmation, causal-group ingress, Required policy,
+run/interval identity and clean-close semantics are unchanged. M9D physical output,
+Metakon and hardware configuration code was not modified.
+
+Every `recorder*.rs` integration binary and `com_recorder_shutdown` passed after the
+move, including startup, start/stop, Required policy, history/cursors, provenance,
+process reopen, backpressure, held-writer native progress, SQLite integrity,
+shutdown and WriterBarrier tests. Final gates:
+
+```text
+cargo fmt --all -- --check                              PASS
+cargo test --workspace                                  PASS
+cargo test --workspace --release                        PASS
+cargo clippy --workspace --all-targets -- -D warnings   PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+                                                         PASS
+exact 42-operation / 25-capability registry regression   PASS
+M9B.8 fault acceptance                                   PASS
+M9D physical-output software suite                       PASS
+all Recorder integration binaries                        PASS
+WriterBarrier lost-wake regression                       PASS
+historical provenance compatibility                      PASS
+git diff --check                                         PASS
+```
+
+COM5 was not opened and no hardware test was performed. Accepted M8, post-M9C and
+M9D evidence remains unchanged.
+
+### Deferred work
+
+M10.6 native component/instrument extension clarity has not started. Systematic
+visibility/rustdoc/test organization and every HIGH-risk change to ownership,
+scheduling, Recorder policy, schema, history protocol, OutputAuthority, transport
+or public API remain deferred. M11 remains unauthorized.
