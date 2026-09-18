@@ -246,7 +246,9 @@ M10.1 completed the structural/studyability audit of the actual post-M9D codebas
 M10.2 completed low-risk internal terminology cleanup, archaeological classification
 and source architecture indexes without changing accepted behavior. M10.3 completed
 behavior-preserving Application API organization around the unchanged centralized
-42-operation registry. M10.4 has not started and requires separate authorization.
+42-operation registry. M10.4 organized Runtime, Host and Service implementation
+modules while preserving state ownership, scheduler order and lifecycle behavior.
+M10.5 has not started and requires separate authorization.
 
 Refactor only under test coverage, preserving behavior and safety:
 

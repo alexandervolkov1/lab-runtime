@@ -227,9 +227,10 @@ with strict ACK and separate matching register-6 readback, normal pause to verif
 zero, Recorder sealing and clean shutdown. The disconnected load means physical
 heater effect was not tested. M10.1 completed the structural/studyability audit and
 M10.2 completed low-risk terminology, archaeology and source architecture indexes.
-M10.3 completed behavior-preserving Application API organization by semantic domain;
-M10.4 has not started. The roadmap ends at v0.1.0; milestones do not cross review
-gates automatically.
+M10.3 completed behavior-preserving Application API organization by semantic domain.
+M10.4 organized Runtime, Host and Service implementation modules without changing
+state ownership, scheduler order or accepted behavior; M10.5 has not started. The
+roadmap ends at v0.1.0; milestones do not cross review gates automatically.
 
 ## v0.1 identity
 

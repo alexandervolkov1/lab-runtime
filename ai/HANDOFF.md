@@ -22,7 +22,8 @@ M10: AUTHORIZED
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
-M10.4: NOT STARTED
+M10.4: COMPLETE
+M10.5: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -36,7 +37,21 @@ sealing and clean shutdown. M10.1 mapped the actual post-M9D codebase. M10.2 add
 behavior-preserving internal terminology and source architecture indexes while
 retaining historical Recorder compatibility. M10.3 organized the Application API
 by semantic domain while preserving the accepted registry and wire contract. M10.4
-has not started.
+organized Runtime, Host and Service orchestration without changing authoritative
+ownership, scheduler order or lifecycle behavior. M10.5 has not started.
+
+## M10.4 completion
+
+The authoritative structs and all mutable fields remain unchanged. Core Runtime
+command/query routing, controller progression, managed-component commit and physical
+I/O correlation now have focused private implementation modules. `HostCore` remains
+the single Runtime host owner while composition, configuration/rebind, Recorder
+admission, components, lifecycle and scheduler implementations are physically
+discoverable. `ServiceHost` still owns startup/process lifecycle; configuration,
+reconnect and finite shutdown progression now have focused implementation modules.
+
+The safety-first service order, reconnect generation fence and M9D shutdown handling
+of non-terminal `TransportShutdown::Pending` are unchanged. M10.5 is not authorized.
 
 ## M10.3 completion
 
@@ -49,7 +64,7 @@ Recorder/history delivery. Existing `measurements.rs`, `recorder_api.rs` and
 
 `protocol::OPERATIONS` remains the sole authoritative 42-operation registry. Its
 regression now freezes exact operation names, query/mutation kinds, availability,
-argument allowlists and capability witness mapping. M10.4 is not authorized.
+argument allowlists and capability witness mapping.
 
 ## M10.2 completion
 

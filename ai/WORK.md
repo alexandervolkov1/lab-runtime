@@ -1,4 +1,4 @@
-# Current work — M10.3 Application API organization complete
+# Current work — M10.4 Runtime/Host/Service organization complete
 
 ```text
 M8: ACCEPTED
@@ -11,7 +11,8 @@ M10: AUTHORIZED
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
-M10.4: NOT STARTED
+M10.4: COMPLETE
+M10.5: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -44,11 +45,13 @@ archives remain immutable.
 `docs/implementation/MILESTONE_10_STRUCTURE_AUDIT.md`. M10.2 implemented its
 low-risk terminology, archaeological and source-index slice. M10.3 organized the
 Application facade, delivery/operation lifecycle and semantic domain handlers while
-preserving the authoritative 42-operation registry and public wire contract. The
-implementation record is `docs/implementation/MILESTONE_10_REPORT.md`.
+preserving the authoritative 42-operation registry and public wire contract. M10.4
+split Runtime, HostCore and ServiceHost implementations by orchestration
+responsibility while retaining the exact structs, fields, owners and progression
+order. The implementation record is `docs/implementation/MILESTONE_10_REPORT.md`.
 
-M10.4 has not started and requires explicit authorization. No later M10 stage or M11
-work is authorized by completion of M10.3.
+M10.5 has not started and requires explicit authorization. No later M10 stage or M11
+work is authorized by completion of M10.4.
 
 M10 may split oversized or mixed modules by responsibility, improve internal names,
 remove safe dead compatibility/code, tighten public/private boundaries, improve

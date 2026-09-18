@@ -35,7 +35,8 @@ M10: AUTHORIZED
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
-M10.4: NOT STARTED
+M10.4: COMPLETE
+M10.5: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -52,8 +53,10 @@ active Lua, obsolete first-party client baggage and transitional source-reload /
 snapshot API. M10.1 mapped the post-M9D codebase. M10.2 completed low-risk internal
 terminology cleanup, archaeological classification and source architecture indexes
 without changing accepted behavior. M10.3 physically organized the Application API
-by semantic domain without changing its accepted 42-operation contract. M10.4 has
-not started. M11 and later milestones remain blocked behind explicit review gates.
+by semantic domain without changing its accepted 42-operation contract. M10.4
+physically organized Runtime, Host and Service orchestration while retaining the
+same owners and progression order. M10.5 has not started. M11 and later milestones
+remain blocked behind explicit review gates.
 
 ## Donor repository
 

@@ -33,7 +33,9 @@ load was disconnected, so this does not claim physical heater effect. External
 review accepted M9D. M10.1 completed the post-M9D structural audit; M10.2 completed
 behavior-preserving terminology, archaeology and source architecture indexes. M10.3
 organized the Application API by semantic domain without changing the accepted
-42-operation contract. M10.4 has not started.
+42-operation contract. M10.4 organized Runtime, Host and Service orchestration into
+focused implementation modules without changing ownership or behavior. M10.5 has
+not started.
 
 ## Product boundary
 

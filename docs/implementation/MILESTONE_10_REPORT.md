@@ -7,7 +7,8 @@ M10: AUTHORIZED
 M10.1: COMPLETE
 M10.2: COMPLETE
 M10.3: COMPLETE
-M10.4: NOT STARTED
+M10.4: COMPLETE
+M10.5: NOT STARTED
 M11+: NOT AUTHORIZED
 ```
 
@@ -17,6 +18,12 @@ M10.2 implementation baseline:
 
 ```text
 77f14b6ad256fb626cd3aa3d041d7ba5a2d81976
+```
+
+M10.4 implementation baseline:
+
+```text
+99676df6bb8cc119e55143376debd3fb4a1a4da2
 ```
 
 ## M10.2 — terminology, archaeology and architecture indexes
@@ -277,7 +284,230 @@ modified.
 
 ### Deferred work
 
-M10.4 Host/Service/Runtime organization has not started. Recorder storage internals,
-native component registration, systematic visibility/test organization and all
-HIGH-risk ownership, scheduling, OutputAuthority, transport, protocol and schema
-changes remain deferred.
+At M10.3 completion, M10.4 Host/Service/Runtime organization had not started.
+Recorder storage internals, native component registration, systematic
+visibility/test organization and all HIGH-risk ownership, scheduling,
+OutputAuthority, transport, protocol and schema changes remained deferred.
+
+## M10.4 — Runtime / Host / Service orchestration organization
+
+M10.4 reorganized implementation files only. The `Runtime`, `HostCore`,
+`ServiceHost` and `SchedulePlan` structs retain the same fields and lifetimes. No
+manager object, second state owner, queue, worker or new progression phase was
+introduced. Tests required no semantic updates.
+
+Before this slice, `runtime.rs` combined the command/query boundary, managed
+components, native controller progression and all physical transaction correlation
+in one 4,794-line file. `host.rs` combined composition, deployment application,
+Recorder admission, managed orchestration, output/resource lifecycle and the native
+scheduler in 3,937 lines. `service.rs` combined startup, configuration lifecycle,
+reconnect and finite shutdown in 2,507 lines. The ownership boundaries were correct,
+but navigation crossed long unrelated sections.
+
+### Final Runtime module map
+
+```text
+crates/lab-core/src/runtime.rs
+    public Command/Query/result types
+    the one authoritative Runtime struct and all of its fields
+    construction, semantic recording gate and resource registration
+    shared private lookup helpers and Runtime-local regression tests
+
+crates/lab-core/src/runtime/dispatch.rs
+    synchronous Command mutation and Query projection routing
+
+crates/lab-core/src/runtime/controllers.rs
+    Reference/controller validation, lifecycle, PID progression and proposals
+
+crates/lab-core/src/runtime/managed_components.rs
+    component validation, invocation, bounded completion and authoritative commit
+
+crates/lab-core/src/runtime/physical_io.rs
+    Metakon transaction correlation, OutputAuthority/ResourceExecutor progression,
+    ACK/readback settlement, acquisition commit and transport retirement
+```
+
+All child modules contain `impl Runtime` blocks. Their `pub(super)` seams are visible
+only within the private `runtime` module tree and exist solely where the physical
+split requires cross-responsibility calls. OutputAuthority and resource executors
+remain private fields of the same Runtime.
+
+### Final Host module map
+
+```text
+apps/lab-runtime/src/host.rs
+    Clock/Periodic/SchedulePlan and HostCore field ownership
+    trusted composition and profile construction
+
+apps/lab-runtime/src/host/configuration.rs
+    configured probes, resource rebind and validated deployment application
+
+apps/lab-runtime/src/host/recording.rs
+    Recorder lifecycle, semantic-fact admission, history and configuration fences
+
+apps/lab-runtime/src/host/components.rs
+    managed executor composition, native components and virtual/emulator projection
+
+apps/lab-runtime/src/host/lifecycle.rs
+    Runtime command/event facade, resource/output evidence and host shutdown barrier
+
+apps/lab-runtime/src/host/scheduler.rs
+    the one bounded safety-first owner turn
+```
+
+`HostCore` still owns exactly one `Runtime`, one schedule, one EventLog, Recorder
+admission/lifecycle state and deployment-facing catalogs. The modules add no
+stateful manager and do not move experiment authority out of Runtime.
+
+### Final Service module map
+
+```text
+apps/lab-runtime/src/service.rs
+    ServiceOptions and lifecycle DTOs
+    the one ServiceHost struct
+    startup/composition, process-facing facade and owner accessors
+
+apps/lab-runtime/src/service/configuration.rs
+    staged application and durable lifecycle-operation coordination
+
+apps/lab-runtime/src/service/reconnect.rs
+    explicit retirement/open/probe/rebind/generation-fenced release
+
+apps/lab-runtime/src/service/shutdown.rs
+    finite safety, transport and Recorder terminal progression
+```
+
+`ServiceHost` still owns the process clock/listener, one `HostCore`, deployment
+lifecycle, reconnect candidate/diagnostic and finite shutdown clocks. In particular,
+the M9D correction remains explicit in `service/shutdown.rs`: an ordinary
+`TransportShutdown::Pending` is non-terminal and receives bounded subsequent owner
+turns under the unchanged deadline.
+
+### Preserved scheduler order
+
+`host/scheduler.rs` now makes one turn readable without crossing configuration or
+Recorder implementation sections. The order is unchanged:
+
+```text
+poll Recorder receipts
+→ due safety slot
+   → required-recording deadline and output watchdogs
+   → controller fail-safe checks and pending safe dispatch
+   → one bounded transport/recovery/completion turn
+   → managed expiry and at most two completions
+→ shutdown transport retirement, when safe
+→ stop/configuration-quiesce early return
+→ virtual thermal plants
+→ configured Metakon read admission
+→ References
+→ controllers on a new distinct Good observation
+→ periodic managed sources
+→ observation-driven managed transforms
+→ admit semantic recording facts and poll Recorder receipts
+```
+
+Every lower-priority phase retains the same early yield when safety is due. Periods,
+next-due calculations, skipped-deadline accounting and actual clock reads are
+unchanged.
+
+### Main execution traces
+
+Physical measurement:
+
+```text
+ServiceHost::startup
+→ HostCore::configured_with_transports
+→ host/scheduler.rs::HostCore::service_inner
+→ Runtime::command(Command::QueueMetakonRead) in runtime/dispatch.rs
+→ Metakon READ transaction on ResourceExecutor
+→ runtime/physical_io.rs::poll_transports
+→ handle_transport_event / decode_read / apply_metakon_value
+→ Runtime SignalBuffer commit + semantic recording fact
+→ Host EventLog/current/history/controller/Recorder observation
+```
+
+Physical controller output:
+
+```text
+host/scheduler.rs controller phase
+→ Runtime::command(Command::TickController)
+→ runtime/controllers.rs::tick_controller / calculate_controller_update
+→ OutputProposal
+→ runtime/physical_io.rs::deliver_physical
+→ OutputAuthority admission
+→ queue_metakon_output / ResourceExecutor
+→ final authority and binding-generation recheck at first possible byte
+→ Metakon WRITE → strict ACK
+→ separate register readback
+→ handle_output_readback / settle_controller_after_physical_readback
+```
+
+The physical-I/O module documents and preserves that requested, authorized,
+send-started, ACK, readback and physical effect are distinct. An ambiguous started
+write is not blindly retried.
+
+Reconnect:
+
+```text
+service/reconnect.rs::reconnect_resource
+→ recorded lifecycle reservation
+→ HostCore configured-resource quiesce and old executor retirement
+→ bounded ComTransport replacement/open under the original deadline
+→ HostCore rebind and generation advance
+→ resource-scoped compatibility probe
+→ durable lifecycle completion
+→ HostCore acquisition release
+```
+
+Shutdown:
+
+```text
+service/shutdown.rs::request_shutdown
+→ host/lifecycle.rs::begin_shutdown
+→ managed admission fence + controller pause/safe obligations
+→ host/scheduler.rs safety/transport turns
+→ ResourceExecutor/COM retirement, including later Pending observations
+→ host/recording.rs Recorder stop/flush/seal
+→ ServiceHost terminal status only after finite cleanup evidence or deadline
+```
+
+### Ownership and behavior freeze
+
+Runtime remains the sole authoritative mutable experiment owner. HostCore retains
+orchestration state only; ServiceHost retains process/deployment/reconnect/shutdown
+state only; Application remains the accepted external projection/control boundary.
+Recorder still owns durable machinery, not experiment authority.
+
+The refactor did not modify the 42-operation registry, 25-capability composition,
+public errors or bounds; no public DTO or protocol version changed. It did not modify
+SQLite schema or Recorder semantics, configuration/instrument definitions, serial or
+Metakon codecs, OutputAuthority transitions, transaction retry policy, scheduler
+cadence/order, reconnect generations or hardware settings. The accepted M9D archive
+and hash remain applicable; COM5 was not opened and no hardware test was performed.
+
+Focused scheduler/acquisition, configured physical read/output, Core controller,
+OutputAuthority, M9D physical-output, reconnect, configuration, shutdown, managed
+component and Recorder-boundary suites passed during extraction. Final gates:
+
+```text
+cargo fmt --all -- --check                              PASS
+cargo test --workspace                                  PASS
+cargo test --workspace --release                        PASS
+cargo clippy --workspace --all-targets -- -D warnings   PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+                                                         PASS
+exact 42-operation / 25-capability registry regression   PASS
+M9B.8 fault acceptance                                   PASS
+M9D physical-output software suite                       PASS
+reconnect/serial and shutdown suites                     PASS
+native managed-component regressions                     PASS
+Recorder integration regressions                         PASS
+git diff --check                                         PASS
+```
+
+### Deferred work
+
+M10.5 Recorder internal organization has not started. Native component/instrument
+extension simplification, systematic visibility/rustdoc/test organization and all
+HIGH-risk ownership, scheduler, OutputAuthority, transport, protocol and schema
+changes remain deferred. M11 remains unauthorized.
