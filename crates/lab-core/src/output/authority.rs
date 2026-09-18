@@ -30,6 +30,11 @@ pub(crate) struct OutputAuthority {
     pending: Option<Pending>,
     transport_reserved: Option<OutputIntent>,
     safe_needed: bool,
+    // An already-started safe write with an unknown outcome does not discharge
+    // the safe obligation, but it also cannot authorize another write. Only a
+    // fresh authority instance/rebind or explicit future reconciliation can
+    // resolve this fail-closed state.
+    safe_resend_blocked: bool,
     next_dispatch: u64,
 }
 
@@ -65,6 +70,7 @@ impl OutputAuthority {
             pending: None,
             transport_reserved: None,
             safe_needed: false,
+            safe_resend_blocked: false,
             next_dispatch: 1,
         })
     }
@@ -310,6 +316,9 @@ impl OutputAuthority {
         }
 
         let (value, safe) = if self.safe_needed {
+            if self.safe_resend_blocked {
+                return Err(OutputError::InvalidState.into());
+            }
             // Safe output is a Rust-owned reserved operation, not a producer proposal.
             // Revocation already invalidated any normal queued work.
             (self.profile()?.safe_value, true)
@@ -389,13 +398,13 @@ impl OutputAuthority {
             outcome,
             DispatchOutcome::Failed | DispatchOutcome::Ambiguous
         ) {
-            let recovery_was_requested = self.safe_needed;
             self.request_safe(true)?;
-            if dispatch.safe && !recovery_was_requested {
-                // Do not spin retrying a failed safe procedure. Retain the fault
-                // and wait for an explicit recovery request, without claiming safe.
-                // A newer explicit request made during this send is not lost.
-                self.safe_needed = false;
+            if dispatch.safe {
+                // The safe target remains required, but a started write with an
+                // unknown result is not permission to emit that command again.
+                // Keep the obligation while preventing both automatic safety
+                // service and direct trusted queue admission from resending it.
+                self.safe_resend_blocked = true;
                 self.snapshot.state = OutputState::FaultLatched;
             }
         } else if dispatch.safe && dispatch.epoch == self.snapshot.epoch {
@@ -421,7 +430,11 @@ impl OutputAuthority {
         self.snapshot.lease = None;
         self.snapshot.fault_latched |= fault;
         self.snapshot.safe_confirmed = false;
-        self.snapshot.state = OutputState::SafePending;
+        self.snapshot.state = if self.safe_resend_blocked {
+            OutputState::FaultLatched
+        } else {
+            OutputState::SafePending
+        };
         self.safe_needed = true;
         self.transport_reserved = None;
         // Keep the slot bounded and make revocation immediately visible. The
@@ -451,6 +464,9 @@ impl OutputAuthority {
             return Err(OutputError::InvalidTime.into());
         }
         let intent = if self.safe_needed {
+            if self.safe_resend_blocked {
+                return Err(OutputError::InvalidState.into());
+            }
             OutputIntent {
                 actuator: self.actuator,
                 attempt_id,
@@ -575,10 +591,17 @@ impl OutputAuthority {
 
     /// Revoke ordinary authority as soon as a started physical write becomes uncertain.
     pub(crate) fn transport_uncertain(&mut self, id: DispatchId) -> Result<(), Error> {
-        if self.snapshot.in_flight.map(Dispatch::id) != Some(id) {
-            return Err(OutputError::UnknownDispatch.into());
+        let dispatch = self
+            .snapshot
+            .in_flight
+            .filter(|dispatch| dispatch.id() == id)
+            .ok_or(OutputError::UnknownDispatch)?;
+        self.request_safe(true)?;
+        if dispatch.is_safe() {
+            self.safe_resend_blocked = true;
+            self.snapshot.state = OutputState::FaultLatched;
         }
-        self.request_safe(true)
+        Ok(())
     }
 
     /// Record a strict protocol ACK while retaining the dispatch for the distinct

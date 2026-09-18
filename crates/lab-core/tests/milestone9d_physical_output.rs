@@ -32,6 +32,9 @@ struct Wire {
     last_output: i8,
     readback_offsets: VecDeque<i8>,
     suppress_readback: bool,
+    write_limits: VecDeque<usize>,
+    fail_before_first_write: bool,
+    started_writes: usize,
     recoveries: usize,
 }
 
@@ -40,7 +43,20 @@ struct MetakonFake(Rc<RefCell<Wire>>);
 impl ByteTransport for MetakonFake {
     fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
         let mut wire = self.0.borrow_mut();
-        wire.frames.push(bytes.to_vec());
+        if wire.fail_before_first_write && matches!(bytes, [15, 0, 6, 1, ..]) {
+            wire.fail_before_first_write = false;
+            return Err(TransportIoError::Disconnected);
+        }
+        let count = bytes
+            .len()
+            .min(wire.write_limits.pop_front().unwrap_or(bytes.len()));
+        if count > 0 && matches!(bytes, [15, 0, 6, 1, ..]) {
+            wire.started_writes += 1;
+        }
+        wire.frames.push(bytes[..count].to_vec());
+        if count != bytes.len() {
+            return Ok(count);
+        }
         match bytes {
             [15, 0, 6, 1, 2, raw, _] => {
                 wire.last_output = *raw as i8;
@@ -57,7 +73,7 @@ impl ByteTransport for MetakonFake {
             }
             _ => {}
         }
-        Ok(bytes.len())
+        Ok(count)
     }
 
     fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
@@ -117,7 +133,11 @@ fn metakon() -> MetakonInstrumentConfig {
 }
 
 fn setup() -> (Runtime, Rc<RefCell<Wire>>) {
-    let wire = Rc::new(RefCell::new(Wire::default()));
+    setup_with_wire(Wire::default())
+}
+
+fn setup_with_wire(state: Wire) -> (Runtime, Rc<RefCell<Wire>>) {
+    let wire = Rc::new(RefCell::new(state));
     let mut runtime = Runtime::new();
     runtime
         .register_transport(ResourceId::new(1), Box::new(MetakonFake(wire.clone())))
@@ -381,4 +401,116 @@ fn readback_timeout_is_ambiguous_and_never_retries_the_write() {
         writes_before_timeout
     );
     assert_eq!(wire.borrow().recoveries, 1);
+}
+
+#[test]
+fn safe_write_ambiguity_retains_the_obligation_without_an_automatic_resend() {
+    let (mut runtime, wire) = setup_with_wire(Wire {
+        write_limits: [2].into_iter().collect(),
+        ..Wire::default()
+    });
+    runtime
+        .command(Command::Output {
+            actuator: actuator(),
+            command: OutputCommand::RequestSafe,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+
+    service(&mut runtime, 0);
+    assert_eq!(wire.borrow().started_writes, 1);
+    let started = output(&runtime);
+    assert!(started.in_flight.is_some());
+    assert!(!started.safe_confirmed);
+
+    service(&mut runtime, 10);
+    service(&mut runtime, 11);
+    for at in 12..=32 {
+        service(&mut runtime, at);
+    }
+
+    let unresolved = output(&runtime);
+    assert_eq!(unresolved.state, OutputState::FaultLatched);
+    assert!(unresolved.fault_latched);
+    assert!(!unresolved.safe_confirmed);
+    assert!(unresolved.lease.is_none());
+    assert!(unresolved.in_flight.is_none());
+    assert_eq!(unresolved.sent.unwrap().value, 0.0);
+    assert_eq!(unresolved.outcome, Some(DispatchOutcome::Ambiguous));
+    assert_eq!(wire.borrow().started_writes, 1);
+    assert_eq!(wire.borrow().last_output, 0);
+
+    let QueryResult::Transport(resource) =
+        runtime.query(Query::Transport(ResourceId::new(1))).unwrap()
+    else {
+        panic!("unexpected transport query")
+    };
+    assert_eq!(resource.generation, 2);
+    assert_eq!(resource.queue_len, 0);
+    let blocked_epoch = unresolved.epoch;
+    runtime
+        .command(Command::Output {
+            actuator: actuator(),
+            command: OutputCommand::RequestSafe,
+            at: Duration::from_millis(33),
+        })
+        .unwrap();
+    for at in 34..=44 {
+        service(&mut runtime, at);
+    }
+    let still_unresolved = output(&runtime);
+    assert!(still_unresolved.epoch > blocked_epoch);
+    assert_eq!(still_unresolved.state, OutputState::FaultLatched);
+    assert!(!still_unresolved.safe_confirmed);
+    assert_eq!(wire.borrow().started_writes, 1);
+    let QueryResult::Transport(resource) =
+        runtime.query(Query::Transport(ResourceId::new(1))).unwrap()
+    else {
+        panic!("unexpected transport query")
+    };
+    assert_eq!(resource.queue_len, 0);
+    assert!(
+        runtime
+            .command(Command::QueueMetakonOutput {
+                actuator: actuator(),
+                at: Duration::from_millis(45),
+                queue_ttl: Duration::from_millis(50),
+                timeout: Duration::from_millis(10),
+            })
+            .is_err()
+    );
+    assert_eq!(wire.borrow().started_writes, 1);
+    assert_eq!(
+        runtime
+            .shutdown_transport(ResourceId::new(1), Duration::from_millis(46))
+            .unwrap(),
+        lab_core::transport::TransportShutdown::Complete
+    );
+}
+
+#[test]
+fn safe_failure_before_send_can_use_the_existing_later_delivery_policy() {
+    let (mut runtime, wire) = setup_with_wire(Wire {
+        fail_before_first_write: true,
+        ..Wire::default()
+    });
+    runtime
+        .command(Command::Output {
+            actuator: actuator(),
+            command: OutputCommand::RequestSafe,
+            at: Duration::ZERO,
+        })
+        .unwrap();
+
+    service(&mut runtime, 0);
+    assert_eq!(wire.borrow().started_writes, 0);
+    service(&mut runtime, 1);
+    service(&mut runtime, 2);
+    service(&mut runtime, 3);
+
+    let settled = output(&runtime);
+    assert_eq!(wire.borrow().started_writes, 1);
+    assert_eq!(settled.state, OutputState::Disarmed);
+    assert!(settled.safe_confirmed);
+    assert_eq!(settled.outcome, Some(DispatchOutcome::ReadbackVerified));
 }
