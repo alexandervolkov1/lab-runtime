@@ -545,6 +545,49 @@ separate matching readback. The correction changes only the unexercised ambiguou
 safe-WRITE branch; wire encoding, successful settlement, 0 -> +10 -> 0 evidence and
 shutdown semantics are unchanged. No additional hardware run was performed.
 
+### Focused re-review: WriterBarrier lost-wake correction
+
+The focused external re-review found one remaining test-harness race in
+`WriterBarrier`. Its `held` predicate was atomic, while the condition-variable wait
+used an unrelated `Mutex<()>`. A worker could observe `held = true`, a caller could
+observe `reached = true`, and `release` could store `held = false` and notify before
+the worker entered `Condvar::wait`. The notification was then lost and the Recorder
+test worker could remain blocked indefinitely.
+
+The barrier now has one mutex-protected `BarrierGate { held, reached }`. The worker
+sets `reached` while holding that mutex and waits in the canonical `while held`
+predicate loop. `release` changes `held` while holding the same mutex and then
+notifies. `reached` observation and its finite `wait_until_reached` helper use the
+same predicate mutex and condition variable. Releasing before the worker arrives and
+duplicate release are deliberately idempotent: the later worker still records
+`reached` and observes `held = false` without waiting. The injected panic seam marks
+`reached` through the same synchronized state.
+
+The deterministic regression places a release attempt after the worker has recorded
+`reached` and observed `held`, but while the worker still owns the predicate mutex.
+The releaser can mutate the predicate only when `Condvar::wait` atomically releases
+that mutex, so progression cannot depend on notification persistence. This exact
+narrow-boundary oracle passed 25 consecutive runs. A second regression proves early
+and duplicate release.
+
+Every `WriterBarrier` user was audited: the host unit tests and reconnect/Recorder
+ordering tests, plus `recorder_backpressure`, `recorder_failure`,
+`recorder_history_api`, `recorder_isolation`, `recorder_operations`,
+`recorder_process_reopen`, `recorder_reload_budget`, `recorder_required`,
+`recorder_shutdown`, `recorder_shutdown_process`, `recorder_sqlite`,
+`recorder_startup` and `recorder_time`. Pure reached polling was replaced by the
+synchronized finite wait. The one remaining reached loop also drives authoritative
+owner service and therefore is not notification synchronization; its eventual
+release is mutex-safe. Compound reached checks remain assertions/lifecycle
+predicates. No caller assumes notification persistence, and early release cannot
+deadlock a later waiter.
+
+`WriterBarrier` remains a trusted fault-injection seam. Normal `ServiceHost`
+composition does not inject it, so this correction changes no production Recorder
+worker scheduling, SQLite locking, Runtime timing or Recorder admission semantics.
+The M9D hardware archive remains byte-identical and applicable because the change is
+test-harness-only; COM5 was not opened and no additional hardware test was run.
+
 ## Final verification and remaining gate
 
 After external-review remediation, the following gates passed:
@@ -562,6 +605,11 @@ OutputAuthority, M3 Metakon transport, M4 controller, controller configuration,
 configured physical output, Runtime shutdown, COM/Recorder shutdown and M9B.8 fault
 acceptance suites passed. Historical M8, post-M9C and M9D archive hashes remain
 byte-identical; the M9D archive has no WAL/SHM.
+
+After the focused WriterBarrier correction, both full debug workspace runs again
+passed consecutively, as did the release workspace, Clippy and warning-denied
+rustdoc gates. All 13 integration-test binaries that use the barrier passed; the
+focused M9D/OutputAuthority/controller/Metakon/shutdown/M9B.8 batch also passed.
 
 The read-only shutdown blocker remains resolved, the external-review blockers are
 corrected, and final physical acceptance remains valid. M9D is ready for external
