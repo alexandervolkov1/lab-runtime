@@ -78,8 +78,8 @@ fn virtual_control_and_recorder_cycles_remain_bounded_and_close_cleanly() {
         for turn in 1..=TURNS_PER_CYCLE {
             clock.advance(Duration::from_millis(100));
             let report = host.service(&clock).unwrap();
-            measurement_turns += report.measurements as u64;
-            controller_ticks += report.controller_ticks as u64;
+            measurement_turns += report.measurements;
+            controller_ticks += report.controller_ticks;
 
             // Keep the stress substantial but avoid deliberately converting this
             // clean-close oracle into an ingress-exhaustion test.

@@ -471,6 +471,16 @@ mod lifecycle_tests {
         panic!("managed-worker count did not settle")
     }
 
+    fn wait_for_unfinished_workers(executor: &ManagedExecutor, expected: usize) {
+        for _ in 0..100_000 {
+            if executor.unfinished_workers() == expected {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("managed-worker thread handle did not settle")
+    }
+
     fn wait_for_completion(executor: &mut ManagedExecutor) -> ComponentCompletion {
         for _ in 0..100_000 {
             if let Some(completion) = executor.try_poll() {
@@ -504,7 +514,10 @@ mod lifecycle_tests {
             Err(ComponentError::Executor),
             "dead capacity must not masquerade as a pending Busy slot"
         );
-        assert_eq!(executor.unfinished_workers(), 0);
+        // The worker decrements the test-only active counter immediately before its
+        // thread function returns. Wait on the production shutdown predicate too;
+        // equality of those two observations is not an atomic guarantee.
+        wait_for_unfinished_workers(&executor, 0);
     }
 
     #[test]
