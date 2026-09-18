@@ -28,7 +28,12 @@ M10.6: COMPLETE
 M10.7: COMPLETE
 M10.8: COMPLETE
 M11: AUTHORIZED
-M11.1 hardening and failure-model audit: AUTHORIZED — NOT STARTED
+M11.1: COMPLETE
+M11.2: COMPLETE
+M11.3: COMPLETE
+M11.4: COMPLETE
+M11.5: COMPLETE
+M11.6: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -47,6 +52,12 @@ ownership, scheduler order or lifecycle behavior. M10.5 organized the Recorder
 semantic contract, bounded worker and SQLite implementation without changing
 schema, lifecycle or durability. M10.6 centralized static native-component
 registration and configured instrument composition without changing public behavior.
+
+M11.1-M11.4 consolidated the failure model and hardened acquisition/managed-worker,
+controller/output recovery, and Recorder/SQLite crash behavior. M11.5 added bounded
+best-effort diagnostics separate from Recorder: a 1,024-record lossy queue, 8 KiB
+record cap and four 4 MiB files with stderr fallback and finite shutdown. No M11.6
+work has started.
 
 ## M10.6 completion
 
@@ -96,11 +107,8 @@ scheduling, optional authority-gated output and tests.
 ## M11 authorization
 
 M11 is authorized as the final major technical hardening milestone before the
-developer-preview/reference phase. The first task is `M11.1 — hardening and
-failure-model audit`. It must inspect the accepted post-M10 system and produce the
-exact fault matrix, missing-test inventory, diagnostic-logging gap and ordered
-implementation plan before any production change. M11.1 has not started. M12 and
-later work remain unauthorized.
+developer-preview/reference phase. M11.1-M11.5 are complete. M11.6 has not started,
+and M12 and later work remain unauthorized.
 
 ## M10.5 completion
 

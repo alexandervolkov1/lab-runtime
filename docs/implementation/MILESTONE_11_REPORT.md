@@ -1,5 +1,166 @@
 # Milestone 11 implementation report
 
+## M11.5 — bounded diagnostic logging
+
+### Status and scope
+
+```text
+M8-M10: ACCEPTED
+M11.1-M11.4: COMPLETE
+M11.5: COMPLETE
+M11.6: NOT STARTED
+M12+: NOT AUTHORIZED
+```
+
+M11.5 adds one process-wide, bounded, best-effort troubleshooting path. It does not
+change Runtime authority, the 42-operation Application contract, Recorder policy or
+schema, scheduler order, transport behavior, or OutputAuthority. No COM port or
+hardware was used.
+
+The implementation uses `tracing`, `tracing-subscriber` and `tracing-appender`.
+`tracing-appender` owns the one background writer and its bounded lossy channel;
+`diagnostics.rs` adds record capping, size rotation, failure fallback and bounded
+shutdown observation. No custom async logging state machine, new Runtime worker
+lifecycle, remote backend, telemetry service or metrics surface was introduced.
+
+### Contract and Recorder boundary
+
+```text
+Runtime / Service / adapters
+  -> observational tracing event
+  -> 8 KiB capped formatter record
+  -> 1,024-record lossy try-send queue
+  -> library-owned diagnostic worker
+  -> stderr + bounded rotating text files
+
+Runtime semantic fact
+  -> Recorder bounded ingress
+  -> SQLite durable scientific/audit history
+```
+
+Logging success never gates a state transition, Recorder receipt, safety work,
+transport completion or Application result. Diagnostic records are not experiment
+evidence and never enter SQLite. Existing controller, configuration, reconnect,
+output and Recorder semantic facts remain unchanged.
+
+The standard levels are:
+
+- `ERROR`: process/subsystem failure requiring attention;
+- `WARN`: bounded abnormal or recoverable conditions, including ambiguity,
+  backpressure and disconnect/failure states;
+- `INFO`: low-frequency startup, readiness, reconnect, Recorder and shutdown
+  lifecycle;
+- `DEBUG`: client and output state transitions useful during development;
+- `TRACE`: available to the facade but unused for ordinary measurement, poll, PID,
+  SQL or raw-frame streams.
+
+The default threshold is `INFO`. `LAB_RUNTIME_LOG_LEVEL` accepts exactly `ERROR`,
+`WARN`, `INFO`, `DEBUG` or `TRACE`; an invalid value emits one bounded stderr
+warning and falls back to `INFO`. No Application operation configures logs.
+
+### Destination and strict storage bounds
+
+On Windows the default directory is:
+
+```text
+%LOCALAPPDATA%\lab-runtime\logs
+```
+
+`LAB_RUNTIME_LOG_DIRECTORY` may select another process-start directory. Without
+`LOCALAPPDATA`, `XDG_STATE_HOME/lab-runtime/logs` is used when available, otherwise
+the OS temporary directory is the fallback. Logs are not written beside the
+executable or into experiment archives.
+
+The active file is `lab-runtime.log`; rotations are `lab-runtime.log.1` through
+`.3`. Rotation occurs before a write that would cross 4 MiB. The active file plus
+three rotations therefore have a strict generated-data bound of 16 MiB. One record
+is capped at 8 KiB with an explicit `[truncated]` suffix. Lines contain RFC 3339 UTC
+time, process-monotonic milliseconds, level, thread/target, a stable event name and
+bounded fields.
+
+The producer queue contains at most 1,024 complete records. Producers use lossy
+`try_send`; a full or disconnected queue drops diagnostics rather than blocking
+authoritative work. The drop counter produces a bounded overflow line when the sink
+next progresses and one stderr summary at shutdown. Diagnostic completeness is
+explicitly **BEST EFFORT**.
+
+### Destination failure and shutdown
+
+Directory creation, open, rotation or later write failure permanently disables the
+file side for that process and reports one bounded `diagnostic_file_unavailable`
+warning directly to stderr. The background sink continues its stderr mirror. There
+is no recursive retry through the failed queue and no interaction with Required
+Recorder policy. A full log disk cannot masquerade as Recorder failure.
+
+Normal exit first freezes the existing authoritative Runtime/Recorder result,
+closes diagnostic admission and gives admitted records 250 ms to drain. A drained
+writer uses `tracing-appender`'s bounded shutdown handshake (100 ms enqueue plus
+1,000 ms acknowledgement maximum). If the destination is stuck, the handle is
+detached after the observation window rather than joined. Tail diagnostics may be
+lost, but cannot extend Runtime shutdown indefinitely or change its exit status.
+The panic hook emits bounded context and invokes the previous hook; it does not
+claim panic recovery.
+
+### Subsystem coverage
+
+Low-frequency structured events cover:
+
+- package/protocol/API identity, selected profile, readiness and process result;
+- server listen, client accept/detach, malformed/oversized frames, client capacity
+  and reply/event backpressure without copying arbitrary request payloads;
+- reconnect request, replacement COM readiness/open failure and completion;
+- fresh physical-measurement transport loss/recovery, without every sample/poll;
+- controller failure and output safe obligation, ambiguity/readback failure, safe
+  readback confirmation and general output state at `DEBUG`;
+- Recorder archive-open failure, sticky worker/storage failure, lifecycle,
+  coverage and clean/incomplete shutdown;
+- shutdown request, fatal escalation and truthful terminal safe/worker/transport/
+  Recorder status.
+
+Output text preserves:
+
+```text
+requested != send_started != ACK != readback != physical effect
+```
+
+A safe readback line says the register readback was verified and explicitly does
+not claim independent physical effect. An ambiguous safe obligation says it is not
+permission to blindly resend.
+
+### Diagnostic failure matrix contribution
+
+| Failure | Detection | Runtime / Recorder consequence | Diagnostic consequence | Recovery | Guarantee / regression |
+|---|---|---|---|---|---|
+| Directory/file unavailable | Sink open/create result | None; both continue | File disabled; one stderr warning | Correct path/permissions and restart | **BEST EFFORT**; unit and child-process oracles |
+| File write/rotation fails | Background sink I/O result | None | Sticky file disable; no recursive retry | Correct storage and restart | **BEST EFFORT** by construction |
+| Queue full | Lossy `try_send` counter | None; producer never waits | Record dropped; cumulative bounded summary | Automatic when writer progresses | **BEST EFFORT**; held-writer/native-progress oracle |
+| Record exceeds 8 KiB | Capped formatter | None | Tail truncated with marker | Emit smaller fields | **GUARANTEED** size bound |
+| Worker/destination stalls | 250-ms drain observation expires | None; authoritative result already frozen | Tail may be lost; guard detached | Process restart | Runtime liveness **GUARANTEED**; flush **BEST EFFORT** |
+| Panic | Installed hook observes context | No recovery claimed | One bounded event attempted | Process restart | Delivery **BEST EFFORT** |
+
+### Verification and limitations
+
+Focused tests prove file creation, lifecycle entries, level filtering, truncation,
+rotate-before-write, retained-file/total-byte bounds, file failure fallback,
+Recorder independence, lossy overflow, native Runtime progress under a held writer,
+finite completion, malformed-client payload non-disclosure and precise output
+ambiguity wording.
+
+The final M11.5 candidate passed `cargo fmt --all -- --check`, debug and release
+workspace suites, warning-denied Clippy and warning-denied rustdoc. The release
+`lab-runtime` library suite was additionally repeated five times after isolating
+the bounded-sink contract into one test; all five runs passed. Full workspace suites
+include the accepted M11.2 acquisition/managed-worker, M11.3 output-recovery, M11.4
+Recorder/crash, M9B.8 process-fault, M9D physical-output, shutdown and exact
+42-operation/25-capability registry regressions.
+
+The log is intentionally not complete, transactional, remotely shipped or
+cross-process coordinated. One active process per configured directory is normal;
+a conflicting writer can make rotation fail and therefore falls back safely to
+stderr. Raw frames, arbitrary client JSON, every measurement, PID tick, successful
+poll, SQL statement and Recorder fact are absent at ordinary levels. Longer
+rotation/file-growth soak belongs to M11.7. M11.6 has not started.
+
 ## M11.4 — Recorder, SQLite, crash and filesystem hardening
 
 ### Status and scope
