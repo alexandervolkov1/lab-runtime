@@ -1,4 +1,4 @@
-# Current work — M10.1 structural/studyability audit
+# Current work — M10.1 structural/studyability audit complete
 
 ```text
 M8: ACCEPTED
@@ -8,6 +8,8 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: AUTHORIZED
+M10.1: COMPLETE
+M10 implementation: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -34,12 +36,12 @@ readback 0` and clean shutdown. The load/heater was physically disconnected, so
 physical heater effect was intentionally not tested. Existing M8, post-M9C and M9D
 archives remain immutable.
 
-## Authorized next task
+## Audit result
 
-M10 is authorized, but implementation does not start immediately. The first task is
-`M10.1 structural/studyability audit`. It must map the actual post-M9D codebase,
-responsibilities, main execution paths, architectural seams and candidate cleanup
-before any refactoring slice is proposed or implemented.
+`M10.1 structural/studyability audit` is complete. Its authoritative design record is
+`docs/implementation/MILESTONE_10_STRUCTURE_AUDIT.md`. M10 implementation and
+refactoring have not started; the next implementation slice requires explicit
+authorization.
 
 M10 may split oversized or mixed modules by responsibility, improve internal names,
 remove safe dead compatibility/code, tighten public/private boundaries, improve
