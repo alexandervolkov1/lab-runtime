@@ -163,7 +163,12 @@ fn child_serves_with_a_recorder_writer_held_before_commit() {
             at: clock.now(),
         })
         .unwrap();
-    assert!(barrier.wait_until_reached(Duration::from_secs(2)));
+    // The parent process owns the single four-second readiness deadline and kills
+    // this child through `ChildGuard` if the predicate never becomes true. Do not
+    // add a second, tighter child deadline: under suite load it can expire first
+    // and disconnect the readiness channel before the parent can diagnose the
+    // authoritative WriterBarrier predicate.
+    while !barrier.wait_until_reached(Duration::from_millis(250)) {}
     println!(
         "M7_BLOCKED_SHUTDOWN_READY {} {} {}",
         service.bound_address(),
