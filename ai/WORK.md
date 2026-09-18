@@ -1,4 +1,4 @@
-# Current work — M11.1 hardening and failure-model audit
+# Current work — M11.2 acquisition and executor hardening
 
 ```text
 M8: ACCEPTED
@@ -10,7 +10,8 @@ M9D: ACCEPTED
 M10: ACCEPTED
 M11: AUTHORIZED
 M11.1 hardening and failure-model audit: COMPLETE
-M11 implementation: NOT STARTED
+M11.2 acquisition / transport faults, managed-executor lifecycle and starvation: COMPLETE
+M11.3: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -60,7 +61,7 @@ The accepted guarantees include:
 - an Arduino-like instrument is confined to instrument-specific configuration,
   protocol, composition, scheduling, optional authority-gated output and tests.
 
-## Completed audit and next gate
+## Completed M11.1-M11.2 and next gate
 
 M11.1 inspected the accepted post-M10 codebase and recorded the normative fault
 model, guarantee levels, bounds, missing coverage, diagnostic-logging gap and
@@ -69,14 +70,24 @@ ordered implementation sequence in
 
 The audit found that accepted acquisition, control/OutputAuthority, Recorder and
 Application failure behavior is already strongly bounded and regression-tested.
-The highest-priority remaining work is a bounded diagnostic log, a combined
-physical loss/ambiguity-reconnect-no-rearm oracle, explicit managed-worker death
-handling, targeted configured transport/SQLite/process pressure coverage and
-bounded soak acceptance.
+M11.2 closed its configured-transport and managed-worker lifecycle gaps. Remaining
+work includes the combined physical loss/ambiguity-reconnect-no-rearm oracle,
+targeted SQLite/process pressure acceptance, bounded diagnostic logging and bounded
+soak acceptance.
 
-M11 implementation has not started. The next possible slice is M11.2, but it is not
-authorized by this audit task and must wait for a separate instruction. M12 and
-later milestones remain unauthorized.
+M11.2 is complete. It added configured Metakon software fault oracles for CRC,
+truncation, silence, disconnect and malformed compatibility responses; preserved
+the accepted explicit reconnect/generation policy; and corrected managed worker
+panic/disconnect so one dead fixed slot terminalizes its pending correlation and no
+longer masquerades as healthy pending capacity. No worker respawn was added.
+
+Required native progress remains safety-first under bounded managed, API/emulator,
+history/Recorder and configuration pressure. The implementation and evidence are
+recorded in `docs/implementation/MILESTONE_11_REPORT.md`.
+
+The next possible slice is M11.3 control/output recovery acceptance, but it is not
+started or authorized by this completed task. M12 and later milestones remain
+unauthorized.
 
 The completed audit covers:
 
@@ -110,5 +121,5 @@ operations, new Recorder schema features, final tutorials or polished M12 releas
 documentation. The planned educational Arduino furnace is outside M11 unless it is
 separately authorized as test infrastructure.
 
-Do not begin M11.2 or make production/test changes automatically. M12 and later
+Do not begin M11.3 or make production/test changes automatically. M12 and later
 milestones remain unauthorized.
