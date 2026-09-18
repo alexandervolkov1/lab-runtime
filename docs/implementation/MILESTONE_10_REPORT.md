@@ -10,11 +10,18 @@ M10.3: COMPLETE
 M10.4: COMPLETE
 M10.5: COMPLETE
 M10.6: COMPLETE
-M10.7: NOT STARTED
+M10.7: COMPLETE
+M10.8: NOT STARTED
 M11+: NOT AUTHORIZED
 ```
 
 Date: 2026-09-18 (Europe/Moscow).
+
+M10.7 implementation baseline:
+
+```text
+681ec86766c548ad92b9311b5ba31a9e6f46fc43
+```
 
 M10.2 implementation baseline:
 
@@ -851,7 +858,115 @@ and M9D evidence files remain unchanged.
 
 ### Deferred work
 
-M10.7 systematic visibility, rustdoc and test organization has not started. Dynamic
-plugins, scripting, automatic registration, a universal physical-instrument
-framework, Arduino protocol implementation and every semantic redesign remain out
-of scope. M11 remains unauthorized.
+At M10.6 close, M10.7 systematic visibility, rustdoc and test organization had not
+started. Dynamic plugins, scripting, automatic registration, a universal
+physical-instrument framework, Arduino protocol implementation and every semantic
+redesign remained out of scope. M11 remains unauthorized.
+
+## M10.7 — visibility, architectural rustdoc and test organization
+
+M10.7 completed the systematic low/medium-risk source-studyability pass. It did not
+change an owner, state transition, bound, operation, protocol frame, schedule,
+database transaction or hardware-facing path.
+
+### Visibility and dead test infrastructure
+
+The wire-facing `measurements`, `configuration_api` and `recorder_api` modules are
+now crate-private. Their projection helpers and bounds remain consumed by the same
+Application/protocol code, but no longer resemble a second public Rust API beside
+the accepted Application contract. Native component property metadata and registry
+lookup are also crate-private; only the stable moving-mean implementation identity
+needed by the existing integration contract remains exported.
+
+The managed executor's unused `WorkerBarrier`, gated constructor and worker branch
+were removed. No production or test caller used that path. This removes a dormant
+way to stall native worker slots without changing the fixed two-worker executor,
+deadline, cancellation, registry or completion behavior.
+
+Visibility was deliberately retained where integration tests exercise a real
+crate boundary: Host/Service lifecycle ports, Core-neutral extension contracts,
+Recorder worker/storage contracts and `WriterBarrier`. Low-level serial remains
+crate-private, `OutputIntent`/`OutputAuthority` and physical output admission remain
+crate-private, and Application still exposes no raw output/write operation.
+
+### Architectural source navigation
+
+Concise rustdoc now makes the following entry points explicit:
+
+- `lab_core::Runtime`: sole synchronous experiment owner, Command/Query boundary
+  and the private controller/managed/physical-I/O implementation map;
+- `HostCore`: schedules and adapter/Recorder orchestration around Runtime without a
+  second authoritative domain cache;
+- `ServiceHost`: listener, deployment, reconnect and bounded shutdown lifecycle;
+- `Application`: bounded session, deduplication, operation and delivery projection,
+  with no experiment ownership;
+- private `OutputAuthority`: finite lease/epoch/generation permission, final
+  pre-byte check, ambiguity and safe-obligation/resend distinction;
+- `ResourceExecutor`: one bounded byte owner, generation, completion meaning and
+  non-terminal `TransportShutdown::Pending` retirement;
+- `RecorderWorker`: owner-lane credit reservation, exclusive SQLite worker and
+  durability receipt boundary.
+
+Existing module indexes continue to point to acquisition, physical output,
+Recorder/SQLite, Application routing, native component registration and configured
+instrument composition. The time documentation continues to distinguish monotonic
+Runtime/scheduler/deadline time from wall-clock Recorder projection. Bounds remain
+owned next to protocol, session/event, Recorder, managed executor, transport and
+controller subsystems; no global constants module or value change was introduced.
+
+### Test organization and historical regressions
+
+`apps/lab-runtime/tests/README.md` now indexes Application/protocol, Runtime,
+control/virtual, configuration/transport and Recorder integration suites. It calls
+out the historical regression oracles whose apparently awkward assertions must not
+be simplified away.
+
+Focused invariant comments were added to:
+
+- the ambiguous started WRITE/readback-timeout no-retry regression;
+- the M9D `TransportShutdown::Pending` later-owner-turn regression;
+- the disconnected durable-history job/client-capacity reuse regression.
+
+The Recorder `WriterBarrier` remains in its focused fault-injection module. Its
+`held + reached` predicate, one mutex/Condvar, predicate-loop wait and mutation under
+the mutex are unchanged; the lost-wake regression passed. M8 reconnect tests, M9B.8
+fault acceptance, all M9D output regressions, Recorder provenance/order/failure
+oracles and the M10.6 second-component generic-surface test were retained.
+
+### Behavior freeze and verification
+
+The authoritative registry still contains exactly 42 operations and 25
+capabilities with the same query/mutation classes, availability and argument
+allowlists. Protocol version, 12 public error categories, API/session/history/event
+bounds, scheduler order, Runtime ownership, component/instrument extension model,
+SQLite schema/durability/provenance and Metakon/output safety semantics are
+unchanged.
+
+Final gates:
+
+```text
+cargo fmt --all -- --check                              PASS
+cargo test --workspace                                  PASS
+cargo test --workspace --release                        PASS
+cargo clippy --workspace --all-targets -- -D warnings   PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+                                                         PASS
+exact 42-operation / 25-capability registry regression   PASS
+M9B.8 fault acceptance                                   PASS
+M9D physical-output software suite                       PASS
+ambiguous safe-write / no-retry regressions              PASS
+all Recorder integration suites                          PASS
+WriterBarrier lost-wake regression                       PASS
+native-component second-registration regression          PASS
+git diff --check                                         PASS
+```
+
+COM5 was not opened and no hardware test was performed. The accepted M8, post-M9C
+and M9D evidence files were not modified; the M9D archive still hashes to
+`14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32`.
+
+### Deferred work
+
+M10.8 structural acceptance/external review has not started. Broad semantic
+redesign, logging (M11), final tutorials/manuals (M12), GUI, scripting and every
+post-v0.1 feature remain out of scope and unauthorized.

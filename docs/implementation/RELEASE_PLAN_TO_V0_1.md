@@ -251,8 +251,9 @@ modules while preserving state ownership, scheduler order and lifecycle behavior
 M10.5 organized the Recorder semantic contract, bounded worker and SQLite storage
 without changing schema, lifecycle or durability. M10.6 centralized trusted native
 component registration and configured instrument composition without adding plugins,
-protocols or public API semantics. M10.7 has not started and requires separate
-authorization.
+protocols or public API semantics. M10.7 tightened internal visibility and improved
+architectural rustdoc/regression navigation without changing accepted behavior.
+M10.8 has not started and requires separate authorization.
 
 Refactor only under test coverage, preserving behavior and safety:
 

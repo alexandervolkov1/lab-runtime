@@ -233,8 +233,9 @@ state ownership, scheduler order or accepted behavior. M10.5 organized the Recor
 contract, bounded worker and SQLite storage without changing schema, lifecycle or
 durability. M10.6 centralized trusted native-component registration and configured
 instrument composition without adding runtime plugins, protocols or API semantics;
-M10.7 has not started. The roadmap ends at v0.1.0; milestones do not cross review
-gates automatically.
+M10.7 tightened internal visibility and improved architectural rustdoc/test
+navigation without changing public behavior; M10.8 has not started. The roadmap
+ends at v0.1.0; milestones do not cross review gates automatically.
 
 ## v0.1 identity
 

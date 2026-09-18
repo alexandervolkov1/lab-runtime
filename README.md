@@ -38,7 +38,9 @@ focused implementation modules without changing ownership or behavior. M10.5
 separated the Recorder semantic contract, bounded worker concerns and SQLite
 implementation without changing schema or durability. M10.6 centralized native
 component registration and clarified the static physical-instrument composition
-path without adding plugins, protocols or API semantics. M10.7 has not started.
+path without adding plugins, protocols or API semantics. M10.7 tightened internal
+visibility, architectural rustdoc and regression-test navigation without changing
+public behavior. M10.8 has not started.
 
 ## Product boundary
 

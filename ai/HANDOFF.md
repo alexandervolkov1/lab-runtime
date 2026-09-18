@@ -25,7 +25,8 @@ M10.3: COMPLETE
 M10.4: COMPLETE
 M10.5: COMPLETE
 M10.6: COMPLETE
-M10.7: NOT STARTED
+M10.7: COMPLETE
+M10.8: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -56,7 +57,21 @@ instrument kinds; standard signals continue through generic Runtime projections.
 
 Core remains implementation-neutral. No plugin framework, physical protocol,
 Application operation, schema, scheduler, OutputAuthority or Metakon behavior was
-added or changed. M10.7 has not started and M11 remains unauthorized.
+added or changed. At M10.6 close, M10.7 had not started.
+
+## M10.7 completion
+
+Wire-facing measurement/configuration/Recorder projection modules and native
+component registration metadata are now crate-private. The unused managed-executor
+barrier/construction path was removed; the active Recorder `WriterBarrier` remains
+as a documented integration-test fault seam. Runtime, HostCore, ServiceHost,
+Application, OutputAuthority, ResourceExecutor and RecorderWorker now have concise
+ownership/lifecycle navigation rustdoc. The integration-test map and comments make
+the M9D shutdown/ambiguous-write, WriterBarrier and history-disconnect regression
+oracles explicit.
+
+The Application registry, protocol, bounds, schema, scheduling and hardware-facing
+semantics are unchanged. M10.8 has not started and M11 remains unauthorized.
 
 ## M10.5 completion
 
@@ -71,7 +86,7 @@ All Recorder integration binaries, process-reopen, Required/failure, held-writer
 shutdown and canonical `WriterBarrier` lost-wake regressions pass. The 42-operation
 API, schema, transactions, run/interval/provenance semantics and historical
 `managed_lua_source`/`managed_component_source` compatibility are unchanged. M10.6
-is not authorized.
+was still gated at M10.5 close.
 
 ## M10.4 completion
 
