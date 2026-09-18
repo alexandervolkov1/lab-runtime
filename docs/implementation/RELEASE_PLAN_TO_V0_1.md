@@ -17,20 +17,19 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
-post-M9C real-device smoke passed. M9D software integration is complete, but its
-real-device write acceptance is incomplete. The read-only transport shutdown blocker
-was corrected and verified on COM5. A later attempt completed startup safe-zero but
-stopped on a harness defect before nonzero output. A corrected attempt reached the
-real output query, then stopped on another harness interpretation defect; normal
-cleanup verified zero and closed cleanly. M10 and later work are not authorized.
-The roadmap ends at v0.1.0.
+post-M9C real-device smoke passed. M9D software integration, the read-only shutdown
+correction and final real-device write acceptance are complete. The final run proved
+verified startup zero, one authority-gated +10 percent command, strict ACK, separate
+matching register-6 readback, normal pause to verified zero, Recorder sealing and
+clean shutdown. M10 and later work are not authorized pending explicit M9D external
+acceptance. The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
 
@@ -228,18 +227,15 @@ clean shutdown. The apparent first failure was a harness interpretation defect: 
 intentional generation-2 Unavailable/Transport rebind baseline was not an ordinary
 poll result. No production or test change was required.
 
-## M9D — Physical Metakon output integration — HARDWARE ACCEPTANCE BLOCKED
+## M9D — Physical Metakon output integration — READY FOR EXTERNAL REVIEW
 
 The software path preserves controller proposals, OutputAuthority, final authority
 recheck, bounded Metakon WRITE, strict ACK and distinct register-6 readback. Debug
 and release workspace tests plus warning-denied lint/docs pass. The read-only
-preflight shutdown defect was corrected under the existing finite bound and a real
-COM5 rerun closed with zero unfinished transports. A write-acceptance attempt sent
-only the production startup safe-zero and stopped on a harness defect before
-controller start. A corrected attempt passed offline validation but rejected a valid
-settled safe-zero API snapshot; shutdown safely verified zero again. No nonzero
-output occurred. Real-device acceptance remains blocked pending a newly authorized
-complete run.
+shutdown correction is proven. Final COM5 acceptance used the production path for
+startup zero, exactly one +10 percent nonzero controller command and normal pause to
+zero; every command was ACKed and separately read back, Recorder evidence sealed and
+shutdown completed with no unfinished transport. M9D awaits external review.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED
 

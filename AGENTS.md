@@ -30,7 +30,7 @@ M9A: ACCEPTED
 M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
@@ -38,12 +38,10 @@ M11+: NOT AUTHORIZED
 
 Final physical M8 acceptance and the supplementary post-M9C read smoke remain
 accepted. M9D software integration and its read-only shutdown correction are
-complete, but its real-device write acceptance is incomplete. The corrected
-read-only COM5 preflight closed cleanly. A later attempt completed production
-startup safe-zero but stopped on a harness defect before controller start. A
-corrected attempt reached the real output query, then stopped on another harness
-interpretation defect. Normal cleanup verified zero; no controller or nonzero
-proposal ran.
+complete. Final real-device acceptance proved startup safe-zero, one authority-gated
++10 percent controller output, distinct ACK and register-6 readback, normal pause to
+verified zero, Recorder sealing and clean finite shutdown. The heater/load remained
+physically disconnected, so no physical-effect claim is made.
 
 M9A, M9B and M9C implementation and external review have succeeded. M9C removed
 active Lua, obsolete first-party client baggage and transitional source-reload /

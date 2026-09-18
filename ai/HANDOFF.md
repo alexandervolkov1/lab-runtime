@@ -17,7 +17,7 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
@@ -25,14 +25,13 @@ M11+: NOT AUTHORIZED
 
 M9B and M9C implementation and external review are accepted. The supplementary
 post-M9C real-device smoke passed. M9D software integration and the read-only
-shutdown correction are committed. The authorized write acceptance stopped on a
-harness defect after production startup safe-zero and before controller start. A
-newly authorized corrected attempt reached the output API, but stopped on an
-over-strict snapshot assertion before controller start or any nonzero proposal.
-Normal shutdown verified zero and exited cleanly. Do not retry a physical write or
-begin M10 without a new explicit decision.
+shutdown correction are committed. Final real-device acceptance proved production
+startup zero, one authority-gated +10 percent controller command, strict ACK,
+separate matching register-6 readback, normal pause to verified zero, Recorder
+sealing and clean shutdown. Do not begin M10 without explicit M9D external
+acceptance.
 
-## M9D blocked hardware gate
+## M9D external review gate
 
 The authority-gated WRITE/ACK/separate-readback path passed debug/release workspace
 tests, clippy and warning-denied rustdoc. The failed preflight exposed a
@@ -49,6 +48,26 @@ query, but rejected a valid settled snapshot because `requested` was null and AC
 and readback shared one owner timestamp. Cleanup performed another verified zero and
 clean shutdown. No controller or nonzero output ran; the second sealed archive is
 also diagnostic only. See `docs/implementation/MILESTONE_9D_REPORT.md`.
+
+The final harness asserted terminal semantic state instead of transient request
+storage and accepted non-decreasing owner time while still requiring distinct ACK
+and readback fields/stages. Its complete normal and injected-mismatch paths passed
+offline. The one final COM5 run then observed four Good 29.0 degC samples, verified
+startup zero, issued exactly one authority-gated +10 percent nonzero command with
+matching ACK/readback, paused to verified zero, sealed Recorder run/interval 1 with
+complete coverage and zero gaps, and shut down with zero unfinished transports. The
+full process issued four register-6 writes (startup zero, +10, pause zero, shutdown
+zero), with one nonzero, zero blind retries, zero ambiguous writes and zero
+mismatches. The load was disconnected; no physical-effect claim is made.
+
+Clean M9D acceptance evidence:
+
+```text
+examples/metakon-513-m9d-write-smoke.sqlite
+SHA-256 14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32
+size 221184 bytes
+WAL/SHM absent; SQLite integrity check ok
+```
 
 ## Accepted baselines
 
@@ -80,7 +99,8 @@ The successful archive proves real generation-1 acquisition, device-off transiti
 one explicit reconnect, bounded transient open retry, generation-2 compatibility and
 acquisition, durable lifecycle ordering, zero outputs/gaps and clean shutdown. No
 further M8 hardware rerun is required. M9D used COM5 only for the bounded read-only
-preflight described above and stopped before any output write.
+preflight and bounded output acceptance described above. The final output readback
+was zero and COM5 was released.
 
 The supplementary post-M9C read-only smoke is recorded in
 `docs/implementation/POST_M9C_HARDWARE_SMOKE.md`. Its clean acceptance archive is:

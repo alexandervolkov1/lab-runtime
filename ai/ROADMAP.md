@@ -20,7 +20,7 @@ M9B.8: COMPLETE
 M9B.9: COMPLETE
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
@@ -206,20 +206,16 @@ post-v0.1 roadmap. It is simplification, not substitution. External review accep
 the milestone. A supplementary post-M9C read-only Metakon smoke then confirmed the
 accepted hardware-facing behavior without production or test changes.
 
-## M9D — Physical Metakon output integration — HARDWARE ACCEPTANCE BLOCKED
+## M9D — Physical Metakon output integration — READY FOR EXTERNAL REVIEW
 
-The production path is implemented through the existing OutputAuthority, bounded
-transport executor, strict ACK and separate register-6 readback. All software gates
-pass. The mandatory real-device read-only preflight exposed a shutdown
-terminalization defect, corrected under the existing finite deadline in `b6e1840`.
-A corrected read-only COM5 run acquired valid data and closed cleanly with zero
-unfinished transports. A subsequent authorized write attempt completed startup
-safe-zero, then stopped on a harness defect before controller start or nonzero
-output. A corrected attempt passed offline validation and reached the output query,
-but another harness interpretation error rejected a valid settled safe-zero snapshot.
-Its normal cleanup verified zero and exited cleanly; controller/nonzero output still
-did not run. M9D cannot enter external review until a newly authorized clean write
-acceptance run succeeds.
+The production path uses the existing OutputAuthority, bounded transport executor,
+strict ACK and separate register-6 readback. The read-only shutdown correction and
+all software gates pass. Final real-device acceptance proved startup safe-zero, one
+authority-gated +10 percent controller command, matching ACK/readback, normal pause
+to verified zero, sealed Recorder evidence and clean finite shutdown. The
+heater/load was physically disconnected, so register command/readback is proven but
+physical heater effect is not claimed. M9D now awaits external review; M10 remains
+unauthorized.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED
 

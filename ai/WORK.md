@@ -1,4 +1,4 @@
-# Current work — M9D hardware gate blocked
+# Current work — M9D external review gate
 
 ```text
 M8: ACCEPTED
@@ -6,36 +6,34 @@ M9A: ACCEPTED
 M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 M11+: NOT AUTHORIZED
 ```
 
-M9D is the only active milestone. Its software implementation preserves the existing
+M9D is the only active milestone. Its implementation preserves the accepted
 OutputAuthority architecture. The read-only shutdown correction is committed at
-`b6e1840` and all focused, debug/release workspace, clippy and warning-denied rustdoc
-gates pass.
+`b6e1840`; the final focused, debug/release workspace, clippy and warning-denied
+rustdoc gates pass.
 
-The shutdown failure was an owner-lifecycle defect: `ServiceHost` froze the first
-nonblocking transport-retirement `Pending` result as terminal merely because Recorder
-was already flushed. There was one resource, one executor and one COM worker; the
-read-only deployment created no output lifecycle. A deterministic regression test
-failed before the fix. The corrected bounded lifecycle passed a real read-only COM5
-run with `channel_type = 3`, four Good temperature samples, zero unfinished
-transports, clean shutdown and process exit 0.
+The final bounded COM5 acceptance used the production native-controller path. It
+proved startup safe-zero, one authority-gated +10 percent output, strict ACK,
+separate matching register-6 readback, immediate normal pause to verified zero,
+Recorder sealing and clean finite shutdown. There was exactly one nonzero write,
+zero ambiguous writes and zero mismatches. The heater/load was physically
+disconnected, so register command/readback is proven but physical heater effect was
+not tested.
 
-The authorized acceptance attempt completed exactly one production startup
-safe-zero WRITE/ACK/readback and then stopped on a PowerShell harness parameter
-binding defect before any API query, controller start or nonzero proposal. No
-nonzero write occurred. A newly authorized corrected attempt passed offline normal
-and injected-failure validation, then reached the real output query. It stopped on a
-second harness interpretation defect: settled `requested` is null and distinct ACK
-and readback stages may share one owner timestamp. Normal shutdown verified zero
-again and exited cleanly. Across the second attempt there were two zero writes and
-no controller/nonzero activity. Both diagnostic archives are preserved; no M9D
-acceptance archive exists. Do not retry physical output testing, declare M9D ready
-for review, or begin M10 without a new explicit decision.
+The two earlier harness failures remain documented diagnostic evidence. They did not
+require production or test changes: terminal `requested` state need not remain
+populated, and distinct ACK/readback stages may share one owner timestamp. The final
+harness asserts semantic fields and non-decreasing authoritative time, and its full
+normal and mismatch-cleanup sequences passed offline before COM5 was opened.
 
-The bounded evidence and exact software gate results are in
+The clean acceptance archive is
+`examples/metakon-513-m9d-write-smoke.sqlite`, SHA-256
+`14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32`.
+The bounded evidence and exact gate results are in
 `docs/implementation/MILESTONE_9D_REPORT.md`. Historical M8 and post-M9C evidence
-remain immutable.
+remain immutable. Do not begin M10 unless M9D is externally accepted and M10 is
+explicitly authorized.

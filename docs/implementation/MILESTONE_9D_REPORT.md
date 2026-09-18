@@ -3,7 +3,7 @@
 ## Status
 
 ```text
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 ```
 
@@ -11,22 +11,21 @@ Date: 2026-09-18 (Europe/Moscow).
 
 M9D was inserted before M10 to complete the audited partial Metakon output path
 without changing the accepted OutputAuthority architecture. The software path and
-the read-only preflight correction are complete. M9D is not ready for external
-review because its real-device write acceptance stopped on a harness failure before
-the controller or any nonzero proposal was started. A corrected attempt reached the
-first Application API output query, but a second over-strict harness assertion again
-stopped before controller start. Production safe-zero completed; the requested
-nonzero and controller-pause sequence was not run.
+the read-only preflight correction are complete. The final bounded real-device run
+proved initial safe-zero, exactly one authority-gated +10 percent controller output,
+strict ACK, distinct matching register-6 readback, normal pause to verified zero,
+Recorder sealing and clean shutdown. M9D is ready for external review; M10 remains
+unauthorized.
 
 ## Software implementation
 
-Hardware-test HEAD:
+Initial read-only preflight HEAD:
 
 ```text
 ea49a61715e94dfd559a5d360e928410e0116b82
 ```
 
-Exact tested artifacts:
+Initial read-only preflight artifacts:
 
 ```text
 target/release/lab-runtime.exe
@@ -47,6 +46,7 @@ Commits:
 ```text
 45f477436a98a36443b8cb2df34ab54a7aef9cef  feat: integrate authority-gated Metakon output
 ea49a61715e94dfd559a5d360e928410e0116b82  test: add read-only M9D hardware preflight
+b6e184077b968c61a0923b58539a26925f1f39fe  fix: await finite transport retirement on shutdown
 ```
 
 The active path is:
@@ -311,7 +311,135 @@ runs/operation events/controller events/output events/gaps: 0
 
 The lack of output-event rows is expected because the harness failed before starting
 the recording run; the sealed boot exit summary retains the final safe state. No
-third hardware attempt was made.
+further hardware attempt was made under that authorization.
+
+### Final acceptance run
+
+The final harness correction changed no production Rust or tests. Settled output
+assertions now use the authoritative semantic fields rather than requiring transient
+`requested` storage, and accept `readback_timestamp >= acknowledged_timestamp`.
+They still require distinct sent, acknowledged and readback fields/stages, terminal
+`readback_verified`, no pending or in-flight work, and the appropriate safe state.
+
+Before reopening COM5, the complete harness path passed against software/virtual
+infrastructure: startup, initial zero, measurement, P-only configuration, controller
+start, nonzero settlement, pause to zero, Recorder stop and clean shutdown. A
+separate injected register-readback mismatch was rejected and its normal pause,
+Recorder and shutdown cleanup all completed. The harness contains no PowerShell
+automatic/reserved-variable collisions. No arbitrary sleep is used as an acceptance
+predicate.
+
+Exactly one final hardware run used implementation HEAD and artifacts:
+
+```text
+HEAD: 693f5862147f42a7cc7b3b60fb7650ac7200a93e
+target/release/lab-runtime.exe:
+  SHA-256 1fd6597fb5f565ce10136bab99d19645e07c8e33dfb0e083caab4cd0c8d369ef
+examples/runtime.metakon-513-com5-output.toml:
+  SHA-256 82aaea40998965fc021dd08c9aea254e9c514bcb41f1b73ace31037b924061d8
+examples/definitions/metakon-513-output.json:
+  SHA-256 08cc2b1c3b7a945167297c4eccc5ed5c3cd7eab22edb8e48d54159d3667e2492
+boot: a2e853dbc3e3d019f643713b33c2a350
+```
+
+The Metakon 513 was powered on COM5 at address 5/channel 0, 9600 baud, 8N1,
+no flow control. The heater/load remained physically disconnected. The deployment
+declared only register 0x06 writable: signed I8, scale 1.0, range -100..=100 percent,
+safe value 0. Startup reached Ready, read channel type Good integer 3 and observed
+four distinct generation-1 Good temperature samples at 29.0 degC.
+
+Initial safe-zero settled through the production path:
+
+```text
+state: disarmed
+safe_confirmed: true
+epoch: 2
+sent: 0 at 170000300 ns
+acknowledged: 0 at 310000500 ns
+readback: 0 at 310000500 ns
+reported_readback: 0 at 310000500 ns
+outcome: readback_verified
+pending: false
+in_flight: false
+owner/lease: absent
+```
+
+ACK and readback remained distinct fields and protocol transactions. Their equal
+owner timestamp is valid because both terminal observations were processed during
+one owner turn.
+
+The controller was configured before start using the authoritative current value:
+
+```text
+measurement: 29.0 degC
+reference: 39.0 degC
+signed error: reference - measurement = +10.0 degC
+Kp: 1.0 percent/degC
+Ki: 0
+Kd: 0
+unclamped output: +10.0 percent
+output limits: 0..=10 percent
+expected bounded output: +10.0 percent
+```
+
+The first intended nonzero proposal was the only nonzero physical command. It was
+authorized at output epoch 3, binding generation 1, output revision 1, under the
+finite automatic lease for controller instance 1 (expiry 8151583900 ns). The final
+authority/generation recheck passed immediately before first possible output byte.
+The command encoded signed I8 raw 10 (`0x0A`), WRITE started at 5061101500 ns, the
+strict ACK event committed at 5103485900 ns, and the separate register-6 readback
+event committed value 10 at 5151583900 ns. Terminal outcome was
+`readback_verified`; proposed, authorized, ACKed and reported values were all +10.
+
+The harness immediately paused the controller. Normal authority revocation advanced
+to epoch 4 and sent safe raw I8 zero at 5185033700 ns. ACK zero committed at
+5223720400 ns and the separate register-6 readback zero committed at 5270323700 ns.
+The terminal state was disarmed and safe-confirmed, the controller remained paused,
+and 19 subsequent bounded state observations showed no automatic rearm or later
+nonzero command.
+
+The full process issued four physical register-6 writes: startup zero, exactly one
++10 command, pause zero, and the normal shutdown zero. Nonzero writes were exactly
+one; blind retries, ambiguous writes and readback mismatches were all zero. The
+active Recorder interval contains the +10 and pause-zero output lifecycles; startup
+and shutdown zero occurred outside that interval.
+
+Recorder stop drained accepted facts, committed its transaction and sealed run 1 and
+interval 1 with complete coverage and zero gaps. Shutdown retained final readback
+zero and controller Paused, then reported:
+
+```text
+unfinished_transports: 0
+transports_closed: true
+cleanup_complete: true
+recorder_flushed: true
+exit_success: true
+process exit code: 0
+stderr: empty
+COM5: released
+```
+
+Clean acceptance evidence:
+
+```text
+examples/metakon-513-m9d-write-smoke.sqlite
+size: 221184 bytes
+SHA-256: 14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32
+WAL: absent
+SHM: absent
+SQLite integrity check: ok
+boot: sealed
+run 1: sealed
+interval 1: sealed
+coverage: complete
+gaps: 0
+```
+
+The archive contains three Good 29.0 degC samples and ordered requested, authorized,
+send-started, acknowledged and readback-verified facts for +10, followed by the safe
+send-started, safe-acknowledged and safe-readback-verified zero facts. This proves the
+register command, ACK and reported register value. It does not prove physical heater
+effect because the load was deliberately disconnected.
 
 ## Preserved evidence
 
@@ -325,13 +453,20 @@ examples/metakon-513-com5-prepared-reconnect-history.sqlite
 SHA-256 1396421e62b5a1abb834b4178689b3303277a88d46174e0353d2710c2ab17023
 ```
 
-The post-M9C read-smoke archive was not modified.
+The post-M9C read-smoke archive was not modified:
 
-## Remaining gate
+```text
+examples/metakon-513-post-m9c-smoke.sqlite
+SHA-256 098f2fdc31805cbcdfe46d04055a205c9f980fcf6955ccf8ede6043cbc00a9fc
+```
 
-The read-only shutdown blocker remains resolved. Both physical attempts stopped on
-harness defects before controller start, with only verified zero writes. A fresh
-explicit decision is needed before retrying the bounded production-path sequence:
-startup safe-zero, one authorized +10, normal safe transition to zero, ACK plus
-distinct register-6 readback, Recorder seal and clean shutdown. M9D remains blocked
-from external review and M10 remains unauthorized.
+## Final verification and remaining gate
+
+After the final hardware run, formatting, complete debug and release workspace tests,
+Clippy with warnings denied, and rustdoc with warnings denied all passed. Focused
+M9B.8 fault acceptance, configured physical output, OutputAuthority/readback,
+Metakon codec, COM/Recorder shutdown and Runtime shutdown suites also passed.
+
+The read-only shutdown blocker remains resolved, both harness defects remain
+historical diagnostic evidence, and final physical acceptance is complete. M9D is
+ready for external review. M10 remains unauthorized and was not started.

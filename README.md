@@ -12,7 +12,7 @@ M9A: ACCEPTED
 M9B: ACCEPTED
 M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
-M9D: HARDWARE ACCEPTANCE BLOCKED
+M9D: READY_FOR_EXTERNAL_REVIEW
 M10: NOT AUTHORIZED
 Current phase: M9D — physical Metakon output integration
 M11+: NOT AUTHORIZED
@@ -26,9 +26,11 @@ M9B's coherent local Application API is externally accepted. M9C removed active 
 the obsolete Babashka client and transitional source-reload/snapshot API without
 adding a replacement scripting language, client SDK or presentation surface. M9D
 connects physical Metakon output through the existing OutputAuthority architecture.
-Its software gates pass, but the prerequisite real-device read-only preflight ended
-with one unfinished transport, so no physical write was attempted and M10 remains
-unauthorized.
+Its software gates and bounded real-device acceptance pass: startup safe-zero, one
+authority-gated +10 percent controller command, strict ACK, distinct matching
+register-6 readback, normal pause to zero, Recorder sealing and clean shutdown. The
+load was disconnected, so this does not claim physical heater effect. M10 remains
+unauthorized pending explicit M9D external acceptance.
 
 ## Product boundary
 
@@ -84,7 +86,7 @@ Application API != Recorder contract != SQLite schema
 ```text
 M9B  complete and stabilize Application API
 M9C  remove Lua and obsolete client baggage
-M9D  physical Metakon output integration (hardware acceptance blocked)
+M9D  physical Metakon output integration (ready for external review)
 M10  Core cleanup and studyability
 M11  Runtime / Recorder / logging / API hardening
 M12  documentation, packaging and final release audit
