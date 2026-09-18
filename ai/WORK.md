@@ -24,10 +24,12 @@ failed before the fix. The corrected bounded lifecycle passed a real read-only C
 run with `channel_type = 3`, four Good temperature samples, zero unfinished
 transports, clean shutdown and process exit 0.
 
-No physical Metakon WRITE command was sent. No M9D acceptance archive was created.
-The remaining gate is the separately authorized physical write acceptance. Do not
-perform it, declare M9D ready for review, or begin M10 without a new explicit
-decision.
+The authorized acceptance attempt completed exactly one production startup
+safe-zero WRITE/ACK/readback and then stopped on a PowerShell harness parameter
+binding defect before any API query, controller start or nonzero proposal. No
+nonzero write occurred. The unsealed WAL archive is preserved only as failure
+evidence; no M9D acceptance archive exists. Do not retry physical output testing,
+declare M9D ready for review, or begin M10 without a new explicit decision.
 
 The bounded evidence and exact software gate results are in
 `docs/implementation/MILESTONE_9D_REPORT.md`. Historical M8 and post-M9C evidence

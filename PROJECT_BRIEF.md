@@ -211,9 +211,10 @@ v0.1.0
 
 Current phase: M9D — physical Metakon output integration. Software integration and
 gates are complete. The read-only transport shutdown defect is corrected and the
-COM5 preflight now closes cleanly, but physical write acceptance has not been run.
-M10 remains blocked. The roadmap ends at v0.1.0; milestones do not cross review gates
-automatically.
+COM5 preflight now closes cleanly. A write-acceptance attempt completed startup
+safe-zero but stopped on a harness defect before controller start or nonzero output.
+M10 remains blocked. The roadmap ends at v0.1.0; milestones do not cross review
+gates automatically.
 
 ## v0.1 identity
 

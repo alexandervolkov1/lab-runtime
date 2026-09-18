@@ -25,8 +25,9 @@ M11+: NOT AUTHORIZED
 
 M9B and M9C implementation and external review are accepted. The supplementary
 post-M9C real-device smoke passed. M9D software integration and the read-only
-shutdown correction are committed, but the required real-device write acceptance
-did not begin. Do not issue a physical write or begin M10 without a new explicit
+shutdown correction are committed. The authorized write acceptance stopped on a
+harness defect after production startup safe-zero and before controller start or any
+nonzero proposal. Do not retry a physical write or begin M10 without a new explicit
 decision.
 
 ## M9D blocked hardware gate
@@ -38,8 +39,10 @@ first nonblocking COM retirement `Pending` result while Recorder was already
 flushed. Commit `b6e1840` waits for the later retirement observation under the same
 finite deadline. A corrected read-only COM5 run proved channel type 3, four Good
 temperature samples, zero unfinished transports, clean shutdown and exit 0. No
-Metakon WRITE was attempted and no M9D SQLite archive exists. See
-`docs/implementation/MILESTONE_9D_REPORT.md`.
+nonzero Metakon WRITE was attempted. A later acceptance attempt completed one
+startup safe-zero WRITE/ACK/readback, then its PowerShell harness failed before the
+first API query. Its unsealed WAL archive is failure evidence, not M9D acceptance
+evidence. See `docs/implementation/MILESTONE_9D_REPORT.md`.
 
 ## Accepted baselines
 

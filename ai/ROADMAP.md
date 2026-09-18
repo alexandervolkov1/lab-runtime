@@ -213,8 +213,10 @@ transport executor, strict ACK and separate register-6 readback. All software ga
 pass. The mandatory real-device read-only preflight exposed a shutdown
 terminalization defect, corrected under the existing finite deadline in `b6e1840`.
 A corrected read-only COM5 run acquired valid data and closed cleanly with zero
-unfinished transports. No output write was sent. M9D cannot enter external review
-until a separately authorized clean write acceptance run succeeds.
+unfinished transports. A subsequent authorized write attempt completed startup
+safe-zero, then stopped on a harness defect before controller start or nonzero
+output. M9D cannot enter external review until a newly authorized clean write
+acceptance run succeeds.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED
 

@@ -38,8 +38,10 @@ M11+: NOT AUTHORIZED
 
 Final physical M8 acceptance and the supplementary post-M9C read smoke remain
 accepted. M9D software integration and its read-only shutdown correction are
-complete, but its real-device write acceptance has not been run. The corrected
-read-only COM5 preflight closed cleanly. No physical output write was attempted.
+complete, but its real-device write acceptance is incomplete. The corrected
+read-only COM5 preflight closed cleanly. A later attempt completed production
+startup safe-zero but stopped on a harness defect before controller start or any
+nonzero proposal.
 
 M9A, M9B and M9C implementation and external review have succeeded. M9C removed
 active Lua, obsolete first-party client baggage and transitional source-reload /

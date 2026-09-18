@@ -12,8 +12,9 @@ Date: 2026-09-18 (Europe/Moscow).
 M9D was inserted before M10 to complete the audited partial Metakon output path
 without changing the accepted OutputAuthority architecture. The software path and
 the read-only preflight correction are complete. M9D is not ready for external
-review because its real-device write acceptance has not been run. In accordance
-with the stop gate, no physical output write was attempted.
+review because its real-device write acceptance stopped on a harness failure before
+the controller or any nonzero proposal was started. The production startup safe-zero
+completed, but the requested nonzero and final safe-transition sequence was not run.
 
 ## Software implementation
 
@@ -195,8 +196,53 @@ The process emitted no stderr and released COM5. The run loaded only
 
 ## Hardware write acceptance
 
-Not started. No WRITE opcode 0x01 frame, including safe-zero, was sent to COM5. No
-nonzero proposal was armed. No M9D Recorder archive or acceptance hash exists:
+The authorized acceptance attempt used implementation HEAD
+`ecf5520021be2f25fc48d2c8e36845fa555db75b`, release binary SHA-256
+`1fd6597fb5f565ce10136bab99d19645e07c8e33dfb0e083caab4cd0c8d369ef`, the accepted
+COM5 output deployment, and the physically disconnected heater/load.
+
+Production startup opened COM5, completed the channel-type compatibility gate and
+established safe zero through the normal `OutputAuthority -> WRITE register 0x06 ->
+ACK -> separate READ register 0x06` path before publishing readiness. Thus the only
+physical write in this attempt was one successful safe-zero command. No controller
+was started, no lease for nonzero authority was acquired, and no nonzero proposal or
+write occurred.
+
+Immediately after readiness, the temporary PowerShell acceptance harness failed
+before its first Application API query because a helper parameter used PowerShell's
+reserved automatic name `$args`. Parameter binding therefore tried to convert an
+automatic `System.Object[]` to a hashtable. This is a harness defect, not a Runtime,
+serial, protocol, ACK or readback failure. The failure handler terminated the
+process; normal Runtime shutdown was not reached. The process and listener are gone
+and COM5 was released. Because the acceptance failure rule prohibits further
+physical exercise after the first meaningful failure, no corrected hardware rerun
+was attempted.
+
+The incomplete Recorder files were preserved separately as failure evidence:
+
+```text
+examples/metakon-513-m9d-write-smoke-failed.sqlite
+size: 4096 bytes
+SHA-256: da63a52bdf62b3fc863995d79f497584be3ba97c1de4c55d1d301afbafab6cfc
+
+examples/metakon-513-m9d-write-smoke-failed.sqlite-wal
+size: 399672 bytes
+SHA-256: 8885b44a1c5198a47d9e8d96ab10b7b7c166a88a9fca5fcc12581fa06fd68fe3
+
+SHM: absent
+SQLite integrity check on an isolated copy: ok
+boot: 47183b55695a8a6f1e1c35dbb23ed84b, active/unsealed
+runs: 0
+operation events: 0
+controller events: 0
+persisted output events: 0
+```
+
+The empty persisted event sets corroborate that the harness did not reach any API
+mutation or controller start. They do not replace the startup readiness contract as
+durable safe-zero evidence: the process was terminated before Recorder flush and
+the WAL is deliberately retained. This archive is not acceptance evidence. The
+clean acceptance path remains absent:
 
 ```text
 examples/metakon-513-m9d-write-smoke.sqlite: absent
@@ -218,8 +264,8 @@ The post-M9C read-smoke archive was not modified.
 
 ## Remaining gate
 
-The read-only shutdown blocker is resolved. A separately authorized bounded
-production-path sequence remains: safe-zero, authorized +10, normal safe transition
-to zero, ACK plus distinct register-6 readback, and clean shutdown. It was not run
-during the shutdown diagnosis. M9D remains blocked from external review and M10
-remains unauthorized.
+The read-only shutdown blocker remains resolved. A fresh explicit decision is needed
+before retrying the bounded production-path sequence: startup safe-zero, one
+authorized +10, normal safe transition to zero, ACK plus distinct register-6
+readback, Recorder seal and clean shutdown. M9D remains blocked from external review
+and M10 remains unauthorized.
