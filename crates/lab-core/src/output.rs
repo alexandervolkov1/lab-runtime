@@ -1,9 +1,14 @@
-//! Central output vocabulary and deterministic virtual dispatch.
+//! Central output vocabulary and the Runtime-private authority boundary.
 //!
-//! Runtime owns each authority. A proposal is only queued intent: the authority
-//! rechecks its opaque lease at BeginDispatch, immediately before the simulated
-//! send. Completing an old operation cannot restore ownership. ACK, readback and
-//! safe evidence are deliberately distinct; software cancellation cannot undo a send.
+//! Runtime owns each authority. An [`OutputProposal`] is only requested intent; it
+//! is not authorization or transport evidence. Physical output is admitted through
+//! the private `OutputAuthority`, correlated by a private `OutputIntent`, and
+//! rechecked through [`crate::transport::ResourceExecutor`] immediately before the
+//! first possible byte. Completing an old operation cannot restore ownership.
+//!
+//! Requested, authorized, send-started, ACK, readback and physical effect are
+//! deliberately different concepts. Software cancellation cannot retract accepted
+//! bytes, and an ambiguous started write is not blindly retried.
 
 use crate::{Error, InstrumentId, ParameterId, Unit, Value};
 use std::time::Duration;

@@ -30,8 +30,9 @@ Its software gates and bounded real-device acceptance pass: startup safe-zero, o
 authority-gated +10 percent controller command, strict ACK, distinct matching
 register-6 readback, normal pause to zero, Recorder sealing and clean shutdown. The
 load was disconnected, so this does not claim physical heater effect. External
-review accepted M9D. M10 is authorized; its first task is the M10.1
-structural/studyability audit, which maps the post-M9D codebase before refactoring.
+review accepted M9D. M10.1 completed the post-M9D structural audit; M10.2 completed
+behavior-preserving terminology, archaeology and source architecture indexes. M10.3
+has not started.
 
 ## Product boundary
 

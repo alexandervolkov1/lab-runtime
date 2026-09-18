@@ -86,6 +86,8 @@ fn unknown_operation_is_a_structured_nonfatal_synchronous_rejection() {
     assert_eq!(rejected[0]["code"], "unsupported_operation");
     assert_eq!(rejected[0]["category"], "unsupported_operation");
 
+    // M9C removal oracles: these names must remain rejected even though Recorder
+    // separately retains old fact/provenance vocabulary for archive readability.
     for removed in [
         "reload_managed_sources",
         "runtime_snapshot",

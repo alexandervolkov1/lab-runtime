@@ -221,9 +221,10 @@ physical heater effect is not claimed. External review accepted M9D.
 Goal: make the repository unusually easy to understand and study while preserving
 behavior and safety. Refactor only under test coverage.
 
-Implementation does not start immediately. M10.1 is a structural/studyability audit
-of the actual post-M9D codebase; it maps responsibilities, seams and candidate
-cleanup before any refactoring is authorized as a concrete slice.
+M10.1 completed the structural/studyability audit of the actual post-M9D codebase.
+M10.2 completed the separately authorized low-risk terminology, archaeological and
+source architecture-index slice without changing accepted behavior. M10.3 and later
+stages require their own authorization.
 
 Targets:
 

@@ -39,7 +39,7 @@ pub(crate) fn status_json(service: &ServiceHost) -> Value {
         "source":{"kind":"deployment_file","identity":hex(&active.toml_hash()),
             "automatically_persisted":false},
         "staged_candidate":staged,
-        "runtime_overrides":active.runtime_override_count()})
+        "runtime_overrides":active.property_overlay_count()})
 }
 
 /// Deterministic bounded descriptors for all known deployment properties.

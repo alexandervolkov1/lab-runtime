@@ -1,8 +1,21 @@
-//! SQLite version-one storage on a dedicated host worker, outside `lab-core`.
+//! Durable Recorder contract and SQLite version-one storage outside `lab-core`.
 //!
-//! [`SqliteStore`](crate::recorder::SqliteStore) is deliberately synchronous: only the storage worker or an
-//! offline test may own it. The Runtime owner must hand groups to a bounded
-//! nonblocking ingress rather than call these methods on its safety lane.
+//! # Recorder index
+//!
+//! - Semantic experiment facts originate in [`lab_core::recording`] at the
+//!   authoritative Runtime transition.
+//! - [`crate::recorder::RecorderWorker`] owns bounded nonblocking ingress, lifecycle receipts, history
+//!   jobs, gap accounting and finite finish coordination.
+//! - [`crate::recorder::SqliteStore`] is the synchronous worker-owned implementation for schema,
+//!   writes, history, provenance, sealing and completeness.
+//! - [`crate::recorder::TimeAnchor`] projects monotonic Runtime time to wall-clock recording fields;
+//!   wall-clock changes never drive control.
+//!
+//! Only the storage worker or an offline test may own `SqliteStore`. The Runtime
+//! owner hands facts to bounded ingress and never calls SQLite on its safety lane.
+//! Transient Application events and durable Recorder history are separate.
+//!
+//! `Application API != Recorder contract != SQLite schema`.
 
 use lab_core::{
     InstrumentId, ParameterId, SampleQuality, SignalId, Value,
@@ -134,6 +147,9 @@ impl ConfigurationLifecycleRecord {
     }
 
     fn valid(&self) -> bool {
+        // The first two names in this compatibility arm are no longer emitted by
+        // the active API. They remain accepted so pre-M9C lifecycle facts can be
+        // validated when an existing historical archive is inspected or reopened.
         let revision_valid = match self.operation_kind {
             "reload_configuration" | "apply_configuration" => {
                 self.committed_revision == self.base_revision.checked_add(1).unwrap_or(0)
@@ -1184,6 +1200,9 @@ impl SqliteStore {
         let mut charge = 0usize;
         let mut indexed = Vec::with_capacity(entries.len());
         let mut entry_hashes = Vec::with_capacity(entries.len());
+        // Historical executable-source kinds are archive vocabulary, not active
+        // component configuration. Preserve their exact spelling and bounds so old
+        // content-addressed evidence stays readable.
         let mut managed_source_hashes = BTreeSet::new();
         for entry in entries {
             if entry.kind.is_empty()

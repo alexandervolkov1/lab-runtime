@@ -1,8 +1,15 @@
-//! Private authority state machine owned exclusively by Runtime.
+//! Private output-permission state machine owned exclusively by Runtime.
 //!
-//! A reserved safe slot cannot be crowded out by normal proposals. Revocation
-//! fences queued work immediately, but an in-flight send must settle before the
-//! safe procedure can run. This explicit split makes race tests deterministic.
+//! The normal path is `OutputProposal -> pending proposal -> transport reservation
+//! -> final validation -> send started -> ACK -> separate readback`. A reserved safe
+//! slot cannot be crowded out by normal proposals. Revocation fences queued work
+//! immediately, but accepted bytes cannot be recalled.
+//!
+//! `safe_obligation_pending` records that safe state is still required. It does not
+//! by itself authorize another WRITE: `ambiguous_safe_resend_blocked` separately
+//! records that a started safe command has an unknown physical outcome. Keeping both
+//! facts is what preserves the safety obligation without blindly retrying that
+//! command or allowing normal output.
 
 use super::*;
 use crate::ValueSpec;
@@ -29,12 +36,12 @@ pub(crate) struct OutputAuthority {
     snapshot: OutputSnapshot,
     pending: Option<Pending>,
     transport_reserved: Option<OutputIntent>,
-    safe_needed: bool,
+    safe_obligation_pending: bool,
     // An already-started safe write with an unknown outcome does not discharge
     // the safe obligation, but it also cannot authorize another write. Only a
     // fresh authority instance/rebind or explicit future reconciliation can
     // resolve this fail-closed state.
-    safe_resend_blocked: bool,
+    ambiguous_safe_resend_blocked: bool,
     next_dispatch: u64,
 }
 
@@ -69,8 +76,8 @@ impl OutputAuthority {
             },
             pending: None,
             transport_reserved: None,
-            safe_needed: false,
-            safe_resend_blocked: false,
+            safe_obligation_pending: false,
+            ambiguous_safe_resend_blocked: false,
             next_dispatch: 1,
         })
     }
@@ -87,7 +94,7 @@ impl OutputAuthority {
             && self.pending.is_none()
             && self.transport_reserved.is_none()
             && self.snapshot.in_flight.is_none()
-            && !self.safe_needed
+            && !self.safe_obligation_pending
     }
 
     /// Require a finite controller cadence strictly shorter than its configured lease.
@@ -121,7 +128,7 @@ impl OutputAuthority {
         self.check_lease(lease, at)?;
         if self.snapshot.state != OutputState::ArmedAuto
             || self.snapshot.fault_latched
-            || self.safe_needed
+            || self.safe_obligation_pending
         {
             return Err(OutputError::InvalidState.into());
         }
@@ -180,7 +187,7 @@ impl OutputAuthority {
                 if self.snapshot.state != OutputState::FaultLatched
                     || !self.snapshot.safe_confirmed
                     || self.snapshot.in_flight.is_some()
-                    || self.safe_needed
+                    || self.safe_obligation_pending
                 {
                     return Err(OutputError::InvalidState.into());
                 }
@@ -315,8 +322,8 @@ impl OutputAuthority {
             return Err(OutputError::Busy.into());
         }
 
-        let (value, safe) = if self.safe_needed {
-            if self.safe_resend_blocked {
+        let (value, safe) = if self.safe_obligation_pending {
+            if self.ambiguous_safe_resend_blocked {
                 return Err(OutputError::InvalidState.into());
             }
             // Safe output is a Rust-owned reserved operation, not a producer proposal.
@@ -352,7 +359,7 @@ impl OutputAuthority {
         };
         self.next_dispatch = following_id;
         self.clear_pending();
-        self.safe_needed = false;
+        self.safe_obligation_pending = false;
         self.snapshot.safe_confirmed = false;
         self.snapshot.in_flight = Some(dispatch);
         self.snapshot.sent = Some(OutputObservation { value, at });
@@ -404,7 +411,7 @@ impl OutputAuthority {
                 // unknown result is not permission to emit that command again.
                 // Keep the obligation while preventing both automatic safety
                 // service and direct trusted queue admission from resending it.
-                self.safe_resend_blocked = true;
+                self.ambiguous_safe_resend_blocked = true;
                 self.snapshot.state = OutputState::FaultLatched;
             }
         } else if dispatch.safe && dispatch.epoch == self.snapshot.epoch {
@@ -430,12 +437,12 @@ impl OutputAuthority {
         self.snapshot.lease = None;
         self.snapshot.fault_latched |= fault;
         self.snapshot.safe_confirmed = false;
-        self.snapshot.state = if self.safe_resend_blocked {
+        self.snapshot.state = if self.ambiguous_safe_resend_blocked {
             OutputState::FaultLatched
         } else {
             OutputState::SafePending
         };
-        self.safe_needed = true;
+        self.safe_obligation_pending = true;
         self.transport_reserved = None;
         // Keep the slot bounded and make revocation immediately visible. The
         // final send check remains mandatory for deadline/owner validation.
@@ -463,8 +470,8 @@ impl OutputAuthority {
         if at >= queue_deadline || binding_generation == 0 || mapping_revision == 0 {
             return Err(OutputError::InvalidTime.into());
         }
-        let intent = if self.safe_needed {
-            if self.safe_resend_blocked {
+        let intent = if self.safe_obligation_pending {
+            if self.ambiguous_safe_resend_blocked {
                 return Err(OutputError::InvalidState.into());
             }
             OutputIntent {
@@ -529,7 +536,7 @@ impl OutputAuthority {
         }
         .validate(&Value::Float(intent.value))?;
         if intent.safe {
-            if !self.safe_needed || intent.lease.is_some() {
+            if !self.safe_obligation_pending || intent.lease.is_some() {
                 return Err(OutputError::StaleLease.into());
             }
         } else {
@@ -561,7 +568,7 @@ impl OutputAuthority {
         self.next_dispatch = following_id;
         self.transport_reserved = None;
         if intent.safe {
-            self.safe_needed = false;
+            self.safe_obligation_pending = false;
         } else {
             self.clear_pending();
         }
@@ -598,7 +605,7 @@ impl OutputAuthority {
             .ok_or(OutputError::UnknownDispatch)?;
         self.request_safe(true)?;
         if dispatch.is_safe() {
-            self.safe_resend_blocked = true;
+            self.ambiguous_safe_resend_blocked = true;
             self.snapshot.state = OutputState::FaultLatched;
         }
         Ok(())

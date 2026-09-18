@@ -685,7 +685,7 @@ fn history_cursor_expires_on_reconnect_and_explicit_ttl_without_silent_resume() 
                 "max_records":128,"cursor":expiring_cursor}})),
     );
     assert_eq!(range_mismatch[1]["code"], "history_cursor_mismatch");
-    app.expire_snapshots_at(service.clock().now() + Duration::from_secs(31));
+    app.expire_projections_at(service.clock().now() + Duration::from_secs(31));
     let expired = read(&mut app, &mut service, 2, &new_scope, 5, expiring_cursor);
     assert_eq!(expired[1]["code"], "history_cursor_expired");
     drop(app);

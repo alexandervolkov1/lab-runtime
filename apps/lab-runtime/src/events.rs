@@ -2,7 +2,7 @@
 //!
 //! Sequence is publication order, not a durable history or physical timestamp.
 //! A pure query never calls observe. Ring pressure evicts oldest records without
-//! pinning them for snapshots or subscribers.
+//! pinning them for frozen API projections or subscribers.
 
 use crate::application::{controller_projection_json, nanos, output_json, reference_json};
 use crate::measurements::sample_json;
@@ -258,8 +258,8 @@ impl EventLog {
     pub fn boot_id(&self) -> &str {
         &self.boot_id
     }
-    /// Owned current public facts for a frozen snapshot, in stable kind/ID order.
-    pub fn snapshot_records(&self) -> Vec<Value> {
+    /// Owned current public facts for a frozen projection, in stable kind/ID order.
+    pub fn projection_records(&self) -> Vec<Value> {
         self.targets
             .iter()
             .filter_map(|t| {

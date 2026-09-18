@@ -5,6 +5,14 @@
 //! port. Two fixed workers own execution for registered native Rust
 //! implementations, so adding a native implementation does not add a second
 //! queue, correlation path, or source of committed state.
+//!
+//! The active reference path is `native.moving_mean.v1`: its implementation ID,
+//! property metadata and runner are registered here; configuration/host composition
+//! builds a Core definition; Runtime creates an `Invocation`; `ManagedExecutor`
+//! returns a correlated `ComponentResult`; and Runtime alone validates and commits
+//! the result. This module contains no Lua/script loader and grants no output or
+//! physical-evidence authority. Registration ceremony is intentionally unchanged in
+//! M10.2.
 
 use lab_core::managed::{
     ComponentCompletion, ComponentError, ComponentExecutor, ComponentKind, ComponentResult,

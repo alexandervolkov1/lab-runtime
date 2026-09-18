@@ -392,7 +392,9 @@ pub fn limits() -> Value {
         "property_records":crate::configuration_api::PROPERTY_RECORD_LIMIT,
         "page_records":crate::configuration_api::PROPERTY_PAGE_LIMIT,
         "page_bytes":crate::configuration_api::PROPERTY_PAGE_BYTES,
-        "runtime_overrides":32,"staged_candidates":1,"candidate_retention_seconds":30
+        "runtime_overrides":crate::configuration::MAX_PROPERTY_OVERLAYS,
+        "staged_candidates":1,
+        "candidate_retention_seconds":crate::deployment::CANDIDATE_LIFETIME.as_secs()
     });
     let emulator = json!({"targets":64,"records_per_request":1,
         "metadata_bytes":0,"pending_per_scope":sessions::MAX_PENDING_SCOPE});

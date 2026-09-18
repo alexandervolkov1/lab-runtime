@@ -2,6 +2,12 @@
 //!
 //! The executor receives owned plain data. Its callbacks cannot borrow Runtime,
 //! submit output proposals, claim physical evidence, or mutate committed state.
+//! The active host implementation is native Rust, but the contract remains
+//! implementation-neutral: [`Invocation`] enters a [`ComponentExecutor`], which
+//! returns a [`ComponentResult`] inside a correlated completion. Runtime validates
+//! generation, revision, units, bounds and plain state before committing anything.
+//! [`ComponentKind::Source`] is a generic observation source and does not imply a
+//! script or executable-text configuration.
 
 use crate::{InstrumentId, ParameterId, SignalId, Unit};
 use std::{collections::BTreeMap, time::Duration};

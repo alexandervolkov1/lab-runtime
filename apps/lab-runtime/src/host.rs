@@ -1,8 +1,21 @@
-//! The long-running owner will call this bounded scheduler independently of clients.
+//! Serialized Runtime orchestration, independent of client lifetime.
 //!
-//! This module keeps one mutable Runtime owner and explicit periods. It does not
-//! infer a cadence from a native controller's failure threshold. A skipped slot
-//! receives one actual-time opportunity, never a replay at an old deadline.
+//! [`crate::host::HostCore`] owns exactly one [`lab_core::Runtime`] plus schedules, derived event state,
+//! Recorder ingress/lifecycle and configured adapter catalogs. Runtime remains the
+//! authoritative experiment owner; the host stores only orchestration, fencing and
+//! delivery state around it.
+//!
+//! One bounded service turn checks work in this order: Recorder receipts, safety and
+//! transport progress, stopping/configuration fences, thermal models, Metakon read
+//! admission, references, controllers, periodic managed sources and
+//! observation-driven transforms. Every lower-priority section yields when safety
+//! becomes due. A skipped periodic slot receives one actual-time opportunity, never
+//! a replay at an old deadline.
+//!
+//! Physical acquisition enters Runtime through `Command::QueueMetakonRead`; committed
+//! samples then feed current/history projections, events, controllers and semantic
+//! Recorder facts. Physical output returns through Runtime's OutputAuthority and
+//! resource executor rather than through a host-side write bypass.
 
 use crate::recorder::{
     AnnotationRecord, BoundarySnapshot, ConfigurationLifecycleRecord, HistoryCursor, HistoryFilter,
@@ -358,7 +371,7 @@ pub struct HostCore {
     recorder_finish_requested: bool,
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
     deployment_provenance: Vec<ProvenanceEntry>,
-    model_generations: BTreeMap<InstrumentId, u64>,
+    virtual_model_generations: BTreeMap<InstrumentId, u64>,
     emulator_targets: BTreeSet<SignalId>,
     configured_probes: Vec<ConfiguredProbe>,
     configuration_quiesced: bool,
@@ -382,7 +395,7 @@ impl HostCore {
         let dto = &deployment.effective().dto;
         let mut runtime = Runtime::new();
         let mut measurements = Vec::with_capacity(dto.instruments.len());
-        let mut model_generations = BTreeMap::new();
+        let mut virtual_model_generations = BTreeMap::new();
         let mut emulator_targets = BTreeSet::new();
         let mut resources = Vec::with_capacity(dto.resources.len());
         for resource in &dto.resources {
@@ -455,7 +468,7 @@ impl HostCore {
                         gain_per_percent: *gain_per_percent,
                         time_constant: Duration::from_millis(*time_constant_ms),
                     }))?;
-                    model_generations.insert(InstrumentId::new(*id), 1);
+                    virtual_model_generations.insert(InstrumentId::new(*id), 1);
                     measurements.push((
                         InstrumentId::new(*id),
                         Periodic::new(Duration::from_millis(*poll_period_ms)),
@@ -716,7 +729,7 @@ impl HostCore {
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
             deployment_provenance,
-            model_generations,
+            virtual_model_generations,
             emulator_targets,
             configured_probes,
             configuration_quiesced: false,
@@ -829,7 +842,7 @@ impl HostCore {
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
             deployment_provenance: Vec::new(),
-            model_generations: BTreeMap::from([(PLANT, 1)]),
+            virtual_model_generations: BTreeMap::from([(PLANT, 1)]),
             emulator_targets: BTreeSet::new(),
             configured_probes: Vec::new(),
             configuration_quiesced: false,
@@ -1561,7 +1574,7 @@ impl HostCore {
             .zip(&new.instruments)
             .any(|(old, new)| thermal_configuration_changed(old, new))
         {
-            self.restart_configured_models(candidate, at)?;
+            self.restart_configured_virtual_models(candidate, at)?;
         }
 
         for (old_reference, reference) in old.references.iter().zip(&new.references) {
@@ -1721,7 +1734,7 @@ impl HostCore {
     }
 
     /// Restart every configured native thermal model under its generation fence.
-    pub(crate) fn restart_configured_models(
+    pub(crate) fn restart_configured_virtual_models(
         &mut self,
         deployment: &FrozenDeployment,
         at: Duration,
@@ -1742,7 +1755,7 @@ impl HostCore {
             {
                 let id = InstrumentId::new(*id);
                 let expected = *self
-                    .model_generations
+                    .virtual_model_generations
                     .get(&id)
                     .ok_or(Error::InvalidConfiguration("model generation missing"))?;
                 let CommandResult::ModelRestarted { generation, .. } =
@@ -1763,7 +1776,7 @@ impl HostCore {
                 else {
                     return Err(Error::InvalidConfiguration("unexpected restart result"));
                 };
-                self.model_generations.insert(id, generation);
+                self.virtual_model_generations.insert(id, generation);
                 latest_generation = generation;
                 count += 1;
             }
@@ -1775,8 +1788,8 @@ impl HostCore {
         Ok((count, latest_generation))
     }
 
-    /// Stage one configured managed component. Startup and source reload call
-    /// this serially so Core's accepted one-stage/two-worker bound is unchanged.
+    /// Stage one configured managed component. Startup and deployment replacement
+    /// call this serially so Core's accepted one-stage/two-worker bound is unchanged.
     pub(crate) fn stage_configured_component(
         &mut self,
         deployment: &FrozenDeployment,
@@ -3010,7 +3023,7 @@ impl HostCore {
             .any(|(component, _)| component.get() == id.get())
         {
             "managed"
-        } else if self.model_generations.contains_key(&id) {
+        } else if self.virtual_model_generations.contains_key(&id) {
             "emulated"
         } else {
             "virtual"
@@ -3030,7 +3043,7 @@ impl HostCore {
         } else if let Some(binding) = self.runtime.metakon_binding(signal.instrument()) {
             binding.binding_generation
         } else {
-            self.model_generations
+            self.virtual_model_generations
                 .get(&signal.instrument())
                 .copied()
                 .unwrap_or(1)
@@ -3049,7 +3062,7 @@ impl HostCore {
 
     /// Number of Runtime-owned native virtual models with generation-fenced restart.
     pub fn virtual_model_count(&self) -> usize {
-        self.model_generations.len()
+        self.virtual_model_generations.len()
     }
 
     /// Commit one external virtual observation through the ordinary owner path.

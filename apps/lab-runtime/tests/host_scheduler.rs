@@ -1,4 +1,4 @@
-//! The M6 host must progress native work without a network client or Lua callback.
+//! The host must progress required native work without a network client or extension callback.
 
 use lab_core::{
     Command, Query, QueryResult, SampleQuality,

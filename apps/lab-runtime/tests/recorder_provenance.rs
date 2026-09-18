@@ -683,6 +683,7 @@ fn serving_activation_records_native_provenance_and_links_the_new_run() {
 
 #[test]
 fn managed_source_hash_without_the_exact_source_blob_is_rejected_atomically() {
+    // This is historical archive compatibility, not an active Lua implementation.
     let path = temporary_database();
     let mut store = SqliteStore::open(&path).unwrap();
     let implementation = ProvenanceEntry {
@@ -723,6 +724,8 @@ fn hex_sha256(hash: [u8; 32]) -> String {
 
 #[test]
 fn provenance_commits_loaded_script_bytes_not_later_path_contents_and_deduplicates() {
+    // Preserve the pre-M9C content-addressed evidence oracle without restoring an
+    // executable-source path to active configuration or Runtime execution.
     let path = temporary_database();
     let source_path = path.with_extension("lua");
     let loaded = b"return 21.5\n".to_vec();

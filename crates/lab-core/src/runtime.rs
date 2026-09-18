@@ -1,6 +1,31 @@
-//! The synchronous application boundary and sole owner of registered state.
-//! Commands mutate owned instances; queries clone bounded snapshots. No GUI,
-//! transport, clock polling or external client owns these instruments.
+//! The synchronous command/query boundary and sole owner of experiment state.
+//!
+//! [`Runtime`] owns all registered instrument/component state, committed signal
+//! history, references, controllers, `OutputAuthority` instances, bounded
+//! [`ResourceExecutor`]s and the semantic Recorder fact outbox. Commands mutate that
+//! state; queries clone bounded committed projections. The host schedules progress,
+//! but no host, client, worker, Recorder or adapter becomes a second experiment
+//! owner.
+//!
+//! # Physical acquisition index
+//!
+//! [`Command::QueueMetakonRead`] encodes a READ with [`crate::metakon`], queues it on
+//! a [`ResourceExecutor`], then later handles its `TransportEvent`. A strictly decoded
+//! value is validated and committed to the instrument signal buffer before current
+//! queries, bounded history, controllers and storage-independent [`crate::recording`]
+//! facts can observe it.
+//!
+//! # Physical output index
+//!
+//! A controller produces an [`OutputProposal`]. Runtime submits it to its private
+//! `OutputAuthority`, freezes a transport intent, and lets [`ResourceExecutor`] ask
+//! for the final authority/binding-generation check at the first possible output
+//! byte. [`crate::metakon`] encodes the WRITE and validates the strict ACK; Runtime
+//! then queues a distinct register readback before settling the dispatch.
+//!
+//! `requested != authorized != send_started != ACK != readback != physical_effect`.
+//! Once a write has started, an ambiguous result is never treated as proof that no
+//! write occurred and the original command is not blindly retried.
 
 use crate::control::{
     ControllerError, ControllerId, ControllerSnapshot, ControllerState, NativeController,

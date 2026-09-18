@@ -2,6 +2,11 @@
 //!
 //! Only the storage worker can block on SQL. The owner uses try-send and brief
 //! receipt inspection; shutdown requests never join a worker stuck in OS I/O.
+//! [`RecorderWorker`] is the host-side boundary between semantic fact groups and
+//! [`super::SqliteStore`]: ingress credit is charged on the owner lane, while one
+//! worker exclusively owns SQLite writes, history reads, provenance, gaps and
+//! sealing. `WriterBarrier` is a trusted fault-injection seam, not production
+//! scheduling or experiment authority.
 
 use super::{
     AnnotationRecord, BoundarySnapshot, ConfigurationLifecycleRecord, HistoryCursor, HistoryFilter,

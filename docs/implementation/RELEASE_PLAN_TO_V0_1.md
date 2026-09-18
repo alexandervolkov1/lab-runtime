@@ -242,9 +242,10 @@ accepted archive is `examples/metakon-513-m9d-write-smoke.sqlite`, SHA-256
 
 ## M10 — Core cleanup and studyability — AUTHORIZED
 
-M10 implementation does not start immediately. The first task is `M10.1
-structural/studyability audit`, which maps the actual post-M9D codebase before any
-refactoring.
+M10.1 completed the structural/studyability audit of the actual post-M9D codebase.
+M10.2 completed low-risk internal terminology cleanup, archaeological classification
+and source architecture indexes without changing accepted behavior. M10.3 has not
+started and requires separate authorization.
 
 Refactor only under test coverage, preserving behavior and safety:
 

@@ -2,6 +2,12 @@
 //!
 //! The Core owner emits facts only when recording is enabled. This bounded outbox
 //! is a short handoff to the host; it is not durable history or a client event ring.
+//! [`RecordingFact`] represents a semantic transition captured by [`crate::Runtime`];
+//! it does not define an Application response or a SQLite row. The host admits facts
+//! to bounded Recorder ingress, and only the host storage adapter owns durable schema,
+//! history queries, gaps and sealing.
+//!
+//! `Application API != Recorder contract != SQLite schema`.
 
 use crate::{
     Sample, Unit, Value,

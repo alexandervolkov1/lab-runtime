@@ -1,7 +1,11 @@
-//! Headless service startup prepares a safe owner before exposing the listener.
+//! Process lifecycle around the serialized [`crate::host::HostCore`] owner.
 //!
-//! Entropy failure, malformed CLI or failed safe profile prevents readiness.
-//! The network reactor is a separate adapter added after this host foundation.
+//! [`crate::service::ServiceHost`] owns the system clock, loopback listener, deployment lifecycle,
+//! resource reconnect candidates and finite shutdown coordination. It orchestrates
+//! external workers/adapters and Runtime progress through `HostCore`; it does not own
+//! a second copy of experiment state. Entropy failure, malformed configuration,
+//! failed safe profile or failed startup Recorder/transport work prevents readiness.
+//! The network reactor remains a separate adapter.
 
 use crate::recorder::{
     ConfigurationLifecycleRecord, RecorderLimits, RecorderWorker, RecordingPolicy, TimeAnchor,
@@ -1341,7 +1345,7 @@ impl ServiceHost {
         let pending = self.begin_recorded_lifecycle("virtual_models_restart", &active)?;
         let (models, generation) = match self
             .host
-            .restart_configured_models(&active, self.clock.now())
+            .restart_configured_virtual_models(&active, self.clock.now())
         {
             Ok(result) => result,
             Err(_) => {

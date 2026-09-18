@@ -4,6 +4,14 @@
 //! instruments sharing that resource. Calls are deliberately nonblocking attempts:
 //! zero transferred bytes means Pending, while a partial write means a physical
 //! operation may already have started. Software cancellation never retracts bytes.
+//!
+//! A *resource* is the conflict/serialization domain (for example one RS-485 bus).
+//! A [`ByteTransport`] is only the nonblocking byte-moving adapter owned by that
+//! resource's executor. Neither layer understands instrument meaning or grants
+//! output permission. READ/response bytes return to [`crate::Runtime`] for protocol
+//! decode and authoritative measurement commit. Physical output additionally uses
+//! the crate-private authorization callback for Runtime's final check before byte
+//! offset zero.
 
 use std::{collections::VecDeque, time::Duration};
 

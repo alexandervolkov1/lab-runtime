@@ -4,6 +4,13 @@
 //! Parsing never opens a transport, SQLite database or listener. The
 //! returned bundle owns the exact admitted bytes so later activation never has
 //! to reread a mutable pathname for provenance.
+//!
+//! [`crate::configuration::FrozenDeployment`] preserves the persistent deployment source/artifacts and a
+//! fully validated effective DTO. Generic Application property edits add bounded
+//! process-local property overlays to a cloned candidate, then re-enter the same
+//! validation/stage/apply lifecycle in [`crate::deployment`]. Runtime samples,
+//! controller state and generations are ephemeral experiment state, not persistent
+//! deployment configuration.
 
 use crate::{
     definition::{MAX_DEFINITION_BYTES, parse_definition_json},
@@ -33,6 +40,8 @@ pub const MAX_RUNTIME_TOML_DEPTH: usize = 8;
 pub const MAX_DEPLOYMENT_ARTIFACTS: usize = 128;
 /// Maximum exact artifact bytes retained by one deployment candidate.
 pub const MAX_DEPLOYMENT_BYTES: usize = 1024 * 1024;
+/// Maximum process-local property overlays retained above one deployment source.
+pub(crate) const MAX_PROPERTY_OVERLAYS: usize = 32;
 
 /// A bounded source used by validation to freeze referenced files.
 ///
@@ -185,7 +194,7 @@ pub struct FrozenDeployment {
     toml_hash: [u8; 32],
     effective: EffectiveDeployment,
     artifacts: Vec<FrozenArtifact>,
-    runtime_overrides: Vec<String>,
+    property_overlays: Vec<String>,
 }
 
 /// One bounded scalar admitted by the generic live property operation.
@@ -213,14 +222,14 @@ impl FrozenDeployment {
         &self.effective
     }
 
-    /// Referenced definitions and sources frozen during validation.
+    /// Referenced deployment artifacts frozen during validation.
     pub fn artifacts(&self) -> &[FrozenArtifact] {
         &self.artifacts
     }
 
     /// Number of process-local property overlays applied above the deployment file.
-    pub(crate) fn runtime_override_count(&self) -> usize {
-        self.runtime_overrides.len()
+    pub(crate) fn property_overlay_count(&self) -> usize {
+        self.property_overlays.len()
     }
 
     /// Produce a fully validated fixed-topology candidate for one supported live property.
@@ -275,10 +284,10 @@ impl FrozenDeployment {
             }
             _ => return Err(ConfigurationError::invalid("unsupported property target")),
         }
-        if next.runtime_overrides.len() >= 32 {
+        if next.property_overlays.len() >= MAX_PROPERTY_OVERLAYS {
             return Err(ConfigurationError::TooLarge);
         }
-        next.runtime_overrides.push(
+        next.property_overlays.push(
             serde_json::json!({"target":{"kind":target_kind,"id":target_id.to_string()},
                 "property":property,"value":recorded_value})
             .to_string(),
@@ -300,7 +309,7 @@ impl FrozenDeployment {
 
     pub(crate) fn provenance_entries(&self) -> Vec<(String, String, Vec<u8>)> {
         let mut entries =
-            Vec::with_capacity(self.artifacts.len() + self.runtime_overrides.len() + 1);
+            Vec::with_capacity(self.artifacts.len() + self.property_overlays.len() + 1);
         entries.push((
             "runtime_toml".into(),
             "utf8".into(),
@@ -316,7 +325,7 @@ impl FrozenDeployment {
                 artifact.bytes.to_vec(),
             )
         }));
-        entries.extend(self.runtime_overrides.iter().cloned().map(|content| {
+        entries.extend(self.property_overlays.iter().cloned().map(|content| {
             (
                 "runtime_configuration_overlay".into(),
                 "json".into(),
@@ -526,7 +535,7 @@ pub fn parse_runtime_toml(
         toml_hash: Sha256::digest(bytes).into(),
         effective: EffectiveDeployment { dto },
         artifacts,
-        runtime_overrides: Vec::new(),
+        property_overlays: Vec::new(),
     })
 }
 

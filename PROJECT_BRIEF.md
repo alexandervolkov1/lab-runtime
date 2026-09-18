@@ -225,9 +225,10 @@ hardware acceptance and external review are complete. Final real-device acceptan
 proved verified startup zero, one authority-gated +10 percent controller command
 with strict ACK and separate matching register-6 readback, normal pause to verified
 zero, Recorder sealing and clean shutdown. The disconnected load means physical
-heater effect was not tested. M10 is authorized, but begins with the M10.1
-structural/studyability audit before any refactoring. The roadmap ends at v0.1.0;
-milestones do not cross review gates automatically.
+heater effect was not tested. M10.1 completed the structural/studyability audit and
+M10.2 completed low-risk terminology, archaeology and source architecture indexes.
+M10.3 has not started. The roadmap ends at v0.1.0; milestones do not cross review
+gates automatically.
 
 ## v0.1 identity
 

@@ -4,11 +4,15 @@
 //! mutation to one serialized owner through [`crate::deployment::ApplyPort`]. The port intentionally
 //! exposes no rearm operation: a failed safe barrier can retain the old committed
 //! configuration, but cannot recreate an old lease or armed epoch.
+//! [`crate::deployment::DeploymentLifecycle`] owns the persistent active revision and at most one staged
+//! candidate; [`crate::deployment::ApplyPort`] delegates the actual live-safe or safe-barrier mutation
+//! to the serialized host/Runtime owner.
 
 use crate::configuration::{DeploymentChanges, FrozenDeployment};
 use std::{collections::BTreeSet, time::Duration};
 
-const CANDIDATE_LIFETIME: Duration = Duration::from_secs(30);
+/// Retention bound for the one staged deployment candidate.
+pub(crate) const CANDIDATE_LIFETIME: Duration = Duration::from_secs(30);
 
 /// One required effect in a bounded explicit configuration diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

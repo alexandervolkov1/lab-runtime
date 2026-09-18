@@ -1,6 +1,15 @@
-//! The serialized service owner maps fixed wire operations to pure Core queries
-//! or bounded mutations. Accepted records precede dispatch; terminal records
-//! precede any attempt to send a reply.
+//! Accepted local Application API dispatch and bounded delivery state.
+//!
+//! `server` decodes bounded NDJSON with [`crate::wire`]; [`crate::protocol`] supplies
+//! the fixed 42-operation registry, capabilities, limits and public error taxonomy.
+//! [`crate::application::Application`] owns sessions, deduplication, subscriptions, frozen projections
+//! and asynchronous history/recording replies, then routes semantic work through
+//! [`crate::service::ServiceHost`] to the authoritative Core Runtime.
+//!
+//! Frozen projections are connection-local delivery pages, not the removed M9C
+//! `runtime_snapshot` operation family and not experiment authority. Accepted
+//! operation records precede mutation dispatch; terminal records precede any attempt
+//! to offer a reply to the network.
 
 use crate::recorder::{
     AnnotationRecord, HistoryCursor, HistoryFilter, HistoryPage, OperationRecord, RecordingState,
@@ -38,7 +47,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-struct FrozenSnapshot {
+struct FrozenProjection {
     token: String,
     kind: &'static str,
     cursor: u64,
@@ -104,7 +113,7 @@ enum CompletedHistory {
 pub struct Application {
     sessions: SessionStore,
     clients: BTreeMap<u64, String>,
-    snapshots: BTreeMap<u64, FrozenSnapshot>,
+    projections: BTreeMap<u64, FrozenProjection>,
     subscriptions: BTreeMap<u64, Subscription>,
     next_token: u64,
     pending_shutdown: Option<PendingShutdown>,
@@ -120,7 +129,7 @@ impl Application {
         Ok(Self {
             sessions: SessionStore::new(boot_id)?,
             clients: BTreeMap::new(),
-            snapshots: BTreeMap::new(),
+            projections: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             next_token: 1,
             pending_shutdown: None,
@@ -135,7 +144,7 @@ impl Application {
     /// Detach a connection while retaining already admitted operation outcomes.
     pub fn detach(&mut self, service: &ServiceHost, connection: u64) {
         self.clients.remove(&connection);
-        self.snapshots.remove(&connection);
+        self.projections.remove(&connection);
         self.subscriptions.remove(&connection);
         self.history_pages.remove(&connection);
         self.history_cursors
@@ -149,9 +158,10 @@ impl Application {
         }
         self.sessions.detach(connection, service.clock().now());
     }
-    /// Expire frozen connection snapshots at a trusted monotonic owner instant.
-    pub fn expire_snapshots_at(&mut self, now: Duration) {
-        self.snapshots.retain(|_, s| now < s.expires);
+    /// Expire frozen connection projections at a trusted monotonic owner instant.
+    pub fn expire_projections_at(&mut self, now: Duration) {
+        self.projections
+            .retain(|_, projection| now < projection.expires);
         self.history_pages.retain(|_, page| now < page.expires);
         self.history_cursors
             .retain(|_, cursor| now < cursor.expires);
@@ -342,7 +352,7 @@ impl Application {
             service.owner_mut().cancel_history(job);
         }
         let now = service.clock().now();
-        self.expire_snapshots_at(now);
+        self.expire_projections_at(now);
         let ids: Vec<u64> = self.pending_history.keys().copied().collect();
         let mut replies = Vec::new();
         for connection in ids {
@@ -869,7 +879,7 @@ impl Application {
                 records.extend(
                     owner
                         .event_log()
-                        .snapshot_records()
+                        .projection_records()
                         .into_iter()
                         .filter(|record| {
                             matches!(
@@ -974,9 +984,9 @@ impl Application {
         records: Vec<Value>,
     ) -> Result<Value, &'static str> {
         let token = self.issue_token(service.boot_id())?;
-        self.snapshots.insert(
+        self.projections.insert(
             connection,
-            FrozenSnapshot {
+            FrozenProjection {
                 token: token.clone(),
                 kind,
                 cursor: service.owner().event_log().latest_cursor(),
@@ -994,18 +1004,21 @@ impl Application {
         index: usize,
         kind: &str,
     ) -> Result<Value, &'static str> {
-        let snapshot = self.snapshots.get(&connection).ok_or("snapshot_expired")?;
-        if snapshot.token != token
-            || snapshot.kind != kind
-            || service.clock().now() >= snapshot.expires
-            || index > snapshot.records.len()
+        let projection = self
+            .projections
+            .get(&connection)
+            .ok_or("snapshot_expired")?;
+        if projection.token != token
+            || projection.kind != kind
+            || service.clock().now() >= projection.expires
+            || index > projection.records.len()
         {
             return Err("snapshot_expired");
         }
         let mut records = Vec::new();
         let mut next = index;
-        while next < snapshot.records.len() && records.len() < 64 {
-            let candidate = &snapshot.records[next];
+        while next < projection.records.len() && records.len() < 64 {
+            let candidate = &projection.records[next];
             let mut trial = records.clone();
             trial.push(candidate.clone());
             if serde_json::to_vec(&trial).map_or(true, |bytes| bytes.len() > 8 * 1024) {
@@ -1014,13 +1027,13 @@ impl Application {
             records.push(candidate.clone());
             next += 1;
         }
-        if next == index && next < snapshot.records.len() {
+        if next == index && next < projection.records.len() {
             return Err("snapshot_capacity");
         }
         Ok(
             json!({"projection":token,"revision":{"boot_id":service.boot_id(),
-            "event_seq":snapshot.cursor.to_string()},"records":records,
-            "next_index":(next<snapshot.records.len()).then(||next.to_string()),"complete":next==snapshot.records.len()}),
+            "event_seq":projection.cursor.to_string()},"records":records,
+            "next_index":(next<projection.records.len()).then(||next.to_string()),"complete":next==projection.records.len()}),
         )
     }
 

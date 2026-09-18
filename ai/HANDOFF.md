@@ -19,6 +19,9 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: AUTHORIZED
+M10.1: COMPLETE
+M10.2: COMPLETE
+M10.3: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -28,8 +31,24 @@ post-M9C real-device smoke passed. M9D software integration, hardware acceptance
 external review are complete. Final real-device acceptance proved production
 startup zero, one authority-gated +10 percent controller command, strict ACK,
 separate matching register-6 readback, normal pause to verified zero, Recorder
-sealing and clean shutdown. M10 is authorized, but refactoring does not begin until
-the M10.1 structural/studyability audit maps the actual post-M9D codebase.
+sealing and clean shutdown. M10.1 mapped the actual post-M9D codebase. M10.2 added
+behavior-preserving internal terminology and source architecture indexes while
+retaining historical Recorder compatibility. M10.3 has not started.
+
+## M10.2 completion
+
+M10.2 renamed only misleading internal delivery/configuration/virtual-model and
+OutputAuthority state names. It retained the exact 42-operation Application API,
+wire vocabulary, SQLite schema and historical `managed_lua_source`,
+`managed_component_source`, `reload_managed_sources` and `restart_models` archive
+readability. Crate/module rustdoc now indexes Runtime ownership, periodic acquisition,
+physical output, Application dispatch, Recorder/SQLite, native components,
+transport/protocol and configuration/deployment.
+
+Debug/release workspaces, warning-denied Clippy/rustdoc and focused M9B.8, M9D,
+native-component, registry/projection and historical provenance suites pass. COM5
+was not opened and no hardware test was performed. See
+`docs/implementation/MILESTONE_10_REPORT.md`.
 
 ## M9D accepted physical-output architecture
 

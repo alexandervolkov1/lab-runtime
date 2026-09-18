@@ -32,6 +32,9 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: AUTHORIZED
+M10.1: COMPLETE
+M10.2: COMPLETE
+M10.3: NOT STARTED
 Current phase: M10 — core cleanup and studyability
 M11+: NOT AUTHORIZED
 ```
@@ -45,8 +48,9 @@ physically disconnected, so no physical-effect claim is made.
 
 M9A, M9B and M9C implementation and external review have succeeded. M9C removed
 active Lua, obsolete first-party client baggage and transitional source-reload /
-snapshot API. M10 is authorized, but implementation does not begin until the M10.1
-structural/studyability audit maps the post-M9D codebase. M11 and later milestones
+snapshot API. M10.1 mapped the post-M9D codebase. M10.2 completed low-risk internal
+terminology cleanup, archaeological classification and source architecture indexes
+without changing accepted behavior. M10.3 has not started. M11 and later milestones
 remain blocked behind explicit review gates.
 
 ## Donor repository

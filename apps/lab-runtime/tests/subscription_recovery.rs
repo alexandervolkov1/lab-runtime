@@ -35,19 +35,21 @@ fn ask(
 #[test]
 fn retune_between_discovery_and_subscribe_is_replayed_and_pages_remain_frozen() {
     let (mut service, mut app, scope) = setup();
-    let snapshot = ask(
+    let projection = ask(
         &mut service,
         &mut app,
         1,
         json!({"v":1,"msg_id":"snap","op":"discover","args":{}}),
     );
-    assert_eq!(snapshot[0]["type"], "result");
-    let token = snapshot[0]["result"]["projection"].as_str().unwrap();
+    assert_eq!(projection[0]["type"], "result");
+    let token = projection[0]["result"]["projection"].as_str().unwrap();
     let cursor = json!({
-        "boot_id": snapshot[0]["result"]["revision"]["boot_id"],
-        "seq": snapshot[0]["result"]["revision"]["event_seq"]
+        "boot_id": projection[0]["result"]["revision"]["boot_id"],
+        "seq": projection[0]["result"]["revision"]["event_seq"]
     });
-    let index = snapshot[0]["result"]["next_index"].as_str().unwrap_or("0");
+    let index = projection[0]["result"]["next_index"]
+        .as_str()
+        .unwrap_or("0");
     let frozen_page = ask(
         &mut service,
         &mut app,
@@ -192,7 +194,7 @@ fn expired_projection_and_previous_boot_cursor_or_scope_require_explicit_resync(
         json!({"v":1,"msg_id":"snap","op":"discover","args":{}}),
     );
     let token = snap[0]["result"]["projection"].as_str().unwrap();
-    app.expire_snapshots_at(std::time::Duration::from_secs(6));
+    app.expire_projections_at(std::time::Duration::from_secs(6));
     let page = ask(
         &mut first,
         &mut app,
