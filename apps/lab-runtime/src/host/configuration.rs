@@ -959,39 +959,21 @@ impl HostCore {
             .managed_components
             .get(index)
             .ok_or(Error::InvalidConfiguration("managed component index"))?;
-        let implementation = ComponentImplementation::built_in(component.implementation.clone())?;
         let id = ComponentId::new(component.id);
-        let kind = component
-            .input_instrument_id
-            .map_or(ComponentKind::Source, |input| ComponentKind::Transform {
-                input: SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
-            });
-        let definition = ComponentDefinition {
-            manifest: ComponentManifest {
-                schema_version: 1,
+        let definition = build_component_definition(
+            &component.implementation,
+            NativeComponentDefinition {
                 id,
                 instrument: InstrumentId::new(component.instrument_id),
                 name: component.display_name.clone(),
-                parameter: lab_core::TEMPERATURE,
-                kind,
-                unit: Unit::CELSIUS,
-                min: -100.0,
-                max: 500.0,
-                warmup_samples: component.configured_window().unwrap_or_else(|| {
-                    if component.input_instrument_id.is_some() {
-                        3
-                    } else {
-                        1
-                    }
-                }),
-                max_input_age: Duration::from_secs(2),
-                history_capacity: 32,
+                input: component
+                    .input_instrument_id
+                    .map(|input| SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE)),
+                config: component
+                    .plain_config()
+                    .map_err(|_| Error::InvalidConfiguration("managed PlainData config"))?,
             },
-            implementation,
-            config: component
-                .plain_config()
-                .map_err(|_| Error::InvalidConfiguration("managed PlainData config"))?,
-        };
+        )?;
         self.runtime.command(if replaces {
             Command::PrepareComponentReplacement {
                 definition,

@@ -14,12 +14,14 @@
 
 use crate::{
     definition::{MAX_DEFINITION_BYTES, parse_definition_json},
-    managed_executor::MOVING_MEAN_IMPLEMENTATION,
+    managed_executor::{
+        NativeComponentDefinition, component_property_metadata, validate_component_configuration,
+    },
 };
 use lab_core::{
-    AccessMode, ParameterRole, Unit, ValueSpec, WriteEffect,
+    AccessMode, InstrumentId, ParameterRole, SignalId, Unit, ValueSpec, WriteEffect,
     instrument::KnownOperation,
-    managed::{ComponentImplementationId, PlainData, PlainValue},
+    managed::{ComponentId, ComponentImplementationId, PlainData, PlainValue},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -709,22 +711,27 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
         validate_period(component.period_ms, "component period")?;
         ComponentImplementationId::new(component.implementation.clone())
             .map_err(|_| ConfigurationError::invalid("invalid component implementation"))?;
-        component.plain_config()?;
-        match component.implementation.as_str() {
-            MOVING_MEAN_IMPLEMENTATION
-                if component.input_instrument_id.is_some()
-                    && component.configured_window().is_some() => {}
-            MOVING_MEAN_IMPLEMENTATION => {
-                return Err(ConfigurationError::invalid(
-                    "native moving mean requires Transform input and window 2..=64",
-                ));
-            }
-            _ => {
-                return Err(ConfigurationError::invalid(
-                    "unknown managed implementation",
-                ));
-            }
+        let properties = component_property_metadata(&component.implementation);
+        if properties.is_empty() {
+            return Err(ConfigurationError::invalid(
+                "unknown managed implementation",
+            ));
         }
+        component.validate_property_shape(properties)?;
+        let config = component.plain_config()?;
+        validate_component_configuration(
+            &component.implementation,
+            NativeComponentDefinition {
+                id: ComponentId::new(component.id),
+                instrument: InstrumentId::new(component.instrument_id),
+                name: component.display_name.clone(),
+                input: component
+                    .input_instrument_id
+                    .map(|input| SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE)),
+                config,
+            },
+        )
+        .map_err(|_| ConfigurationError::invalid("invalid managed implementation configuration"))?;
         if !component_ids.insert(component.id)
             || instrument_ids.contains(&component.instrument_id)
             || managed_inputs
@@ -1427,6 +1434,42 @@ pub(crate) struct ManagedComponentDto {
 }
 
 impl ManagedComponentDto {
+    fn validate_property_shape(
+        &self,
+        properties: &[crate::managed_executor::ComponentPropertyMetadata],
+    ) -> Result<(), ConfigurationError> {
+        if self.config.len() != properties.len() {
+            return Err(ConfigurationError::invalid(
+                "managed component properties do not match registration",
+            ));
+        }
+        for property in properties {
+            let value = self.config.get(property.id).ok_or_else(|| {
+                ConfigurationError::invalid("managed component property is missing")
+            })?;
+            match (property.value_type, value) {
+                ("integer" | "number", toml::Value::Integer(value))
+                    if property.minimum.is_none_or(|minimum| *value >= minimum)
+                        && property.maximum.is_none_or(|maximum| *value <= maximum) => {}
+                ("number", toml::Value::Float(value))
+                    if value.is_finite()
+                        && property
+                            .minimum
+                            .is_none_or(|minimum| *value >= minimum as f64)
+                        && property
+                            .maximum
+                            .is_none_or(|maximum| *value <= maximum as f64) => {}
+                ("boolean", toml::Value::Boolean(_)) | ("text", toml::Value::String(_)) => {}
+                _ => {
+                    return Err(ConfigurationError::invalid(
+                        "managed component property has invalid type or bounds",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn plain_config(&self) -> Result<PlainData, ConfigurationError> {
         let mut fields = BTreeMap::new();
         for (key, value) in &self.config {
@@ -1459,18 +1502,6 @@ impl ManagedComponentDto {
         data.validate()
             .map_err(|_| ConfigurationError::invalid("invalid managed PlainData config"))?;
         Ok(data)
-    }
-
-    pub(crate) fn configured_window(&self) -> Option<usize> {
-        if self.config.len() != 1 {
-            return None;
-        }
-        match self.config.get("window") {
-            Some(toml::Value::Integer(value)) if (2..=64).contains(value) => {
-                usize::try_from(*value).ok()
-            }
-            _ => None,
-        }
     }
 }
 

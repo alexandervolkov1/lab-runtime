@@ -19,6 +19,7 @@
 
 mod components;
 mod configuration;
+mod instruments;
 mod lifecycle;
 mod recording;
 mod scheduler;
@@ -33,7 +34,9 @@ use crate::{
     configuration::{EvidenceDto, FrozenDeployment, InstrumentDto, ReferenceKindDto},
     definition::parse_definition_json,
     events::{EventError, EventLog},
-    managed_executor::MOVING_MEAN_IMPLEMENTATION,
+    managed_executor::{
+        MOVING_MEAN_IMPLEMENTATION, NativeComponentDefinition, build_component_definition,
+    },
 };
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
@@ -42,9 +45,7 @@ use lab_core::{
     control::{ControllerId, ControllerState, NativeControllerConfig, PidConfig},
     instrument::{KnownOperation, MetakonBinding, MetakonInstrumentConfig},
     managed::{
-        ComponentDefinition, ComponentError, ComponentExecutor, ComponentId,
-        ComponentImplementation, ComponentKind, ComponentManifest, ComponentState, PlainData,
-        PlainValue,
+        ComponentError, ComponentExecutor, ComponentId, ComponentState, PlainData, PlainValue,
     },
     output::{
         ActuatorId, DispatchOutcome, EvidenceLevel, OutputCommand, OutputResult, SafeProfile,
@@ -379,6 +380,7 @@ pub struct HostCore {
     deployment_provenance: Vec<ProvenanceEntry>,
     virtual_model_generations: BTreeMap<InstrumentId, u64>,
     emulator_targets: BTreeSet<SignalId>,
+    physical_instruments: BTreeSet<InstrumentId>,
     configured_probes: Vec<ConfiguredProbe>,
     configuration_quiesced: bool,
     reconnect_quiesced_resources: BTreeSet<ResourceId>,
@@ -400,9 +402,6 @@ impl HostCore {
     ) -> Result<Self, Error> {
         let dto = &deployment.effective().dto;
         let mut runtime = Runtime::new();
-        let mut measurements = Vec::with_capacity(dto.instruments.len());
-        let mut virtual_model_generations = BTreeMap::new();
-        let mut emulator_targets = BTreeSet::new();
         let mut resources = Vec::with_capacity(dto.resources.len());
         for resource in &dto.resources {
             let id = ResourceId::new(resource.id);
@@ -421,142 +420,13 @@ impl HostCore {
                 "undeclared configured transport",
             ));
         }
-        let mut metakon_reads = Vec::new();
-        let mut configured_probes = Vec::new();
-        for instrument in &dto.instruments {
-            match instrument {
-                InstrumentDto::VirtualMeasurement {
-                    id,
-                    display_name,
-                    history_capacity,
-                    base_temperature,
-                    measurement_enabled,
-                    external_publication,
-                    poll_period_ms,
-                    ..
-                } => {
-                    runtime.command(Command::RegisterVirtual(
-                        lab_core::VirtualInstrumentConfig {
-                            id: InstrumentId::new(*id),
-                            name: display_name.clone(),
-                            history_capacity: *history_capacity,
-                            base_temperature: *base_temperature,
-                            measurement_enabled: *measurement_enabled,
-                        },
-                    ))?;
-                    let signal = SignalId::new(InstrumentId::new(*id), lab_core::TEMPERATURE);
-                    if *external_publication {
-                        emulator_targets.insert(signal);
-                    } else {
-                        measurements.push((
-                            InstrumentId::new(*id),
-                            Periodic::new(Duration::from_millis(*poll_period_ms)),
-                        ));
-                    }
-                }
-                InstrumentDto::ThermalPlant {
-                    id,
-                    display_name,
-                    history_capacity,
-                    ambient_temperature,
-                    initial_temperature,
-                    gain_per_percent,
-                    time_constant_ms,
-                    poll_period_ms,
-                    ..
-                } => {
-                    runtime.command(Command::RegisterThermalPlant(ThermalPlantConfig {
-                        id: InstrumentId::new(*id),
-                        name: display_name.clone(),
-                        history_capacity: *history_capacity,
-                        ambient_temperature: *ambient_temperature,
-                        initial_temperature: *initial_temperature,
-                        gain_per_percent: *gain_per_percent,
-                        time_constant: Duration::from_millis(*time_constant_ms),
-                    }))?;
-                    virtual_model_generations.insert(InstrumentId::new(*id), 1);
-                    measurements.push((
-                        InstrumentId::new(*id),
-                        Periodic::new(Duration::from_millis(*poll_period_ms)),
-                    ));
-                }
-                InstrumentDto::Metakon {
-                    id,
-                    definition,
-                    resource_id,
-                    address,
-                    poll_period_ms,
-                    queue_timeout_ms,
-                    transaction_timeout_ms,
-                    ..
-                } => {
-                    let bytes = deployment
-                        .artifact_bytes(definition)
-                        .ok_or(Error::InvalidConfiguration("frozen definition missing"))?;
-                    let text = std::str::from_utf8(bytes)
-                        .map_err(|_| Error::InvalidConfiguration("definition is not UTF-8"))?;
-                    let definition = parse_definition_json(text)
-                        .map_err(|_| Error::InvalidConfiguration("invalid frozen definition"))?;
-                    if definition.id != InstrumentId::new(*id) {
-                        return Err(Error::InvalidConfiguration(
-                            "definition and deployment instrument IDs differ",
-                        ));
-                    }
-                    let temperature = definition
-                        .parameters
-                        .iter()
-                        .find(|parameter| parameter.operation == KnownOperation::Temperature)
-                        .ok_or(Error::InvalidConfiguration(
-                            "read-only Metakon definition lacks temperature",
-                        ))?
-                        .id;
-                    let channel_type = definition
-                        .parameters
-                        .iter()
-                        .find(|parameter| parameter.operation == KnownOperation::ChannelType)
-                        .ok_or(Error::InvalidConfiguration(
-                            "read-only Metakon definition lacks compatibility probe",
-                        ))?
-                        .id;
-                    let output_unit = definition
-                        .parameters
-                        .iter()
-                        .find(|parameter| parameter.operation == KnownOperation::Output)
-                        .map(|parameter| parameter.unit);
-                    runtime.command(Command::RegisterMetakon(MetakonInstrumentConfig {
-                        definition,
-                        binding: MetakonBinding {
-                            resource: ResourceId::new(*resource_id),
-                            device: *address,
-                            channel: 0,
-                            binding_generation: 1,
-                            mapping_revision: 1,
-                            expected_output_unit: output_unit,
-                            output_queue_ttl: output_unit
-                                .map(|_| Duration::from_millis(*queue_timeout_ms)),
-                            output_timeout: output_unit
-                                .map(|_| Duration::from_millis(*transaction_timeout_ms)),
-                        },
-                        history_capacity: 64,
-                    }))?;
-                    metakon_reads.push(MetakonReadSchedule {
-                        instrument: InstrumentId::new(*id),
-                        parameter: temperature,
-                        slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
-                        queue_ttl: Duration::from_millis(*queue_timeout_ms),
-                        timeout: Duration::from_millis(*transaction_timeout_ms),
-                    });
-                    configured_probes.push(ConfiguredProbe {
-                        instrument: InstrumentId::new(*id),
-                        parameter: channel_type,
-                        queue_ttl: Duration::from_millis(*queue_timeout_ms),
-                        timeout: Duration::from_millis(*transaction_timeout_ms),
-                        queued: false,
-                        baseline: None,
-                    });
-                }
-            }
-        }
+        let instruments = instruments::register_configured_instruments(&mut runtime, deployment)?;
+        let measurements = instruments.measurements;
+        let metakon_reads = instruments.metakon_reads;
+        let virtual_model_generations = instruments.virtual_model_generations;
+        let emulator_targets = instruments.emulator_targets;
+        let physical_instruments = instruments.physical_instruments;
+        let configured_probes = instruments.configured_probes;
         let mut outputs = Vec::with_capacity(dto.safe_profiles.len());
         let mut active_safety_profiles = Vec::with_capacity(dto.safe_profiles.len());
         for safe in &dto.safe_profiles {
@@ -737,6 +607,7 @@ impl HostCore {
             deployment_provenance,
             virtual_model_generations,
             emulator_targets,
+            physical_instruments,
             configured_probes,
             configuration_quiesced: false,
             reconnect_quiesced_resources: BTreeSet::new(),
@@ -850,6 +721,7 @@ impl HostCore {
             deployment_provenance: Vec::new(),
             virtual_model_generations: BTreeMap::from([(PLANT, 1)]),
             emulator_targets: BTreeSet::new(),
+            physical_instruments: BTreeSet::new(),
             configured_probes: Vec::new(),
             configuration_quiesced: false,
             reconnect_quiesced_resources: BTreeSet::new(),

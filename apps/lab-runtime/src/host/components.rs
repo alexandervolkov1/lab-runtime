@@ -24,30 +24,20 @@ impl HostCore {
                 "managed profile already staged",
             ));
         }
-        let manifest = ComponentManifest {
-            schema_version: 1,
-            id: MANAGED_FILTER,
-            instrument: InstrumentId::new(MANAGED_FILTER.get()),
-            name: "Native moving mean".into(),
-            parameter: lab_core::TEMPERATURE,
-            kind: ComponentKind::Transform {
-                input: SignalId::new(PLANT, lab_core::TEMPERATURE),
-            },
-            unit: Unit::CELSIUS,
-            min: -100.0,
-            max: 500.0,
-            warmup_samples: 3,
-            max_input_age: Duration::from_secs(2),
-            history_capacity: 32,
-        };
-        self.runtime.command(Command::StageComponent {
-            definition: ComponentDefinition {
-                manifest,
-                implementation: ComponentImplementation::built_in(MOVING_MEAN_IMPLEMENTATION)?,
+        let definition = build_component_definition(
+            MOVING_MEAN_IMPLEMENTATION,
+            NativeComponentDefinition {
+                id: MANAGED_FILTER,
+                instrument: InstrumentId::new(MANAGED_FILTER.get()),
+                name: "Native moving mean".into(),
+                input: Some(SignalId::new(PLANT, lab_core::TEMPERATURE)),
                 config: PlainData {
                     fields: BTreeMap::from([("window".into(), PlainValue::Number(3.0))]),
                 },
             },
+        )?;
+        self.runtime.command(Command::StageComponent {
+            definition,
             replaces: None,
             at,
         })?;
@@ -80,7 +70,7 @@ impl HostCore {
 
     /// Public semantic class for discovery; never exposes a Rust implementation type.
     pub fn instrument_kind(&self, id: InstrumentId) -> &'static str {
-        if self.runtime.metakon_binding(id).is_some() {
+        if self.physical_instruments.contains(&id) {
             "physical"
         } else if self
             .components
