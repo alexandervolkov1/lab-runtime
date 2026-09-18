@@ -744,6 +744,50 @@ pub(crate) mod test_support {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    #[ignore = "bounded developer-preview soak; writes more than the 16 MiB retention window"]
+    fn production_rotation_retains_exactly_the_documented_storage_window() {
+        let directory = temporary_directory("production-bound-rotation");
+        let written = Arc::new(AtomicU64::new(0));
+        let mut sink = RotatingSink::new(
+            directory.clone(),
+            MAX_FILE_BYTES,
+            RETAINED_FILE_COUNT,
+            false,
+            written,
+            Arc::new(OnceLock::new()),
+        );
+        let record = vec![b'x'; MAX_RECORD_BYTES];
+        let records_per_file = MAX_FILE_BYTES.div_ceil(MAX_RECORD_BYTES as u64) as usize;
+        for _ in 0..records_per_file * (RETAINED_FILE_COUNT + 2) {
+            sink.write_all(&record).unwrap();
+        }
+        sink.flush().unwrap();
+        drop(sink);
+
+        let files: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let total: u64 = files
+            .iter()
+            .map(|entry| entry.metadata().unwrap().len())
+            .sum();
+        assert_eq!(files.len(), RETAINED_FILE_COUNT);
+        assert!(
+            files
+                .iter()
+                .all(|entry| { entry.metadata().unwrap().len() <= MAX_FILE_BYTES })
+        );
+        assert!(total <= MAX_FILE_BYTES * RETAINED_FILE_COUNT as u64);
+        eprintln!(
+            "diagnostic rotation soak: files={}, retained_bytes={total}, bound={}",
+            files.len(),
+            MAX_FILE_BYTES * RETAINED_FILE_COUNT as u64
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     pub(crate) fn run_bounded_sink_contract() {
         creates_filters_caps_and_rotates_bounded_files();
         unavailable_file_falls_back_without_failing_the_subscriber();
