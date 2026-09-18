@@ -6,10 +6,10 @@
 //! operation correlation, then routes semantic work to focused modules:
 //!
 //! - `discovery` — discovery, instrument descriptions and component projections;
-//! - [`crate::measurements`] — current and recent in-memory measurements;
+//! - `measurements` — current and recent in-memory measurements;
 //! - `references` and `controllers` — native control-facing operations;
-//! - [`crate::recorder_api`] — Recorder DTO validation and projections;
-//! - [`crate::configuration_api`] — resources and deployment properties;
+//! - `recorder_api` — Recorder DTO validation and projections;
+//! - `configuration_api` — resources and deployment properties;
 //! - `virtuals` — virtual publication and native-model lifecycle;
 //! - `delivery` — frozen pages, subscriptions and replay delivery.
 //!
@@ -116,7 +116,13 @@ enum CompletedHistory {
     Runs(RunsPage),
 }
 
-/// Single-owner fixed API state; a TCP connection carries no domain authority.
+/// Single-owner fixed Application/session state; a connection carries no domain authority.
+///
+/// The facade validates already-decoded requests against the authoritative
+/// operation registry, owns deduplication and accepted/terminal correlation, and
+/// routes semantic work to focused handlers. It retains only bounded delivery
+/// state such as frozen pages, replay cursors and subscriptions. All experiment
+/// mutation still crosses [`ServiceHost`] into `HostCore` and Core Runtime.
 pub struct Application {
     sessions: SessionStore,
     clients: BTreeMap<u64, String>,

@@ -15,13 +15,13 @@ use lab_core::{
 use serde_json::{Value as JsonValue, json};
 
 /// Encode one stable signal identity. Instrument and parameter positions are not identities.
-pub fn signal_id_json(signal: lab_core::SignalId) -> JsonValue {
+pub(crate) fn signal_id_json(signal: lab_core::SignalId) -> JsonValue {
     json!({"instrument":signal.instrument().get().to_string(),
         "parameter":signal.parameter().get().to_string()})
 }
 
 /// Encode every scalar kind supported by the Core value contract.
-pub fn value_json(value: &Value) -> JsonValue {
+pub(crate) fn value_json(value: &Value) -> JsonValue {
     match value {
         Value::Float(value) => json!(value),
         Value::Integer(value) => json!(value.to_string()),
@@ -41,7 +41,7 @@ fn failure_name(failure: MeasurementFailure) -> &'static str {
 }
 
 /// Encode a complete attempt; absence is represented separately by [`current_json`].
-pub fn sample_json(sample: &Sample, generation: u64) -> JsonValue {
+pub(crate) fn sample_json(sample: &Sample, generation: u64) -> JsonValue {
     let quality = match sample.quality() {
         lab_core::SampleQuality::Good => "good",
         lab_core::SampleQuality::Unavailable => "unavailable",
@@ -61,7 +61,7 @@ pub fn sample_json(sample: &Sample, generation: u64) -> JsonValue {
 }
 
 /// Encode authoritative current state without using missing fields as status.
-pub fn current_json(
+pub(crate) fn current_json(
     signal: lab_core::SignalId,
     unit: lab_core::Unit,
     sample: Option<&Sample>,

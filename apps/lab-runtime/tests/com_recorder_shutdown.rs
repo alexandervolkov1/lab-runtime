@@ -90,6 +90,9 @@ impl ByteTransport for OneTurnShutdownTransport {
 
 #[test]
 fn service_does_not_freeze_a_one_turn_transport_retirement_as_terminal_failure() {
+    // Regression for the M9D shutdown correction: Pending is progress state, not a
+    // terminal classification. The owner must grant a later bounded turn so a COM
+    // worker that closes asynchronously can prove completion.
     let attempts = Arc::new(AtomicUsize::new(0));
     let mut host = HostCore::virtual_demo().unwrap();
     host.register_transport(

@@ -228,6 +228,18 @@ enum OwnedState {
 }
 
 /// Sole owner and serializer for one conflicting byte resource.
+///
+/// The executor owns exactly one [`ByteTransport`], an ordinary queue bounded by
+/// [`MAX_QUEUED_TRANSACTIONS`], one reserved safe-output slot and the current
+/// transport generation. Polling produces bounded crate-private completion events;
+/// a completion reports transaction progress, never Metakon meaning, output
+/// authority, readback verification or physical effect.
+///
+/// Output admission is crate-private. Before byte offset zero, Runtime must pass the
+/// final authority, binding-generation and mapping-revision check; acceptance of
+/// any prefix is then reported as send-started. Retirement is nonblocking:
+/// [`TransportShutdown::Pending`] requires later owner turns and is not failure or
+/// completion.
 pub struct ResourceExecutor {
     id: ResourceId,
     adapter: Box<dyn ByteTransport>,

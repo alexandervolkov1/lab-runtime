@@ -36,7 +36,7 @@ pub mod build_identity;
 /// Strict bounded declarative deployment loading and validation.
 pub mod configuration;
 /// Semantic resource and validated property projections for the Application API.
-pub mod configuration_api;
+pub(crate) mod configuration_api;
 /// Strict declarative instrument-definition adapter to trusted Core operations.
 pub mod definition;
 /// Staged configuration diff and explicit apply lifecycle.
@@ -47,14 +47,14 @@ pub mod events;
 pub mod host;
 /// Compile-time managed implementation registry and shared bounded worker pool.
 pub mod managed_executor;
-/// Stable public discovery and measurement DTO builders.
-pub mod measurements;
+/// Stable wire-facing discovery and measurement projection builders.
+pub(crate) mod measurements;
 /// Stable Application-protocol identity, operation registry, and public errors.
 pub mod protocol;
 /// Bounded durable-history storage adapter and host-owned recording ingress.
 pub mod recorder;
 /// Semantic Recorder projections kept independent from its SQLite implementation.
-pub mod recorder_api;
+pub(crate) mod recorder_api;
 /// Bounded worker-backed Windows COM byte adapter, private to trusted host orchestration.
 pub(crate) mod serial;
 pub mod server;

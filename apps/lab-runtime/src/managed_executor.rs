@@ -33,16 +33,15 @@ mod registry;
 #[cfg(test)]
 mod reference_component;
 
-pub use registry::{
-    ComponentPropertyMetadata, MOVING_MEAN_IMPLEMENTATION, component_property_metadata,
-};
+pub use registry::MOVING_MEAN_IMPLEMENTATION;
 pub(crate) use registry::{
-    NativeComponentDefinition, build_component_definition, validate_component_configuration,
+    ComponentPropertyMetadata, NativeComponentDefinition, build_component_definition,
+    component_property_metadata, validate_component_configuration,
 };
 
 use lab_core::managed::{
     ComponentCompletion, ComponentError, ComponentExecutor, ComponentResult, Correlation,
-    Invocation, InvocationPhase,
+    Invocation,
 };
 use std::{
     sync::{
@@ -58,46 +57,6 @@ static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const WORKERS: usize = 2;
 const JOB_DEADLINE: Duration = Duration::from_millis(100);
 const WORKER_STACK: usize = 2 * 1024 * 1024;
-
-/// Trusted fixture gate proving both fixed worker slots entered managed Step work.
-/// It is unavailable to component code and exists only for deterministic tests.
-pub struct WorkerBarrier {
-    enabled: AtomicBool,
-    entered: AtomicUsize,
-    released: AtomicBool,
-}
-
-impl WorkerBarrier {
-    /// Create a disabled gate so initialization may finish before Step blocking.
-    pub const fn new() -> Self {
-        Self {
-            enabled: AtomicBool::new(false),
-            entered: AtomicUsize::new(0),
-            released: AtomicBool::new(false),
-        }
-    }
-
-    /// Gate future Step work on the common worker boundary.
-    pub fn enable(&self) {
-        self.enabled.store(true, Ordering::Release);
-    }
-
-    /// Number of fixed workers that reached the gate.
-    pub fn entered(&self) -> usize {
-        self.entered.load(Ordering::Acquire)
-    }
-
-    /// Release gated workers during test cleanup.
-    pub fn release(&self) {
-        self.released.store(true, Ordering::Release);
-    }
-}
-
-impl Default for WorkerBarrier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 type WorkerRunner =
     fn(&Invocation, Instant, Arc<AtomicBool>) -> Result<ComponentResult, ComponentError>;
@@ -145,18 +104,10 @@ pub struct ManagedExecutor {
 impl ManagedExecutor {
     /// Launch the process-wide two-slot pool for all registered implementations.
     pub fn new() -> Result<Self, ComponentError> {
-        Self::new_with_runner_and_barrier(registry::run_registered, None)
+        Self::new_with_runner(registry::run_registered)
     }
 
-    /// Construct the production registry with a deterministic test-only Step gate.
-    pub fn new_with_barrier(barrier: Arc<WorkerBarrier>) -> Result<Self, ComponentError> {
-        Self::new_with_runner_and_barrier(registry::run_registered, Some(barrier))
-    }
-
-    fn new_with_runner_and_barrier(
-        runner: WorkerRunner,
-        barrier: Option<Arc<WorkerBarrier>>,
-    ) -> Result<Self, ComponentError> {
+    fn new_with_runner(runner: WorkerRunner) -> Result<Self, ComponentError> {
         ACTIVE_WORKERS
             .compare_exchange(0, WORKERS, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| ComponentError::Busy)?;
@@ -164,22 +115,12 @@ impl ManagedExecutor {
         for id in 0..WORKERS {
             let (jobs, job_receiver) = mpsc::sync_channel::<Work>(1);
             let (results, completions) = mpsc::sync_channel::<ComponentCompletion>(1);
-            let worker_barrier = barrier.clone();
             let worker = thread::Builder::new()
                 .name(format!("lab-managed-{id}"))
                 .stack_size(WORKER_STACK)
                 .spawn(move || {
                     let _guard = WorkerGuard;
                     while let Ok(work) = job_receiver.recv() {
-                        if let Some(gate) = &worker_barrier
-                            && gate.enabled.load(Ordering::Acquire)
-                            && work.invocation.phase == InvocationPhase::Step
-                        {
-                            gate.entered.fetch_add(1, Ordering::AcqRel);
-                            while !gate.released.load(Ordering::Acquire) {
-                                thread::yield_now();
-                            }
-                        }
                         let outcome = runner(&work.invocation, work.deadline, work.cancelled);
                         let timely = Instant::now() < work.deadline;
                         let completion = ComponentCompletion {

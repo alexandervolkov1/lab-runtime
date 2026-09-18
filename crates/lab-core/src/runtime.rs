@@ -26,6 +26,16 @@
 //! `requested != authorized != send_started != ACK != readback != physical_effect`.
 //! Once a write has started, an ambiguous result is never treated as proof that no
 //! write occurred and the original command is not blindly retried.
+//!
+//! # Implementation map
+//!
+//! - `dispatch` is the command/query entry point;
+//! - `physical_io` owns transaction admission, completion correlation and commits;
+//! - `controllers` advances native controllers into output proposals;
+//! - `managed_components` validates executor completions before signal commit.
+//!
+//! These private modules split the implementation, not the owner. Their mutable
+//! state remains fields of the one [`Runtime`] below.
 
 mod controllers;
 mod dispatch;
@@ -486,7 +496,16 @@ pub struct ParameterObservation {
     pub latest: Option<Sample>,
 }
 
-/// Single synchronous state owner. No I/O, interior mutability or background work.
+/// Sole synchronous owner of mutable experiment/domain state.
+///
+/// A `Runtime` owns instruments, committed observations, References, controllers,
+/// output authorities, resource executors, managed-component lifecycle and the
+/// semantic Recorder outbox. It advances only through [`Command`] and exposes only
+/// owned committed snapshots through [`Query`]. Host scheduling, OS adapters,
+/// SQLite, NDJSON sessions and wall-clock projection live outside this type.
+///
+/// The struct has no interior mutability or background thread: callers must
+/// serialize access, which keeps every authority transition in one explicit owner.
 #[derive(Default)]
 pub struct Runtime {
     managed: BTreeMap<ComponentId, ManagedInstance>,

@@ -18,11 +18,11 @@ use lab_core::{
 use serde_json::{Value, json};
 
 /// Maximum records in one frozen property projection.
-pub const PROPERTY_RECORD_LIMIT: usize = 256;
+pub(crate) const PROPERTY_RECORD_LIMIT: usize = 256;
 /// Maximum records emitted in one configuration page.
-pub const PROPERTY_PAGE_LIMIT: usize = 64;
+pub(crate) const PROPERTY_PAGE_LIMIT: usize = 64;
 /// Maximum encoded bytes in one configuration page.
-pub const PROPERTY_PAGE_BYTES: usize = 8 * 1024;
+pub(crate) const PROPERTY_PAGE_BYTES: usize = 8 * 1024;
 
 /// Complete current configuration lifecycle projection.
 pub(crate) fn status_json(service: &ServiceHost) -> Value {

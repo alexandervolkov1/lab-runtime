@@ -6,6 +6,17 @@
 //! a second copy of experiment state. Entropy failure, malformed configuration,
 //! failed safe profile or failed startup Recorder/transport work prevents readiness.
 //! The network reactor remains a separate adapter.
+//!
+//! # Implementation map
+//!
+//! - the parent module validates startup and owns the process resources;
+//! - `configuration` stages/applies validated deployment candidates;
+//! - `reconnect` advances retire/open/probe/rebind under one generation fence;
+//! - `shutdown` gives safety, transport and Recorder cleanup bounded owner turns.
+//!
+//! Native scheduling remains in [`crate::host`], Application request/session state
+//! remains in [`crate::application`], and experiment authority remains in
+//! [`lab_core::Runtime`].
 
 mod configuration;
 mod reconnect;
@@ -129,7 +140,14 @@ impl ServiceOptions {
     }
 }
 
-/// Safe owner and bound listener; neither socket nor serialization enters Core.
+/// Process-lifecycle owner around one serialized [`HostCore`].
+///
+/// `ServiceHost` owns the listener, monotonic clock, deployment lifecycle,
+/// reconnect candidates and shutdown deadline. It advances those resources in
+/// bounded turns and exposes `HostCore` to the Application facade, but never caches
+/// a second authoritative experiment state. Socket framing and client delivery are
+/// handled outside this type; OS and SQLite errors are translated before reaching
+/// the public Application error taxonomy.
 pub struct ServiceHost {
     host: HostCore,
     clock: SystemClock,

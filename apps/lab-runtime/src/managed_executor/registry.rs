@@ -16,17 +16,17 @@ pub const MOVING_MEAN_IMPLEMENTATION: &str = moving_mean::IMPLEMENTATION;
 
 /// Registration-owned configuration metadata projected generically by the API.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ComponentPropertyMetadata {
+pub(crate) struct ComponentPropertyMetadata {
     /// Stable property identity within the implementation configuration.
-    pub id: &'static str,
+    pub(crate) id: &'static str,
     /// Language-neutral scalar type.
-    pub value_type: &'static str,
+    pub(crate) value_type: &'static str,
     /// Inclusive numeric minimum, when applicable.
-    pub minimum: Option<i64>,
+    pub(crate) minimum: Option<i64>,
     /// Inclusive numeric maximum, when applicable.
-    pub maximum: Option<i64>,
+    pub(crate) maximum: Option<i64>,
     /// Runtime lifecycle class selected by trusted registration.
-    pub mutation_class: &'static str,
+    pub(crate) mutation_class: &'static str,
 }
 
 /// Host-supplied identity and binding for one statically registered implementation.
@@ -78,7 +78,9 @@ fn registration(implementation: &str) -> Option<&'static Registration> {
 
 /// Property metadata for one registered implementation. The wire layer has no
 /// implementation-specific branch, so new registrations need no new operation.
-pub fn component_property_metadata(implementation: &str) -> &'static [ComponentPropertyMetadata] {
+pub(crate) fn component_property_metadata(
+    implementation: &str,
+) -> &'static [ComponentPropertyMetadata] {
     registration(implementation).map_or(&[], |entry| entry.properties)
 }
 

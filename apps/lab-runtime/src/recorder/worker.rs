@@ -221,7 +221,14 @@ struct LiveActivationReservation {
     bytes: usize,
 }
 
-/// Runtime-owned ingress to one SQLite worker. No method executes disk I/O.
+/// Host-owned bounded ingress and lifecycle handle for one SQLite worker.
+///
+/// No method executes disk I/O on the owner lane. Admission reserves record, byte
+/// and causal-group credit before a nonblocking send; a durable worker receipt is
+/// the only normal release of that credit. The storage thread exclusively owns
+/// [`SqliteStore`], may block on SQLite, and reports bounded receipts/history pages
+/// back to this handle. Dropping the handle never converts an unfinished write into
+/// durability evidence and never waits indefinitely for an OS call.
 pub struct RecorderWorker {
     sender: SyncSender<Message>,
     receipt: Arc<Mutex<Receipt>>,

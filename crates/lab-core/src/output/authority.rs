@@ -26,7 +26,20 @@ struct Pending {
     expires: Duration,
 }
 
-/// One registered actuator's authority, independent of client or algorithm lifetime.
+/// One registered actuator's permission state, independent of client or algorithm lifetime.
+///
+/// Proposals carry requested values but no permission to send. Permission is bound
+/// to a finite lease, authority instance, revocation epoch and current physical
+/// binding/mapping generation. `ResourceExecutor` asks this owner to validate those
+/// facts again immediately before the first possible byte and then reports the
+/// distinct send-started transition.
+///
+/// `requested != authorized != send_started != ACK != readback != physical_effect`.
+/// ACK and readback are separate evidence stages, and neither proves independent
+/// physical effect. If a started write settles ambiguously, normal authority stays
+/// revoked. For a safe write, the required safe obligation remains recorded while
+/// resend permission is separately blocked: obligation is not authorization to
+/// repeat an operation whose physical outcome is unknown.
 pub(crate) struct OutputAuthority {
     actuator: ActuatorId,
     instance: u64,

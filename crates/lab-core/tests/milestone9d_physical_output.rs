@@ -357,6 +357,9 @@ fn mismatching_readback_is_explicit_and_requests_safe_without_success() {
 
 #[test]
 fn readback_timeout_is_ambiguous_and_never_retries_the_write() {
+    // Once any WRITE byte may have reached hardware, timeout cannot prove absence
+    // of effect. This oracle protects the non-retriable ambiguous state and the
+    // separate safe obligation from a tempting queue-level retry simplification.
     let (mut runtime, wire) = setup();
     establish_safe(&mut runtime);
     install_controller(&mut runtime);

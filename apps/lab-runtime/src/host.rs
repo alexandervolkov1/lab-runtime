@@ -16,6 +16,15 @@
 //! samples then feed current/history projections, events, controllers and semantic
 //! Recorder facts. Physical output returns through Runtime's OutputAuthority and
 //! resource executor rather than through a host-side write bypass.
+//!
+//! # Implementation map
+//!
+//! - `instruments` composes configured instrument kinds and their schedules;
+//! - `scheduler` preserves the safety-first owner-turn order described above;
+//! - `components` connects the bounded native executor to Runtime;
+//! - `recording` admits semantic facts and lifecycle work to Recorder;
+//! - `configuration` applies validated live/rebind changes;
+//! - `lifecycle` owns commands, shutdown and adapter retirement.
 
 mod components;
 mod configuration;
@@ -357,7 +366,13 @@ struct PendingOperation {
     deferred_safe_terminal: Option<OperationRecord>,
 }
 
-/// Sole mutable Core owner plus one explicit schedule; callers serialize commands.
+/// Serialized host composition around the sole mutable Core [`Runtime`] owner.
+///
+/// `HostCore` retains schedules, adapter catalogs, transient event projection and
+/// Recorder admission state needed to progress Runtime. Those fields coordinate
+/// work; they do not duplicate authoritative instrument, controller,
+/// OutputAuthority or measurement state. [`HostCore::service`] is the single
+/// monotonic owner turn and never delegates ownership to an API client or worker.
 pub struct HostCore {
     runtime: Runtime,
     events: EventLog,

@@ -846,6 +846,9 @@ fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
 
 #[test]
 fn disconnected_held_history_job_cannot_publish_into_reused_client_capacity() {
+    // A disconnected job may finish after its connection slot is reused. Keeping
+    // the orphan/cancellation fence prevents that late durable page from becoming
+    // data owned by the new client generation.
     let path = temporary_database();
     let archive_boot = "91919191919191919191919191919191";
     let mut archive = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
