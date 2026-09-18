@@ -253,23 +253,28 @@ fn old_epoch_and_late_result_cannot_restore_authority_or_confirm_new_safe() {
 
 #[test]
 fn safe_failure_ambiguity_and_insufficient_evidence_never_become_disarmed() {
-    for outcome in [
-        DispatchOutcome::Failed,
-        DispatchOutcome::Ambiguous,
-        DispatchOutcome::Acknowledged,
-    ] {
+    for outcome in [DispatchOutcome::Failed, DispatchOutcome::Ambiguous] {
         let mut runtime = setup(0.0);
         action(&mut runtime, OutputCommand::RequestSafe, 0).unwrap();
         let sent = dispatch(&mut runtime, 0);
         complete(&mut runtime, sent, outcome, 1);
         assert_eq!(snapshot(&runtime).state, OutputState::FaultLatched);
         assert!(action(&mut runtime, OutputCommand::AcknowledgeFault, 1).is_err());
-        make_safe(&mut runtime, 2);
+        action(&mut runtime, OutputCommand::RequestSafe, 2).unwrap();
+        assert!(action(&mut runtime, OutputCommand::BeginDispatch, 2).is_err());
         assert_eq!(snapshot(&runtime).state, OutputState::FaultLatched);
-        action(&mut runtime, OutputCommand::AcknowledgeFault, 2).unwrap();
-        assert_eq!(snapshot(&runtime).state, OutputState::Disarmed);
+        assert!(!snapshot(&runtime).safe_confirmed);
         assert!(snapshot(&runtime).lease.is_none());
     }
+
+    let mut runtime = setup(0.0);
+    action(&mut runtime, OutputCommand::RequestSafe, 0).unwrap();
+    let sent = dispatch(&mut runtime, 0);
+    complete(&mut runtime, sent, DispatchOutcome::Acknowledged, 1);
+    assert_eq!(snapshot(&runtime).state, OutputState::FaultLatched);
+    make_safe(&mut runtime, 2);
+    action(&mut runtime, OutputCommand::AcknowledgeFault, 2).unwrap();
+    assert_eq!(snapshot(&runtime).state, OutputState::Disarmed);
 }
 
 #[test]
@@ -361,22 +366,20 @@ fn a_new_safe_request_waits_for_and_is_not_confirmed_by_the_old_safe_result() {
         action(&mut runtime, OutputCommand::RequestSafe, 1).unwrap();
         complete(&mut runtime, old_safe, result, 2);
         assert!(!snapshot(&runtime).safe_confirmed);
-        let current_safe = dispatch(&mut runtime, 2);
-        complete(
-            &mut runtime,
-            current_safe,
-            DispatchOutcome::ReadbackVerified,
-            3,
-        );
-        assert!(snapshot(&runtime).safe_confirmed);
-        assert_eq!(
-            snapshot(&runtime).state,
-            if result == DispatchOutcome::ReadbackVerified {
-                OutputState::Disarmed
-            } else {
-                OutputState::FaultLatched
-            }
-        );
+        if result == DispatchOutcome::ReadbackVerified {
+            let current_safe = dispatch(&mut runtime, 2);
+            complete(
+                &mut runtime,
+                current_safe,
+                DispatchOutcome::ReadbackVerified,
+                3,
+            );
+            assert!(snapshot(&runtime).safe_confirmed);
+            assert_eq!(snapshot(&runtime).state, OutputState::Disarmed);
+        } else {
+            assert!(action(&mut runtime, OutputCommand::BeginDispatch, 2).is_err());
+            assert_eq!(snapshot(&runtime).state, OutputState::FaultLatched);
+        }
     }
 }
 
