@@ -15,7 +15,7 @@ use std::{
     ops::RangeInclusive,
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, SyncSender, TrySendError},
     },
@@ -51,6 +51,8 @@ impl MonotonicSource {
 struct BarrierState {
     held: AtomicBool,
     reached: AtomicBool,
+    gate: Mutex<()>,
+    changed: Condvar,
     hold_start: bool,
     hold_after_fact_commit: bool,
     hold_terminal_operation: bool,
@@ -70,6 +72,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
@@ -86,6 +90,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: true,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
@@ -103,6 +109,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: true,
             hold_terminal_operation: false,
@@ -120,6 +128,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: true,
@@ -136,6 +146,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(false),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
@@ -152,6 +164,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(true),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
@@ -169,6 +183,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(false),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
@@ -185,6 +201,8 @@ impl WriterBarrier {
         Self(Arc::new(BarrierState {
             held: AtomicBool::new(false),
             reached: AtomicBool::new(false),
+            gate: Mutex::new(()),
+            changed: Condvar::new(),
             hold_start: false,
             hold_after_fact_commit: false,
             hold_terminal_operation: false,
@@ -212,15 +230,43 @@ impl WriterBarrier {
     /// Release any worker held at a deterministic storage stage.
     pub fn release(&self) {
         self.0.held.store(false, Ordering::Release);
+        self.0.changed.notify_all();
     }
     /// Whether the worker actually reached a held storage stage.
     pub fn reached(&self) -> bool {
         self.0.reached.load(Ordering::Acquire)
     }
+    /// Wait for the exact worker barrier predicate, with a finite hang guard.
+    pub fn wait_until_reached(&self, timeout: Duration) -> bool {
+        if self.reached() {
+            return true;
+        }
+        let guard = self
+            .0
+            .gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _ = self
+            .0
+            .changed
+            .wait_timeout_while(guard, timeout, |_| !self.reached())
+            .unwrap_or_else(|error| error.into_inner());
+        self.reached()
+    }
     fn await_release(&self) {
+        let mut guard = self
+            .0
+            .gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.0.reached.store(true, Ordering::Release);
+        self.0.changed.notify_all();
         while self.0.held.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(1));
+            guard = self
+                .0
+                .changed
+                .wait(guard)
+                .unwrap_or_else(|error| error.into_inner());
         }
     }
 }

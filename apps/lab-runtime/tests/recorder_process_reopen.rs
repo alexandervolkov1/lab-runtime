@@ -16,7 +16,7 @@ use lab_runtime::{
 };
 use serde_json::json;
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
     sync::mpsc,
@@ -91,11 +91,10 @@ fn child_holds_real_retune_terminal_after_durable_acceptance() {
     assert_eq!(outcome[0]["state"], "accepted");
     assert_eq!(outcome[1]["state"], "completed");
     assert_eq!(outcome[1]["result"]["revision"], "2");
-    let held_by = Instant::now() + Duration::from_secs(2);
-    while !barrier.reached() {
-        assert!(Instant::now() < held_by);
-        thread::yield_now();
-    }
+    assert!(
+        barrier.wait_until_reached(Duration::from_secs(2)),
+        "terminal operation did not reach the authoritative SQLite barrier"
+    );
     let clock = service.clock_copy();
     service.owner_mut().service(&clock).unwrap();
     assert!(
@@ -748,6 +747,7 @@ fn kill_selected_child(
         .spawn()
         .unwrap();
     let stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
     let (tx, rx) = mpsc::channel();
     let marker = marker.to_owned();
     let reader = thread::spawn(move || {
@@ -759,11 +759,22 @@ fn kill_selected_child(
             }
         }
     });
-    let observed = rx.recv_timeout(Duration::from_secs(4));
-    child.kill().unwrap();
-    child.wait().unwrap();
+    let error_reader = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+    // The child owns finite state/barrier watchdogs and either emits this exact
+    // marker or exits, which disconnects the channel. The parent therefore
+    // waits on process evidence instead of a second scheduler-dependent timer.
+    let observed = rx.recv();
+    let _ = child.kill();
+    let status = child.wait().unwrap();
     reader.join().unwrap();
-    let marker = observed.expect("child did not reach held SQLite batch");
+    let stderr = error_reader.join().unwrap();
+    let marker = observed.unwrap_or_else(|error| {
+        panic!("child did not reach held SQLite batch: {error:?}; status={status}; stderr={stderr}")
+    });
     let mut identities = marker.split_whitespace();
     let old_boot = identities.next().unwrap().to_owned();
     let database_id = identities.next().unwrap().to_owned();

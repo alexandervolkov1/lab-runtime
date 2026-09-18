@@ -234,8 +234,13 @@ fn lifecycle_uses_runtime_safe_path_and_disconnect_does_not_undo_transition() {
         json!({"after":cursor,"filter":{"kinds":["controller"],"targets":[]}}),
     );
     assert_eq!(subscribed["type"], "result");
+    // Controller start validates input freshness against the authoritative
+    // service clock. Refresh due native work immediately before the mutation so
+    // workspace scheduling delay cannot age the fixture's startup sample.
+    let clock = fixture.service.clock_copy();
+    fixture.service.owner_mut().service(&clock).unwrap();
     let started = fixture.operation("controller_start", json!({"controller":"1"}));
-    assert_eq!(started[1]["state"], "completed");
+    assert_eq!(started[1]["state"], "completed", "{started:?}");
     assert!(matches!(
         started[1]["result"]["state"].as_str(),
         Some("warming" | "running")
