@@ -11,6 +11,7 @@ impl ServiceHost {
         if self.stopping_since.is_some() {
             return Ok(());
         }
+        tracing::info!(event = "shutdown_requested", "Runtime shutdown requested");
         self.stopping_since = Some(std::time::Instant::now());
         if let Some((_, candidate)) = self.quarantined_reconnect_candidate.as_mut() {
             candidate.retire();
@@ -18,6 +19,11 @@ impl ServiceHost {
         let clock = self.clock;
         if let Err(error) = self.host.begin_shutdown(&clock) {
             self.fatal = true;
+            tracing::error!(
+                event = "shutdown_begin_failed",
+                detail = %error,
+                "Runtime shutdown could not begin"
+            );
             return Err(error);
         }
         let at = self.clock.now();
@@ -33,6 +39,10 @@ impl ServiceHost {
     /// Record a fatal owner fault and enter the same bounded evidence-preserving
     /// shutdown path; a failed stop step still leaves the grace state active.
     pub fn request_fatal_shutdown(&mut self) {
+        tracing::error!(
+            event = "fatal_shutdown_requested",
+            "fatal owner failure requested bounded shutdown"
+        );
         self.fatal = true;
         let _ = self.request_shutdown();
     }
@@ -105,6 +115,26 @@ impl ServiceHost {
             if (status.recorder_flushed && (status.transports_closed || !status.safe_confirmed))
                 || flush_expired
             {
+                if status.exit_success {
+                    tracing::info!(
+                        event = "shutdown_terminal",
+                        safe_confirmed = status.safe_confirmed,
+                        recorder_flushed = status.recorder_flushed,
+                        transports_closed = status.transports_closed,
+                        "Runtime shutdown reached a clean terminal state"
+                    );
+                } else {
+                    tracing::error!(
+                        event = "shutdown_terminal_incomplete",
+                        safe_confirmed = status.safe_confirmed,
+                        unfinished_workers = status.unfinished_workers,
+                        unfinished_transports = status.unfinished_transports,
+                        recorder_flushed = status.recorder_flushed,
+                        recorder_error = status.recorder_error,
+                        fatal_error = status.fatal_error,
+                        "Runtime shutdown reached an incomplete terminal state"
+                    );
+                }
                 self.terminal = Some(status);
             }
         }

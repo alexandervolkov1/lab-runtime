@@ -288,6 +288,76 @@ impl EventLog {
             if self.facts.get(&key) == Some(&data) {
                 continue;
             }
+            let previous = self.facts.get(&key);
+            match &target {
+                Target::Signal(signal)
+                    if data["quality"] == "unavailable"
+                        && data["failure"] == "transport"
+                        && previous.is_none_or(|old| {
+                            old["quality"] != "unavailable" || old["failure"] != "transport"
+                        }) =>
+                {
+                    tracing::warn!(
+                        event = "physical_measurement_unavailable",
+                        instrument = signal.instrument().get(),
+                        parameter = signal.parameter().get(),
+                        "physical measurement became unavailable because of transport"
+                    );
+                }
+                Target::Signal(signal)
+                    if data["quality"] == "good"
+                        && previous.is_some_and(|old| {
+                            old["quality"] == "unavailable" && old["failure"] == "transport"
+                        }) =>
+                {
+                    tracing::info!(
+                        event = "physical_measurement_recovered",
+                        instrument = signal.instrument().get(),
+                        parameter = signal.parameter().get(),
+                        "physical measurement recovered with a fresh Good observation"
+                    );
+                }
+                Target::Controller(id) if data["state"] == "failed" => tracing::warn!(
+                    event = "controller_failed",
+                    controller = id.get(),
+                    "controller entered Failed; input health does not rearm output authority"
+                ),
+                Target::Output(actuator)
+                    if data["outcome"] == "ambiguous"
+                        || data["readback_failure"] == "mismatch"
+                        || data["readback_failure"] == "unavailable" =>
+                {
+                    tracing::warn!(
+                        event = "physical_output_unconfirmed",
+                        instrument = actuator.instrument().get(),
+                        parameter = actuator.parameter().get(),
+                        state = data["state"].as_str().unwrap_or("unknown"),
+                        outcome = data["outcome"].as_str().unwrap_or("unknown"),
+                        readback = data["readback_failure"].as_str().unwrap_or("unknown"),
+                        "physical output is unconfirmed; requested, sent, ACK, readback, and physical effect remain distinct"
+                    );
+                }
+                Target::Output(actuator) if data["safe_confirmed"] == true => tracing::info!(
+                    event = "physical_output_safe_readback_verified",
+                    instrument = actuator.instrument().get(),
+                    parameter = actuator.parameter().get(),
+                    "safe register readback verified; independent physical effect is not proven"
+                ),
+                Target::Output(actuator) if data["state"] == "safe_pending" => tracing::warn!(
+                    event = "physical_output_safe_obligation",
+                    instrument = actuator.instrument().get(),
+                    parameter = actuator.parameter().get(),
+                    "safe obligation is pending and is not permission to blindly resend"
+                ),
+                Target::Output(actuator) => tracing::debug!(
+                    event = "physical_output_state",
+                    instrument = actuator.instrument().get(),
+                    parameter = actuator.parameter().get(),
+                    state = data["state"].as_str().unwrap_or("unknown"),
+                    "physical output state changed"
+                ),
+                _ => {}
+            }
             self.append(at, target.kind(), target.id(), data.clone(), cause)?;
             self.facts.insert(key, data);
         }

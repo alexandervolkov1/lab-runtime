@@ -500,6 +500,13 @@ impl RecorderWorker {
     }
 
     fn fail(&mut self, message: &str) {
+        if self.cached.state != RecordingState::Failed {
+            tracing::error!(
+                event = "recorder_failed",
+                detail = message,
+                "Recorder entered a failed state"
+            );
+        }
         if self.cached.coverage == "complete" && self.cached.run_no.is_some() {
             self.cached.coverage = "unknown_tail";
         }

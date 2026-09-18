@@ -151,6 +151,12 @@ impl Peer {
                     self.partial_since = Some(Instant::now());
                 }
                 if self.input.len() + count > wire::FRAME_LIMIT {
+                    tracing::warn!(
+                        event = "client_frame_oversized",
+                        connection = id,
+                        limit = wire::FRAME_LIMIT,
+                        "closing client with oversized request frame"
+                    );
                     return Ok(false);
                 }
                 self.input.extend_from_slice(&scratch[..count]);
@@ -185,6 +191,13 @@ impl Peer {
                     let rejection = rejection(correlation.as_deref(), error.code);
                     self.rejection = Some(encode_outgoing(&rejection));
                     self.closing = true;
+                    tracing::warn!(
+                        event = "client_request_malformed",
+                        connection = id,
+                        code = error.code,
+                        frame_bytes = frame.len(),
+                        "closing client after bounded malformed request"
+                    );
                     return true;
                 }
             };
@@ -290,6 +303,11 @@ fn reactor(
             match listener.accept() {
                 Ok((stream, _)) => {
                     if peers.len() + pending_detach.len() >= MAX_CLIENTS {
+                        tracing::warn!(
+                            event = "client_capacity_exhausted",
+                            limit = MAX_CLIENTS,
+                            "dropping client at process capacity"
+                        );
                         drop(stream);
                         continue;
                     }
@@ -299,6 +317,12 @@ fn reactor(
                         .checked_add(1)
                         .ok_or(io::Error::other("connection ID exhausted"))?;
                     peers.insert(id, Peer::new(stream));
+                    tracing::debug!(
+                        event = "client_accepted",
+                        connection = id,
+                        active_clients = peers.len(),
+                        "loopback client accepted"
+                    );
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e),
@@ -315,6 +339,12 @@ fn reactor(
                 }) => {
                     if let Some(peer) = peers.get_mut(&id) {
                         if peer.reply_queued() >= CLIENT_OUT {
+                            tracing::warn!(
+                                event = "client_reply_backpressure",
+                                connection = id,
+                                limit = CLIENT_OUT,
+                                "dropping client with full reply queue"
+                            );
                             peers.remove(&id);
                             pending_detach.push_back(id);
                         } else {
@@ -341,6 +371,12 @@ fn reactor(
                 }) => {
                     if let Some(peer) = peers.get_mut(&id) {
                         if peer.event_queued() >= CLIENT_EVENTS {
+                            tracing::warn!(
+                                event = "client_event_backpressure",
+                                connection = id,
+                                limit = CLIENT_EVENTS,
+                                "dropping client with full event queue"
+                            );
                             peers.remove(&id);
                             pending_detach.push_back(id);
                         } else {
@@ -371,6 +407,11 @@ fn reactor(
                 false
             };
             if !alive {
+                tracing::debug!(
+                    event = "client_detached",
+                    connection = id,
+                    "loopback client detached"
+                );
                 peers.remove(&id);
                 pending_detach.push_back(id);
             }
@@ -389,6 +430,12 @@ pub fn run(
     mut service: ServiceHost,
     stop: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!(
+        event = "application_server_start",
+        address = %service.bound_address(),
+        max_clients = MAX_CLIENTS,
+        "Application server starting"
+    );
     let listener = service.listener().try_clone()?;
     listener.set_nonblocking(true)?;
     let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Incoming>(QUEUE);
@@ -464,6 +511,10 @@ pub fn run(
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    tracing::error!(
+                        event = "network_owner_channel_closed",
+                        "network reactor owner channel closed unexpectedly"
+                    );
                     service.request_fatal_shutdown();
                     break;
                 }
@@ -558,8 +609,23 @@ pub fn run(
                     .map_err(|_| io::Error::other("network reactor panicked"))?;
                 net?;
                 if status.exit_success {
+                    tracing::info!(
+                        event = "application_server_shutdown",
+                        safe_confirmed = status.safe_confirmed,
+                        recorder_flushed = status.recorder_flushed,
+                        "Application server stopped cleanly"
+                    );
                     return Ok(());
                 } else {
+                    tracing::error!(
+                        event = "application_server_shutdown_incomplete",
+                        safe_confirmed = status.safe_confirmed,
+                        unfinished_workers = status.unfinished_workers,
+                        unfinished_transports = status.unfinished_transports,
+                        recorder_flushed = status.recorder_flushed,
+                        recorder_error = status.recorder_error,
+                        "Application server shutdown incomplete"
+                    );
                     return Err(io::Error::other("safe shutdown incomplete").into());
                 }
             }

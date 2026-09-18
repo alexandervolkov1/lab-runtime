@@ -26,6 +26,12 @@ impl ServiceHost {
         expected_binding_generation: u64,
         factory: impl FnOnce(ComSettings, std::time::Instant) -> Result<ComTransport, SerialError>,
     ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
+        tracing::info!(
+            event = "resource_reconnect_requested",
+            resource_id,
+            expected_binding_generation,
+            "explicit resource reconnect requested"
+        );
         self.reconnect_diagnostic = None;
         let active = self
             .deployment
@@ -227,6 +233,13 @@ impl ServiceHost {
                     diagnostic.os_port_open_confirmed = snapshot.os_port_open_confirmed;
                     diagnostic.open_attempts = snapshot.open_attempts;
                     diagnostic.serial_error = snapshot.last_open_error;
+                    tracing::info!(
+                        event = "resource_port_ready",
+                        resource_id,
+                        generation,
+                        attempts = snapshot.open_attempts,
+                        "replacement COM resource is ready"
+                    );
                     break;
                 }
                 ComOpenStatus::Failed(error) => {
@@ -239,6 +252,14 @@ impl ServiceHost {
                     diagnostic.com_state = Some(snapshot.state);
                     diagnostic.serial_error = Some(error);
                     diagnostic.open_attempts = snapshot.open_attempts;
+                    tracing::warn!(
+                        event = "resource_reconnect_open_failed",
+                        resource_id,
+                        generation,
+                        error = ?error,
+                        attempts = snapshot.open_attempts,
+                        "replacement COM resource failed to open"
+                    );
                     self.cancel_recorded_lifecycle(pending);
                     self.retire_uninstalled_reconnect_candidate(
                         resource_key,
@@ -436,6 +457,12 @@ impl ServiceHost {
             .as_mut()
             .expect("diagnostic initialized")
             .stage = ReconnectStage::Complete;
+        tracing::info!(
+            event = "resource_reconnect_complete",
+            resource_id,
+            binding_generation = generation,
+            "resource reconnect completed without controller rearm"
+        );
         Ok(ReconnectResourceResult {
             resource_id,
             binding_generation: generation,

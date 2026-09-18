@@ -41,6 +41,8 @@ pub(crate) mod configuration_api;
 pub mod definition;
 /// Staged configuration diff and explicit apply lifecycle.
 pub mod deployment;
+/// Bounded best-effort process diagnostics, separate from scientific recording.
+pub mod diagnostics;
 /// Bounded transient semantic-event projection; not durable Recorder history.
 pub mod events;
 /// Explicit monotonic scheduling and trusted virtual host composition.
@@ -64,3 +66,11 @@ pub mod service;
 pub mod sessions;
 /// Bounded version-one NDJSON framing and strict host-side DTO validation.
 pub mod wire;
+
+#[cfg(test)]
+mod zz_diagnostics_tests {
+    #[test]
+    fn bounded_sink_contract_is_isolated_from_timing_sensitive_worker_tests() {
+        crate::diagnostics::test_support::run_bounded_sink_contract();
+    }
+}

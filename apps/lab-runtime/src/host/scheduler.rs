@@ -173,6 +173,12 @@ impl HostCore {
                         if after.state != ControllerState::Failed {
                             return Err(error);
                         }
+                        tracing::warn!(
+                            event = "controller_failed",
+                            controller = controller.get(),
+                            detail = %error,
+                            "controller entered Failed and output authority remains fail-closed"
+                        );
                     }
                     self.consumed.insert(*controller, latest);
                     report.controller_ticks += 1;

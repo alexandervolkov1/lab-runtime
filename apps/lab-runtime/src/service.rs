@@ -655,13 +655,24 @@ impl ServiceHost {
         listener.set_nonblocking(true)?;
         if let Some(recording) = options.recording() {
             let anchor = TimeAnchor::capture(|| clock.now(), || Ok(std::time::SystemTime::now()))?;
-            let worker = RecorderWorker::open_with_boot_clock(
+            let worker = match RecorderWorker::open_with_boot_clock(
                 &recording.path,
                 RecorderLimits::default(),
                 &boot_id,
                 anchor,
                 clock,
-            )?;
+            ) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    tracing::error!(
+                        event = "recorder_archive_open_failed",
+                        archive = %recording.path.display(),
+                        detail = %error,
+                        "Recorder archive could not be opened"
+                    );
+                    return Err(error.into());
+                }
+            };
             host.attach_recorder(worker, recording.policy, clock.now())?;
         }
         await_recorder_activation(&mut host)?;
@@ -870,13 +881,24 @@ impl ServiceHost {
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
         listener.set_nonblocking(true)?;
         if let Some(recording) = configured_recording.as_ref() {
-            let worker = RecorderWorker::open_with_boot_clock(
+            let worker = match RecorderWorker::open_with_boot_clock(
                 &recording.path,
                 RecorderLimits::default(),
                 &boot_id,
                 boot_anchor.expect("recording startup captured its boot anchor"),
                 clock,
-            )?;
+            ) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    tracing::error!(
+                        event = "recorder_archive_open_failed",
+                        archive = %recording.path.display(),
+                        detail = %error,
+                        "Recorder archive could not be opened"
+                    );
+                    return Err(error.into());
+                }
+            };
             host.attach_recorder(worker, recording.policy, clock.now())?;
         }
         await_recorder_activation(&mut host)?;

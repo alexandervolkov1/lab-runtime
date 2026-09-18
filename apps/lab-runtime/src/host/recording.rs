@@ -923,6 +923,27 @@ impl HostCore {
         let publish_lifecycle = crate::recorder_api::lifecycle_changed(previous.as_ref(), &status);
         self.recording_status = Some(status);
         if publish_lifecycle {
+            let status = self
+                .recording_status
+                .as_ref()
+                .expect("recording status was just stored");
+            if status.state == RecordingState::Failed {
+                tracing::error!(
+                    event = "recorder_state_failed",
+                    coverage = status.coverage,
+                    detail = status.first_error.as_deref().unwrap_or("unspecified"),
+                    "Recorder lifecycle is failed"
+                );
+            } else {
+                tracing::info!(
+                    event = "recorder_state",
+                    state = ?status.state,
+                    coverage = status.coverage,
+                    run = ?status.run_no,
+                    interval = ?status.interval_no,
+                    "Recorder lifecycle changed"
+                );
+            }
             let event_boot_id = self.event_log().boot_id().to_owned();
             let data = crate::recorder_api::status_json(
                 self.recording_status.as_ref(),
