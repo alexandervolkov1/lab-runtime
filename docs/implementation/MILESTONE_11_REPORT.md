@@ -1,5 +1,227 @@
 # Milestone 11 implementation report
 
+## M11.4 — Recorder, SQLite, crash and filesystem hardening
+
+### Status and scope
+
+```text
+M8-M10: ACCEPTED
+M11.1-M11.3: COMPLETE
+M11.4: COMPLETE
+M11.5: NOT STARTED
+M12+: NOT AUTHORIZED
+```
+
+M11.4 closed the focused storage-acceptance gaps identified by M11.1. It added
+deterministic external-lock and Windows read-only startup oracles and made offline
+integrity, WAL recovery and lifecycle completeness explicit in the clean-close and
+real process-kill tests. No production Rust, SQLite schema, transaction policy,
+Application operation or public DTO changed.
+
+### Frozen durability contract
+
+The authoritative boundary remains:
+
+```text
+Runtime semantic facts
+-> Host admission
+-> bounded RecorderWorker ingress
+-> SQLite worker transaction
+-> durable receipt / committed watermark
+```
+
+The concrete guarantees are:
+
+- Recorder open validates the application ID, schema version, required tables,
+  indexes, encoding and bounded file settings before creating the serving boot;
+- start becomes `Recording` only after the start/provenance/boundary transaction is
+  committed and its worker receipt is observed;
+- successful ingress reserves bounded credit and assigns FIFO identities, but does
+  not claim that the facts are durable;
+- only a successful worker receipt advances the committed prefix and releases the
+  corresponding ingress credit;
+- stop is ordered after all admitted FIFO work and becomes `Idle` only after the
+  interval and run are sealed in a committed transaction;
+- process finish separately commits the boot seal and then closes SQLite; a sealed
+  boot does not by itself fabricate a successful connection close;
+- a storage error makes Recorder failure sticky. The already committed prefix
+  remains authoritative, while an unconfirmed tail becomes a known gap where that
+  can be durably represented or conservatively `unknown_tail` otherwise;
+- process death has no graceful-stop guarantee. On validated reopen, active boot,
+  run and interval rows become `interrupted`, and run/interval coverage becomes
+  `unknown_tail` under a new boot identity.
+
+Therefore:
+
+```text
+fact admitted != fact durably committed
+archive structurally readable != experiment semantically complete
+```
+
+### Storage failure matrix
+
+| Failure | Detection | Recorder state | Runtime consequence | Durability consequence | API consequence | Recovery | Guarantee / regression |
+|---|---|---|---|---|---|---|---|
+| Missing parent or path is a directory | SQLite open error during process startup | No attached Ready worker and no active run | Serving never becomes ready for either policy | No database or half-started boot is claimed | Bounded startup error | Correct the configured path and restart | **GUARANTEED**; `explicit_unopenable_storage_fails_startup_before_readiness_for_both_policies` |
+| Windows file has the read-only attribute | Real SQLite open/initialization fails | No Ready worker | Required and BestEffort startup both fail before readiness | Existing main-file bytes and sole sealed boot remain unchanged | Bounded startup error, no raw SQL contract | Restore write access and restart | **GUARANTEED on Windows**; `readonly_windows_archive_fails_startup_for_both_policies_without_mutation` |
+| Foreign, corrupt, future or structurally incomplete archive | Pre-WAL compatibility validation fails | No serving boot | No experiment starts against the file | Existing bytes/schema are not repaired or rewritten | Bounded incompatible-storage failure | Supply a compatible archive or new path | **GUARANTEED**; transaction/reopen compatibility suite |
+| External writer holds `BEGIN EXCLUSIVE` | Configured 100-ms SQLite busy timeout expires | Open fails; no second owner | Runtime never sees a usable Recorder | No second boot or lifecycle mutation | Bounded startup failure | Release the external owner, then open in a new process | **GUARANTEED**; `external_sqlite_writer_lock_fails_within_the_busy_bound_without_starting_a_boot` |
+| Start/provenance transaction fails | Atomic SQL/commit error before start receipt | Starting becomes Failed or start is rejected | Required authority stays closed; BestEffort never gains Recorder-owned authority | No successful run boundary or partial provenance claim | Failed operation/status | Correct storage and start a new worker/process | **GUARANTEED** by lifecycle, provenance and transaction tests |
+| Ingress credit exhausted | Pre-send group/record/byte accounting rejects admission | Sticky Failed; reserved gap path is attempted | Required trips control/output; BestEffort native work may continue | Prefix stays fixed; loss is a gap or `unknown_tail` | Failed status with bounded counts and coverage | New worker/process after correcting pressure | **GUARANTEED** by backpressure/failure suites |
+| Fact/operation transaction or deferred constraint fails | SQLite statement or commit fails | Failed; worker terminates | Required fails closed; BestEffort does not transfer experiment authority to storage | Whole transaction rolls back; checkpoint cannot pass it | `recording_failed`, not a successful receipt | New worker/process; prior prefix remains readable | **GUARANTEED** by transaction/failure suites |
+| WAL threshold checkpoint fails | Required checkpoint reports busy/error or injected exact fault | Failed | Policy split applies without owner blocking | Last confirmed checkpoint/prefix remains; no fake success | Failed status preserves bounded storage health | Reopen after storage correction | **GUARANTEED** by startup/checkpoint tests |
+| Storage worker panics | Owner observes a finished thread without its terminal receipt | Failed/closed worker, pending credit remains honestly unconfirmed | Required fails controller/output; BestEffort acquisition/control remains independent | Only prior committed prefix is authoritative | Failed status reports the bounded worker failure | Process restart | **GUARANTEED** by worker-panic, Required and isolation tests |
+| Stop/seal transaction fails | Terminal SQL/commit error | Failed, not Idle | Required cannot claim complete coverage | Run/interval remain unsealed or interrupted on reopen | Stop cannot report durable success | Reopen for inspection; use a new process for recording | **GUARANTEED** by shutdown transaction tests |
+| Boot seal commits but close fails | Close fault after real terminal transaction | Failed; `worker_closed`/flush success is false | Process terminal result is unsuccessful | Seal may be durable, but successful close is not fabricated | Shutdown reports no successful Recorder flush | Inspect/reopen; restart | **GUARANTEED** by close-after-seal regression |
+| Process killed before fact commit | OS process termination at the pre-commit barrier | No owner transition can finish | No shutdown or safe-effect claim | Transaction is absent; committed prefix remains | Next open exposes interrupted/unknown-tail history | SQLite recovery plus a new boot | **GUARANTEED** by process-reopen oracle and offline integrity check |
+| Process killed after commit before receipt | OS termination at the post-commit barrier | Old owner receipt is unknowable | No control operation is replayed and no authority is restored | Nonempty WAL contains the committed row/checkpoint | Durable history exposes row under interrupted/unknown-tail run | SQLite recovery plus a new boot | **GUARANTEED** by process-reopen oracle and offline integrity check |
+| History job/cursor pressure or locked worker | Bounded job/cursor admission, cancellation and TTL | Recording lifecycle is unchanged | Acquisition, control and Recorder admission remain independent | Queries never expose an uncommitted page as durable | `history_busy`, cancellation or bounded failure | Consume, cancel, disconnect or wait for expiry | **GUARANTEED** by history API/isolation suites |
+
+An actual full disk is not created in tests. Exhaustion semantics are exercised
+deterministically by the checked one-GiB `max_page_count`, five-percent reserve,
+small test quota, WAL checkpoint fault and real insert/commit faults. The guarantee
+is that a write which cannot commit never receives durable acknowledgement; the
+exact Windows error code from a physical full volume remains **BEST EFFORT**.
+
+### Required and BestEffort policies
+
+Recorder policy remains a Runtime safety policy, not a SQLite setting:
+
+- `Required` blocks controller start until the start boundary is durable. Admission
+  failure, writer death or a missed two-second durable-progress deadline closes the
+  recording gate, fails active control, revokes leases and drives output safety;
+- `BestEffort` uses the same bounded worker and honest Failed/coverage state, but a
+  Recorder failure does not acquire authority to stop otherwise valid native
+  acquisition or control;
+- both policies reject an unusable configured archive before process readiness;
+- neither policy turns accepted ingress into a durable claim before a receipt.
+
+Existing `recorder_required`, `recorder_isolation`, `recorder_failure` and
+`recorder_backpressure` tests prove this split. M11.4 did not introduce another
+recording policy or recovery mechanism.
+
+### Clean close, process crash and WAL/SHM
+
+The paired acceptance is now explicit:
+
+**Clean path**
+
+```text
+start -> admit facts -> stop/drain -> seal run and interval
+-> finish/seal boot -> close -> offline integrity check
+```
+
+The clean shutdown oracle requires `PRAGMA integrity_check = ok`, one sealed boot,
+one sealed complete run, one sealed complete interval, successful Recorder flush
+and no active `-wal` or `-shm` sidecar after the worker connection closes.
+
+**Crash path**
+
+```text
+start -> commit known prefix -> kill before owner receipt
+-> nonempty WAL remains -> offline integrity check
+-> lifecycle is still active/recording and therefore unsealed
+-> validated product reopen -> interrupted + unknown_tail
+```
+
+The crash fixture deliberately proves that rows may be structurally readable and
+their local coverage field may contain `complete` while the boot/run/interval state
+is still active/recording. Such an archive is not semantically complete. Normal
+SQLite WAL recovery is used; M11.4 does not delete sidecars or copy only the main
+file. After product reopen and clean close, the committed prefix remains readable,
+the old lifecycle is interrupted/unknown-tail, and `integrity_check` remains `ok`.
+
+### Gaps, sealing and completeness
+
+| Archive condition | Structural readability | Lifecycle | Coverage interpretation |
+|---|---|---|---|
+| Clean complete run | `integrity_check = ok` | Boot, run and interval sealed | `complete` |
+| Explicit admitted-loss gap | Readable committed prefix and gap row | Failed/sealed according to the terminal path | `gap`; never complete |
+| Storage failure without a durable gap seal | Prior prefix readable | Failed, then interrupted on reopen if unfinished | `unknown_tail` |
+| Kill before commit | SQLite rolls back/omits the open transaction | Active before recovery; interrupted after reopen | `unknown_tail` |
+| Kill after commit before receipt | Committed WAL prefix is readable | Active before recovery; interrupted after reopen | `unknown_tail` despite the surviving row |
+| Unsealed interval or run | May pass SQLite integrity | Recording/starting/stopping, then interrupted on reopen | Not semantically complete |
+
+Successful `recording_stop` continues to mean that accepted facts drained and the
+interval/run seal transaction committed. It does not mean the storage thread was
+destroyed or that the later process boot seal has completed.
+
+### Provenance and durable history under faults
+
+No provenance format changed. Start/boundary provenance remains atomic; component
+activation, configuration revision and native build identity continue to use the
+same generic content/identity records. The compatibility roles
+`managed_lua_source`, `managed_component_source`, old operation facts and historical
+`source_hash` data remain readable and were not rewritten.
+
+Durable history still reads only committed SQLite state. It pages active recording,
+clean sealed runs, interrupted crash archives and explicit gaps through the same
+bounded query layer. Frozen checkpoints, page/cursor bounds, cancellation,
+disconnect release and `history_busy` behavior are unchanged. A failed Recorder can
+leave its committed prefix readable; it cannot promote pending ingress into durable
+history.
+
+### Platform and bounds notes
+
+- Missing-parent, directory-path, incompatible-file, lock and integrity tests are
+  portable SQLite/filesystem oracles used on the current Windows target as well;
+- the read-only-file oracle is explicitly `cfg(windows)` and exercises the Windows
+  file attribute rather than claiming POSIX permission behavior;
+- the physical disk-full class is test-emulated with SQLite quota/checkpoint/write
+  faults; no test attempts to fill the host disk;
+- clean sidecar absence is required only after the accepted clean close. A killed
+  process may legitimately leave WAL/SHM and those files are part of the archive;
+- Recorder ingress remains four groups, 1,024 records and four MiB total, with the
+  existing per-group/record limits; history remains eight jobs with bounded page
+  sizes/cursors; the main database remains capped at one GiB with its five-percent
+  reserve, and WAL checking remains at sixteen MiB. No bound was increased.
+
+### Remaining soak/manual gaps
+
+M11.4 does not claim evidence for multi-day archive growth, millions of samples,
+physical volume exhaustion, repeated thousands of start/stop cycles or power loss
+during an OS/filesystem cache flush. Short deterministic batching, quota, repeated
+process-kill/reopen, transaction rollback, history pressure and clean-shutdown
+oracles cover the same invariants without making default `cargo test` unbounded.
+Long Recorder growth remains an opt-in M11.7 soak concern.
+
+### M11.4 verification
+
+The focused Recorder integration set passed, including startup/open, transaction,
+backpressure, Required/BestEffort isolation, provenance, history, process reopen,
+shutdown/process-shutdown, WAL/checkpoint and WriterBarrier tests. The new exact
+oracles passed on Windows:
+
+```text
+external SQLite writer lock and recovery                    PASS
+Windows read-only startup under Required and BestEffort     PASS
+pre-commit process kill + offline integrity                 PASS
+post-commit WAL process kill + offline integrity/reopen     PASS
+clean seal/close + integrity + absent WAL/SHM               PASS
+```
+
+The new startup/process/shutdown oracles passed three consecutive focused
+repetitions. One unrelated socket replay-gap unit test timed out once during an
+intermediate quiet workspace rerun; it then passed three immediate isolated
+repetitions and both final complete debug and release runs. No M11.4 file was
+involved in that test.
+
+Full gates passed:
+
+```text
+cargo fmt --all -- --check                                PASS
+cargo test --workspace                                    PASS
+cargo test --workspace --release                          PASS
+cargo clippy --workspace --all-targets -- -D warnings     PASS
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps PASS
+git diff --check                                          PASS
+```
+
+The exact 42-operation/25-capability registry, M9B.8 fault acceptance, M11.2
+configured acquisition faults, M11.3 output recovery, M9D physical-output software
+suite and all Recorder integration binaries remained green. No hardware test was
+run, COM5 was not opened, and accepted evidence was not modified.
+
 ## M11.3 — controller, OutputAuthority and physical-output recovery hardening
 
 ### Status and scope
@@ -8,7 +230,8 @@
 M8-M10: ACCEPTED
 M11.1-M11.2: COMPLETE
 M11.3: COMPLETE
-M11.4: NOT STARTED
+M11.4: COMPLETE
+M11.5: NOT STARTED
 M12+: NOT AUTHORIZED
 ```
 
@@ -421,10 +644,10 @@ No capacity was increased and no unbounded fallback was added.
 
 At M11.2 completion, M11.3 remained the separate combined control/output recovery
 gate, especially ambiguity plus reconnect plus proof of no automatic rearm. That
-gate is now complete in the M11.3 section above. Recorder/platform hardening remains
-M11.4, bounded diagnostic logging remains M11.5, and additional full-process
-capacity/soak work remains M11.6-M11.7. No logging subsystem or Arduino support was
-started in M11.2.
+gate is now complete in the M11.3 section above. Recorder/platform hardening is
+complete in M11.4 above; bounded diagnostic logging remains M11.5, and additional
+full-process capacity/soak work remains M11.6-M11.7. No logging subsystem or Arduino
+support was started in M11.2-M11.4.
 
 ### Verification
 

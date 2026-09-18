@@ -1,4 +1,4 @@
-# Current work — M11.3 controller and physical-output fault hardening
+# Current work — M11.4 Recorder and storage hardening
 
 ```text
 M8: ACCEPTED
@@ -12,7 +12,8 @@ M11: AUTHORIZED
 M11.1 hardening and failure-model audit: COMPLETE
 M11.2 acquisition / transport faults, managed-executor lifecycle and starvation: COMPLETE
 M11.3 controller / OutputAuthority recovery and physical-output faults: COMPLETE
-M11.4: NOT STARTED
+M11.4 Recorder / SQLite / crash and filesystem hardening: COMPLETE
+M11.5: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -92,7 +93,13 @@ not rearm a failed controller. Exact recovery is `reset_failed -> Paused -> resu
 -> Warming -> fresh finite lease`; old authority instances, epochs and generations
 remain fenced, and ambiguous started WRITEs are never blindly retried.
 
-The next possible slice is M11.4 Recorder/storage hardening, but it is not started
+M11.4 is complete. It froze the admission-versus-commit durability boundary, added
+real external-lock and Windows read-only startup acceptance, and paired clean-close
+and killed-process archives with offline SQLite integrity and explicit lifecycle
+completeness checks. Required and BestEffort policy, schema, public API and all
+transaction/sealing semantics remain unchanged.
+
+The next possible slice is M11.5 bounded diagnostic logging, but it is not started
 or authorized by this completed task. M12 and later milestones remain unauthorized.
 
 The completed audit covers:
@@ -127,5 +134,5 @@ operations, new Recorder schema features, final tutorials or polished M12 releas
 documentation. The planned educational Arduino furnace is outside M11 unless it is
 separately authorized as test infrastructure.
 
-Do not begin M11.4 or make production/test changes automatically. M12 and later
+Do not begin M11.5 or make production/test changes automatically. M12 and later
 milestones remain unauthorized.
