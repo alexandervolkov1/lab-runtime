@@ -25,8 +25,9 @@ M11+: NOT AUTHORIZED
 
 M9B and M9C implementation and external review are accepted. The supplementary
 post-M9C real-device smoke passed. M9D software integration is complete, but its
-hardware gate stopped on incomplete transport shutdown during read-only preflight;
-no physical write occurred. M10 and later work are not authorized.
+real-device write acceptance has not run. The read-only transport shutdown blocker
+was corrected and verified on COM5; no physical write occurred. M10 and later work
+are not authorized.
 The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
@@ -229,9 +230,11 @@ poll result. No production or test change was required.
 
 The software path preserves controller proposals, OutputAuthority, final authority
 recheck, bounded Metakon WRITE, strict ACK and distinct register-6 readback. Debug
-and release workspace tests plus warning-denied lint/docs pass. Real-device
-acceptance remains blocked because the mandatory read-only preflight could not close
-the transport finitely; no output command was sent.
+and release workspace tests plus warning-denied lint/docs pass. The read-only
+preflight shutdown defect was corrected under the existing finite bound and a real
+COM5 rerun closed with zero unfinished transports. Real-device acceptance remains
+blocked pending a separately authorized physical write run; no output command was
+sent.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED
 

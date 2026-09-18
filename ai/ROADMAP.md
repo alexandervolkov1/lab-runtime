@@ -210,9 +210,11 @@ accepted hardware-facing behavior without production or test changes.
 
 The production path is implemented through the existing OutputAuthority, bounded
 transport executor, strict ACK and separate register-6 readback. All software gates
-pass. The mandatory real-device read-only preflight acquired valid data but failed
-finite transport closure twice before any output write. M9D cannot enter external
-review until that blocker is classified and a clean write acceptance run succeeds.
+pass. The mandatory real-device read-only preflight exposed a shutdown
+terminalization defect, corrected under the existing finite deadline in `b6e1840`.
+A corrected read-only COM5 run acquired valid data and closed cleanly with zero
+unfinished transports. No output write was sent. M9D cannot enter external review
+until a separately authorized clean write acceptance run succeeds.
 
 ## M10 — Core cleanup and studyability — NOT AUTHORIZED
 

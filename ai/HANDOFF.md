@@ -24,21 +24,22 @@ M11+: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
-post-M9C real-device smoke passed. M9D software integration is committed, but the
-required real-device write acceptance did not begin: the read-only preflight ended
-with `transports_closed = false` and one unfinished transport. Do not issue a
-physical write or begin M10 without a new explicit decision.
+post-M9C real-device smoke passed. M9D software integration and the read-only
+shutdown correction are committed, but the required real-device write acceptance
+did not begin. Do not issue a physical write or begin M10 without a new explicit
+decision.
 
 ## M9D blocked hardware gate
 
-Software HEAD `ea49a61715e94dfd559a5d360e928410e0116b82` contains the
-authority-gated WRITE/ACK/separate-readback path and passed debug/release workspace
-tests, clippy and warning-denied rustdoc. Read-only COM5 acquisition proved channel
-type 3 and four generation-1 Good temperature samples at 28.0 degrees Celsius.
-Shutdown then failed twice with `unfinished_transports = 1` and
-`transports_closed = false`, including after an authoritative idle observation.
-Both processes exited nonzero and released COM5. No Metakon WRITE was attempted and
-no M9D SQLite archive exists. See `docs/implementation/MILESTONE_9D_REPORT.md`.
+The authority-gated WRITE/ACK/separate-readback path passed debug/release workspace
+tests, clippy and warning-denied rustdoc. The failed preflight exposed a
+`ServiceHost` terminalization defect, not a second transport owner: it froze the
+first nonblocking COM retirement `Pending` result while Recorder was already
+flushed. Commit `b6e1840` waits for the later retirement observation under the same
+finite deadline. A corrected read-only COM5 run proved channel type 3, four Good
+temperature samples, zero unfinished transports, clean shutdown and exit 0. No
+Metakon WRITE was attempted and no M9D SQLite archive exists. See
+`docs/implementation/MILESTONE_9D_REPORT.md`.
 
 ## Accepted baselines
 

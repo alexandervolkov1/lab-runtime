@@ -10,10 +10,10 @@ M10: NOT AUTHORIZED
 Date: 2026-09-18 (Europe/Moscow).
 
 M9D was inserted before M10 to complete the audited partial Metakon output path
-without changing the accepted OutputAuthority architecture. The software work is
-complete, but M9D is not ready for external review because its mandatory read-only
-hardware preflight did not close the transport cleanly. In accordance with the stop
-gate, no physical output write was attempted.
+without changing the accepted OutputAuthority architecture. The software path and
+the read-only preflight correction are complete. M9D is not ready for external
+review because its real-device write acceptance has not been run. In accordance
+with the stop gate, no physical output write was attempted.
 
 ## Software implementation
 
@@ -139,9 +139,59 @@ process exit code: 1
 
 Both processes exited and released COM5. The repeat after the real idle predicate
 makes this a meaningful preflight blocker rather than treating the first harness
-ordering error as acceptance evidence. Root cause is not established; it may be a
-hardware-facing shutdown/serial-environment issue and must be classified before a
-write acceptance run.
+ordering error as acceptance evidence.
+
+## Read-only shutdown root cause and correction
+
+The unfinished object was the only configured transport for resource 1: its single
+`ResourceExecutor`, binding generation 1, transport generation 1, and Windows worker
+`lab-com-1`. The read-only deployment creates no output definition, safe profile or
+controller, so there was no `OutputAuthority`, output reservation, pending output
+operation, ACK/readback state, or second writer lifecycle. There remained one
+physical resource, one bounded executor and at most one OS-open worker.
+
+Shutdown is deliberately nonblocking. The first `ComTransport::try_shutdown` call
+publishes the persistent stop intent, changes the adapter to `Closing`, and may
+return `Pending` before the owner has observed the worker's terminal completion.
+`HostCore` therefore correctly kept resource 1 out of `closed_resources`, which made
+`unfinished_transports = 1`. The defect was in `ServiceHost::shutdown_step`: when
+Recorder was already flushed, it froze that first ordinary `Pending` observation as
+the terminal result instead of giving the transport a subsequent owner turn. The OS
+worker then stopped and COM5 was released as the process unwound, but the already
+frozen public result could not become successful.
+
+Commit `45f4774` did not create a second executor or COM owner for the read-only
+deployment. Its larger composition/timing changes exposed this pre-existing
+scheduler-luck assumption. The correction in `b6e1840` waits for transport closure
+after safety is confirmed, while retaining the existing absolute two-second bound
+for a genuinely stuck transport. It does not add a second grace period after an
+already failed safety deadline.
+
+Two deterministic software oracles cover the exact distinction. A transport that
+returns `Pending` once and `Complete` on the next owner turn now closes successfully;
+a transport that never retires still produces an honest failed terminal result at
+the finite deadline. The first oracle failed before the production correction and
+passed afterward. Existing shutdown, physical configuration, full debug/release,
+clippy and warning-denied rustdoc gates also passed.
+
+A single corrected read-only COM5 run used boot
+`815774ba12b3b5752326d7eb0558573f`. It observed resource 1 idle at binding and
+transport generation 1, `channel_type = 3`, and four distinct Good temperature
+samples at 28.0 degrees Celsius. Normal shutdown then completed with:
+
+```text
+safe_confirmed: true
+recorder_flushed: true
+unfinished_workers: 0
+unfinished_transports: 0
+transports_closed: true
+cleanup_complete: true
+exit_success: true
+process exit code: 0
+```
+
+The process emitted no stderr and released COM5. The run loaded only
+`runtime.metakon-513-m9d-read-preflight.toml`; physical WRITE count remained zero.
 
 ## Hardware write acceptance
 
@@ -168,8 +218,8 @@ The post-M9C read-smoke archive was not modified.
 
 ## Remaining gate
 
-Classify and resolve the finite read-only shutdown failure without exercising output
-against the connected device. Only after a clean read-only preflight may one bounded
-production-path sequence proceed: safe-zero, authorized +10, normal safe transition
-to zero, ACK plus distinct register-6 readback, and clean shutdown. M10 remains
-unauthorized.
+The read-only shutdown blocker is resolved. A separately authorized bounded
+production-path sequence remains: safe-zero, authorized +10, normal safe transition
+to zero, ACK plus distinct register-6 readback, and clean shutdown. It was not run
+during the shutdown diagnosis. M9D remains blocked from external review and M10
+remains unauthorized.
