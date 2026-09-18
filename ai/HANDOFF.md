@@ -33,7 +33,8 @@ M11.2: COMPLETE
 M11.3: COMPLETE
 M11.4: COMPLETE
 M11.5: COMPLETE
-M11.6: NOT STARTED
+M11.6: COMPLETE
+M11.7: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -56,8 +57,13 @@ registration and configured instrument composition without changing public behav
 M11.1-M11.4 consolidated the failure model and hardened acquisition/managed-worker,
 controller/output recovery, and Recorder/SQLite crash behavior. M11.5 added bounded
 best-effort diagnostics separate from Recorder: a 1,024-record lossy queue, 8 KiB
-record cap and four 4 MiB files with stderr fallback and finite shutdown. No M11.6
-work has started.
+record cap and four 4 MiB files with stderr fallback and finite shutdown.
+
+M11.6 consolidated the accepted bounded Application/process pressure model. The
+real TCP path now has explicit malformed/oversized and eight-client churn oracles;
+the earlier one-off nonreader timeout was traced to a test admission race and fixed
+with an owner-channel predicate. Public API, capacities and production semantics are
+unchanged. No M11.7 work has started.
 
 ## M10.6 completion
 
@@ -107,7 +113,7 @@ scheduling, optional authority-gated output and tests.
 ## M11 authorization
 
 M11 is authorized as the final major technical hardening milestone before the
-developer-preview/reference phase. M11.1-M11.5 are complete. M11.6 has not started,
+developer-preview/reference phase. M11.1-M11.6 are complete. M11.7 has not started,
 and M12 and later work remain unauthorized.
 
 ## M10.5 completion

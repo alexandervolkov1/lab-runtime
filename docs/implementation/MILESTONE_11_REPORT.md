@@ -1,5 +1,177 @@
 # Milestone 11 implementation report
 
+## M11.6 — Application, client, emulator, and process pressure hardening
+
+### Status and scope
+
+```text
+M8-M10: ACCEPTED
+M11.1-M11.6: COMPLETE
+M11.7: NOT STARTED
+M12+: NOT AUTHORIZED
+```
+
+M11.6 re-audited the real TCP/NDJSON path and consolidated the accepted M9B.8
+pressure model. No production state machine, public operation, capability, error
+category, capacity, scheduling rule, Recorder/SQLite contract, controller or
+OutputAuthority behavior changed. The implementation change is test-only: malformed
+traffic coverage was expanded and one socket oracle was synchronized against actual
+reactor admission instead of TCP-connect timing. No COM port or hardware was used.
+
+The governing process invariants remain:
+
+```text
+bad / slow / malformed / dead / noisy client != bad / slow / dead experiment
+client lifetime != experiment lifetime
+Application pressure cannot wait inside authoritative native work
+```
+
+### Connection, framing, and session boundaries
+
+The reactor owns exactly one nonblocking socket thread. It never borrows Runtime and
+communicates with the owner over two capacity-64 synchronous mailboxes. The owner
+services Runtime before it drains at most sixteen inbound messages and before it
+dispatches a rotating slice of at most four client queues. Native safety,
+acquisition, controller and Recorder work therefore retain their accepted priority;
+perfect client fairness is not promised.
+
+The complete Application/process bounds are:
+
+| Structure | Owner | Capacity | Full / invalid behavior | Release / recovery | Principal regression |
+|---|---|---:|---|---|---|
+| Active TCP peers | reactor | 8, including detach generations awaiting owner delivery | New peer is closed; existing peers continue | Exact detach delivery | 8-peer plus 16 replacement-cycle reactor oracle |
+| Inbound NDJSON frame | peer | 16,384 bytes including LF; 16 nesting levels; 1,024 lexical values; 512-byte strings | Bounded rejection for a complete malformed frame or close at the hard byte bound | Socket close | real UTF-8/JSON/shape/DTO/oversize matrix |
+| Owner/reactor mailboxes | reactor/owner | 64 each | Nonblocking pause, scoped detach, or terminal owner failure according to direction | Receiver progress/detach | mailbox saturation and stale-generation tests |
+| Admitted requests | peer plus owner queue | 8 per client | Read pauses; no further allocation | Reply consumption/detach | bounded-peer and M9B.8 suites |
+| Reply/event queues | peer | 8 replies / 16 events, including current write | Only affected peer detaches | Detach | nonreader flood oracle |
+| Socket work | peer | 8 KiB per sweep; four read/write units | Work resumes at the exact byte offset | Later reactor sweep | partial-write unit oracle |
+| Hello/partial/write deadline | peer | 2 seconds from the fixed boundary | Only affected peer closes | Reconnect | real partial-frame trickler |
+| Session scopes | Application | 16 process-wide | `capacity_exhausted` | 1,800-second detached TTL/terminal eviction | request deduplication |
+| Pending mutations | Application | 8/scope, 64 process-wide | Existing `busy`/`capacity_exhausted` mapping | Terminal outcome | session/global capacity oracle |
+| Retained outcomes | Application | 32/scope, 256 process-wide; 4 KiB each | Old terminal records evict; evicted IDs remain unknown, never reusable | TTL/eviction | request deduplication |
+| Frozen projection | Application | one per connection; 64 records/page, 8 KiB encoded | Structured bounded-page failure | Page completion, 5-second expiry, detach | discovery/current projection suites |
+| Subscription | Application | one/client; 8 kinds, 16 targets | `subscription_busy`/bounded validation error | Unsubscribe, gap, detach | subscription recovery |
+| Event replay | Host event log | 1,024 records, 4 KiB each; scan 32/offer 4 per owner turn | Old cursor receives `event_gap` with `resync_required` | Current/history snapshot plus fresh subscribe | M9B.8 gap/resync |
+| Recent history | Runtime signal | configured ring; query maximum 128 | Oldest attempts evict | Normal signal publication | measurement API |
+| Durable history | Recorder/Application | 8 jobs, 8 pages, 8 cursors; 128 rows/8 KiB page | `history_busy`, bounded page failure | Terminal result, page/cursor expiry, detach cancellation | recorder history API |
+| Configuration staging | Service/Application | one candidate, 32 overlays | Existing busy/capacity/revision errors; atomic rejection | Apply, replacement, 30-second expiry | configuration/resource API |
+| Emulator publication | Runtime/Application | one scalar per request within session bounds | Validation or existing capacity error; no buffering | Synchronous terminal outcome | emulator and M9B.8 pressure |
+
+All maps and queues above are either directly capped or keyed by the eight live
+connections, sixteen scopes, or eight durable-history jobs. Detached history jobs
+are drained through the bounded Recorder job capacity; their late results are
+discarded by job/correlation fencing. No client-controlled unbounded map or lazy
+stream was found.
+
+### Malformed, slow, and disconnected clients
+
+The real loopback server now exercises invalid UTF-8, invalid and empty JSON,
+unknown envelope fields, an invalid nested DTO, and an unterminated frame at the
+hard size limit. A complete malformed frame may receive one bounded rejection and
+then closes; the hard-size frame closes without allocating beyond the fixed input
+buffer. A separate healthy client remains usable after every case. Diagnostics log
+only the fixed code, connection identity and byte count, never the arbitrary frame.
+
+The existing slow-writer oracle fixes the deadline at the first partial byte and
+continues successful work through a healthy peer until the trickler closes. The
+slow-reader oracle fills the sixteen-event queue with maximum-size frames and proves
+scoped detach, exact stale-connection fencing, and reuse by a new connection. Socket
+writes are nonblocking and limited per sweep; neither client can wait in the Runtime
+owner. Process shutdown stops acceptance, completes authoritative shutdown first,
+then gives terminal delivery a fixed 200-ms best-effort window before stopping and
+joining the cooperative reactor thread.
+
+### Subscription, replay, deduplication, and client death
+
+One aggregate subscription per client scans at most 32 retained events and offers
+at most four per owner turn. Falling behind the 1,024-record ring removes the
+subscription and returns `event_gap` with `resync_required`; it never fabricates a
+contiguous sequence. Recovery remains an explicit current snapshot, optional recent
+or durable history, and a fresh subscription at the current boot/cursor. Detach
+removes connection-local subscription, projection, page and cursor state, so none
+can enter a reused socket generation.
+
+Mutation deduplication remains scope plus consecutive sequence, not `msg_id`.
+Identical retained requests replay the terminal outcome without executing twice;
+conflicting payloads fail, pending work is never evicted, and an evicted sequence is
+unknown rather than reusable. Disconnect fences reply delivery but does not roll
+back an accepted Runtime mutation. A later attachment to the same process-local
+scope can observe or replay its retained terminal result. Connection-local `msg_id`
+duplicates close only that peer and a completed exchange releases its ID.
+
+### History, configuration, emulator, and multi-client pressure
+
+Runtime recent history remains distinct from Recorder durable history. Durable jobs,
+pages and continuation cursors share the accepted eight-slot bound; detach cancels
+or orphans the exact job, drops its page/cursor, and late completion cannot publish
+into reused client capacity. SQLite busy and worker failure remain bounded Recorder
+results and never block the owner.
+
+Repeated configuration/property queries, invalid edits and revision conflicts use
+the existing one-candidate/32-overlay lifecycle. Rejection is atomic and cannot grow
+another staging structure. Ordinary queries do not create overlays.
+
+The M9B.8 pressure oracle alternates 600 Good/Unavailable virtual publications from
+independent scopes while current queries and native thermal scheduling progress.
+Stale generations, nonfinite/range-invalid values and publication to the native
+thermal instrument fail through existing categories. Virtual publication can create
+only a normal virtual measurement; it cannot fabricate physical observation, Ready,
+ACK, readback or output authority. The virtual sample continues through generic
+current/history/subscription/Recorder paths, including the durable-history oracle.
+
+Combined coverage uses malformed, slow subscription, history, emulator and normal
+query/mutation clients. Isolation is bounded rather than perfectly fair: one peer's
+backpressure closes that peer, while owner-first service, committed measurement
+generations, controller progress, Recorder prefixes and transport/safety completions
+remain authoritative progress predicates. Held-SQLite and managed-worker pressure
+oracles from M11.2-M11.4 remain part of this composition.
+
+### Socket-timeout investigation
+
+The single M11.5 full-suite timeout occurred in
+`nonreading_event_flood_detaches_and_stale_slot_frames_cannot_reach_reused_capacity`.
+The test assumed that successful `TcpStream::connect` meant the nonblocking reactor
+had already inserted `connection=1`, then immediately injected synthetic events for
+that ID. Under compile/full-suite load the reactor could legitimately process those
+events first and discard them as stale. No event queue was filled, so the test's
+one-second wait for `Detach(1)` timed out. This was a **test harness race**, not a
+production socket or backpressure defect.
+
+The oracle now writes a valid hello and waits until the owner channel observes the
+exact `Incoming::Request(1, ...)` admission predicate before flooding. The adjacent
+gap-delivery test uses the same barrier. No timeout was lengthened. The corrected
+flood oracle passed 20 focused repetitions; the new capacity/churn oracle passed 10,
+and the real malformed matrix passed 10.
+
+### Startup, shutdown, diagnostics, and contract freeze
+
+Existing startup tests prove invalid configuration fails before listener binding,
+occupied loopback bind unwinds without readiness, and transport/Recorder startup
+failures do not claim a half-ready service. Existing process tests cover accepted
+`runtime_shutdown`, other-client fencing, clients and Recorder work in flight, and
+finite truthful terminal cleanup. Shutdown acceptance is not a claim that sockets,
+transports or Recorder have already retired; the terminal result carries that proof.
+
+M11.5 diagnostics now cover malformed/oversized input, admission capacity, reply/
+event backpressure, server start and terminal shutdown. These records remain lossy,
+bounded and observational. Client traffic never gates on successful logging.
+
+The public contract is frozen at 42 operations, 25 capabilities, protocol version
+one and the existing twelve error categories. No WebSocket, HTTP, remote access,
+authentication, client SDK or convenience operation was introduced. M11.7 has not
+started.
+
+### Verification
+
+The final candidate passed formatting, debug and release workspace suites,
+warning-denied Clippy and warning-denied rustdoc. Focused M9B.8, client isolation,
+subscription/replay, request deduplication, durable history/cursor, emulator and
+Runtime-shutdown suites also passed. The corrected nonreader oracle passed 20
+focused repetitions, exact client-capacity/churn passed 10, and the real malformed
+matrix passed 10. Full workspace gates also include M11.2 acquisition/managed-worker,
+M11.3 output recovery, M11.4 Recorder/crash, M11.5 logging and M9D physical-output
+software regressions. No production defect or capacity change was required.
+
 ## M11.5 — bounded diagnostic logging
 
 ### Status and scope

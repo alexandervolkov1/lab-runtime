@@ -19,6 +19,8 @@ importance.
 High-value historical oracles are intentionally retained:
 
 - `m9b8_fault_acceptance` freezes malformed-client isolation and bounded failures;
+- `client_isolation` additionally freezes the real TCP malformed-frame matrix,
+  eight-client admission/churn, slow-writer isolation and duplicate exchange IDs;
 - `com_recorder_shutdown` proves `TransportShutdown::Pending` receives later owner
   turns rather than becoming a false terminal result;
 - Core `milestone9d_physical_output` protects authority recheck, ACK/readback

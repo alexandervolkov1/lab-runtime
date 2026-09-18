@@ -1,4 +1,4 @@
-# Current work — M11.5 bounded diagnostic logging
+# Current work — M11.6 Application/process pressure hardening
 
 ```text
 M8: ACCEPTED
@@ -14,7 +14,8 @@ M11.2 acquisition / transport faults, managed-executor lifecycle and starvation:
 M11.3 controller / OutputAuthority recovery and physical-output faults: COMPLETE
 M11.4 Recorder / SQLite / crash and filesystem hardening: COMPLETE
 M11.5 bounded diagnostic logging: COMPLETE
-M11.6: NOT STARTED
+M11.6 Application/client/emulator/process pressure hardening: COMPLETE
+M11.7: NOT STARTED
 Current phase: M11 — runtime / Recorder / logging / API hardening
 M12+: NOT AUTHORIZED
 ```
@@ -64,7 +65,7 @@ The accepted guarantees include:
 - an Arduino-like instrument is confined to instrument-specific configuration,
   protocol, composition, scheduling, optional authority-gated output and tests.
 
-## Completed M11.1-M11.5 and next gate
+## Completed M11.1-M11.6 and next gate
 
 M11.1 inspected the accepted post-M10 codebase and recorded the normative fault
 model, guarantee levels, bounds, missing coverage, diagnostic-logging gap and
@@ -104,8 +105,15 @@ M11.5 is complete. It adds a separate bounded troubleshooting path using the
 standard tracing stack: a 1,024-record lossy queue, 8 KiB record cap, four 4 MiB
 files including the active file, stderr fallback, INFO default level and bounded
 best-effort shutdown. Diagnostic loss or destination failure never affects Runtime,
-OutputAuthority or Recorder semantics. The next possible slice is M11.6, but it has
-not started. M12 and later milestones remain unauthorized.
+OutputAuthority or Recorder semantics.
+
+M11.6 is complete. It re-audited all Application/process capacities, expanded the
+real TCP malformed/oversized matrix, proved exact eight-client admission and repeated
+capacity recovery, and removed a test-harness race by synchronizing synthetic event
+pressure with actual reactor admission. M9B.8 subscription/resync, deduplication,
+history, emulator, multi-client and native-progress contracts remain unchanged. The
+next possible slice is M11.7, but it has not started. M12 and later milestones remain
+unauthorized.
 
 The completed audit covers:
 
@@ -139,5 +147,5 @@ operations, new Recorder schema features, final tutorials or polished M12 releas
 documentation. The planned educational Arduino furnace is outside M11 unless it is
 separately authorized as test infrastructure.
 
-Do not begin M11.6 or make production/test changes automatically. M12 and later
+Do not begin M11.7 or make production/test changes automatically. M12 and later
 milestones remain unauthorized.
