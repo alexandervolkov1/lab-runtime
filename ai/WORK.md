@@ -1,73 +1,101 @@
-# Current work — M9C external review
+# Current work — M10 core cleanup and studyability
 
 ```text
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: ACCEPTED
-M9C: READY_FOR_EXTERNAL_REVIEW
-Current phase: M9C external review gate
-M10+: NOT AUTHORIZED
+M9C: ACCEPTED
+POST-M9C HARDWARE SMOKE: PASS
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
+M11+: NOT AUTHORIZED
 ```
 
-M9C implementation is complete. No implementation milestone is currently authorized.
-Do not begin M10, M11, M12 or post-v0.1 work without an explicit review decision.
+M10 is the only authorized implementation milestone. It is a structural/readability
+milestone for the nearly final v0.1 codebase, not a product-semantics milestone. Do
+not begin M11, M12 or post-v0.1 work without an explicit review decision.
 
-## Completed removal
+## Goal
 
-The active v0.1 product no longer contains:
+Make the codebase exceptionally easy to understand and study while preserving all
+accepted behavior, safety properties and externally visible contracts.
 
-- the `lab-lua` workspace crate or `mlua` dependency;
-- executable-text component artifacts, Lua VM/sandbox/source loading or `lua.v1`;
-- Lua source configuration and source-reload lifecycle;
-- `reload_managed_sources` or `managed_source_reload`;
-- the transitional `runtime_snapshot`, `snapshot_page` and `snapshot_release` API;
-- the first-party Babashka client, workflow and client-only acceptance tests.
+M10 may:
 
-No replacement scripting language, client SDK, GUI or Presentation API was added.
+- split oversized modules by clear responsibility;
+- clarify module and ownership boundaries;
+- improve names and architectural rustdoc;
+- remove dead compatibility code;
+- reduce unnecessary indirection;
+- make important Runtime, API, acquisition, component, safety and Recorder paths
+  easier to trace.
 
-## Active architecture
+Do not create speculative frameworks merely to improve the directory tree. Prefer
+small reviewable structural slices under existing tests.
+
+## Required preservation
+
+Every M10 change must preserve:
+
+- the Runtime as sole authoritative mutable experiment owner;
+- periodic acquisition and measurement semantics;
+- the Application API contract accepted in M9B;
+- neutral native managed-component execution and `native.moving_mean.v1`;
+- OutputAuthority, controller lifecycle and all output-safety rules;
+- Recorder behavior, schema, provenance and client independence;
+- virtual-instrument and emulator behavior and the physical/virtual boundary;
+- all documented bounds, overflow policy and backpressure;
+- reconnect ordering, generation/revision/epoch fencing and stale-result rejection;
+- accepted Windows COM and Metakon hardware-facing behavior.
+
+Required Runtime work remains architecturally prior to managed components and API
+clients. Structural cleanup must not introduce blocking, unbounded queues or new
+mutable owners.
+
+## Prohibited scope
+
+M10 must not:
+
+- add product features or change Application API semantics;
+- add GUI, Presentation API, client SDK or first-party client;
+- restore Lua or add any scripting/runtime/plugin replacement;
+- change Recorder schema merely for readability;
+- redesign controller or output safety;
+- change the Metakon protocol or accepted serial/reconnect semantics;
+- weaken bounds, backpressure, shutdown or failure behavior;
+- begin M11 hardening, M12 packaging/documentation release work or post-v0.1 work.
+
+Additional hardware testing is not required for ordinary structural work. If a later
+M10 change unexpectedly touches hardware-facing semantics, stop and obtain an
+explicit hardware-test decision rather than opening COM5 automatically.
+
+## Accepted starting point
+
+M9C removed active Lua, executable-text configuration, source reload, the
+transitional snapshot family and the Babashka client while preserving the neutral
+managed-component architecture and implementation-neutral process coverage. The
+active Application API contains 42 operations and 25 capabilities.
+
+The supplementary post-M9C read-only Metakon smoke passed. Its report is
+`docs/implementation/POST_M9C_HARDWARE_SMOKE.md`; its clean archive is:
 
 ```text
-Application API
-      ↓
-authoritative Runtime
-      ├── native instruments
-      ├── native managed components
-      ├── native controllers / OutputAuthority
-      ├── Recorder
-      └── virtual instruments / emulator API
+examples/metakon-513-post-m9c-smoke.sqlite
+SHA-256 098f2fdc31805cbcdfe46d04055a205c9f980fcf6955ccf8ede6043cbc00a9fc
 ```
 
-The neutral managed-component contract remains: `ComponentDefinition`,
-`ComponentImplementationId`, BuiltIn selection, `Invocation`, `ComponentResult`,
-`ComponentCompletion`, `ComponentExecutor`, bounded `PlainData` and generation /
-revision fencing. `native.moving_mean.v1` is the canonical active implementation.
+It confirmed generation-1 acquisition, one explicit generation 1 -> 2 reconnect,
+the expected generation-2 rebind baseline, resumed ordinary Good acquisition,
+Application API current/history/subscription, sealed complete Recorder evidence,
+zero outputs, zero gaps and clean shutdown. No production or test change was needed.
+Historical M8 evidence remains immutable.
 
-The Application API contains 42 operations (22 queries and 20 mutations) and 25
-capabilities. Discovery/current/domain-specific projections supersede the removed
-aggregate snapshot family.
+## Verification and review boundary
 
-## Historical compatibility
+Use verification proportional to each structural slice, including focused tests for
+the moved responsibility and the normal workspace gates before review. Treat any
+behavioral change, contract ambiguity, safety change or hardware-facing change as a
+scope boundary rather than folding it into cleanup.
 
-Historical milestone reports and immutable SQLite evidence remain unchanged.
-Recorder validation retains the minimal historical provenance vocabulary needed to
-interpret old `managed_component_source` / `managed_lua_source` records. New active
-recording emits BuiltIn native implementation provenance with Runtime binary identity;
-it does not emit executable source artifacts.
-
-```text
-active product surface != historical compatibility/evidence
-```
-
-## Review boundary
-
-External review should confirm:
-
-- no active Lua runtime/dependency/configuration/API remains;
-- no first-party Babashka product/client remains;
-- generic native component discovery, properties, current/history/subscriptions and
-  Recorder provenance remain intact;
-- removed operations are deterministically `unsupported_operation`;
-- process/reconnect/client-isolation acceptance is implementation-neutral;
-- M8 archives and hardware evidence are unchanged;
-- M10 has not started.
+M10 does not cross its external review gate automatically. M11 and later milestones
+remain unauthorized.

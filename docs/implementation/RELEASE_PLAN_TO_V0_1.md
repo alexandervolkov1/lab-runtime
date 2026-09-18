@@ -15,14 +15,17 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: READY_FOR_EXTERNAL_REVIEW
-Current phase: M9C external review gate
-M10+: NOT AUTHORIZED
+M9C: ACCEPTED
+POST-M9C HARDWARE SMOKE: PASS
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
+M11+: NOT AUTHORIZED
 ```
 
-M9B implementation and external review are accepted. M9C is the only authorized
-implementation milestone; this plan does not authorize automatic transition to M10
-or later work. The roadmap ends at v0.1.0.
+M9B and M9C implementation and external review are accepted. The supplementary
+post-M9C real-device smoke passed. M10 is the only authorized implementation
+milestone; this plan does not authorize automatic transition to M11 or later work.
+The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
 
@@ -171,7 +174,7 @@ transport completion or safe-output evidence.
 M9B has no Presentation API, frontend/client implementation or bundled scripting
 environment. Acceptance uses Rust, raw-protocol and integration tests.
 
-## M9C — Remove Lua and obsolete client baggage — READY_FOR_EXTERNAL_REVIEW
+## M9C — Remove Lua and obsolete client baggage — ACCEPTED
 
 M9C removed active product Lua:
 
@@ -214,7 +217,13 @@ authoritative Runtime
 M9C adds no replacement scripting language, GUI, Presentation API, client SDK or
 post-v0.1 roadmap. It is simplification, not substitution.
 
-## M10 — Core cleanup and studyability
+The supplementary post-M9C real-device smoke confirmed the accepted Metakon read,
+reconnect/generation, Application API and Recorder paths with zero outputs/gaps and
+clean shutdown. The apparent first failure was a harness interpretation defect: the
+intentional generation-2 Unavailable/Transport rebind baseline was not an ordinary
+poll result. No production or test change was required.
+
+## M10 — Core cleanup and studyability — AUTHORIZED
 
 Refactor only under test coverage, preserving behavior and safety:
 
@@ -230,6 +239,13 @@ Refactor only under test coverage, preserving behavior and safety:
 Developers must be able to find quickly how instruments, polling, measurement
 series, controllers, output authorization, Recorder submission, API dispatch and
 native managed extensions work. Do not create speculative frameworks.
+
+M10 must preserve authoritative Runtime ownership, periodic acquisition, the M9B
+Application API, native managed components, OutputAuthority/controller safety,
+Recorder semantics/provenance, virtual/emulator behavior, bounds/backpressure,
+reconnect/generation fencing and all accepted hardware-facing behavior. It must not
+add features, presentation or scripting; change API semantics or the Metakon
+protocol; redesign safety; or change Recorder schema merely for readability.
 
 ## M11 — Runtime / Recorder / logging / API hardening
 

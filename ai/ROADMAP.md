@@ -18,9 +18,11 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: READY_FOR_EXTERNAL_REVIEW
-Current phase: M9C external review gate
-M10+: NOT AUTHORIZED
+M9C: ACCEPTED
+POST-M9C HARDWARE SMOKE: PASS
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
+M11+: NOT AUTHORIZED
 ```
 
 Completed milestones M1-M9A established the domain, OutputAuthority, bounded
@@ -150,7 +152,7 @@ completion or safe-output evidence.
 M9B contains no Presentation API, frontend/client implementation or bundled scripting
 environment. Testing uses Rust, raw-protocol and integration tests.
 
-## M9C — Remove Lua and obsolete client baggage — READY_FOR_EXTERNAL_REVIEW
+## M9C — Remove Lua and obsolete client baggage — ACCEPTED
 
 M9C removed active Lua product code and dependencies:
 
@@ -199,10 +201,11 @@ authoritative Runtime
 ```
 
 M9C added no replacement scripting language, GUI, Presentation API, client SDK or
-post-v0.1 roadmap. It is simplification, not substitution. External review is the
-current gate; M10 remains unauthorized.
+post-v0.1 roadmap. It is simplification, not substitution. External review accepted
+the milestone. A supplementary post-M9C read-only Metakon smoke then confirmed the
+accepted hardware-facing behavior without production or test changes.
 
-## M10 — Core cleanup and studyability
+## M10 — Core cleanup and studyability — AUTHORIZED
 
 Goal: make the repository unusually easy to understand and study while preserving
 behavior and safety. Refactor only under test coverage.
@@ -234,6 +237,13 @@ How is a native managed component added?
 ```
 
 Do not create speculative frameworks merely to improve the directory tree.
+
+M10 must not add product features, alter the accepted Application API, change
+Recorder schema for readability, redesign controller/output safety, change the
+Metakon protocol, add presentation or scripting, or weaken bounds/backpressure.
+Further hardware testing is not required unless a later structural change
+unexpectedly touches hardware-facing semantics. M11 and later work remains
+unauthorized.
 
 ## M11 — Runtime / Recorder / logging / API hardening
 

@@ -28,18 +28,22 @@ context. Read them on demand. They do not override the active authorization.
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: ACCEPTED
-M9C: READY_FOR_EXTERNAL_REVIEW
-Current phase: M9C external review gate
-M10+: NOT AUTHORIZED
+M9C: ACCEPTED
+POST-M9C HARDWARE SMOKE: PASS
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
+M11+: NOT AUTHORIZED
 ```
 
-Final physical M8 acceptance and the final software gates have succeeded. No further
-M8 hardware rerun is required, and COM5 is not part of current work.
+Final physical M8 acceptance, the final software gates and the supplementary
+post-M9C real-device smoke have succeeded. No further hardware rerun is required,
+and COM5 is not part of current work.
 
-M9A and M9B implementation and external review have succeeded. M9C implementation
-removed active Lua, obsolete first-party client baggage and transitional
-source-reload/snapshot API. M10 and later milestones remain blocked behind explicit
-review gates.
+M9A, M9B and M9C implementation and external review have succeeded. M9C removed
+active Lua, obsolete first-party client baggage and transitional source-reload /
+snapshot API. M10 is authorized only for structural cleanup and studyability while
+preserving accepted product semantics. M11 and later milestones remain blocked
+behind explicit review gates.
 
 ## Donor repository
 

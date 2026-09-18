@@ -200,14 +200,18 @@ Presentation API, frontend, client implementation or bundled scripting environme
 M8   ACCEPTED — deployment, Windows COM and physical read-only evidence
 M9A  ACCEPTED — neutral managed components and native Rust execution
 M9B  ACCEPTED — coherent bounded Application API
-M9C  READY_FOR_EXTERNAL_REVIEW — Lua and obsolete client baggage removed
-M10  NOT AUTHORIZED — Core cleanup and studyability
+M9C  ACCEPTED — Lua and obsolete client baggage removed
+POST-M9C HARDWARE SMOKE  PASS — supplementary real-device read path
+M10  AUTHORIZED — Core cleanup and studyability
 M11  NOT AUTHORIZED — Runtime/Recorder/logging/API hardening
 M12  NOT AUTHORIZED — documentation, packaging and final release audit
 v0.1.0
 ```
 
-The roadmap ends at v0.1.0. Milestones do not cross review gates automatically.
+Current phase: M10 — core cleanup and studyability. M10 is structural work only and
+must preserve accepted product, hardware-facing, safety, Recorder and Application
+API semantics. The roadmap ends at v0.1.0; milestones do not cross review gates
+automatically.
 
 ## v0.1 identity
 

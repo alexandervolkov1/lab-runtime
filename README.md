@@ -10,18 +10,22 @@ durable recording and a local Application API.
 M8: ACCEPTED
 M9A: ACCEPTED
 M9B: ACCEPTED
-M9C: READY_FOR_EXTERNAL_REVIEW
-Current phase: M9C external review gate
-M10+: NOT AUTHORIZED
+M9C: ACCEPTED
+POST-M9C HARDWARE SMOKE: PASS
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
+M11+: NOT AUTHORIZED
 ```
 
 M8 physical read-only acceptance and M9A neutral/native managed-component execution
-are externally accepted. No additional M8 hardware run is required, and COM5 is not
-part of current work.
+are externally accepted. The supplementary post-M9C real-device smoke also passed;
+no additional hardware run is required, and COM5 is not part of current work.
 
 M9B's coherent local Application API is externally accepted. M9C removed active Lua,
 the obsolete Babashka client and transitional source-reload/snapshot API without
-adding a replacement scripting language, client SDK or presentation surface.
+adding a replacement scripting language, client SDK or presentation surface. M10 is
+authorized for structural cleanup and studyability only; accepted behavior remains
+the contract.
 
 ## Product boundary
 

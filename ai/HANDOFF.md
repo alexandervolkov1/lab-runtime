@@ -15,14 +15,16 @@ M9B.6: COMPLETE
 M9B.7: COMPLETE
 M9B.8: COMPLETE
 M9B.9: COMPLETE
-M9C: READY_FOR_EXTERNAL_REVIEW
-Current phase: M9C external review gate
-M10+: NOT AUTHORIZED
+M9C: ACCEPTED
+POST-M9C HARDWARE SMOKE: PASS
+M10: AUTHORIZED
+Current phase: M10 — core cleanup and studyability
+M11+: NOT AUTHORIZED
 ```
 
-M9B implementation and external review are accepted. M9C implementation is complete
-and awaits external review. Do not begin M10, hardening, packaging or release work
-automatically.
+M9B and M9C implementation and external review are accepted. The supplementary
+post-M9C real-device smoke passed. M10 is authorized only for structural cleanup and
+studyability. Do not begin M11, packaging or release work automatically.
 
 ## Accepted baselines
 
@@ -54,6 +56,22 @@ The successful archive proves real generation-1 acquisition, device-off transiti
 one explicit reconnect, bounded transient open retry, generation-2 compatibility and
 acquisition, durable lifecycle ordering, zero outputs/gaps and clean shutdown. No
 further M8 hardware rerun is required. COM5 is not part of current work.
+
+The supplementary post-M9C read-only smoke is recorded in
+`docs/implementation/POST_M9C_HARDWARE_SMOKE.md`. Its clean acceptance archive is:
+
+```text
+examples/metakon-513-post-m9c-smoke.sqlite
+SHA-256 098f2fdc31805cbcdfe46d04055a205c9f980fcf6955ccf8ede6043cbc00a9fc
+```
+
+It proves the real Metakon read path, channel type 3, Good acquisition before and
+after one explicit generation 1 -> 2 reconnect, Application API
+current/history/subscription, sealed complete Recorder run/interval, zero outputs,
+zero gaps and clean shutdown. The initial failed smoke was a harness interpretation
+defect: it mistook the intentional generation-2 Unavailable/Transport rebind
+baseline for an ordinary acquisition result. Existing M8 evidence, production code
+and tests establish the same ordering; no production or test change was required.
 
 ## Final v0.1 direction
 
@@ -123,5 +141,6 @@ environment. Testing uses Rust, protocol and integration tests.
 M9C removed active Lua, executable-text configuration, source reload, the transitional
 snapshot family and the Babashka client. The final registry has 42 operations and 25
 capabilities. Neutral Rust/process tests retain managed-component and client-isolation
-coverage; historical Recorder provenance compatibility remains. M10-M12 remain
+coverage; historical Recorder provenance compatibility remains. M10 may now improve
+structure and studyability without changing accepted semantics. M11-M12 remain
 blocked. The roadmap ends at v0.1.0.
