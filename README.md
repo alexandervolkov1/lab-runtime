@@ -14,9 +14,11 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
-M11: AUTHORIZED
-Current phase: M11 — runtime / Recorder / logging / API hardening
-M12+: NOT AUTHORIZED
+M11: ACCEPTED
+Developer-preview technical gate: PASSED
+Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
+Current phase: Developer Preview Preparation
+M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
 M8 physical read-only acceptance and M9A neutral/native managed-component execution
@@ -43,8 +45,12 @@ path without adding plugins, protocols or API semantics. M10.7 tightened interna
 visibility, architectural rustdoc and regression-test navigation without changing
 public behavior. The focused external re-review accepted M10 after neutral
 instrument property metadata removed concrete-instrument knowledge from the generic
-Application projection. M11 is authorized; its first task is the audit-only M11.1
-hardening and failure-model audit before implementation begins.
+Application projection. External review accepted M11: configured faults terminate
+finitely, output ambiguity fails closed without blind retry or automatic rearm,
+Recorder clean/crash semantics are truthful, diagnostics and client pressure are
+bounded, and shutdown remains finite and conservative. The core is functionally
+complete for developer preview, not production-certified or exhaustively physically
+qualified.
 
 ## Product boundary
 
@@ -102,7 +108,9 @@ M9B  complete and stabilize Application API
 M9C  remove Lua and obsolete client baggage
 M9D  physical Metakon output integration (accepted)
 M10  Core cleanup and studyability (accepted)
-M11  Runtime / Recorder / logging / API hardening (authorized; audit first)
+M11  Runtime / Recorder / logging / API hardening (accepted)
+      developer-preview technical gate passed
+      Developer Preview Preparation (current, unnumbered phase)
 M12  documentation, packaging and final release audit (not authorized)
 v0.1.0
 ```

@@ -19,12 +19,13 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
-M11: AUTHORIZED
+M11: ACCEPTED
 M11.1-M11.7: COMPLETE
 Developer-preview technical gate: PASSED
-M11.8: NOT STARTED
-Current phase: M11 — runtime / Recorder / logging / API hardening
-M12+: NOT AUTHORIZED
+M11.8 external review: COMPLETE
+Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
+Current phase: Developer Preview Preparation
+M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
@@ -32,9 +33,12 @@ post-M9C real-device smoke passed. M9D software integration, the read-only shutd
 correction and final real-device write acceptance are complete. The final run proved
 verified startup zero, one authority-gated +10 percent command, strict ACK, separate
 matching register-6 readback, normal pause to verified zero, Recorder sealing and
-clean shutdown. External review accepted M9D and M10. M11 is authorized and begins
-with an audit-only hardening and failure-model pass before any production change;
-M12 and later work remain unauthorized. The roadmap ends at v0.1.0.
+clean shutdown. External review accepted M9D, M10 and M11. The developer-preview
+technical gate passed and the v0.1 core is functionally complete: accepted Runtime
+functionality is implemented and no known preview-blocking correctness, safety or
+durability defect remains. This is not production certification or exhaustive
+physical qualification. M12 final documentation/release audit remains unauthorized.
+The roadmap ends at v0.1.0.
 
 ## v0.1 product definition
 
@@ -290,13 +294,12 @@ reconnect/generation fencing and all accepted hardware-facing behavior. It must 
 add features, presentation or scripting; change API semantics or the Metakon
 protocol; redesign safety; or change Recorder schema merely for readability.
 
-## M11 — Runtime / Recorder / logging / API hardening — AUTHORIZED
+## M11 — Runtime / Recorder / logging / API hardening — ACCEPTED
 
-M11 implementation does not start immediately. `M11.1 — hardening and failure-model
-audit` first maps the accepted post-M10 acquisition, control/safety, Recorder/storage
-and Application/process failure behavior. It must produce the exact fault matrix,
-missing-test inventory, diagnostic-logging gap and ordered implementation sequence
-before production changes.
+M11.1-M11.8 completed the failure-model audit, focused hardening, bounded soak,
+developer-preview technical gate and external review. The accepted engineering
+evidence remains in `MILESTONE_11_REPORT.md` and
+`MILESTONE_11_FAILURE_MATRIX.md`.
 
 ### Acquisition
 
@@ -323,6 +326,58 @@ size bounds, rotation/retention, startup/shutdown and user collection workflow.
 Harden names, errors, capabilities/versioning, response bounds, backpressure,
 disconnect/reconnect/resync, malformed input, resource exhaustion and shutdown. Add
 fault/adversarial tests where useful.
+
+### Accepted M11 guarantees
+
+- configured acquisition/transport failures terminate finitely without false Good
+  observations, while explicit reconnect and generation fencing remain intact;
+- dead managed workers terminalize capacity truthfully, remain scoped and do not
+  trigger an unbounded respawn loop;
+- ambiguous started writes fail closed without blind retry; ACK, readback and
+  physical effect remain distinct; reconnect and fresh input do not auto-rearm;
+- Required Recorder remains fail-closed, BestEffort remains scoped, admission is not
+  durability, and clean/crash archives report their lifecycle truthfully without a
+  schema change;
+- diagnostics are non-authoritative and bounded to INFO by default, a 1,024-entry
+  lossy queue, 8 KiB entries and four retained 4 MiB files under
+  `%LOCALAPPDATA%\lab-runtime\logs`;
+- the eight-client Application boundary and its request/reply/event/parser resources
+  remain bounded; malformed and slow clients are isolated and native progress
+  remains; the public contract remains 42 operations and 25 capabilities with
+  unchanged protocol and public error semantics;
+- shutdown is finite and never turns unresolved physical ambiguity into a claim of
+  proved physical safety.
+
+## Developer Preview Preparation — CURRENT PHASE
+
+Prepare a compact developer-facing reference and preview package for the accepted
+headless core:
+
+1. active-document cleanup;
+2. a concise architecture/concepts guide;
+3. a compact but complete Application API reference;
+4. a Recorder/SQLite archive reference;
+5. a safety/failure/recovery cheat sheet based on the M11 failure matrix;
+6. configuration and instrument/component extension notes;
+7. preview-sufficient getting-started/build/run instructions;
+8. preview packaging/build.
+
+This unnumbered phase is not the final polished M12 documentation set. Its execution
+requires a separately authorized task.
+
+The later practical integration path remains Arduino thermal plant, Rust physical
+instrument integration, an experiment-specific Clojure client, Clay live browser
+view, thermal experiments, sealed SQLite archives, and a Clojure/Clay
+system-identification notebook. Arduino is external practical evidence, not a
+retroactive M11 prerequisite. WebSocket is not required for that first workflow; if
+considered later it is only an optional transport adapter over the same Application
+sessions, operations and DTOs.
+
+Residual non-blocking limitations remain: no multi-day unattended soak, physical
+disk-full or real power-loss qualification; no exhaustive USB/driver or Arduino
+fault-injection evidence; no hard-real-time guarantee; no M9D proof of physical
+heater effect; no remote/network-security qualification; and no completed
+release-quality documentation set.
 
 ## M12 — Documentation, packaging and final release audit
 

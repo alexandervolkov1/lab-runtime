@@ -32,9 +32,11 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
-M11: AUTHORIZED
-Current phase: M11 — runtime / Recorder / logging / API hardening
-M12+: NOT AUTHORIZED
+M11: ACCEPTED
+Developer-preview technical gate: PASSED
+Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
+Current phase: Developer Preview Preparation
+M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
 Final physical M8 acceptance and the supplementary post-M9C read smoke remain
@@ -44,28 +46,15 @@ complete. Final real-device acceptance proved startup safe-zero, one authority-g
 verified zero, Recorder sealing and clean finite shutdown. The heater/load remained
 physically disconnected, so no physical-effect claim is made.
 
-M9A, M9B and M9C implementation and external review have succeeded. M9C removed
-active Lua, obsolete first-party client baggage and transitional source-reload /
-snapshot API. M10.1 mapped the post-M9D codebase. M10.2 completed low-risk internal
-terminology cleanup, archaeological classification and source architecture indexes
-without changing accepted behavior. M10.3 physically organized the Application API
-by semantic domain without changing its accepted 42-operation contract. M10.4
-physically organized Runtime, Host and Service orchestration while retaining the
-same owners and progression order. M10.5 physically organized the Recorder contract,
-bounded worker and SQLite implementation without changing schema or durability.
-M10.6 centralized static native-component registration and configured instrument
-composition without adding plugins, protocols or public semantics. M10.7 tightened
-internal visibility, improved architectural source navigation and organized the
-regression-test map without changing behavior. The first M10 external review found
-one instrument-property projection coupling; the configuration layer now owns
-neutral property metadata and the Application projection no longer enumerates
-instrument variants. External review accepted M10: Runtime remains the sole
-authoritative mutable experiment owner, the Application and Recorder/SQLite layers
-are clearer, extension paths are static and generic, and the accepted public and
-hardware-facing behavior is unchanged. M11 is authorized, but implementation does
-not begin until the M11.1 hardening and failure-model audit maps the exact fault
-matrix, missing tests, diagnostic-logging gap and implementation sequence. M12 and
-later milestones remain blocked behind explicit review gates.
+M9A-M10 implementation and external review have succeeded. M11 external review also
+accepted the acquisition/transport, managed-worker, controller/output,
+Recorder/SQLite, bounded-diagnostics and Application/process hardening work. The
+accepted v0.1 Runtime functionality is implemented and no known preview-blocking
+correctness, safety or durability defect remains. "Functionally complete" does not
+mean production certification or exhaustive physical qualification: preview/reference
+material, practical integration validation, full release documentation and packaging
+remain. M12 final polished documentation and release audit remain behind an explicit
+authorization gate.
 
 ## Donor repository
 

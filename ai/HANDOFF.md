@@ -27,7 +27,7 @@ M10.5: COMPLETE
 M10.6: COMPLETE
 M10.7: COMPLETE
 M10.8: COMPLETE
-M11: AUTHORIZED
+M11: ACCEPTED
 M11.1: COMPLETE
 M11.2: COMPLETE
 M11.3: COMPLETE
@@ -35,10 +35,11 @@ M11.4: COMPLETE
 M11.5: COMPLETE
 M11.6: COMPLETE
 M11.7: COMPLETE
+M11.8 external review: COMPLETE
 Developer-preview technical gate: PASSED
-M11.8: NOT STARTED
-Current phase: M11 — runtime / Recorder / logging / API hardening
-M12+: NOT AUTHORIZED
+Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
+Current phase: Developer Preview Preparation
+M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
 M9B and M9C implementation and external review are accepted. The supplementary
@@ -72,7 +73,52 @@ developer-preview technical gate. Three release runs each completed 2,000 monoto
 acquisition/controller turns and eight sealed Recorder cycles; diagnostic rotation
 remained at four 4 MiB files; and key acquisition/output/crash/client/shutdown suites
 passed three focused repetitions. No production defect was found. M11.8 external
-review has not started.
+review accepted the result at `31a39cf02e7d58a42d731368f56164226566c5e8`.
+
+## M11 accepted guarantees
+
+- Configured transport failures terminate finitely. CRC, malformed, truncated,
+  silent or disconnected responses cannot create false Good observations;
+  generation fencing and explicit reconnect remain authoritative.
+- A dead managed worker terminalizes its capacity truthfully, cannot remain Busy
+  forever, fails only its scoped work and is not respawned without bound.
+- A WRITE ambiguous after `send_started` fails closed and is not blindly retried.
+  ACK, readback and physical effect remain distinct. Reconnect or fresh Good input
+  does not rearm output; stale leases, epochs and generations are fenced, and
+  recovery requires explicit `reset_failed` followed by the accepted lifecycle.
+- Required Recorder failure remains fail-closed; BestEffort failure does not
+  incorrectly stop unrelated native work. Admission is not durability. Clean-close
+  archives seal truthfully, killed-process archives remain visibly interrupted, and
+  the SQLite schema is unchanged.
+- Diagnostic logs are non-authoritative, bounded and lossy: INFO by default,
+  `%LOCALAPPDATA%\lab-runtime\logs`, four retained 4 MiB files, a 1,024-entry
+  queue and an 8 KiB entry cap. Logging failure cannot become experiment failure.
+- The Application boundary remains at eight clients with bounded request, reply,
+  event and parser resources. Malformed and slow clients are isolated, gaps and
+  resynchronization are explicit, and client lifetime remains separate from the
+  experiment while native progress continues. The public contract remains 42
+  operations and 25 capabilities with unchanged protocol and error semantics.
+- Shutdown is finite and truthful. Unresolved physical ambiguity is never reported
+  as proof that the physical world is safe.
+
+The v0.1 core is functionally complete: accepted Runtime functionality is present
+and known developer-preview-blocking correctness, safety and durability defects are
+closed. This is not production certification or exhaustive physical qualification.
+
+## Developer Preview Preparation
+
+The current unnumbered phase prepares a compact developer-facing reference and
+preview package: active-doc cleanup; concise architecture/concepts; compact complete
+Application API and Recorder/SQLite references; a safety/failure/recovery cheat sheet
+derived from `MILESTONE_11_FAILURE_MATRIX.md`; configuration and extension notes;
+preview build/run instructions; and preview packaging/build. Work has not begun and
+requires a separately authorized task. Full polished M12 documentation remains gated.
+
+Residual non-blocking limitations remain explicit: no multi-day unattended soak,
+physical disk-full or real power-loss qualification; no exhaustive USB/driver or
+Arduino hardware fault injection; no hard-real-time guarantee; no M9D proof of
+physical heater effect; no remote/network-security qualification; and no completed
+release-quality documentation set.
 
 ## M10.6 completion
 
@@ -119,12 +165,11 @@ signals no longer require generic Application branches, and an Arduino-like adap
 is confined to instrument-specific configuration, protocol, composition,
 scheduling, optional authority-gated output and tests.
 
-## M11 authorization
+## M11 acceptance
 
-M11 is authorized as the final major technical hardening milestone before the
-developer-preview/reference phase. M11.1-M11.7 are complete and the internal
-technical gate passed. M11.8 external review has not started; M12 and later work
-remain unauthorized.
+M11 is externally accepted as the final major technical hardening milestone before
+the developer-preview/reference phase. M11.1-M11.8 are complete and the technical
+gate passed. M12 final documentation/release audit remains unauthorized.
 
 ## M10.5 completion
 
@@ -384,5 +429,6 @@ snapshot family and the Babashka client. The final registry has 42 operations an
 capabilities. Neutral Rust/process tests retain managed-component and client-isolation
 coverage; historical Recorder provenance compatibility remains. M10 improved
 structure and studyability without changing accepted semantics and is externally
-accepted. M11 is authorized with M11.1 audit first; M12 remains blocked. The roadmap
-ends at v0.1.0.
+accepted. M11 is externally accepted and the core is functionally complete for
+developer preview. M12 final documentation/release audit remains blocked. The
+roadmap ends at v0.1.0.

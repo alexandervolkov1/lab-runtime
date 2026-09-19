@@ -1,4 +1,4 @@
-# Current work — M11.7 developer-preview technical gate
+# Current work — developer-preview phase transition
 
 ```text
 M8: ACCEPTED
@@ -8,153 +8,130 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
-M11: AUTHORIZED
-M11.1 hardening and failure-model audit: COMPLETE
-M11.2 acquisition / transport faults, managed-executor lifecycle and starvation: COMPLETE
-M11.3 controller / OutputAuthority recovery and physical-output faults: COMPLETE
-M11.4 Recorder / SQLite / crash and filesystem hardening: COMPLETE
-M11.5 bounded diagnostic logging: COMPLETE
-M11.6 Application/client/emulator/process pressure hardening: COMPLETE
-M11.7 consolidated failure matrix / bounded soak / preview gate: COMPLETE
+M11: ACCEPTED
+
 Developer-preview technical gate: PASSED
-M11.8 external review: NOT STARTED
-Current phase: M11 — runtime / Recorder / logging / API hardening
-M12+: NOT AUTHORIZED
+Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
+
+Current phase: Developer Preview Preparation
+Developer-preview documentation/packaging execution: NOT STARTED
+M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
-M9D software integration, physical acceptance and external review are complete. Its
-accepted production path is:
+## Accepted core state
 
-```text
-native controller
-→ OutputProposal
-→ OutputAuthority
-→ bounded ResourceExecutor
-→ final authority/generation recheck
-→ Metakon WRITE reg06
-→ strict ACK
-→ separate reg06 readback
-```
+External review accepted M11 at
+`31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 Runtime functionality
+is implemented and known developer-preview-blocking correctness, safety and
+durability defects are closed.
 
-The clean acceptance archive is
+"Functionally complete" does not mean production certification or exhaustive
+physical qualification. Work remaining before v0.1 includes preview/reference
+material, practical integration validation, full release documentation and
+packaging.
+
+The M9D evidence archive remains immutable:
 `examples/metakon-513-m9d-write-smoke.sqlite`, SHA-256
 `14ec74be2a33cb795b29dcc295acc323a0dd4d8cf44b2cc5f6f64fd29e775c32`.
-It proves `0 → ACK → readback 0`, `+10 → ACK → readback 10`, `0 → ACK →
-readback 0` and clean shutdown. The load/heater was physically disconnected, so
-physical heater effect was intentionally not tested. Existing M8, post-M9C and M9D
-archives remain immutable.
+It proves the accepted software/transport ACK and register-6 readback sequence, not
+physical heater effect.
 
-## M10 accepted guarantees
+## M11 accepted guarantees
 
-M10 is externally accepted. It made Runtime, HostCore and ServiceHost ownership and
-progression easier to navigate without changing owners; organized the Application
-API by semantic domain; physically separated the Recorder semantic contract from
-SQLite implementation; clarified acquisition, output-safety and extension paths;
-and tightened internal visibility and architectural rustdoc.
+- Configured transport failures terminate finitely. Malformed, CRC-failing,
+  truncated, silent and disconnected responses cannot create false Good
+  observations. Generation fencing and explicit reconnect semantics remain.
+- Dead managed-worker capacity terminalizes truthfully, does not remain Busy forever,
+  stays scoped and is not automatically respawned without bound.
+- Ambiguous started physical writes fail closed without blind retry. ACK, readback
+  and physical effect remain distinct. Reconnect and fresh Good input do not rearm;
+  stale lease, epoch and generation are fenced. Recovery requires explicit
+  `reset_failed` and the accepted lifecycle transition.
+- Required Recorder failure remains fail-closed; BestEffort failure does not
+  incorrectly stop unrelated native work. Admission is distinct from durability,
+  clean close seals truthfully, process-kill archives remain visibly incomplete, and
+  the SQLite schema is unchanged.
+- Diagnostic logging is bounded, lossy and non-authoritative: INFO default,
+  `%LOCALAPPDATA%\lab-runtime\logs`, four retained 4 MiB files (16 MiB), queue 1,024
+  and maximum entry 8 KiB. Logging failure never becomes experiment authority.
+- The Application boundary remains eight clients with bounded request/reply/event
+  queues and bounded NDJSON/JSON complexity. Malformed and slow clients are isolated;
+  subscription gaps/resynchronization are explicit; client lifetime remains separate
+  from experiment lifetime; native progress is preserved under pressure. The public
+  contract remains 42 operations and 25 capabilities with unchanged protocol and
+  error semantics.
+- Shutdown remains finite and truthful. Unresolved physical ambiguity is never
+  presented as proven physical safety.
 
-The accepted guarantees include:
+The authoritative engineering evidence remains in:
 
-- Runtime remains the sole authoritative mutable experiment owner;
-- HostCore composes bounded scheduling and adapter/Recorder orchestration, while
-  ServiceHost owns process/deployment/reconnect/shutdown progression;
-- the public Application contract remains exactly 42 operations and 25 capabilities;
-- public protocol, error, bounds/backpressure and reconnect semantics are unchanged;
-- Recorder schema, durability, provenance and historical compatibility are unchanged;
-- scheduler ordering and all M9D OutputAuthority/Metakon behavior are unchanged;
-- native-component registration is centralized, explicit and compile-time;
-- ordinary instrument properties and signals need no generic Application, Recorder,
-  history, subscription or SQLite changes;
-- an Arduino-like instrument is confined to instrument-specific configuration,
-  protocol, composition, scheduling, optional authority-gated output and tests.
+```text
+docs/implementation/MILESTONE_11_REPORT.md
+docs/implementation/MILESTONE_11_FAILURE_MATRIX.md
+```
 
-## Completed M11.1-M11.7 and next gate
+## Current phase scope
 
-M11.1 inspected the accepted post-M10 codebase and recorded the normative fault
-model, guarantee levels, bounds, missing coverage, diagnostic-logging gap and
-ordered implementation sequence in
-`docs/implementation/MILESTONE_11_HARDENING_AUDIT.md`.
+Developer Preview Preparation will prepare a compact developer-facing reference and
+preview package for the accepted headless core:
 
-The audit found that accepted acquisition, control/OutputAuthority, Recorder and
-Application failure behavior is already strongly bounded and regression-tested.
-M11.2 closed its configured-transport and managed-worker lifecycle gaps. M11.3
-closed the combined physical loss/ambiguity-reconnect-no-rearm gap and corrected a
-scoped controller fault that Host previously escalated after Runtime had already
-failed the controller safely. Remaining work includes targeted SQLite/process
-pressure acceptance, bounded diagnostic logging and bounded soak acceptance.
+1. active-doc cleanup;
+2. concise architecture/concepts guide;
+3. compact but complete Application API reference;
+4. Recorder/SQLite archive reference;
+5. safety/failure/recovery cheat sheet based on
+   `MILESTONE_11_FAILURE_MATRIX.md`;
+6. configuration and instrument/component extension notes;
+7. preview-sufficient getting-started/build/run instructions;
+8. preview packaging/build.
 
-M11.2 is complete. It added configured Metakon software fault oracles for CRC,
-truncation, silence, disconnect and malformed compatibility responses; preserved
-the accepted explicit reconnect/generation policy; and corrected managed worker
-panic/disconnect so one dead fixed slot terminalizes its pending correlation and no
-longer masquerades as healthy pending capacity. No worker respawn was added.
+This transition does not authorize starting those deliverables automatically. A
+separate task must define and authorize the next slice. Do not begin final polished
+M12 documentation.
 
-Required native progress remains safety-first under bounded managed, API/emulator,
-history/Recorder and configuration pressure. The implementation and evidence are
-recorded in `docs/implementation/MILESTONE_11_REPORT.md`.
+## Preserved boundaries and later practical validation
 
-M11.3 proves that resource reconnect, confirmed safe state and fresh Good input do
-not rearm a failed controller. Exact recovery is `reset_failed -> Paused -> resume
--> Warming -> fresh finite lease`; old authority instances, epochs and generations
-remain fenced, and ambiguous started WRITEs are never blindly retried.
+```text
+Runtime owns experiment semantics.
+Client owns presentation semantics.
+```
 
-M11.4 is complete. It froze the admission-versus-commit durability boundary, added
-real external-lock and Windows read-only startup acceptance, and paired clean-close
-and killed-process archives with offline SQLite integrity and explicit lifecycle
-completeness checks. Required and BestEffort policy, schema, public API and all
-transaction/sealing semantics remain unchanged.
+Do not add GUI/presentation concepts to the Application API. Do not begin Arduino,
+Clojure, Clay or WebSocket implementation during this transition.
 
-M11.5 is complete. It adds a separate bounded troubleshooting path using the
-standard tracing stack: a 1,024-record lossy queue, 8 KiB record cap, four 4 MiB
-files including the active file, stderr fallback, INFO default level and bounded
-best-effort shutdown. Diagnostic loss or destination failure never affects Runtime,
-OutputAuthority or Recorder semantics.
+The planned practical learning/integration phase remains:
 
-M11.6 is complete. It re-audited all Application/process capacities, expanded the
-real TCP malformed/oversized matrix, proved exact eight-client admission and repeated
-capacity recovery, and removed a test-harness race by synchronizing synthetic event
-pressure with actual reactor admission. M9B.8 subscription/resync, deduplication,
-history, emulator, multi-client and native-progress contracts remain unchanged.
+```text
+Arduino thermal plant
+→ Rust physical instrument integration
+→ experiment-specific Clojure client
+→ Clay live browser view
+→ thermal experiments
+→ sealed SQLite archives
+→ Clojure/Clay system-identification notebook
+```
 
-M11.7 is complete and its internal developer-preview technical gate passed. The
-authoritative engineering matrix is
-`docs/implementation/MILESTONE_11_FAILURE_MATRIX.md`. Three bounded release soaks
-each completed 2,000 acquisition/controller turns and eight clean Recorder cycles;
-three production-retention soaks held diagnostics to exactly four 4 MiB files; and
-configured acquisition/output, process-kill/reopen, client-isolation, M9B.8 and
-shutdown suites passed three focused release repetitions. No production defect or
-semantic change was found. M11 still requires M11.8 external review; M12 and later
-milestones remain unauthorized.
+Arduino remains an external real instrument/emulator and practical integration
+exercise, not a prerequisite for M11 acceptance. WebSocket is not required for the
+first Clojure/Clay workflow. If evaluated later, it may only be an optional transport
+adapter over the same Application sessions, operations and DTOs.
 
-The completed audit covers:
+## Residual limitations
 
-- an exact fault matrix for acquisition, control/safety, Recorder/storage and the
-  Application/process boundary;
-- the immediate Runtime action, controller/output response, retry/no-retry rule,
-  Recorder/API result and recovery/rearm rule for each important failure;
-- a classification of relevant guarantees as `GUARANTEED`, `BEST EFFORT` or
-  `NOT GUARANTEED`;
-- an inventory of missing or weak fault/adversarial tests;
-- the diagnostic-logging gap and a bounded logging design covering levels,
-  destination, size, rotation/retention, startup/shutdown, failures and collection;
-- a small, ordered M11 implementation sequence with explicit risk and verification.
+These limitations are explicit and are not current developer-preview blockers:
 
-It covers periodic acquisition, monotonic cadence/drift, bounded queues,
-slow or hung transport, reconnect, starvation resistance and finite shutdown;
-controller timing, stale/unavailable input, leases, epoch/generation fencing,
-OutputAuthority, ambiguous WRITE, ACK/readback mismatch, safe transition and rearm;
-Recorder ingress, durable failure, gaps/sealing, provenance, history pressure,
-SQLite locking/failure/integrity and clean/crash-close expectations; and malformed or
-slow clients, capacity pressure, reconnect/resync, subscription overflow, history or
-emulator pressure, multi-client isolation and finite server shutdown.
+- no multi-day unattended soak;
+- no physical disk-full qualification;
+- no real power-loss qualification;
+- no exhaustive USB/driver fault injection;
+- no Arduino hardware fault-injection evidence yet;
+- no hard-real-time guarantee;
+- M9D did not prove physical heater effect;
+- no remote/network-security qualification;
+- release-quality documentation is not complete.
 
-Recorder remains durable scientific/audit history. Diagnostic logging is a separate
-bounded troubleshooting mechanism; routine worker, TCP and debug messages must not
-become unbounded Recorder facts.
+## Scope guard
 
-M11 is hardening, not feature development. Do not add GUI/Presentation, scripting,
-a Clojure client, an Arduino production instrument, new public convenience
-operations, new Recorder schema features, final tutorials or polished M12 release
-documentation. The planned educational Arduino furnace is outside M11 unless it is
-separately authorized as test infrastructure.
-
-Do not begin M11.8 automatically. M12 and later milestones remain unauthorized.
+Do not begin developer-preview documentation or packaging without a separately
+authorized task. Do not begin Arduino, Clojure, Clay, WebSocket or final M12 work.
+Milestone/review gates never advance automatically.

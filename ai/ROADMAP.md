@@ -22,12 +22,13 @@ M9C: ACCEPTED
 POST-M9C HARDWARE SMOKE: PASS
 M9D: ACCEPTED
 M10: ACCEPTED
-M11: AUTHORIZED
+M11: ACCEPTED
 M11.1-M11.7: COMPLETE
 Developer-preview technical gate: PASSED
-M11.8: NOT STARTED
-Current phase: M11 — runtime / Recorder / logging / API hardening
-M12+: NOT AUTHORIZED
+M11.8 external review: COMPLETE
+Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
+Current phase: Developer Preview Preparation
+M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
 Completed milestones M1-M9A established the domain, OutputAuthority, bounded
@@ -275,13 +276,13 @@ Metakon protocol, add presentation or scripting, or weaken bounds/backpressure.
 Further hardware testing is not required unless a later structural change
 unexpectedly touches hardware-facing semantics.
 
-## M11 — Runtime / Recorder / logging / API hardening — AUTHORIZED
+## M11 — Runtime / Recorder / logging / API hardening — ACCEPTED
 
-Perform a systematic release-hardening pass.
-
-Implementation does not start immediately. M11.1 first audits the accepted post-M10
-system and records the exact fault matrix, missing tests, diagnostic-logging gap and
-ordered implementation sequence. M12 and later work remain unauthorized.
+The systematic release-hardening pass and external review are complete. The
+developer-preview technical gate passed. The accepted v0.1 core is functionally
+complete, meaning its agreed Runtime functionality is implemented and no known
+preview-blocking correctness, safety or durability defect remains. It does not mean
+production certification or exhaustive physical qualification.
 
 ### Acquisition
 
@@ -330,6 +331,47 @@ Semantically important diagnostics may also be structured durable Runtime events
 Harden operation naming, errors, capabilities/versioning, response bounds,
 subscription backpressure, disconnect/reconnect/resync, malformed input, resource
 exhaustion and shutdown. Add fault/adversarial tests where useful.
+
+## Developer Preview Preparation — CURRENT PHASE
+
+Prepare a compact developer-facing reference and preview package for the accepted
+headless core:
+
+1. clean active documentation;
+2. provide a concise architecture and concepts guide;
+3. provide a compact but complete Application API reference;
+4. provide a Recorder/SQLite archive reference;
+5. derive a safety/failure/recovery cheat sheet from
+   `MILESTONE_11_FAILURE_MATRIX.md`;
+6. record configuration and instrument/component extension notes;
+7. provide preview-sufficient build, run and getting-started instructions;
+8. build the preview package.
+
+This is an unnumbered preparation phase, not the final polished M12 documentation
+set. Execution requires a separate authorized task.
+
+The subsequent practical learning/integration path remains:
+
+```text
+Arduino thermal plant
+→ Rust physical instrument integration
+→ experiment-specific Clojure client
+→ Clay live browser view
+→ thermal experiments
+→ sealed SQLite archives
+→ Clojure/Clay system-identification notebook
+```
+
+The Arduino remains an external real instrument/emulator and practical integration
+exercise, not retroactive M11 evidence. TCP/NDJSON is sufficient for the first
+Clojure/Clay workflow. A future WebSocket transport, if considered, is only another
+adapter over the same Application sessions, operations and DTOs:
+
+```text
+TCP/NDJSON ─┐
+            ├→ same Application sessions / operations / DTOs
+WebSocket ──┘
+```
 
 ## M12 — Documentation, packaging and final release audit
 
