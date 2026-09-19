@@ -35,4 +35,4 @@ Priority не прерывает in-flight serial transaction. Ordinary OS proce
 - Считать последнее отправленное значение фактическим output: скрывает потерю подтверждения, отказ исполнительного устройства и поздние writes.
 - Сохранять последнюю мощность навсегда при disconnect: переносит сбой producer на физический процесс без ограниченного срока полномочий.
 
-Подробности: [RUNTIME_AND_SAFETY_MODEL.md](../architecture/RUNTIME_AND_SAFETY_MODEL.md), проверка — [POC_PLAN.md](../architecture/POC_PLAN.md).
+Связанный historical rationale: [RUNTIME_AND_SAFETY_MODEL.md](RUNTIME_AND_SAFETY_MODEL.md).

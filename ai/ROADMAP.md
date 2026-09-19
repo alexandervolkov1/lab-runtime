@@ -1,356 +1,36 @@
-# Product roadmap to v0.1.0
+# Roadmap to v0.1.0
 
-`ai/HANDOFF.md` records current state. `ai/WORK.md` is the only detailed current
-implementation authorization. This roadmap ends at v0.1.0.
-
-## Status
+## Current state
 
 ```text
-M8: ACCEPTED
-M9A: ACCEPTED
-M9B: ACCEPTED
-M9B.1 API audit: COMPLETE
-M9B.2 protocol / error / operation foundation: COMPLETE
-M9B.3: COMPLETE
-M9B.4: COMPLETE
-M9B.5: COMPLETE
-M9B.6: COMPLETE
-M9B.7: COMPLETE
-M9B.8: COMPLETE
-M9B.9: COMPLETE
-M9C: ACCEPTED
-POST-M9C HARDWARE SMOKE: PASS
-M9D: ACCEPTED
-M10: ACCEPTED
-M11: ACCEPTED
-M11.1-M11.7: COMPLETE
+M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
-M11.8 external review: COMPLETE
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 Current phase: Developer Preview Preparation
-M12 final documentation/release audit: NOT AUTHORIZED
 ```
 
-Completed milestones M1-M9A established the domain, OutputAuthority, bounded
-transport, native control, Recorder/SQLite, deployment/Windows COM/reconnect,
-implementation-neutral managed components and native Rust managed execution.
+The accepted headless Runtime core is implemented and technically hardened for a
+developer preview. Remaining work concerns reference material, practical integration
+validation and release preparation, not an unplanned feature milestone.
 
-## Product boundary through release
+## Developer Preview Preparation
 
-```text
-Runtime owns experiment semantics.
-Clients own presentation semantics.
-```
+Prepare a compact developer-facing set for the accepted core:
 
-v0.1 is headless. The Runtime and Application API contain no Presentation API or
-workspace, plot, trace, button, panel, tab, color, layout or window concepts. The
-release contains no first-party frontend, client SDK or user-facing scripting
-environment.
+1. architecture and concepts guide;
+2. Application API reference;
+3. Recorder/SQLite archive reference;
+4. safety/failure/recovery cheat sheet;
+5. configuration and instrument/component extension notes;
+6. getting-started/build/run guide;
+7. preview packaging/build.
 
-Required Runtime work has architectural scheduling priority over managed components
-and API clients:
+This is not yet the final polished release-documentation pass. Each execution slice
+requires explicit authorization in `WORK.md`.
 
-```text
-authoritative / required Runtime work
-├── transport scheduling
-├── periodic instrument polling
-├── measurement publication
-├── native controller deadlines
-├── OutputAuthority
-├── Recorder ingestion
-└── required lifecycle/safety work
+## Practical learning and integration
 
-non-authoritative extension/external work
-├── managed components
-└── API clients
-```
-
-This does not prescribe Windows thread-priority classes.
-
-## M9B — Complete and stabilize Application API
-
-Goal: expose complete useful Runtime semantics through one coherent bounded local
-Application API.
-
-M9B.1 audited the actual API. M9B.2 completed the shared protocol identity,
-composition-aware operation/capability registry, bounded public error taxonomy and
-operation lifecycle response foundation. M9B.3 completed discovery, current/recent
-measurements, durable-history delivery cleanup, and live subscription semantics.
-M9B.4 completed bounded Reference mutation/current state and native controller/PID
-configuration, status, lifecycle and event projections without exposing output
-authority.
-M9B.5 completed semantic Recorder current state, start/stop durability boundaries,
-stable run/interval identity, failure projection and bounded lifecycle events while
-keeping SQLite below the Application boundary.
-M9B.6 completed semantic resources, generic validated property metadata/mutation,
-typed deployment stage/apply state and generation-fenced reconnect projections.
-M9B.7 completed explicit virtual-only external measurement publication and separated
-native virtual-model restart from managed-component lifecycle.
-M9B.8 completed adversarial reconnect/resynchronization, bounded-pressure and
-multi-client fault acceptance, including the final connection-local history-cursor
-bound.
-M9B.9 consolidated the source-derived operation/capability inventory, identity and
-lifecycle contracts, error taxonomy, authoritative limits, transition list and
-external-review checklist. External review accepted M9B at
-`d228d697c01a4b77d55333655129f95ee784c07c`.
-
-### Discovery
-
-- resources and transports;
-- instruments;
-- signals/series;
-- capabilities;
-- properties;
-- implementation-neutral status.
-
-### Measurements
-
-- latest values, quality and units;
-- generation/revision where semantically needed;
-- periodic acquisition state;
-- live subscriptions/events;
-- bounded and paged history.
-
-### References and control
-
-- Reference lifecycle/configuration;
-- controller/PID configuration;
-- supported start/pause/resume/stop operations;
-- controller status;
-- validated operation results.
-
-### Recorder
-
-- start/stop/status;
-- current run/interval state;
-- durable failure/coverage status;
-- public bounded history/query surfaces.
-
-### Resources, transports and configuration
-
-- Runtime/resource status;
-- validated configuration operations;
-- reconnect;
-- safe reload/rebind where applicable;
-- explicit revision/conflict behavior.
-
-### Virtual and emulator API
-
-- explicitly declared virtual instruments;
-- emulator publication endpoints/model steps;
-- deterministic fault injection where appropriate;
-- typed values/units/quality and generation/lifecycle fencing;
-- strict separation from physical evidence.
-
-An emulator can never fabricate physical ACK, physical readback, transport
-completion or safe-output evidence.
-
-### Protocol/API quality
-
-- coherent operation naming and structured errors;
-- capability discovery and protocol/API versioning;
-- bounded request/response sizes;
-- subscription backpressure;
-- disconnect/reconnect and resynchronization;
-- malformed/untrusted input and resource-exhaustion behavior;
-- finite shutdown.
-
-M9B contains no Presentation API, frontend/client implementation or bundled scripting
-environment. Testing uses Rust, raw-protocol and integration tests.
-
-## M9C — Remove Lua and obsolete client baggage — ACCEPTED
-
-M9C removed active Lua product code and dependencies:
-
-- `lab-lua`;
-- `mlua`;
-- `lua.v1`;
-- Lua runtime/sandbox;
-- Lua source/configuration paths and Lua-only active fixtures;
-- active Lua-specific API vocabulary, including `reload_managed_sources` and
-  `managed_source_reload`;
-- Lua user documentation.
-
-Preserve historical milestone reports, immutable SQLite archives and historical
-provenance such as `managed_lua_source`. Keep compatibility for historical evidence
-inspection only when genuinely necessary.
-
-Remove active first-party client baggage from the release product:
-
-- Babashka client and user workflow;
-- Babashka-only process acceptance that has no neutral product coverage role;
-- client SDK material;
-- bundled external-client examples.
-
-Replace required acceptance coverage with implementation-neutral Rust/protocol
-integration tests.
-
-The transitional `runtime_snapshot`, `snapshot_page` and `snapshot_release` family
-was removed because accepted domain-specific discovery/current surfaces supersede it.
-
-Keep the neutral managed-component contract, BuiltIn/native executor path, bounded
-`PlainData`, generation/revision fencing, `native.moving_mean.v1` and neutral
-provenance. Historical M5 documentation, archives, schemas and provenance names are
-evidence, not active product surface, and are not rewritten.
-
-Final active component model:
-
-```text
-Application API
-      ↓
-authoritative Runtime
-      ├── native instruments
-      ├── native managed components
-      ├── native controllers / OutputAuthority
-      ├── Recorder
-      └── virtual instruments / emulator API
-```
-
-M9C added no replacement scripting language, GUI, Presentation API, client SDK or
-post-v0.1 roadmap. It is simplification, not substitution. External review accepted
-the milestone. A supplementary post-M9C read-only Metakon smoke then confirmed the
-accepted hardware-facing behavior without production or test changes.
-
-## M9D — Physical Metakon output integration — ACCEPTED
-
-The production path uses the existing OutputAuthority, bounded transport executor,
-strict ACK and separate register-6 readback. The read-only shutdown correction and
-all software gates pass. Final real-device acceptance proved startup safe-zero, one
-authority-gated +10 percent controller command, matching ACK/readback, normal pause
-to verified zero, sealed Recorder evidence and clean finite shutdown. The
-heater/load was physically disconnected, so register command/readback is proven but
-physical heater effect is not claimed. External review accepted M9D.
-
-## M10 — Core cleanup and studyability — ACCEPTED
-
-Goal: make the repository unusually easy to understand and study while preserving
-behavior and safety. Refactor only under test coverage.
-
-M10.1 completed the structural/studyability audit of the actual post-M9D codebase.
-M10.2 completed the separately authorized low-risk terminology, archaeological and
-source architecture-index slice without changing accepted behavior. M10.3 completed
-the separately authorized Application API physical organization while preserving the
-accepted registry/wire contract. M10.4 organized Runtime, Host and Service
-orchestration without changing owners, scheduling or accepted semantics. M10.5
-organized Recorder/SQLite implementation boundaries without changing schema or
-durability. M10.6 centralized static native-component registration and configured
-instrument composition without adding plugin or protocol semantics. M10.7 completed
-the source-visibility, architectural rustdoc and test-navigation cleanup without
-changing behavior. The first external review blocker was corrected by moving
-ordinary instrument property metadata out of the generic Application projection and
-into the configuration extension layer. Focused external re-review accepted M10.
-Runtime ownership, the 42-operation / 25-capability contract, scheduler order,
-Recorder/SQLite semantics and M9D physical-output behavior remain unchanged.
-
-Targets:
-
-- split oversized implementation files by clear responsibility;
-- preserve one authoritative Runtime ownership model;
-- make API request -> Runtime operation -> domain behavior easy to trace;
-- make periodic acquisition and signal/series lifecycle explicit;
-- make transport/instrument, controller, OutputAuthority and Recorder boundaries
-  obvious;
-- make native component extension points obvious;
-- eliminate stale naming, dead compatibility code and unused abstractions;
-- keep public/private boundaries deliberate.
-
-A developer should be able to answer quickly:
-
-```text
-How is an instrument added?
-How does periodic polling work?
-How is a measurement series created?
-How is latest/history state represented?
-How does a controller consume data?
-How is an output authorized?
-How is data submitted to Recorder?
-How does an API request reach Runtime?
-How is a native managed component added?
-```
-
-Do not create speculative frameworks merely to improve the directory tree.
-
-M10 must not add product features, alter the accepted Application API, change
-Recorder schema for readability, redesign controller/output safety, change the
-Metakon protocol, add presentation or scripting, or weaken bounds/backpressure.
-Further hardware testing is not required unless a later structural change
-unexpectedly touches hardware-facing semantics.
-
-## M11 — Runtime / Recorder / logging / API hardening — ACCEPTED
-
-The systematic release-hardening pass and external review are complete. The
-developer-preview technical gate passed. The accepted v0.1 core is functionally
-complete, meaning its agreed Runtime functionality is implemented and no known
-preview-blocking correctness, safety or durability defect remains. It does not mean
-production certification or exhaustive physical qualification.
-
-### Acquisition
-
-- deterministic monotonic scheduling and polling cadence;
-- drift correction;
-- bounded queues;
-- slow transport and starvation behavior;
-- finite shutdown;
-- priority of required native work over extension/client work.
-
-### Control and safety
-
-- controller lifecycle;
-- finite leases and generation/epoch fencing;
-- OutputAuthority;
-- ambiguous-write handling;
-- no blind retry or automatic rearm.
-
-### Recorder
-
-- complete durable experiment history and provenance integrity;
-- run/interval sealing and gaps;
-- bounded ingestion and failure handling;
-- crash/clean-close expectations;
-- SQLite integrity behavior.
-
-### Diagnostic logging
-
-Implement and document a separate bounded diagnostics mechanism with explicit
-destination, levels, size bounds, rotation/retention, startup/shutdown behavior and
-user collection guidance.
-
-```text
-Recorder / SQLite
-= durable scientific + experiment audit history
-
-Diagnostic logs
-= bounded troubleshooting information
-```
-
-Routine verbose implementation messages do not become unbounded Recorder content.
-Semantically important diagnostics may also be structured durable Runtime events.
-
-### Application API
-
-Harden operation naming, errors, capabilities/versioning, response bounds,
-subscription backpressure, disconnect/reconnect/resync, malformed input, resource
-exhaustion and shutdown. Add fault/adversarial tests where useful.
-
-## Developer Preview Preparation — CURRENT PHASE
-
-Prepare a compact developer-facing reference and preview package for the accepted
-headless core:
-
-1. clean active documentation;
-2. provide a concise architecture and concepts guide;
-3. provide a compact but complete Application API reference;
-4. provide a Recorder/SQLite archive reference;
-5. derive a safety/failure/recovery cheat sheet from
-   `MILESTONE_11_FAILURE_MATRIX.md`;
-6. record configuration and instrument/component extension notes;
-7. provide preview-sufficient build, run and getting-started instructions;
-8. build the preview package.
-
-This is an unnumbered preparation phase, not the final polished M12 documentation
-set. Execution requires a separate authorized task.
-
-The subsequent practical learning/integration path remains:
+After preview preparation, the planned exercise is:
 
 ```text
 Arduino thermal plant
@@ -362,116 +42,27 @@ Arduino thermal plant
 → Clojure/Clay system-identification notebook
 ```
 
-The Arduino remains an external real instrument/emulator and practical integration
-exercise, not retroactive M11 evidence. TCP/NDJSON is sufficient for the first
-Clojure/Clay workflow. A future WebSocket transport, if considered, is only another
-adapter over the same Application sessions, operations and DTOs:
+The Arduino remains an external instrument/emulator and is not required to accept
+M11 retroactively. Runtime continues to own experiment semantics; the Clojure/Clay
+client owns presentation semantics.
 
-```text
-TCP/NDJSON ─┐
-            ├→ same Application sessions / operations / DTOs
-WebSocket ──┘
-```
+TCP/NDJSON is sufficient for the first workflow. A future WebSocket transport may
+only adapt the same Application sessions, operations and DTOs; it is not current
+preview scope.
 
-## M12 — Documentation, packaging and final release audit
+## Final release gate
 
-Documentation is a release gate. All active release documentation is clear,
-professional technical English.
+The later final documentation/package audit will require polished architecture,
+protocol, archive, configuration, safety/recovery and operational documentation plus
+a reproducible checksummed Windows package. It is not authorized by the current
+phase transition.
 
-### Architecture and concepts
+## Explicit non-goals
 
-Document project/architecture overview, ownership, Runtime/domain separation,
-instruments, signals/series, periodic acquisition, Query/Command/Operation, time,
-transport, Reference, PID/controllers, OutputAuthority, Recorder/provenance, native
-managed components, virtual/emulated instruments, Application API and diagnostics.
-
-### Tutorials
-
-Provide complete step-by-step tutorials to:
-
-1. build the project;
-2. run `lab-runtime`;
-3. configure and understand an instrument;
-4. understand polling and measurement series;
-5. inspect latest measurements through the raw protocol/API;
-6. query history;
-7. subscribe to live data at protocol level;
-8. configure/use Reference;
-9. configure/use PID with a virtual plant;
-10. start/stop Recorder;
-11. inspect the SQLite archive;
-12. inspect provenance;
-13. configure/use a virtual instrument/emulator;
-14. add a native Rust instrument;
-15. add a native Rust managed component;
-16. understand diagnostic logs;
-17. diagnose common failures.
-
-Tutorials may use raw protocol interaction. Do not create a first-party client SDK
-for tutorials.
-
-### Reference documentation
-
-Document the Application API, protocol/versioning, operations, errors, capabilities,
-configuration schema, instrument definitions, native component contract, logging,
-shutdown/recovery guarantees and supported platform assumptions.
-
-Fully document the Recorder SQLite archival format:
-
-- purpose and schema version;
-- every active table and important column;
-- primary and foreign relationships;
-- run/interval and measurement models;
-- operations/events and object snapshots;
-- provenance and component implementation/source/build identities;
-- gaps, sealing/completeness and shutdown state;
-- timestamp/time semantics and invariants;
-- content-addressed deduplication;
-- migration/version policy;
-- example read-only SQL queries.
-
-```text
-Application API != Recorder contract != SQLite schema
-```
-
-SQLite is a documented archival format, not the live control interface.
-
-### Rust documentation
-
-Provide useful rustdoc for public APIs and important ownership, invariant, bound,
-failure and safety seams. Avoid obvious restatements of Rust syntax.
-
-### Packaging
-
-Prepare a minimal Windows release bundle:
-
-```text
-lab-runtime.exe
-example configuration
-instrument definitions
-README/documentation entry point
-LICENSE if applicable
-checksums
-```
-
-Do not ship Lua, Babashka/Python clients, GUI, Steel, development-only fixtures or
-unrelated historical evidence archives. Perform clean Windows release acceptance.
-
-## v0.1.0
-
-```text
-lab-runtime v0.1
-
-A polished headless laboratory automation runtime with:
-- periodic instrument acquisition,
-- measurement signals and history,
-- native control and output safety,
-- durable recording and provenance,
-- native Rust extensibility,
-- virtual/emulated instruments,
-- a documented local Application API,
-- bounded diagnostic logging,
-- comprehensive English documentation.
-```
-
-The roadmap ends here.
+- no GUI or Presentation API;
+- no bundled scripting runtime or first-party client SDK;
+- no dynamic plugin framework;
+- no new convenience API merely for documentation;
+- no schema or accepted semantic changes;
+- no claim of production certification, hard real-time or exhaustive physical
+  qualification.

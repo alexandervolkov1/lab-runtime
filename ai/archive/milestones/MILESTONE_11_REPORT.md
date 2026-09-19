@@ -13,7 +13,7 @@ M12+: NOT AUTHORIZED
 ```
 
 M11.7 consolidated the implemented M11.1-M11.6 contracts into
-`MILESTONE_11_FAILURE_MATRIX.md`, ran opt-in bounded qualification workloads and
+`../audits/MILESTONE_11_FAILURE_MATRIX.md`, ran opt-in bounded qualification workloads and
 repeated the most important lifecycle/fault suites. It found no new production
 correctness, safety, concurrency or durability defect. Production Rust, public API,
 SQLite schema, scheduler, OutputAuthority and hardware definitions did not change;
@@ -120,7 +120,7 @@ separate best-effort tail.
 
 ### Matrix, bounds and evidence boundary
 
-`MILESTONE_11_FAILURE_MATRIX.md` is the authoritative engineering input for later
+`../audits/MILESTONE_11_FAILURE_MATRIX.md` is the authoritative engineering input for later
 preview/reference documentation. It contains the common failure columns, exact
 `GUARANTEED`/`BEST EFFORT`/`NOT GUARANTEED` legend, the subsystem bounds master
 table, soak classification and preview criteria. Important active bounds include

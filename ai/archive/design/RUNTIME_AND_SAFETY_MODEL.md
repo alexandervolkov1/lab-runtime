@@ -221,4 +221,4 @@ Recorder implementation может адаптировать SQLite writer, но 
 - GUI/Babashka disconnect не уничтожает experiment, native controllers и recording session. External/manual lease loss имеет отдельную ожидаемую safe semantics.
 - Состояние и история различают requested, authorized, sent, acknowledged, observed и durable; никаких скрытых exactly-once/physical-safety обещаний.
 
-POC acceptance scenarios для этих инвариантов определены в [POC_PLAN.md](POC_PLAN.md). Решение закреплено в [ADR-0002](../adr/0002-central-output-authority.md).
+Исходное решение зафиксировано в [ADR-0002](0002-central-output-authority.md).

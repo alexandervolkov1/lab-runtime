@@ -32,4 +32,4 @@ GUI может быть заменён без изменения domain model; B
 - Микросервисы для instruments/controllers/recorder: добавляют распределённые отказы и deployment без требования масштабирования.
 - Traits/crates для каждой domain сущности: большинство descriptor/message/value concepts достаточно представить данными и modules.
 
-Подробности: [HIGH_LEVEL_ARCHITECTURE.md](../architecture/HIGH_LEVEL_ARCHITECTURE.md), [execution и disconnect](../architecture/RUNTIME_AND_SAFETY_MODEL.md).
+Связанный historical rationale: [execution и disconnect](RUNTIME_AND_SAFETY_MODEL.md).

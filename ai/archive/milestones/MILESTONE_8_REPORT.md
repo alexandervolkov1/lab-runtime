@@ -3,10 +3,10 @@
 Status: `READY_FOR_EXTERNAL_REVIEW`; the final read-only hardware run and all final
 software gates passed. COM5 was closed cleanly and has not been reopened.
 
-Design authority: [MILESTONE_8_DESIGN.md](MILESTONE_8_DESIGN.md). M7 was
-externally accepted at `f3ff456`; the design-only checkpoint was committed as
-`443fa4e`. This report records actual implementation evidence. Planned tests
-are not reported as passing evidence.
+The original design authority remains available in Git history. M7 was externally
+accepted at `f3ff456`; the design-only checkpoint was committed as `443fa4e`. This
+report records actual implementation evidence. Planned tests are not reported as
+passing evidence.
 
 ## Acceptance implementation map
 
