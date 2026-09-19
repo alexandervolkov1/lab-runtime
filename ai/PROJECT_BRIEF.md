@@ -57,8 +57,9 @@ exhaustive physical qualification.
 
 The compact architecture/concepts, complete Application API, Recorder/SQLite,
 safety/failure, extension, and getting-started references are complete. A
-reproducible Windows x86_64 developer-preview package is ready locally; it has not
-been externally published.
+reproducible Windows x86_64 developer-preview package is ready locally and
+`v0.1.0-preview.1` is published as a GitHub pre-release from source commit
+`70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`.
 
 Final polished release documentation is a later gate.
 

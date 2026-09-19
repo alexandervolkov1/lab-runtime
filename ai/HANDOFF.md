@@ -10,6 +10,7 @@ Current phase: Developer Preview Preparation
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
+v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 ```
@@ -71,6 +72,12 @@ and bounds, schema v1, logging bounds, and controller lifecycle.
 The Windows x86_64 developer-preview package is reproducibly built by
 `scripts/package-developer-preview.ps1`. Generated `dist/` artifacts are ignored by
 Git and are not published automatically.
+
+The first preview is published at
+`https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1`.
+Its immutable release tag points to packaged source commit
+`70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`; later coordination-only commits do
+not move that tag.
 
 ## Next authorized direction
 

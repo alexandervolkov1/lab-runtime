@@ -9,6 +9,7 @@ Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
+v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 ```
 
@@ -38,6 +39,10 @@ behavior, extension paths, and preview-sufficient build/run instructions.
 creates an allowlisted Windows x86_64 directory, ZIP, SHA-256 sidecar, build
 provenance, package manifest and third-party license inventory under ignored
 `dist/`. The starter configuration is virtual-only and opens no COM resource.
+
+GitHub pre-release `v0.1.0-preview.1` was built from and tagged at
+`70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`. The tag is immutable; the current
+coordination HEAD may be later because this publication record is docs-only.
 
 ## Next work after this task
 

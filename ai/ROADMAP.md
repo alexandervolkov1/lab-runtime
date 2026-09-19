@@ -25,7 +25,9 @@ The compact developer-facing reference is complete:
 6. getting-started/build/run guide;
 
 Preview packaging/build is complete. The checksummed Windows x86_64 artifact is
-ready locally and remains unpublished.
+ready locally, and `v0.1.0-preview.1` is published as a GitHub pre-release. Its tag
+remains fixed at the packaged source commit; later coordination commits are not
+release inputs.
 
 This is not yet the final polished release-documentation pass. Each execution slice
 requires explicit authorization in `WORK.md`.
