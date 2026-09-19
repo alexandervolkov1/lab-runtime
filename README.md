@@ -105,3 +105,7 @@ qualification. It has not completed multi-day unattended, physical disk-full, re
 power-loss, exhaustive USB/driver, or hardware fault-injection qualification.
 ACK or register readback does not prove physical heater effect. The current
 transport is local TCP/NDJSON; additional transports are not implemented.
+
+## License
+
+`lab-runtime` is licensed under the [MIT License](LICENSE).

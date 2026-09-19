@@ -226,6 +226,7 @@ try {
 
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $stageRoot 'lab-runtime.exe')
     Copy-ApprovedFile 'README.md' 'README.md'
+    Copy-ApprovedFile 'LICENSE' 'LICENSE'
     Copy-ApprovedFile 'docs\getting-started.md' 'docs\getting-started.md'
     Copy-ApprovedFile 'docs\architecture.md' 'docs\architecture.md'
     Copy-ApprovedFile 'docs\application-api.md' 'docs\application-api.md'
@@ -251,6 +252,7 @@ try {
         "git-commit=$commit"
         'protocol=lab-runtime.application/1'
         'application-api=0.1-pre'
+        'project-license=MIT'
         'runtime-dependency=Microsoft Visual C++ 2015-2022 x64 runtime (VCRUNTIME140.dll)'
     )
     [System.IO.File]::WriteAllLines(
@@ -286,8 +288,8 @@ try {
     $notice.Add('Generated from Cargo.lock and the Windows x86_64 normal dependency graph.')
     $notice.Add('SPDX expressions below come from upstream Cargo package metadata.')
     $notice.Add('Corresponding upstream license files are included under licenses/.')
-    $notice.Add('The lab-runtime workspace itself does not currently declare a project license;')
-    $notice.Add('this local developer-preview artifact does not imply a license grant.')
+    $notice.Add('lab-runtime itself is licensed under MIT; see LICENSE at the package root.')
+    $notice.Add('This file covers third-party dependencies and does not replace that project license.')
     $notice.Add('')
     foreach ($dependency in $dependencies) {
         $notice.Add("$($dependency.Name) $($dependency.Version) -- $($dependency.License)")
