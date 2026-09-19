@@ -1,75 +1,90 @@
 # lab-runtime
 
-`lab-runtime` is a long-running, headless Rust laboratory automation Runtime with
-periodic acquisition, native control, central output safety, durable SQLite recording
-and a bounded local Application API.
+`lab-runtime` is a headless Rust runtime for laboratory automation. It combines
+periodic physical and virtual acquisition, bounded recent history, native control,
+central output safety, durable SQLite recording, and a local language-neutral
+Application API.
 
-## Status
+The v0.1 core is functionally complete and has passed its developer-preview
+technical gate. This means the accepted functionality has no known
+preview-blocking correctness, safety, or durability defect; it is not production
+certification or exhaustive physical qualification.
 
-```text
-M8–M11: ACCEPTED
-Developer-preview technical gate: PASSED
-Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: Developer Preview Preparation
-```
-
-The core is ready for developer-preview preparation. “Functionally complete” means
-the accepted v0.1 Runtime behavior is implemented and no known preview-blocking
-correctness, safety or durability defect remains. It is not production certification
-or exhaustive physical qualification.
-
-## Product boundary
+## Design boundary
 
 ```text
 Runtime owns experiment semantics.
 Clients own presentation semantics.
 ```
 
-The Runtime owns authoritative experiment state, acquisition, controller lifecycle,
-output authority and recording. Clients use the local Application API and own all
-workspace, plotting and other presentation behavior.
+The Runtime is the sole authoritative mutable experiment owner. Clients query
+committed state and submit bounded operations over local TCP/NDJSON. A client does
+not own the experiment, and disconnecting it does not roll back admitted work.
+There is no GUI, Presentation API, bundled client SDK, scripting runtime, or remote
+security model in the current preview.
 
-The v0.1 core includes:
+## Included
 
-- physical and virtual instruments with periodic acquisition;
-- current measurements, bounded recent history and subscriptions;
-- Reference, native PID/controller lifecycle and central `OutputAuthority`;
-- Recorder/SQLite durable history, provenance, gaps and sealing;
-- validated deployment configuration and explicit reconnect;
-- compile-time native managed components;
-- bounded diagnostic logging;
-- a bounded TCP/NDJSON Application API.
+- physical and virtual instruments with generation-fenced acquisition;
+- current measurements, bounded recent history, subscriptions, and durable history;
+- References, native PID controllers, finite leases, and central `OutputAuthority`;
+- SQLite experiment archives with provenance, gaps, and lifecycle sealing;
+- declarative deployment configuration and explicit physical-resource reconnect;
+- statically registered, bounded native managed components;
+- bounded, lossy diagnostic logging separate from experiment history;
+- 42 Application operations and 25 composition-dependent capabilities.
 
-It does not include a GUI, Presentation API, scripting runtime, first-party client
-SDK or remote-network security model.
+## Quick start
 
-## Safety and evidence boundary
+Prerequisites are a current stable Rust toolchain and, on Windows, PowerShell.
 
-Physical output keeps request, authorization, send start, ACK, readback and physical
-effect distinct. Ambiguous started writes are not blindly retried, and reconnect does
-not automatically rearm a controller.
-
-The accepted M9D evidence proves the tested Metakon command/ACK/readback sequence and
-clean shutdown with the heater/load disconnected. It does not prove physical heater
-effect or generic hardware safety.
-
-## Recorder and diagnostics
-
-Recorder/SQLite is durable scientific and experiment-audit history. Diagnostic logs
-are separate bounded, lossy troubleshooting information.
-
-```text
-Application API != Recorder contract != SQLite schema
+```powershell
+cargo build --workspace
+cargo test --workspace
+cargo run -p lab-runtime -- --serve --profile virtual-demo --port 0
 ```
 
-## Repository layout
+The service prints one readiness JSON object containing the selected loopback
+`port`. Connect to `127.0.0.1:<port>` and exchange one UTF-8 JSON object per line.
+The first request is `hello`:
 
-```text
-crates/lab-core        domain, safety and authoritative Runtime state
-apps/lab-runtime       process orchestration, adapters, API and Recorder
-examples               example deployment data and accepted evidence artifacts
-ai                     active coordination and selected internal engineering history
+```json
+{"v":1,"msg_id":"hello-1","op":"hello","args":{"scope":null}}
 ```
 
-Developer-facing architecture, API, archive and extension references are the next
-preview-preparation deliverables. They are not yet the final release documentation.
+See [Getting started](docs/getting-started.md) for a complete local example and
+configuration-based startup.
+
+## Documentation
+
+- [Getting started](docs/getting-started.md)
+- [Architecture and concepts](docs/architecture.md)
+- [Application API reference](docs/application-api.md)
+- [Recorder and SQLite archive reference](docs/recorder-sqlite.md)
+- [Safety and failure behavior](docs/safety-and-failures.md)
+- [Extending the Runtime](docs/extending-runtime.md)
+- [Test-suite map](apps/lab-runtime/tests/README.md)
+
+## Safety posture
+
+Physical output deliberately distinguishes:
+
+```text
+requested != authorized != send_started != ACK != readback != physical_effect
+```
+
+A started write with an ambiguous outcome is not blindly retried. Reconnect and a
+fresh `Good` measurement do not rearm a failed controller. Output requires fresh
+authority, a finite lease, current generation/epoch, and a final check immediately
+before the first possible byte.
+
+Recorder/SQLite is durable scientific and experiment-audit history. Diagnostic
+logs are bounded, lossy troubleshooting data and never experiment authority.
+
+## Preview limitations
+
+The current preview is not hard real-time and has no remote-network security
+qualification. It has not completed multi-day unattended, physical disk-full, real
+power-loss, exhaustive USB/driver, or hardware fault-injection qualification.
+ACK or register readback does not prove physical heater effect. The current
+transport is local TCP/NDJSON; additional transports are not implemented.

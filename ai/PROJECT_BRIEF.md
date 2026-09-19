@@ -55,9 +55,9 @@ exhaustive physical qualification.
 
 ## Current preparation scope
 
-The next separately authorized work will create a compact architecture/concepts
-guide, Application API reference, Recorder/SQLite reference, safety/failure cheat
-sheet, extension notes, getting-started/build/run material and preview package.
+The compact architecture/concepts, complete Application API, Recorder/SQLite,
+safety/failure, extension, and getting-started references are complete. Preview
+packaging/build remains the next separately authorized preparation step.
 
 Final polished release documentation is a later gate.
 

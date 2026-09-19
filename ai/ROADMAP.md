@@ -15,7 +15,7 @@ validation and release preparation, not an unplanned feature milestone.
 
 ## Developer Preview Preparation
 
-Prepare a compact developer-facing set for the accepted core:
+The compact developer-facing reference is complete:
 
 1. architecture and concepts guide;
 2. Application API reference;
@@ -23,7 +23,9 @@ Prepare a compact developer-facing set for the accepted core:
 4. safety/failure/recovery cheat sheet;
 5. configuration and instrument/component extension notes;
 6. getting-started/build/run guide;
-7. preview packaging/build.
+
+Preview packaging/build remains not started and is the next separate preparation
+step.
 
 This is not yet the final polished release-documentation pass. Each execution slice
 requires explicit authorization in `WORK.md`.

@@ -7,7 +7,9 @@ M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 Current phase: Developer Preview Preparation
-Preview reference/package work: NOT STARTED
+Developer Preview Reference: COMPLETE
+Preview packaging: NOT STARTED
+Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 ```
 
@@ -48,9 +50,9 @@ the load disconnected, not physical heater effect.
 Selected internal rationale and evidence is under `ai/archive/`. Git history holds
 the superseded milestone and migration documents removed from the current tree.
 
-## Next authorized direction
+## Current public reference
 
-Developer Preview Preparation will cover:
+The compact developer-preview reference is now public under `docs/` and covers:
 
 1. concise architecture/concepts;
 2. compact complete Application API reference;
@@ -58,10 +60,15 @@ Developer Preview Preparation will cover:
 4. safety/failure/recovery cheat sheet derived from the M11 matrix;
 5. configuration and instrument/component extension notes;
 6. preview-sufficient getting-started/build/run instructions;
-7. preview packaging/build.
 
-Do not begin these deliverables without a separate task. Do not begin final polished
-release documentation automatically.
+The README is the landing page. Public claims were checked against the accepted
+source/tests: 42 operations, 25 capabilities, 12 public error categories, protocol
+and bounds, schema v1, logging bounds, and controller lifecycle.
+
+## Next authorized direction
+
+Preview packaging/build remains not started and requires a separate task. Do not
+begin final polished release documentation automatically.
 
 ## Later practical validation
 
