@@ -10,6 +10,16 @@ technical gate. This means the accepted functionality has no known
 preview-blocking correctness, safety, or durability defect; it is not production
 certification or exhaustive physical qualification.
 
+## Developer Preview
+
+The current Developer Preview is published as a GitHub Pre-release:
+
+- [Download v0.1.0-preview.1](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1)
+
+The Windows x86_64 package is
+`lab-runtime-developer-preview-windows-x86_64.zip`. A matching SHA-256 checksum
+file is included with the release assets. This is not a stable production release.
+
 ## Design boundary
 
 ```text
