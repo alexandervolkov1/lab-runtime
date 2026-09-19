@@ -55,6 +55,24 @@ The first request is `hello`:
 See [Getting started](docs/getting-started.md) for a complete local example and
 configuration-based startup.
 
+### Extracted developer-preview package
+
+From the extracted package root, start the safe virtual composition with:
+
+```powershell
+.\lab-runtime.exe --serve --config .\examples\runtime.virtual.toml
+```
+
+The Windows x86_64 binary uses the operating-system UCRT and requires the Microsoft
+Visual C++ 2015–2022 x64 runtime (`VCRUNTIME140.dll`). No non-system application DLL
+is shipped; SQLite is built into the executable.
+
+The starter configuration opens no serial port. It listens on loopback TCP port
+`7420`, writes its SQLite archive beside the configuration as
+`examples\history.sqlite`, and writes bounded diagnostic logs under
+`%LOCALAPPDATA%\lab-runtime\logs`. Stop it through the `runtime_shutdown`
+Application operation or `Ctrl+C`; see [Getting started](docs/getting-started.md).
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
@@ -63,7 +81,6 @@ configuration-based startup.
 - [Recorder and SQLite archive reference](docs/recorder-sqlite.md)
 - [Safety and failure behavior](docs/safety-and-failures.md)
 - [Extending the Runtime](docs/extending-runtime.md)
-- [Test-suite map](apps/lab-runtime/tests/README.md)
 
 ## Safety posture
 

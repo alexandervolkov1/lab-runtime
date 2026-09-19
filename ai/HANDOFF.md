@@ -8,7 +8,8 @@ Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 Current phase: Developer Preview Preparation
 Developer Preview Reference: COMPLETE
-Preview packaging: NOT STARTED
+Preview packaging: COMPLETE
+Developer Preview artifact: READY LOCALLY
 Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 ```
@@ -65,10 +66,16 @@ The README is the landing page. Public claims were checked against the accepted
 source/tests: 42 operations, 25 capabilities, 12 public error categories, protocol
 and bounds, schema v1, logging bounds, and controller lifecycle.
 
+## Current local artifact
+
+The Windows x86_64 developer-preview package is reproducibly built by
+`scripts/package-developer-preview.ps1`. Generated `dist/` artifacts are ignored by
+Git and are not published automatically.
+
 ## Next authorized direction
 
-Preview packaging/build remains not started and requires a separate task. Do not
-begin final polished release documentation automatically.
+Practical integration and final polished release documentation remain not started
+and require separate authorization.
 
 ## Later practical validation
 

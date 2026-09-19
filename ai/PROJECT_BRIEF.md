@@ -56,8 +56,9 @@ exhaustive physical qualification.
 ## Current preparation scope
 
 The compact architecture/concepts, complete Application API, Recorder/SQLite,
-safety/failure, extension, and getting-started references are complete. Preview
-packaging/build remains the next separately authorized preparation step.
+safety/failure, extension, and getting-started references are complete. A
+reproducible Windows x86_64 developer-preview package is ready locally; it has not
+been externally published.
 
 Final polished release documentation is a later gate.
 

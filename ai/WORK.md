@@ -7,7 +7,8 @@ Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 Current phase: Developer Preview Preparation
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
-Preview packaging: NOT STARTED
+Preview packaging: COMPLETE
+Developer Preview artifact: READY LOCALLY
 Practical integration phase: NOT STARTED
 ```
 
@@ -31,9 +32,14 @@ The compact public reference now covers architecture/concepts, the complete
 Application API, Recorder/SQLite schema and archive semantics, safety/failure
 behavior, extension paths, and preview-sufficient build/run instructions.
 
+## Completed packaging step
+
+`scripts/package-developer-preview.ps1` builds the locked release workspace and
+creates an allowlisted Windows x86_64 directory, ZIP, SHA-256 sidecar, build
+provenance, package manifest and third-party license inventory under ignored
+`dist/`. The starter configuration is virtual-only and opens no COM resource.
+
 ## Next work after this task
 
-Preview packaging/build is the next separately authorized preparation step.
-
-Do not begin packaging, Arduino, Clojure, Clay, WebSocket, practical integration, or
-final release-documentation work automatically.
+Do not publish the artifact or begin Arduino, Clojure, Clay, WebSocket, practical
+integration, or final release-documentation work automatically.

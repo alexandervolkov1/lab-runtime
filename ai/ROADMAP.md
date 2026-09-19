@@ -24,8 +24,8 @@ The compact developer-facing reference is complete:
 5. configuration and instrument/component extension notes;
 6. getting-started/build/run guide;
 
-Preview packaging/build remains not started and is the next separate preparation
-step.
+Preview packaging/build is complete. The checksummed Windows x86_64 artifact is
+ready locally and remains unpublished.
 
 This is not yet the final polished release-documentation pass. Each execution slice
 requires explicit authorization in `WORK.md`.
