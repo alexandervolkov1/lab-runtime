@@ -32,9 +32,9 @@ M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14.1 Workbench architecture audit: AUTHORIZED
-M14 implementation: NOT AUTHORIZED
-Current phase: M14.1 Workbench architecture audit
+M14.1 Workbench architecture audit: READY FOR EXTERNAL REVIEW
+M14.2: NOT AUTHORIZED
+Current phase: M14.1 external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -104,11 +104,12 @@ bounds, security, parity and browser review is recorded in
 `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The accepted read-only M13.1
 external Steel host architecture/dependency audit is recorded in
 `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Steel dependency safety
-resolution is complete in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and ready for
-external review. No acceptable current Steel release or upstream commit was found;
-M13.2 remains blocked and unauthorized. M14.1 is the authorized read-only Workbench
-architecture audit. Workbench remains an external Application client; any future
-Steel integration is a deferred optional Workbench subsystem.
+resolution is accepted in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`. No acceptable
+current Steel release or upstream commit was found;
+M13.2 remains blocked and unauthorized. The read-only Workbench architecture audit
+is ready for external review in `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. Workbench
+remains an external Application client; M14.2 is not authorized and any future Steel
+integration is a deferred optional Workbench subsystem.
 
 Final polished release documentation is a later gate.
 

@@ -17,9 +17,9 @@ M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14.1 Workbench architecture audit: AUTHORIZED
-M14 implementation: NOT AUTHORIZED
-Current phase: M14.1 Workbench architecture audit
+M14.1 Workbench architecture audit: READY FOR EXTERNAL REVIEW
+M14.2: NOT AUTHORIZED
+Current phase: M14.1 external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -134,8 +134,8 @@ GUI and any future transport/language-neutral `PresentationDocument` are
 client-owned. Runtime must not acquire window, tab, row, column, plot, panel,
 layout, widget, slider, button, egui, or other presentation semantics.
 
-M14.1 is an authorized read-only architecture audit. M14 implementation is not
-authorized.
+The read-only M14.1 architecture audit is ready for external review in
+`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. M14.2 is not authorized.
 
 ## Final release gate
 

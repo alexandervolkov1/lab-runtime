@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.1 Workbench architecture audit
+Current phase: M14.1 external review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -23,8 +23,8 @@ M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14.1 Workbench architecture audit: AUTHORIZED
-M14 implementation: NOT AUTHORIZED
+M14.1 Workbench architecture audit: READY FOR EXTERNAL REVIEW
+M14.2: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -142,9 +142,10 @@ accepted read-only external Steel host architecture/dependency audit, recorded i
 one-shot host over TCP/NDJSON. The current read-only Steel dependency safety
 resolution is complete in
 `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found no acceptable current release
-or upstream commit. M13.2 remains blocked and unauthorized. M14.1 is the authorized
-read-only Workbench architecture audit; implementation, practical integration and
-final polished release documentation remain separately gated.
+or upstream commit. M13.2 remains blocked and unauthorized. The read-only Workbench
+architecture audit is ready for external review in
+`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`; M14.2, implementation, practical
+integration and final polished release documentation remain separately gated.
 
 ## Later practical validation
 

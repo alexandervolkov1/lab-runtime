@@ -17,9 +17,9 @@ M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14.1 Workbench architecture audit: AUTHORIZED
-M14 implementation: NOT AUTHORIZED
-Current phase: M14.1 Workbench architecture audit
+M14.1 Workbench architecture audit: READY FOR EXTERNAL REVIEW
+M14.2: NOT AUTHORIZED
+Current phase: M14.1 external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -42,9 +42,9 @@ recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
 M13.1 external Steel host architecture/dependency audit is accepted in
 `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Steel dependency safety
 resolution is complete in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found no
-acceptable current dependency candidate. M13.2 remains blocked and unauthorized;
-M14.1 is authorized as a read-only Workbench architecture audit while M14
-implementation remains unauthorized.
+acceptable current dependency candidate. M13.2 remains blocked and unauthorized.
+The read-only M14.1 Workbench architecture audit is ready for external review in
+`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`; M14.2 remains unauthorized.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
