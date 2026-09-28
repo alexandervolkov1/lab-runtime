@@ -19,9 +19,10 @@ M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: READY FOR EXTERNAL RE-REVIEW
-M14.4 GUI: NOT AUTHORIZED
-Current phase: M14.3 recovery-projection remediation external re-review
+M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
+M14.4 minimal eframe/egui GUI: AUTHORIZED
+M14.5: NOT AUTHORIZED
+Current phase: M14.4 minimal eframe/egui GUI implementation
 ```
 
 The accepted M12.2 implementation commit is
@@ -42,6 +43,8 @@ The accepted M14.1 architecture-audit commit is
 `6340aee32b563000bc6397a52aecd85ee945da1c`.
 The accepted M14.2 implementation commit is
 `bdedf9455305f693a9537f698403c3bbb3840c51`.
+The accepted M14.3 implementation commit is
+`f01567ba2165b24b9551e3b0acf5b100b0169f32`.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -51,9 +54,9 @@ resolution is complete in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found 
 acceptable current dependency candidate. M13.2 remains blocked and unauthorized.
 The read-only M14.1 Workbench architecture audit is accepted in
 `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The M14.2 minimal native Application client
-is accepted in `M14_2_MINIMAL_WORKBENCH_CLIENT.md`; M14.3 is ready for external
-review in `M14_3_WORKBENCH_MODEL_PRESENTATION.md` while the M14.4 GUI remains
-unauthorized.
+is accepted in `M14_2_MINIMAL_WORKBENCH_CLIENT.md`; the client-owned model and
+persistence in `M14_3_WORKBENCH_MODEL_PRESENTATION.md` are also accepted. M14.4 is
+authorized only for the minimal eframe/egui GUI; M14.5 remains unauthorized.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

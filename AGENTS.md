@@ -45,9 +45,10 @@ M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: READY FOR EXTERNAL RE-REVIEW
-M14.4 GUI: NOT AUTHORIZED
-Current phase: M14.3 recovery-projection remediation external re-review
+M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
+M14.4 minimal eframe/egui GUI: AUTHORIZED
+M14.5: NOT AUTHORIZED
+Current phase: M14.4 minimal eframe/egui GUI implementation
 ```
 
 The accepted M12.2 implementation commit is
@@ -68,6 +69,8 @@ The accepted M14.1 architecture-audit commit is
 `6340aee32b563000bc6397a52aecd85ee945da1c`.
 The accepted M14.2 implementation commit is
 `bdedf9455305f693a9537f698403c3bbb3840c51`.
+The accepted M14.3 implementation commit is
+`f01567ba2165b24b9551e3b0acf5b100b0169f32`.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

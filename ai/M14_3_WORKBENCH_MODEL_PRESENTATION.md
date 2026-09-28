@@ -13,6 +13,15 @@ M14.4 GUI: NOT AUTHORIZED
 STATUS: M14_3_RECOVERY_PROJECTION_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
+## External-review acceptance
+
+External re-review accepted M14.3, including fresh-only `RuntimeRef` resolution,
+explicit rebuild completion, separate `CommandId`/`MutationIdentity` domains, the
+single-Workbench v0.1 workspace-ownership assumption, and the worker-owned bounded
+recovery projection. The accepted implementation/evidence commit is
+`f01567ba2165b24b9551e3b0acf5b100b0169f32`. M14.4 is authorized only for the
+minimal eframe/egui GUI; M14.5 remains unauthorized.
+
 The accepted M14.2 implementation commit is
 `bdedf9455305f693a9537f698403c3bbb3840c51`; its coordination acceptance commit is
 `668f00369ebeea16f68af61a410c1c0adce03b38`. M14.3 is an uncommitted review
