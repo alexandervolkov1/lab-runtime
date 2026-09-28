@@ -18,7 +18,8 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: AUTHORIZED
+M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
@@ -127,7 +128,8 @@ during the consolidation.
 ```text
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: AUTHORIZED
+M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
@@ -138,6 +140,16 @@ investigation of current upstream Steel and `mattwparas/steel-imbl` to determine
 whether an upstream-owned release or exact commit removes RUSTSEC-2026-0255 and the
 abandoned `im-rc` chain without a lab-runtime-owned fork.
 
-This slice may add only `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and active
-coordination updates. It must not modify Cargo files or production source, add Steel
-to the workspace, create `apps/lab-steel`, authorize M13.2, or begin M14.
+The investigation is complete in
+`M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`. Released `steel-core 0.8.3` and current
+upstream master retain the mandatory `im-rc -> sized-chunks` memory-safety blocker.
+The optional `steel-imbl` path adds separate `imbl-sized-chunks` and `bitmaps`
+memory-safety advisories and does not remove the old graph. No acceptable candidate
+was found.
+
+No Cargo file or production source changed. Steel was not added to the workspace,
+`apps/lab-steel` was not created, and M13.2/M14 remain unauthorized.
+
+```text
+STATUS: M13_DEPENDENCY_RESOLUTION_READY_FOR_EXTERNAL_REVIEW
+```

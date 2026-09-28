@@ -17,6 +17,7 @@ ai/M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md
 ai/M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md
 ai/M12_CONSOLIDATED_EXTERNAL_REVIEW.md
 ai/M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md
+ai/M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -36,7 +37,8 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: AUTHORIZED
+M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 Current phase: M13 Steel dependency safety resolution

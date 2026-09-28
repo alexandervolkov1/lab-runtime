@@ -20,7 +20,8 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: AUTHORIZED
+M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
@@ -102,7 +103,7 @@ Its immutable release tag points to packaged source commit
 `70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`; later coordination-only commits do
 not move that tag.
 
-## Current M12 work
+## Accepted M12 and M13.1 work
 
 External review accepted `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md` as the
 source-derived current transport/Application boundary, exact bounds and ownership,
@@ -135,9 +136,11 @@ accepted. The consolidated source, bounds, security, parity and browser review i
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. M13.1 is the
 accepted read-only external Steel host architecture/dependency audit, recorded in
 `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. It establishes an external
-one-shot host over TCP/NDJSON. The current phase is the authorized read-only Steel
-dependency safety resolution; M13.2, M14, practical integration and final polished
-release documentation remain separately gated.
+one-shot host over TCP/NDJSON. The current read-only Steel dependency safety
+resolution is complete in
+`M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found no acceptable current release
+or upstream commit. M13.2 remains blocked and unauthorized; M14, practical
+integration and final polished release documentation remain separately gated.
 
 ## Later practical validation
 

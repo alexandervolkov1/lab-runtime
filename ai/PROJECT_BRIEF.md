@@ -29,7 +29,8 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: AUTHORIZED
+M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 Current phase: M13 Steel dependency safety resolution
@@ -100,7 +101,9 @@ bounds, security, parity and browser review is recorded in
 `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The accepted read-only M13.1
 external Steel host architecture/dependency audit is recorded in
 `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Steel dependency safety
-resolution is authorized; M13.2 is not authorized.
+resolution is complete in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and ready for
+external review. No acceptable current Steel release or upstream commit was found;
+M13.2 remains blocked and unauthorized.
 
 Final polished release documentation is a later gate.
 

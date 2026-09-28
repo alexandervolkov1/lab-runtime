@@ -14,7 +14,8 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: AUTHORIZED
+M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 Current phase: M13 Steel dependency safety resolution
@@ -113,8 +114,10 @@ experiment lifetime. Native real-time components remain native Rust.
 The M13.1 source/dependency audit is accepted in
 `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. It establishes a
 one-process-per-script external host over the existing TCP/NDJSON Application
-endpoint. The current authorized slice is a read-only dependency safety resolution
-for the rejected `steel-core 0.8.3` graph. M13.2 remains unauthorized.
+endpoint. The read-only dependency safety resolution for the rejected
+`steel-core 0.8.3` graph is complete. Its report,
+`M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`, found no acceptable current release or
+upstream commit. M13.2 remains blocked and unauthorized.
 
 ## M14 — GUI/Workbench/presentation schema
 
