@@ -156,6 +156,10 @@ pub(crate) enum ClientUpdate {
         envelope: Value,
         recovery: Option<RecoveryRecord>,
     },
+    /// Complete bounded projection of the recovery records owned by the worker.
+    RecoveryState {
+        records: Vec<RecoveryRecord>,
+    },
     Event {
         cursor: EventCursor,
         envelope: Value,
@@ -172,6 +176,10 @@ pub(crate) enum ClientUpdate {
     ResnapshotRequired {
         reason: String,
         envelope: Option<Value>,
+    },
+    /// Durable recovery could not be loaded, classified, or updated safely.
+    RecoveryJournalProblem {
+        reason: String,
     },
     LocalRejected {
         command_id: u64,

@@ -1,8 +1,15 @@
-//! Headless M14.2 shell for the private Workbench Application client.
+//! Headless shell for the private Workbench client and renderer-neutral model.
 
 mod client;
+mod model;
+mod presentation;
+mod recovery;
+mod storage;
 
 use client::{ClientHandle, ClientUpdate};
+use model::WorkbenchModel;
+use presentation::{PresentationDocument, default_presentation_path, load_presentation};
+use recovery::{default_journal_path, load_journal};
 use serde_json::json;
 use std::{net::SocketAddr, process::ExitCode, time::Duration};
 
@@ -37,8 +44,29 @@ fn arguments() -> Result<(SocketAddr, Option<String>), &'static str> {
 
 fn run() -> Result<(), String> {
     let (address, scope) = arguments().map_err(str::to_owned)?;
-    let client = ClientHandle::spawn(address).map_err(|error| error.to_string())?;
-    client.connect(scope).map_err(|error| error.to_string())?;
+    let presentation_path = default_presentation_path().map_err(|error| error.to_string())?;
+    let presentation = if presentation_path.exists() {
+        load_presentation(&presentation_path).map_err(|error| error.to_string())?
+    } else {
+        PresentationDocument::empty("default")
+    };
+    let mut model = WorkbenchModel::new(presentation);
+    let journal_path = default_journal_path().map_err(|error| error.to_string())?;
+    let desired_scope = scope.or_else(|| {
+        journal_path
+            .exists()
+            .then(|| {
+                load_journal(&journal_path)
+                    .ok()
+                    .map(|journal| journal.scope)
+            })
+            .flatten()
+    });
+    let client = ClientHandle::spawn_with_recovery_journal(address, Some(journal_path))
+        .map_err(|error| error.to_string())?;
+    client
+        .connect(desired_scope)
+        .map_err(|error| error.to_string())?;
     let deadline = std::time::Instant::now() + STARTUP_WAIT;
     let result = loop {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -46,7 +74,9 @@ fn run() -> Result<(), String> {
             break Err("hello did not complete before the startup deadline".to_owned());
         }
         match client.recv_timeout(remaining) {
-            Ok(ClientUpdate::Hello(hello)) => {
+            Ok(update @ ClientUpdate::Hello(_)) => {
+                model.apply_client_update(update);
+                let hello = model.hello.as_ref().expect("hello update populated model");
                 println!(
                     "{}",
                     json!({"status":"connected","boot_id":hello.boot_id,
@@ -56,13 +86,29 @@ fn run() -> Result<(), String> {
                 );
                 break Ok(());
             }
-            Ok(ClientUpdate::TransportFailure { reason }) => break Err(reason),
-            Ok(ClientUpdate::Reply { envelope, .. })
-                if envelope.get("type").and_then(serde_json::Value::as_str) == Some("error") =>
-            {
-                break Err(format!("hello rejected: {envelope}"));
+            Ok(update @ ClientUpdate::TransportFailure { .. }) => {
+                model.apply_client_update(update);
+                break Err(model
+                    .client_error
+                    .take()
+                    .unwrap_or_else(|| "transport failed".into()));
             }
-            Ok(_) => {}
+            Ok(update @ ClientUpdate::Reply { .. }) => {
+                let error = match &update {
+                    ClientUpdate::Reply { envelope, .. }
+                        if envelope.get("type").and_then(serde_json::Value::as_str)
+                            == Some("error") =>
+                    {
+                        Some(format!("hello rejected: {envelope}"))
+                    }
+                    _ => None,
+                };
+                model.apply_client_update(update);
+                if let Some(error) = error {
+                    break Err(error);
+                }
+            }
+            Ok(update) => model.apply_client_update(update),
             Err(error) => break Err(format!("client worker stopped during hello: {error}")),
         }
     };
@@ -84,9 +130,13 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod runtime_acceptance {
-    use super::client::{
-        ClientHandle, ClientUpdate,
-        types::{EventCursor, MutationIdentity, ReplyKind},
+    use super::{
+        client::{
+            ClientHandle, ClientUpdate,
+            types::{EventCursor, MutationIdentity, ReplyKind},
+        },
+        model::{Freshness, WorkbenchModel},
+        presentation::{PresentationDocument, RuntimeRef},
     };
     use serde_json::{Value, json};
     use std::{
@@ -180,22 +230,27 @@ mod runtime_acceptance {
     #[ignore = "process acceptance; run after cargo build -p lab-runtime -p lab-workbench"]
     fn real_runtime_reference_reconnect_reconcile_and_replay() {
         let (mut runtime, address) = start_runtime();
+        let presentation = PresentationDocument::empty("process-acceptance");
+        let mut model = WorkbenchModel::new(presentation.clone());
         let client = ClientHandle::spawn(address).unwrap();
         client.connect(None).unwrap();
         let hello = wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
         let ClientUpdate::Hello(hello) = hello else {
             unreachable!()
         };
+        model.apply_client_update(ClientUpdate::Hello(hello.clone()));
         assert!(hello.operations.iter().any(|op| op == "reference_retune"));
         assert!(hello.operations.iter().any(|op| op == "operation_status"));
         assert_eq!(hello.limits["client_pending_requests"], 8);
         let original_cursor = hello.event_latest.clone();
 
         client.query("reference", json!({"reference":"1"})).unwrap();
-        let reference = reply_result(wait_for(
+        let reference_update = wait_for(
             &client,
             |update| matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. } if op == "reference"),
-        ));
+        );
+        model.apply_client_update(reference_update.clone());
+        let reference = reply_result(reference_update);
         let revision = reference["revision"].as_str().unwrap().to_owned();
         let original_target = reference["target"].as_f64().unwrap();
 
@@ -229,12 +284,15 @@ mod runtime_acceptance {
         assert_eq!(record.identity.seq, 1);
 
         client.disconnect().unwrap();
-        wait_for(&client, |update| {
+        let disconnected = wait_for(&client, |update| {
             matches!(
                 update,
                 ClientUpdate::State(super::client::types::ConnectionState::Disconnected)
             )
         });
+        model.apply_client_update(disconnected);
+        assert_eq!(model.observations.freshness, Freshness::Stale);
+        assert_eq!(model.presentation, presentation);
         assert!(runtime.0.try_wait().unwrap().is_none());
 
         client.connect(Some(hello.scope.clone())).unwrap();
@@ -242,6 +300,7 @@ mod runtime_acceptance {
         let ClientUpdate::Hello(reattached) = reattached else {
             unreachable!()
         };
+        model.apply_client_update(ClientUpdate::Hello(reattached.clone()));
         assert_eq!(reattached.scope, hello.scope);
         assert_eq!(reattached.next_seq, 2);
 
@@ -272,10 +331,20 @@ mod runtime_acceptance {
         assert_eq!(envelope["result"], status["result"]);
 
         client.query("reference", json!({"reference":"1"})).unwrap();
-        let after_retry = reply_result(wait_for(
+        let after_retry_update = wait_for(
             &client,
             |update| matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. } if op == "reference"),
-        ));
+        );
+        model.apply_client_update(after_retry_update.clone());
+        let after_retry = reply_result(after_retry_update);
+        let reference_identity = RuntimeRef::Reference {
+            reference: "1".into(),
+        };
+        assert_eq!(
+            model.observations.entities[&reference_identity].freshness,
+            Freshness::Fresh
+        );
+        assert_eq!(model.presentation, presentation);
         assert_eq!(after_retry["revision"], status["result"]["revision"]);
         client
             .mutation(

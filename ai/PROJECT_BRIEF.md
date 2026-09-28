@@ -12,8 +12,9 @@ Runtime owns experiment semantics.
 Clients own presentation semantics.
 ```
 
-The product contains no GUI, Presentation API, bundled client, scripting runtime or
-dynamic plugin system.
+The Runtime contains no GUI or Presentation API. The workspace now contains the
+headless `lab-workbench` external client/model under review, but no GUI, scripting
+runtime or dynamic plugin system.
 
 ## Accepted state
 
@@ -34,9 +35,9 @@ M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: AUTHORIZED
+M14.3 WorkbenchModel + PresentationDocument: READY FOR EXTERNAL RE-REVIEW
 M14.4 GUI: NOT AUTHORIZED
-Current phase: M14.3 WorkbenchModel + PresentationDocument
+Current phase: M14.3 recovery-projection remediation external re-review
 ```
 
 The accepted M12.2 implementation commit is
@@ -115,8 +116,10 @@ current Steel release or upstream commit was found;
 M13.2 remains blocked and unauthorized. The read-only Workbench architecture audit
 is accepted in `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. Workbench remains an
 external Application client. Its minimal native M14.2 client is accepted in
-`M14_2_MINIMAL_WORKBENCH_CLIENT.md`; M14.3 is authorized, and any
-future Steel integration is a deferred optional Workbench subsystem.
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`; its M14.3 client-owned model/persistence is
+ready for external re-review after focused model-state and recovery-projection remediation in
+`M14_3_WORKBENCH_MODEL_PRESENTATION.md`, and any future Steel integration is a
+deferred optional Workbench subsystem.
 
 Final polished release documentation is a later gate.
 

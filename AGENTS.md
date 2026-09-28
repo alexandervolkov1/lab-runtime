@@ -20,6 +20,7 @@ ai/M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md
 ai/M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md
 ai/M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md
 ai/M14_2_MINIMAL_WORKBENCH_CLIENT.md
+ai/M14_3_WORKBENCH_MODEL_PRESENTATION.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -44,9 +45,9 @@ M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: AUTHORIZED
+M14.3 WorkbenchModel + PresentationDocument: READY FOR EXTERNAL RE-REVIEW
 M14.4 GUI: NOT AUTHORIZED
-Current phase: M14.3 WorkbenchModel + PresentationDocument
+Current phase: M14.3 recovery-projection remediation external re-review
 ```
 
 The accepted M12.2 implementation commit is

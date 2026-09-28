@@ -8,11 +8,13 @@ use super::{
         UPDATE_QUEUE,
     },
 };
+use crate::recovery::{RecoveryJournal, load_journal, retire_journal, save_journal};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{self, Read},
     net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -65,6 +67,14 @@ pub(crate) struct ClientHandle {
 )]
 impl ClientHandle {
     pub(crate) fn spawn(address: SocketAddr) -> io::Result<Self> {
+        Self::spawn_with_recovery_journal(address, None)
+    }
+
+    /// Starts the one client owner with an optional bounded durable recovery journal.
+    pub(crate) fn spawn_with_recovery_journal(
+        address: SocketAddr,
+        journal_path: Option<PathBuf>,
+    ) -> io::Result<Self> {
         if !address.ip().is_loopback() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -84,6 +94,7 @@ impl ClientHandle {
             .spawn(move || {
                 Worker::new(
                     address,
+                    journal_path,
                     command_rx,
                     update_tx,
                     worker_stop,
@@ -280,6 +291,7 @@ struct Bootstrap {
 
 struct Worker {
     address: SocketAddr,
+    journal_path: Option<PathBuf>,
     command_rx: Receiver<ClientCommand>,
     update_tx: SyncSender<ClientUpdate>,
     stop: Arc<AtomicBool>,
@@ -298,6 +310,8 @@ struct Worker {
     subscription_token: Option<String>,
     event_cursor: Option<EventCursor>,
     recovery: Vec<RecoveryRecord>,
+    journal_failed: bool,
+    startup_journal_error: Option<String>,
     sequence_blocked: bool,
     deferred_update: Option<ClientUpdate>,
     update_overflow: bool,
@@ -307,13 +321,16 @@ struct Worker {
 impl Worker {
     fn new(
         address: SocketAddr,
+        journal_path: Option<PathBuf>,
         command_rx: Receiver<ClientCommand>,
         update_tx: SyncSender<ClientUpdate>,
         stop: Arc<AtomicBool>,
         #[cfg(test)] update_overflow_observed: Arc<AtomicBool>,
     ) -> Self {
+        let (recovery, startup_journal_error) = load_startup_recovery(journal_path.as_deref());
         Self {
             address,
+            journal_path,
             command_rx,
             update_tx,
             stop,
@@ -331,7 +348,9 @@ impl Worker {
             retry_at: None,
             subscription_token: None,
             event_cursor: None,
-            recovery: Vec::with_capacity(MAX_IN_FLIGHT),
+            recovery,
+            journal_failed: startup_journal_error.is_some(),
+            startup_journal_error,
             sequence_blocked: false,
             deferred_update: None,
             update_overflow: false,
@@ -341,6 +360,10 @@ impl Worker {
 
     fn run(mut self) {
         self.emit(ClientUpdate::State(ConnectionState::Disconnected));
+        self.emit_recovery_state();
+        if let Some(reason) = self.startup_journal_error.take() {
+            self.emit(ClientUpdate::RecoveryJournalProblem { reason });
+        }
         while !self.stop.load(Ordering::Acquire) {
             self.flush_deferred_update();
             if self.update_overflow {
@@ -595,18 +618,23 @@ impl Worker {
             self.reject(command_id, "mutation_reconciliation_required");
             return;
         }
+        if self.journal_failed {
+            self.reject(command_id, "recovery_journal_unavailable");
+            return;
+        }
         if self.pending.len() >= MAX_IN_FLIGHT {
             self.reject(command_id, "in_flight_limit");
             return;
         }
-        if self.recovery.len() >= MAX_IN_FLIGHT {
-            if let Some(resolved) = self.recovery.iter().position(|record| {
+        let mut candidate = self.recovery.clone();
+        if candidate.len() >= MAX_IN_FLIGHT {
+            if let Some(resolved) = candidate.iter().position(|record| {
                 matches!(
                     record.admission,
                     KnownAdmission::Completed | KnownAdmission::Failed
                 )
             }) {
-                self.recovery.remove(resolved);
+                candidate.remove(resolved);
             } else {
                 self.reject(command_id, "recovery_capacity");
                 return;
@@ -627,13 +655,31 @@ impl Worker {
             args: args.clone(),
             admission: KnownAdmission::Pending,
         };
-        self.sequence_blocked = true;
-        if !self.upsert_recovery(record.clone()) {
-            self.sequence_blocked = false;
+        if !upsert_record(&mut candidate, record.clone()) {
             self.reject(command_id, "recovery_capacity");
             return;
         }
-        self.queue_request(command_id, op, args, Some(record), Purpose::Mutation);
+        if let Err(error) = self.persist_recovery(&candidate) {
+            self.journal_failed = true;
+            self.emit(ClientUpdate::RecoveryJournalProblem {
+                reason: format!("could not persist mutation before wire emission: {error}"),
+            });
+            self.reject(command_id, "recovery_journal_unavailable");
+            return;
+        }
+        self.recovery = candidate;
+        self.emit_recovery_state();
+        self.sequence_blocked = true;
+        if !self.queue_request(
+            command_id,
+            op,
+            args,
+            Some(record.clone()),
+            Purpose::Mutation,
+        ) {
+            let _ = self.try_remove_recovery(&record.identity);
+            self.sequence_blocked = false;
+        }
     }
 
     fn queue_retry(&mut self, command_id: u64, identity: MutationIdentity) {
@@ -773,12 +819,6 @@ impl Worker {
             Ok(frame) => frame,
             Err(error) => {
                 self.reject(command_id, &format!("request_encoding_failed:{error}"));
-                if purpose == Purpose::Mutation {
-                    self.sequence_blocked = false;
-                    if let Some(record) = mutation.as_ref() {
-                        self.remove_recovery(&record.identity);
-                    }
-                }
                 return false;
             }
         };
@@ -1013,6 +1053,10 @@ impl Worker {
             self.fail_transport("hello result was malformed");
             return;
         };
+        let journal_session_mismatch = self
+            .recovery
+            .iter()
+            .any(|record| record.boot_id != hello.boot_id || record.identity.scope != hello.scope);
         self.desired_scope = Some(hello.scope.clone());
         self.retry_at = None;
         self.reattach_until = None;
@@ -1038,8 +1082,22 @@ impl Worker {
                 )
         });
         self.hello = Some(hello.clone());
+        if journal_session_mismatch {
+            self.journal_failed = true;
+            self.emit(ClientUpdate::RecoveryJournalProblem {
+                reason: "loaded recovery journal does not match the attached boot/scope; no mutation was retried"
+                    .into(),
+            });
+        } else if !self.journal_failed
+            && let Err(error) = self.persist_recovery(&self.recovery)
+        {
+            self.note_journal_failure(format!(
+                "could not persist authoritative hello reconciliation: {error}"
+            ));
+        }
         self.transition(ConnectionState::Ready);
         self.emit(ClientUpdate::Hello(hello));
+        self.emit_recovery_state();
         if !self.recovery.is_empty() {
             self.emit(ClientUpdate::ReconciliationRequired {
                 records: self.recovery.clone(),
@@ -1066,8 +1124,17 @@ impl Worker {
             self.reattach_until = None;
             if matches!(code, "instance_changed" | "scope_unknown") {
                 self.recovery.clear();
+                self.emit_recovery_state();
                 self.sequence_blocked = false;
                 self.desired_scope = None;
+                if self.journal_path.is_some() {
+                    self.journal_failed = true;
+                    self.emit(ClientUpdate::RecoveryJournalProblem {
+                        reason: format!(
+                            "retained recovery journal cannot be authoritative after {code}; no mutation was retried"
+                        ),
+                    });
+                }
             }
             self.emit_reply(&pending, ReplyKind::PublicError, value, None);
             self.reset_transport_only();
@@ -1095,7 +1162,7 @@ impl Worker {
         if let Some(record) = pending.mutation.as_ref()
             && record.admission == KnownAdmission::Pending
         {
-            self.remove_recovery(&record.identity);
+            let _ = self.try_remove_recovery(&record.identity);
             self.sequence_blocked = false;
         }
         self.emit_reply(
@@ -1120,7 +1187,7 @@ impl Worker {
                     pending.deadline = Some(Instant::now() + REQUEST_DEADLINE);
                     (record.identity.clone(), record.clone())
                 };
-                if !self.upsert_recovery(recovery.clone()) {
+                if !self.try_upsert_recovery(recovery.clone()) {
                     self.fail_transport("recovery capacity invariant violated");
                     return;
                 }
@@ -1155,8 +1222,8 @@ impl Worker {
                         KnownAdmission::Failed
                     };
                     if pending.purpose == Purpose::RetryMutation {
-                        self.remove_recovery(&record.identity);
-                    } else if !self.upsert_recovery(record.clone()) {
+                        let _ = self.try_remove_recovery(&record.identity);
+                    } else if !self.try_upsert_recovery(record.clone()) {
                         self.fail_transport("recovery capacity invariant violated");
                         return;
                     }
@@ -1227,15 +1294,22 @@ impl Worker {
             self.fail_transport("operation_status correlation identity was lost");
             return;
         };
-        if let Some(record) = self
+        let mut updated = self
             .recovery
-            .iter_mut()
+            .iter()
             .find(|record| record.identity == identity)
-        {
+            .cloned();
+        if let Some(record) = updated.as_mut() {
             match state {
-                Some("accepted") => record.admission = KnownAdmission::Accepted,
-                Some("completed") => record.admission = KnownAdmission::Completed,
-                Some("failed") => record.admission = KnownAdmission::Failed,
+                Some("accepted") => {
+                    record.admission = KnownAdmission::Accepted;
+                }
+                Some("completed") => {
+                    record.admission = KnownAdmission::Completed;
+                }
+                Some("failed") => {
+                    record.admission = KnownAdmission::Failed;
+                }
                 Some("outcome_unknown") | None | Some(_) => {}
             }
             if matches!(state, Some("accepted" | "completed" | "failed")) {
@@ -1250,6 +1324,13 @@ impl Worker {
                 }
                 self.sequence_blocked = false;
             }
+        }
+        if let Some(record) = updated
+            && matches!(state, Some("accepted" | "completed" | "failed"))
+            && !self.try_upsert_recovery(record)
+        {
+            self.fail_transport("recovery capacity invariant violated");
+            return;
         }
         self.emit_reply(&pending, ReplyKind::Result, value, None);
     }
@@ -1303,7 +1384,7 @@ impl Worker {
         }
         let mut recovery_invariant_failed = false;
         for record in records {
-            recovery_invariant_failed |= !self.upsert_recovery(record);
+            recovery_invariant_failed |= !self.try_upsert_recovery(record);
         }
         self.sequence_blocked = self.recovery.iter().any(|record| {
             matches!(
@@ -1340,24 +1421,109 @@ impl Worker {
         self.next_msg = 1;
     }
 
-    fn upsert_recovery(&mut self, record: RecoveryRecord) -> bool {
-        if let Some(existing) = self
-            .recovery
-            .iter_mut()
-            .find(|existing| existing.identity == record.identity)
-        {
-            *existing = record;
-            true
-        } else if self.recovery.len() < MAX_IN_FLIGHT {
-            self.recovery.push(record);
-            true
-        } else {
-            false
+    fn try_upsert_recovery(&mut self, record: RecoveryRecord) -> bool {
+        let mut candidate = self.recovery.clone();
+        if !upsert_record(&mut candidate, record) {
+            return false;
         }
+        let changed = candidate != self.recovery;
+        if let Err(error) = self.persist_recovery(&candidate) {
+            // The pre-wire Pending record already retains exact payload. Keep the
+            // fresher in-memory state, block new mutations, and surface the
+            // durability uncertainty without affecting Runtime progress.
+            self.recovery = candidate;
+            if changed {
+                self.emit_recovery_state();
+            }
+            self.note_journal_failure(format!("could not update recovery journal: {error}"));
+            return true;
+        }
+        self.recovery = candidate;
+        if changed {
+            self.emit_recovery_state();
+        }
+        true
     }
 
-    fn remove_recovery(&mut self, identity: &MutationIdentity) {
-        self.recovery.retain(|record| &record.identity != identity);
+    fn try_remove_recovery(&mut self, identity: &MutationIdentity) -> bool {
+        let mut candidate = self.recovery.clone();
+        candidate.retain(|record| &record.identity != identity);
+        if candidate.len() == self.recovery.len() {
+            return true;
+        }
+        if let Err(error) = self.persist_recovery(&candidate) {
+            self.note_journal_failure(format!("could not retire recovery record: {error}"));
+            return false;
+        }
+        self.recovery = candidate;
+        self.emit_recovery_state();
+        true
+    }
+
+    fn emit_recovery_state(&mut self) {
+        debug_assert!(self.recovery.len() <= MAX_IN_FLIGHT);
+        self.emit(ClientUpdate::RecoveryState {
+            records: self.recovery.clone(),
+        });
+    }
+
+    fn persist_recovery(&self, records: &[RecoveryRecord]) -> Result<(), String> {
+        let Some(path) = self.journal_path.as_deref() else {
+            return Ok(());
+        };
+        if records.is_empty() {
+            return retire_journal(path).map_err(|error| error.to_string());
+        }
+        let Some(hello) = self.hello.as_ref() else {
+            // Before hello a loaded journal remains untouched and cannot be
+            // treated as retry authority.
+            return Ok(());
+        };
+        let journal = RecoveryJournal::from_records(
+            hello.boot_id.clone(),
+            hello.scope.clone(),
+            hello.next_seq,
+            records,
+        )
+        .map_err(|error| error.to_string())?;
+        save_journal(path, &journal).map_err(|error| error.to_string())
+    }
+
+    fn note_journal_failure(&mut self, reason: String) {
+        self.journal_failed = true;
+        self.sequence_blocked = true;
+        self.emit(ClientUpdate::RecoveryJournalProblem { reason });
+    }
+}
+
+fn upsert_record(records: &mut Vec<RecoveryRecord>, record: RecoveryRecord) -> bool {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|existing| existing.identity == record.identity)
+    {
+        *existing = record;
+        true
+    } else if records.len() < MAX_IN_FLIGHT {
+        records.push(record);
+        true
+    } else {
+        false
+    }
+}
+
+fn load_startup_recovery(path: Option<&Path>) -> (Vec<RecoveryRecord>, Option<String>) {
+    let Some(path) = path else {
+        return (Vec::with_capacity(MAX_IN_FLIGHT), None);
+    };
+    if !path.exists() {
+        return (Vec::with_capacity(MAX_IN_FLIGHT), None);
+    }
+    match load_journal(path) {
+        Ok(journal) => (journal.to_recovery_records(), None),
+        Err(error) => (
+            Vec::with_capacity(MAX_IN_FLIGHT),
+            Some(format!("recovery journal is unusable: {error}")),
+        ),
     }
 }
 
@@ -1417,13 +1583,28 @@ fn parse_hello(envelope: &Value) -> Option<HelloState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{model::WorkbenchModel, presentation::PresentationDocument};
     use std::{
+        fs,
         io::{BufRead, BufReader, Write},
         net::TcpListener,
+        path::PathBuf,
+        sync::atomic::{AtomicU64 as TestAtomicU64, Ordering as TestOrdering},
         sync::mpsc,
     };
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(3);
+    static TEST_FILE_ID: TestAtomicU64 = TestAtomicU64::new(1);
+
+    fn journal_path(name: &str) -> PathBuf {
+        let id = TEST_FILE_ID.fetch_add(1, TestOrdering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "lab-workbench-worker-journal-{name}-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        directory.join("recovery.json")
+    }
 
     fn scripted_peer(
         script: impl FnOnce(TcpStream) + Send + 'static,
@@ -1473,6 +1654,387 @@ mod tests {
                 return update;
             }
         }
+    }
+
+    fn recovery_record(seq: u64, admission: KnownAdmission) -> RecoveryRecord {
+        RecoveryRecord {
+            boot_id: "boot".into(),
+            identity: MutationIdentity {
+                scope: "scope".into(),
+                seq,
+            },
+            op: "reference_retune".into(),
+            args: json!({"reference":"1","expected_revision":seq.to_string(),
+                "target":seq as f64,"rate":1.0}),
+            admission,
+        }
+    }
+
+    fn hello_state(next_seq: u64) -> HelloState {
+        HelloState {
+            boot_id: "boot".into(),
+            scope: "scope".into(),
+            next_seq,
+            operations: vec!["operation_status".into(), "reference_retune".into()],
+            capabilities: json!([]),
+            limits: json!({}),
+            event_oldest: EventCursor {
+                boot_id: "boot".into(),
+                seq: 0,
+            },
+            event_latest: EventCursor {
+                boot_id: "boot".into(),
+                seq: 0,
+            },
+        }
+    }
+
+    fn unit_worker() -> (Worker, Receiver<ClientUpdate>) {
+        let (_command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
+        let worker = Worker::new(
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+            command_rx,
+            update_tx,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        (worker, update_rx)
+    }
+
+    fn apply_worker_updates(
+        updates: &Receiver<ClientUpdate>,
+        model: &mut WorkbenchModel,
+    ) -> Vec<ClientUpdate> {
+        let mut seen = Vec::new();
+        while let Ok(update) = updates.try_recv() {
+            model.apply_client_update(update.clone());
+            seen.push(update);
+        }
+        seen
+    }
+
+    #[test]
+    fn operation_status_replaces_ambiguous_model_recovery_projection() {
+        let (mut worker, updates) = unit_worker();
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        worker.hello = Some(hello_state(1));
+        worker.recovery = vec![record.clone()];
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+        model.apply_client_update(ClientUpdate::RecoveryState {
+            records: vec![record],
+        });
+        assert_eq!(
+            model.recovery.mutations[0].admission,
+            KnownAdmission::Ambiguous
+        );
+
+        worker.handle_operation_status_result(
+            PendingExchange {
+                command_id: 1,
+                msg_id: "1".into(),
+                op: "operation_status".into(),
+                purpose: Purpose::OperationStatus,
+                mutation: None,
+                status_identity: Some(MutationIdentity {
+                    scope: "scope".into(),
+                    seq: 1,
+                }),
+                transmitted: true,
+                deadline: None,
+            },
+            json!({"v":1,"msg_id":"1","type":"result","result":{
+                "request_id":{"scope":"scope","seq":"1"},"state":"completed"
+            }}),
+        );
+        let seen = apply_worker_updates(&updates, &mut model);
+
+        assert!(seen.iter().any(|update| matches!(
+            update,
+            ClientUpdate::RecoveryState { records }
+                if records[0].admission == KnownAdmission::Completed
+        )));
+        assert_eq!(worker.recovery[0].admission, KnownAdmission::Completed);
+        assert_eq!(
+            model.recovery.mutations[0].admission,
+            KnownAdmission::Completed
+        );
+    }
+
+    #[test]
+    fn exact_retry_terminal_projection_retires_model_record() {
+        let (mut worker, updates) = unit_worker();
+        let record = recovery_record(1, KnownAdmission::Completed);
+        worker.hello = Some(hello_state(2));
+        worker.recovery = vec![record.clone()];
+        worker.pending.insert(
+            "1".into(),
+            PendingExchange {
+                command_id: 1,
+                msg_id: "1".into(),
+                op: record.op.clone(),
+                purpose: Purpose::RetryMutation,
+                mutation: Some(record.clone()),
+                status_identity: None,
+                transmitted: true,
+                deadline: None,
+            },
+        );
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+        model.apply_client_update(ClientUpdate::RecoveryState {
+            records: vec![record],
+        });
+
+        worker.handle_operation(
+            "1".into(),
+            json!({"v":1,"msg_id":"1","type":"operation","state":"completed",
+                "result":{"revision":"2"}}),
+        );
+        let seen = apply_worker_updates(&updates, &mut model);
+
+        assert!(seen.iter().any(|update| matches!(
+            update,
+            ClientUpdate::RecoveryState { records } if records.is_empty()
+        )));
+        assert!(worker.recovery.is_empty());
+        assert!(model.recovery.mutations.is_empty());
+        assert!(seen.iter().any(|update| matches!(
+            update,
+            ClientUpdate::Reply {
+                kind: ReplyKind::MutationCompleted,
+                recovery: Some(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn retained_terminal_and_capacity_retirement_share_worker_projection() {
+        let (mut worker, updates) = unit_worker();
+        let record = recovery_record(1, KnownAdmission::Pending);
+        worker.hello = Some(hello_state(1));
+        worker.pending.insert(
+            "1".into(),
+            PendingExchange {
+                command_id: 1,
+                msg_id: "1".into(),
+                op: record.op.clone(),
+                purpose: Purpose::Mutation,
+                mutation: Some(record),
+                status_identity: None,
+                transmitted: true,
+                deadline: None,
+            },
+        );
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+
+        worker.handle_operation(
+            "1".into(),
+            json!({"v":1,"msg_id":"1","type":"operation","state":"completed",
+                "result":{"revision":"2"}}),
+        );
+        apply_worker_updates(&updates, &mut model);
+        assert_eq!(worker.recovery, model.recovery.mutations);
+        assert_eq!(worker.recovery[0].admission, KnownAdmission::Completed);
+
+        worker.recovery = (1..=MAX_IN_FLIGHT as u64)
+            .map(|seq| recovery_record(seq, KnownAdmission::Completed))
+            .collect();
+        worker.emit_recovery_state();
+        apply_worker_updates(&updates, &mut model);
+        worker.hello = Some(hello_state(9));
+        worker.state = ConnectionState::Ready;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        worker.stream = Some(stream);
+
+        worker.queue_mutation(
+            9,
+            "reference_retune".into(),
+            json!({"reference":"1","expected_revision":"9","target":9.0,"rate":1.0}),
+        );
+        let seen = apply_worker_updates(&updates, &mut model);
+
+        assert!(seen.iter().any(|update| matches!(
+            update,
+            ClientUpdate::RecoveryState { records }
+                if records.len() == MAX_IN_FLIGHT
+                    && !records.iter().any(|record| record.identity.seq == 1)
+                    && records.iter().any(|record| record.identity.seq == 9)
+        )));
+        assert_eq!(worker.recovery, model.recovery.mutations);
+        assert!(
+            !model
+                .recovery
+                .mutations
+                .iter()
+                .any(|record| record.identity.seq == 1)
+        );
+        assert!(
+            model
+                .recovery
+                .mutations
+                .iter()
+                .any(|record| record.identity.seq == 9)
+        );
+    }
+
+    #[test]
+    fn durable_exact_record_exists_before_mutation_reaches_wire() {
+        let path = journal_path("pre-wire");
+        let peer_path = path.clone();
+        let (address, peer) = scripted_peer(move |stream| {
+            let mut reader = BufReader::new(stream);
+            let hello = read_request(&mut reader);
+            let reply = hello_reply(&hello["msg_id"], "scope", 1);
+            write_value(reader.get_mut(), &reply);
+
+            let mutation = read_request(&mut reader);
+            let journal = load_journal(&peer_path).expect("journal must precede wire bytes");
+            assert_eq!(journal.boot_id, "boot");
+            assert_eq!(journal.scope, "scope");
+            assert_eq!(journal.records.len(), 1);
+            assert_eq!(journal.records[0].seq, "1");
+            assert_eq!(journal.records[0].op, "reference_retune");
+            assert_eq!(journal.records[0].args, mutation["args"]);
+            assert_eq!(
+                journal.records[0].admission,
+                crate::recovery::JournalAdmission::Pending
+            );
+
+            write_value(
+                reader.get_mut(),
+                &json!({"v":1,"msg_id":mutation["msg_id"],"type":"operation",
+                    "state":"completed","result":{"revision":"2"}}),
+            );
+        });
+        let client =
+            ClientHandle::spawn_with_recovery_journal(address, Some(path.clone())).unwrap();
+        client.connect(None).unwrap();
+        wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+        client
+            .mutation(
+                "reference_retune",
+                json!({"reference":"1","expected_revision":"1","target":2.0,"rate":1.0}),
+            )
+            .unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationCompleted,
+                    ..
+                }
+            )
+        });
+        client.shutdown().unwrap();
+        peer.join().unwrap();
+        let directory = path.parent().unwrap().to_owned();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loaded_journal_only_requests_reconciliation_and_never_auto_sends() {
+        let path = journal_path("no-auto-send");
+        let record = RecoveryRecord {
+            boot_id: "boot".into(),
+            identity: MutationIdentity {
+                scope: "scope".into(),
+                seq: 1,
+            },
+            op: "reference_retune".into(),
+            args: json!({"reference":"1","target":2.0,"rate":1.0}),
+            admission: KnownAdmission::Ambiguous,
+        };
+        let journal = RecoveryJournal::from_records(
+            "boot".into(),
+            "scope".into(),
+            2,
+            std::slice::from_ref(&record),
+        )
+        .unwrap();
+        save_journal(&path, &journal).unwrap();
+
+        let (quiet_tx, quiet_rx) = mpsc::channel();
+        let (address, peer) = scripted_peer(move |stream| {
+            let mut reader = BufReader::new(stream);
+            let hello = read_request(&mut reader);
+            assert_eq!(hello["args"]["scope"], "scope");
+            write_value(reader.get_mut(), &hello_reply(&hello["msg_id"], "scope", 2));
+            reader
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            let mut line = String::new();
+            let result = reader.read_line(&mut line);
+            quiet_tx.send((result, line)).unwrap();
+        });
+        let client =
+            ClientHandle::spawn_with_recovery_journal(address, Some(path.clone())).unwrap();
+        client.connect(Some("scope".into())).unwrap();
+        wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+        let reconciliation = wait_for(&client, |update| {
+            matches!(update, ClientUpdate::ReconciliationRequired { .. })
+        });
+        let ClientUpdate::ReconciliationRequired { records } = reconciliation else {
+            unreachable!()
+        };
+        assert_eq!(records[0].op, record.op);
+        let (read, line) = quiet_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        assert!(read.is_err(), "journal load unexpectedly wrote {line:?}");
+        client.shutdown().unwrap();
+        peer.join().unwrap();
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn journal_failure_rejects_mutation_before_wire_emission() {
+        let base_path = journal_path("write-failure");
+        let directory = base_path.parent().unwrap().to_owned();
+        let blocked_parent = directory.join("not-a-directory");
+        fs::write(&blocked_parent, b"block directory creation").unwrap();
+        let unusable_path = blocked_parent.join("recovery.json");
+
+        let (quiet_tx, quiet_rx) = mpsc::channel();
+        let (address, peer) = scripted_peer(move |stream| {
+            let mut reader = BufReader::new(stream);
+            let hello = read_request(&mut reader);
+            write_value(reader.get_mut(), &hello_reply(&hello["msg_id"], "scope", 1));
+            reader
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            let mut line = String::new();
+            quiet_tx.send((reader.read_line(&mut line), line)).unwrap();
+        });
+        let client =
+            ClientHandle::spawn_with_recovery_journal(address, Some(unusable_path)).unwrap();
+        client.connect(None).unwrap();
+        wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+        let command_id = client
+            .mutation(
+                "reference_retune",
+                json!({"reference":"1","target":2.0,"rate":1.0}),
+            )
+            .unwrap();
+        wait_for(&client, |update| {
+            matches!(update, ClientUpdate::RecoveryJournalProblem { .. })
+        });
+        wait_for(&client, |update| {
+            matches!(update, ClientUpdate::LocalRejected { command_id: id, reason }
+                if *id == command_id && reason == "recovery_journal_unavailable")
+        });
+        let (read, line) = quiet_rx.recv_timeout(TEST_TIMEOUT).unwrap();
+        assert!(
+            read.is_err(),
+            "journal failure leaked mutation bytes: {line:?}"
+        );
+        client.shutdown().unwrap();
+        peer.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

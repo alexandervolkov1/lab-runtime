@@ -304,6 +304,7 @@ dependencies = [
 name = "lab-workbench"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
 ]
 

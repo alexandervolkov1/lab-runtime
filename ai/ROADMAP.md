@@ -19,9 +19,9 @@ M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: AUTHORIZED
+M14.3 WorkbenchModel + PresentationDocument: READY FOR EXTERNAL RE-REVIEW
 M14.4 GUI: NOT AUTHORIZED
-Current phase: M14.3 WorkbenchModel + PresentationDocument
+Current phase: M14.3 recovery-projection remediation external re-review
 ```
 
 The accepted M12.2 implementation commit is
@@ -142,8 +142,9 @@ layout, widget, slider, button, egui, or other presentation semantics.
 
 The read-only M14.1 architecture audit is accepted in
 `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The minimal private bounded native
-Application client is complete and ready for external re-review in
-`M14_2_MINIMAL_WORKBENCH_CLIENT.md`. M14.2 is accepted and M14.3 is authorized.
+Application client is accepted in `M14_2_MINIMAL_WORKBENCH_CLIENT.md`; the M14.3
+client-owned model and persistence implementation is ready for external re-review in
+`M14_3_WORKBENCH_MODEL_PRESENTATION.md`.
 
 ## Final release gate
 

@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.3 WorkbenchModel + PresentationDocument
+Current phase: M14.3 recovery-projection remediation external re-review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -25,7 +25,7 @@ M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: AUTHORIZED
+M14.3 WorkbenchModel + PresentationDocument: READY FOR EXTERNAL RE-REVIEW
 M14.4 GUI: NOT AUTHORIZED
 ```
 
@@ -150,9 +150,12 @@ resolution is complete in
 `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found no acceptable current release
 or upstream commit. M13.2 remains blocked and unauthorized. The read-only Workbench
 architecture audit is accepted in `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The
-minimal native Application client is complete and ready for external re-review in
-`M14_2_MINIMAL_WORKBENCH_CLIENT.md`; M14.3, practical integration and final polished
-release documentation remain separately gated.
+minimal native Application client is accepted in
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`; the M14.3 client-owned model and persistence
+implementation is ready for external re-review after focused model-state and
+recovery-projection remediation in
+`M14_3_WORKBENCH_MODEL_PRESENTATION.md`. M14.4, practical integration and final
+polished release documentation remain separately gated.
 
 ## Later practical validation
 
