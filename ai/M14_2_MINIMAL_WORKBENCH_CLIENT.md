@@ -14,6 +14,12 @@ NOT AUTHORIZED
 STATUS: M14_2_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
+External review accepted this implementation and its focused remediation on
+2026-09-28. The accepted implementation commit is
+`bdedf9455305f693a9537f698403c3bbb3840c51`. The original review-ready status above
+is retained as the evidence state that was reviewed; active coordination now records
+M14.2 as accepted and authorizes M14.3 only.
+
 M14.2 creates the first `lab-workbench` executable and its private bounded native
 Application client. It does not create a GUI, presentation model, reusable SDK, new
 transport, or Runtime semantic surface.

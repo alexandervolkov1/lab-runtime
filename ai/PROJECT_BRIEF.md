@@ -33,9 +33,10 @@ M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: READY FOR EXTERNAL RE-REVIEW
-M14.3: NOT AUTHORIZED
-Current phase: M14.2 remediation external review
+M14.2 minimal native Application client: ACCEPTED
+M14.3 WorkbenchModel + PresentationDocument: AUTHORIZED
+M14.4 GUI: NOT AUTHORIZED
+Current phase: M14.3 WorkbenchModel + PresentationDocument
 ```
 
 The accepted M12.2 implementation commit is
@@ -54,6 +55,8 @@ The accepted M13 dependency-safety resolution commit is
 `7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
 The accepted M14.1 architecture-audit commit is
 `6340aee32b563000bc6397a52aecd85ee945da1c`.
+The accepted M14.2 implementation commit is
+`bdedf9455305f693a9537f698403c3bbb3840c51`.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -111,8 +114,8 @@ resolution is accepted in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`. No accept
 current Steel release or upstream commit was found;
 M13.2 remains blocked and unauthorized. The read-only Workbench architecture audit
 is accepted in `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. Workbench remains an
-external Application client. Its minimal native M14.2 client is ready for external
-re-review in `M14_2_MINIMAL_WORKBENCH_CLIENT.md`; M14.3 is not authorized, and any
+external Application client. Its minimal native M14.2 client is accepted in
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`; M14.3 is authorized, and any
 future Steel integration is a deferred optional Workbench subsystem.
 
 Final polished release documentation is a later gate.

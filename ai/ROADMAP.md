@@ -18,9 +18,10 @@ M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: READY FOR EXTERNAL RE-REVIEW
-M14.3: NOT AUTHORIZED
-Current phase: M14.2 remediation external review
+M14.2 minimal native Application client: ACCEPTED
+M14.3 WorkbenchModel + PresentationDocument: AUTHORIZED
+M14.4 GUI: NOT AUTHORIZED
+Current phase: M14.3 WorkbenchModel + PresentationDocument
 ```
 
 The accepted M12.2 implementation commit is
@@ -39,6 +40,8 @@ The accepted M13 dependency-safety resolution commit is
 `7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
 The accepted M14.1 architecture-audit commit is
 `6340aee32b563000bc6397a52aecd85ee945da1c`.
+The accepted M14.2 implementation commit is
+`bdedf9455305f693a9537f698403c3bbb3840c51`.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -140,7 +143,7 @@ layout, widget, slider, button, egui, or other presentation semantics.
 The read-only M14.1 architecture audit is accepted in
 `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The minimal private bounded native
 Application client is complete and ready for external re-review in
-`M14_2_MINIMAL_WORKBENCH_CLIENT.md`. M14.3 is not authorized.
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`. M14.2 is accepted and M14.3 is authorized.
 
 ## Final release gate
 
