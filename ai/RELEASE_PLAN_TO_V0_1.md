@@ -9,8 +9,9 @@ Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: AUTHORIZED
-Current phase: M12.3 implementation
+M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
+M12.4 transport parity/fault acceptance: NOT AUTHORIZED
+Current phase: M12.3 external review
 ```
 
 The accepted M12.2 implementation commit is

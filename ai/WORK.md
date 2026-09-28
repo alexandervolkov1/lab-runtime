@@ -1,10 +1,10 @@
-# Current work — M12.2 transport-neutral server seam
+# Current work — M12.3 bounded WebSocket/JSON transport
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.3 implementation
+Current phase: M12.3 external review
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -13,7 +13,8 @@ v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: AUTHORIZED
+M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
+M12.4 transport parity/fault acceptance: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -82,16 +83,19 @@ runtime, public Application semantics, capacity, scripting, presentation concept
 or changes to Runtime, Recorder, controller, output-authority or physical-safety
 semantics.
 
-## Current authorization
+## Completed M12.3 implementation
 
-M12.3 may add one optional IPv4-loopback WebSocket/JSON listener through the accepted
+M12.3 adds one optional IPv4-loopback WebSocket/JSON listener through the accepted
 M12.2 coordinator, shared Application JSON codec, bounded delivery path, serialized
 `Application`, and `SessionStore`. TCP plus WebSocket retains one eight-client pool.
 
-M12.3 must implement exact path/Host/Origin/subprotocol Upgrade validation, bounded
-handshake/message/frame/write state, text-only Application messages, finite
-ping/pong/close progress, additive readiness and failure isolation. It must not add
-an async runtime, TLS, authentication framework, Application operations/DTOs/errors,
-UI/scripting semantics, or a second coordinator/Application/session store.
+The endpoint enforces exact path, numeric Host, Origin allowlist and required
+subprotocol checks before Upgrade. Handshake/message/frame/write state, text-only
+Application messages, ping/pong/close progression, readiness and failure isolation
+are all explicitly bounded. It adds no async runtime, TLS, authentication framework,
+Application operations/DTOs/errors, UI/scripting semantics, or second
+coordinator/Application/session store.
 
-Stop for external review after M12.3. M12.4 is not authorized.
+Implementation, dependency review, exact bounds and verification evidence are in
+`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is ready for external review. M12.4 is
+not authorized.

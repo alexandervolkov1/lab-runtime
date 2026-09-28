@@ -39,6 +39,7 @@ use crate::{
         ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
         SerialParity,
     },
+    websocket::WebSocketOptions,
 };
 use lab_core::managed::ComponentError;
 use lab_core::{
@@ -66,6 +67,7 @@ pub struct RecordingOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceOptions {
     port: u16,
+    websocket: Option<WebSocketOptions>,
     recording: Option<RecordingOptions>,
     config: Option<PathBuf>,
 }
@@ -78,34 +80,43 @@ impl ServiceOptions {
             }
             return Ok(Self {
                 port: 0,
+                websocket: None,
                 recording: None,
                 config: Some(PathBuf::from(args[2])),
             });
         }
-        if !matches!(args.len(), 5 | 7 | 9)
+        if args.len() < 5
             || args[0] != "--serve"
             || args[1] != "--profile"
             || args[2] != "virtual-demo"
             || args[3] != "--port"
         {
-            return Err("expected --serve --profile virtual-demo --port <0..65535> [--record-db <absolute-local-path> [--record-policy required|best-effort]]".into());
+            return Err("expected --serve --profile virtual-demo --port <0..65535> [--record-db <absolute-local-path>] [--record-policy required|best-effort] [--ws-port <0..65535> --ws-origin <exact-origin> ...]".into());
         }
         let port = args[4]
             .parse::<u16>()
             .map_err(|_| "port must be an integer in 0..65535".to_string())?;
-        let recording = if args.len() > 5 {
-            if args[5] != "--record-db" || args[6].is_empty() {
+        let mut index = 5;
+        let recording = if args.get(index) == Some(&"--record-db") {
+            let value = args
+                .get(index + 1)
+                .copied()
+                .ok_or_else(|| "recording policy requires a database path".to_string())?;
+            if value.is_empty() {
                 return Err("recording policy requires a database path".into());
             }
-            let path = PathBuf::from(args[6]);
-            if !path.is_absolute() || args[6].starts_with("\\\\") || args[6].starts_with("//") {
+            let path = PathBuf::from(value);
+            if !path.is_absolute() || value.starts_with("\\\\") || value.starts_with("//") {
                 return Err("recording database path must be local and absolute".into());
             }
-            let policy = if args.len() == 9 {
-                if args[7] != "--record-policy" {
-                    return Err("unknown recording option".into());
-                }
-                match args[8] {
+            index += 2;
+            let policy = if args.get(index) == Some(&"--record-policy") {
+                let value = args
+                    .get(index + 1)
+                    .copied()
+                    .ok_or_else(|| "unknown recording policy".to_string())?;
+                index += 2;
+                match value {
                     "required" => RecordingPolicy::Required,
                     "best-effort" => RecordingPolicy::BestEffort,
                     _ => return Err("unknown recording policy".into()),
@@ -117,8 +128,35 @@ impl ServiceOptions {
         } else {
             None
         };
+        let websocket = if index == args.len() {
+            None
+        } else {
+            if args.get(index) != Some(&"--ws-port") {
+                return Err("unknown service option".into());
+            }
+            let port = args
+                .get(index + 1)
+                .ok_or_else(|| "ws-port requires a value".to_string())?
+                .parse::<u16>()
+                .map_err(|_| "ws-port must be an integer in 0..65535".to_string())?;
+            index += 2;
+            let mut origins = Vec::new();
+            while index < args.len() {
+                if args.get(index) != Some(&"--ws-origin") {
+                    return Err("unknown WebSocket service option".into());
+                }
+                origins.push(
+                    args.get(index + 1)
+                        .ok_or_else(|| "ws-origin requires a value".to_string())?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            Some(WebSocketOptions::new(port, origins).map_err(str::to_owned)?)
+        };
         Ok(Self {
             port,
+            websocket,
             recording,
             config: None,
         })
@@ -127,6 +165,11 @@ impl ServiceOptions {
     /// Requested loopback TCP port; zero delegates selection to the OS.
     pub const fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Optional validated IPv4-loopback WebSocket endpoint configuration.
+    pub const fn websocket(&self) -> Option<&WebSocketOptions> {
+        self.websocket.as_ref()
     }
 
     /// Selected Recorder path/policy, if durability is enabled for this host.
@@ -153,6 +196,7 @@ pub struct ServiceHost {
     clock: SystemClock,
     listener: TcpListener,
     bound: SocketAddr,
+    websocket: Option<WebSocketEndpoint>,
     boot_id: String,
     stopping_since: Option<std::time::Instant>,
     safe_since: Option<std::time::Instant>,
@@ -164,6 +208,12 @@ pub struct ServiceHost {
     next_lifecycle_operation: u64,
     reconnect_diagnostic: Option<ReconnectDiagnostic>,
     quarantined_reconnect_candidate: Option<(ResourceId, ComTransport)>,
+}
+
+struct WebSocketEndpoint {
+    listener: TcpListener,
+    bound: SocketAddr,
+    allowed_origins: Vec<String>,
 }
 
 /// Bounded lifecycle-operation failure exposed without leaking filesystem details.
@@ -653,6 +703,7 @@ impl ServiceHost {
         let clock = SystemClock::new();
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
         listener.set_nonblocking(true)?;
+        let websocket = bind_websocket(options.websocket())?;
         if let Some(recording) = options.recording() {
             let anchor = TimeAnchor::capture(|| clock.now(), || Ok(std::time::SystemTime::now()))?;
             let worker = match RecorderWorker::open_with_boot_clock(
@@ -682,6 +733,7 @@ impl ServiceHost {
             clock,
             listener,
             bound,
+            websocket,
             boot_id,
             stopping_since: None,
             safe_since: None,
@@ -702,23 +754,40 @@ impl ServiceHost {
             .configuration_path()
             .map(load_runtime_toml)
             .transpose()?;
-        let (port, configured_recording) = if let Some(deployment) = loaded.as_ref() {
-            let dto = &deployment.effective().dto;
-            let recording = if dto.recording.enabled {
-                Some(RecordingOptions {
-                    path: deployment.resolved_path(&dto.recording.path)?,
-                    policy: match dto.recording.policy {
-                        RecordingPolicyDto::BestEffort => RecordingPolicy::BestEffort,
-                        RecordingPolicyDto::Required => RecordingPolicy::Required,
-                    },
-                })
+        let (port, configured_recording, websocket_options) =
+            if let Some(deployment) = loaded.as_ref() {
+                let dto = &deployment.effective().dto;
+                let recording = if dto.recording.enabled {
+                    Some(RecordingOptions {
+                        path: deployment.resolved_path(&dto.recording.path)?,
+                        policy: match dto.recording.policy {
+                            RecordingPolicyDto::BestEffort => RecordingPolicy::BestEffort,
+                            RecordingPolicyDto::Required => RecordingPolicy::Required,
+                        },
+                    })
+                } else {
+                    None
+                };
+                let websocket = dto
+                    .server
+                    .websocket
+                    .enabled
+                    .then(|| {
+                        WebSocketOptions::new(
+                            dto.server.websocket.port,
+                            dto.server.websocket.allowed_origins.clone(),
+                        )
+                    })
+                    .transpose()
+                    .map_err(io::Error::other)?;
+                (dto.server.port, recording, websocket)
             } else {
-                None
+                (
+                    options.port(),
+                    options.recording().cloned(),
+                    options.websocket().cloned(),
+                )
             };
-            (dto.server.port, recording)
-        } else {
-            (options.port(), options.recording().cloned())
-        };
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes)
             .map_err(|error| io::Error::other(format!("OS boot entropy unavailable: {error}")))?;
@@ -880,6 +949,7 @@ impl ServiceHost {
         }
         let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
         listener.set_nonblocking(true)?;
+        let websocket = bind_websocket(websocket_options.as_ref())?;
         if let Some(recording) = configured_recording.as_ref() {
             let worker = match RecorderWorker::open_with_boot_clock(
                 &recording.path,
@@ -908,6 +978,7 @@ impl ServiceHost {
             clock,
             listener,
             bound,
+            websocket,
             boot_id,
             stopping_since: None,
             safe_since: None,
@@ -932,8 +1003,16 @@ impl ServiceHost {
     }
     /// One bounded JSON readiness line for a process harness; caller prints it once.
     pub fn ready_line(&self) -> String {
-        serde_json::json!({"boot_id":self.boot_id,"port":self.bound.port(),"state":"ready"})
-            .to_string()
+        let mut ready =
+            serde_json::json!({"boot_id":self.boot_id,"port":self.bound.port(),"state":"ready"});
+        if let Some(websocket) = &self.websocket {
+            ready["websocket"] = serde_json::json!({
+                "port":websocket.bound.port(),
+                "path":crate::websocket::APPLICATION_PATH,
+                "subprotocol":crate::websocket::APPLICATION_SUBPROTOCOL,
+            });
+        }
+        ready.to_string()
     }
     /// Borrow the committed owner only on the owning service thread.
     pub fn owner(&self) -> &HostCore {
@@ -964,6 +1043,39 @@ impl ServiceHost {
     pub const fn listener(&self) -> &TcpListener {
         &self.listener
     }
+
+    /// Borrow the optional nonblocking WebSocket listener for the network reactor.
+    pub fn websocket_listener(&self) -> Option<&TcpListener> {
+        self.websocket.as_ref().map(|endpoint| &endpoint.listener)
+    }
+
+    /// Actual optional IPv4-loopback WebSocket address.
+    pub fn websocket_bound_address(&self) -> Option<SocketAddr> {
+        self.websocket.as_ref().map(|endpoint| endpoint.bound)
+    }
+
+    /// Validated exact browser Origin allowlist for the optional endpoint.
+    pub fn websocket_allowed_origins(&self) -> &[String] {
+        self.websocket
+            .as_ref()
+            .map_or(&[], |endpoint| endpoint.allowed_origins.as_slice())
+    }
+}
+
+fn bind_websocket(
+    options: Option<&WebSocketOptions>,
+) -> Result<Option<WebSocketEndpoint>, io::Error> {
+    let Some(options) = options else {
+        return Ok(None);
+    };
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
+    listener.set_nonblocking(true)?;
+    let bound = listener.local_addr()?;
+    Ok(Some(WebSocketEndpoint {
+        listener,
+        bound,
+        allowed_origins: options.allowed_origins().to_vec(),
+    }))
 }
 fn com_settings(
     resource: &crate::configuration::ResourceDto,
@@ -1186,6 +1298,7 @@ transaction_timeout_ms=50
                 clock,
                 listener,
                 bound,
+                websocket: None,
                 boot_id,
                 stopping_since: None,
                 safe_since: None,

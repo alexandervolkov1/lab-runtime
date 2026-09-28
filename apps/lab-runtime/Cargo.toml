@@ -18,6 +18,7 @@ serialport = { version = "=4.10.1", default-features = false }
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "std", "time"] }
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 
 [lints]
 workspace = true

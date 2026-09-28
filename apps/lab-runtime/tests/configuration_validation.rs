@@ -177,6 +177,41 @@ proposal_ttl_ms=200
     .into_bytes()
 }
 
+fn with_websocket(config: Vec<u8>, websocket: &str) -> Vec<u8> {
+    let text = String::from_utf8(config).unwrap();
+    text.replace(
+        "[recording]",
+        &format!("[server.websocket]\n{websocket}\n[recording]"),
+    )
+    .into_bytes()
+}
+
+#[test]
+fn websocket_deployment_configuration_is_explicit_and_fail_closed() {
+    let base = Path::new("C:/lab/config");
+    let valid = with_websocket(
+        native_control_config("degC", 2),
+        "enabled=true\nport=0\nallowed_origins=[\"http://127.0.0.1:3000\"]",
+    );
+    assert!(parse_runtime_toml(&valid, base, &mut MemoryReader::default()).is_ok());
+
+    for websocket in [
+        "enabled=true\nport=0\nallowed_origins=[]",
+        "enabled=true\nport=0\nallowed_origins=[\"*\"]",
+        "enabled=true\nport=0\nallowed_origins=[\"http://localhost\"]",
+        "enabled=true\nport=0\nallowed_origins=[\"http://localhost:3000\",\"http://localhost:3000\"]",
+        "enabled=false\nport=7421\nallowed_origins=[]",
+        "enabled=true\nport=0\nhost=\"0.0.0.0\"\nallowed_origins=[\"http://localhost:3000\"]",
+        "enabled=true\nport=0\npath=\"/other\"\nallowed_origins=[\"http://localhost:3000\"]",
+    ] {
+        let bytes = with_websocket(native_control_config("degC", 2), websocket);
+        assert!(
+            parse_runtime_toml(&bytes, base, &mut MemoryReader::default()).is_err(),
+            "invalid WebSocket configuration admitted: {websocket}"
+        );
+    }
+}
+
 #[test]
 fn c1_valid_runtime_toml_is_deterministic_and_freezes_exact_bytes() {
     let base = Path::new("C:/lab/config");

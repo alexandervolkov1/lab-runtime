@@ -17,6 +17,7 @@ use crate::{
     managed_executor::{
         NativeComponentDefinition, component_property_metadata, validate_component_configuration,
     },
+    websocket,
 };
 use lab_core::{
     AccessMode, InstrumentId, ParameterRole, SignalId, Unit, ValueSpec, WriteEffect,
@@ -594,6 +595,14 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
     validate_display_name(&dto.runtime.display_name)?;
     if dto.server.host != "127.0.0.1" {
         return Err(ConfigurationError::invalid("server host must be 127.0.0.1"));
+    }
+    if dto.server.websocket.enabled {
+        websocket::validate_origins(&dto.server.websocket.allowed_origins)
+            .map_err(ConfigurationError::invalid)?;
+    } else if dto.server.websocket.port != 0 || !dto.server.websocket.allowed_origins.is_empty() {
+        return Err(ConfigurationError::invalid(
+            "disabled WebSocket endpoint cannot retain configuration",
+        ));
     }
     if dto.recording.enabled && dto.recording.path.as_os_str().is_empty() {
         return Err(ConfigurationError::invalid(
@@ -1243,6 +1252,18 @@ pub(crate) struct RuntimeDto {
 pub(crate) struct ServerDto {
     pub(crate) host: String,
     pub(crate) port: u16,
+    #[serde(default)]
+    pub(crate) websocket: WebSocketDto,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebSocketDto {
+    pub(crate) enabled: bool,
+    #[serde(default)]
+    pub(crate) port: u16,
+    #[serde(default)]
+    pub(crate) allowed_origins: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

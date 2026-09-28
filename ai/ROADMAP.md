@@ -9,8 +9,9 @@ Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: AUTHORIZED
-Current phase: M12.3 implementation
+M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
+M12.4 transport parity/fault acceptance: NOT AUTHORIZED
+Current phase: M12.3 external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -57,7 +58,9 @@ The Arduino remains an external instrument/emulator and is not required to accep
 M11 retroactively. Runtime continues to own experiment semantics; the Clojure/Clay
 client owns presentation semantics.
 
-TCP/NDJSON remains the only implemented transport in the preview.
+The published preview contains TCP/NDJSON. The current working tree on `main`
+additionally contains the uncommitted M12.3 optional loopback WebSocket/JSON
+implementation awaiting external review.
 
 ## M12 — WebSocket transport
 
@@ -73,14 +76,15 @@ WebSocket / JSON --+
 - **M12.1:** read-only architecture audit — accepted;
 - **M12.2:** transport-neutral server seam, with unchanged TCP behavior — accepted;
 - **M12.3:** bounded local WebSocket/JSON transport and browser Origin policy —
-  authorized;
+  ready for external review;
 - **M12.4:** parity, reconnect, backpressure and fault acceptance;
 - **M12.5:** browser/ClojureScript smoke acceptance;
 - **M12 external review.**
 
-M12.1 and M12.2 are accepted; M12.3 alone is authorized. See
+M12.1 and M12.2 are accepted; M12.3 is ready for external review. See
 `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md` and
-`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. Do not start M12.4 automatically.
+`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`; M12.3 evidence is in
+`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. Do not start M12.4 automatically.
 
 ## M13 — external Steel scripting host
 

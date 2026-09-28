@@ -48,9 +48,66 @@ fn service_cli_rejects_unsafe_bind_or_unknown_profile_before_runtime_activation(
             "0.0.0.0",
         ],
         vec!["--serve", "--profile", "virtual-demo", "--port"],
+        vec![
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--ws-port",
+            "0",
+        ],
+        vec![
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--ws-origin",
+            "http://127.0.0.1:3000",
+        ],
+        vec![
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--ws-port",
+            "0",
+            "--ws-origin",
+            "*",
+        ],
     ] {
         assert!(ServiceOptions::parse(&args).is_err());
     }
+}
+
+#[test]
+fn optional_websocket_readiness_is_additive_and_loopback_only() {
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--ws-port",
+        "0",
+        "--ws-origin",
+        "http://127.0.0.1:3000",
+    ])
+    .unwrap();
+    let service = ServiceHost::startup(options).unwrap();
+    let websocket = service.websocket_bound_address().unwrap();
+    assert_eq!(websocket.ip().to_string(), "127.0.0.1");
+    assert_ne!(websocket.port(), 0);
+    let ready: serde_json::Value = serde_json::from_str(&service.ready_line()).unwrap();
+    assert_eq!(ready["port"], service.bound_address().port());
+    assert_eq!(ready["websocket"]["port"], websocket.port());
+    assert_eq!(ready["websocket"]["path"], "/application/v1");
+    assert_eq!(
+        ready["websocket"]["subprotocol"],
+        "lab-runtime.application.v1"
+    );
 }
 
 #[test]

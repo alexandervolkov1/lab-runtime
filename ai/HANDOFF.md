@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.3 implementation
+Current phase: M12.3 external review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -15,7 +15,8 @@ Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: AUTHORIZED
+M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
+M12.4 transport parity/fault acceptance: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -102,11 +103,17 @@ M12.2 is implemented and recorded in
 `M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. Shared Application JSON now sits below
 NDJSON framing, and one concrete coordinator owns checked connection IDs, the global
 eight-client pool, bounded per-client delivery, fair owner request scheduling and
-exact detach lifecycle. TCP/NDJSON remains the sole transport and all debug/release
-workspace gates pass. M12.3 alone is authorized to add the bounded loopback
-WebSocket/JSON adapter with the accepted browser Origin policy. Do not begin M12.4,
-practical integration, M13, M14, or final polished release documentation without
-separate authorization.
+exact detach lifecycle.
+
+M12.3 added one optional loopback WebSocket/JSON adapter through that same
+coordinator and delivery path. It uses the same bounded Application JSON codec,
+serialized `Application`, `SessionStore`, connection-ID space and global eight-client
+budget. Exact path, numeric Host, Origin allowlist and required subprotocol checks
+occur before Upgrade; text/message/frame/handshake/write state and close progression
+are finite. Implementation and verification evidence is in
+`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is ready for external review. Do not
+begin M12.4, practical integration, M13, M14, or final polished release documentation
+without separate authorization.
 
 ## Later practical validation
 
@@ -121,9 +128,9 @@ Arduino thermal plant
 ```
 
 Arduino remains an external practical integration exercise, not retroactive M11
-evidence. TCP/NDJSON remains the only implemented transport. M12.1 designed, but
-did not implement, a future WebSocket adapter for the same Application sessions,
-operations and DTOs.
+evidence. The published `v0.1.0-preview.1` artifact remains TCP/NDJSON-only. Current
+uncommitted M12.3 work adds an optional WebSocket adapter for the same Application
+sessions, operations and DTOs and is awaiting external review.
 
 ## Residual limitations
 

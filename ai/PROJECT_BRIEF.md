@@ -24,8 +24,9 @@ Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: AUTHORIZED
-Current phase: M12.3 implementation
+M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
+M12.4 transport parity/fault acceptance: NOT AUTHORIZED
+Current phase: M12.3 external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -55,7 +56,8 @@ exhaustive physical qualification.
 
 - Application registry: 42 operations and 25 capabilities.
 - Public errors: the accepted 12-category taxonomy.
-- Transport: local bounded TCP/NDJSON.
+- Transports: local bounded TCP/NDJSON and optional loopback WebSocket/JSON through
+  one shared eight-client capacity pool.
 - Recorder: unchanged SQLite schema with provenance, gaps and lifecycle sealing.
 - Diagnostics: INFO default, four retained 4 MiB files, 1,024-entry lossy queue,
   8 KiB entry bound, default Windows path `%LOCALAPPDATA%\lab-runtime\logs`.
@@ -71,9 +73,9 @@ reproducible Windows x86_64 developer-preview package is ready locally and
 The accepted read-only M12.1 audit established the source-derived path for adding a
 second loopback WebSocket/JSON transport to the same Application instance. M12.2
 implemented the behavior-preserving transport-neutral JSON and bounded delivery
-seams while retaining TCP/NDJSON as the only transport. Its evidence is
-`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. M12.3 is authorized to add the first
-bounded loopback WebSocket/JSON adapter through that same seam.
+seams. M12.3 added the first bounded loopback WebSocket/JSON adapter through that
+same seam, with exact browser Origin policy and no duplicated Application semantics.
+Its review evidence is `M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`.
 
 Final polished release documentation is a later gate.
 

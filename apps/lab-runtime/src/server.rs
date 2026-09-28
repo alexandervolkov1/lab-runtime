@@ -11,8 +11,10 @@ use crate::{
 };
 
 mod coordination;
+mod websocket_peer;
 
 use coordination::{AdmissionError, ClientDelivery, ConnectionCoordinator, OwnerDelivery};
+use websocket_peer::WebSocketPeer;
 
 fn rejection(msg_id: Option<&str>, code: &str) -> serde_json::Value {
     let mut value = serde_json::json!({
@@ -250,11 +252,19 @@ impl Peer {
 
 fn reactor(
     listener: TcpListener,
+    websocket_listener: Option<TcpListener>,
+    websocket_origins: Vec<String>,
     to_owner: SyncSender<Incoming>,
     from_owner: Receiver<Outgoing>,
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let mut peers = std::collections::BTreeMap::<u64, Peer>::new();
+    let mut websocket_peers = std::collections::BTreeMap::<u64, WebSocketPeer>::new();
+    let websocket_host = websocket_listener
+        .as_ref()
+        .map(TcpListener::local_addr)
+        .transpose()?
+        .map(|address| format!("127.0.0.1:{}", address.port()));
     // A full owner mailbox must never erase a detach. In-flight generations
     // count against the same eight-slot budget until their detach is delivered.
     let mut connections = ConnectionCoordinator::new();
@@ -269,7 +279,8 @@ fn reactor(
                 Err(TrySendError::Disconnected(_)) => return Ok(()),
             }
         }
-        for _ in 0..if accepting { 8 } else { 0 } {
+        let tcp_accept_budget = if websocket_listener.is_some() { 4 } else { 8 };
+        for _ in 0..if accepting { tcp_accept_budget } else { 0 } {
             match listener.accept() {
                 Ok((stream, _)) => {
                     if connections.capacity_full() {
@@ -304,6 +315,54 @@ fn reactor(
                 Err(e) => return Err(e),
             }
         }
+        if accepting
+            && let (Some(websocket_listener), Some(websocket_host)) =
+                (&websocket_listener, &websocket_host)
+        {
+            for _ in 0..4 {
+                match websocket_listener.accept() {
+                    Ok((stream, _)) => {
+                        if connections.capacity_full() {
+                            tracing::warn!(
+                                event = "client_capacity_exhausted",
+                                limit = MAX_CLIENTS,
+                                "dropping WebSocket client at process capacity"
+                            );
+                            drop(stream);
+                            continue;
+                        }
+                        stream.set_nonblocking(true)?;
+                        let id = match connections.admit() {
+                            Ok(id) => id,
+                            Err(AdmissionError::Capacity) => {
+                                drop(stream);
+                                continue;
+                            }
+                            Err(AdmissionError::Exhausted) => {
+                                return Err(io::Error::other("connection ID exhausted"));
+                            }
+                        };
+                        websocket_peers.insert(
+                            id,
+                            WebSocketPeer::new(
+                                stream,
+                                websocket_host.clone(),
+                                websocket_origins.clone(),
+                            ),
+                        );
+                        tracing::debug!(
+                            event = "client_accepted",
+                            connection = id,
+                            active_clients = connections.active_count(),
+                            transport = "websocket",
+                            "loopback client accepted"
+                        );
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         for _ in 0..QUEUE {
             match from_owner.try_recv() {
                 Ok(Outgoing::StopAccept) => accepting = false,
@@ -331,6 +390,19 @@ fn reactor(
                                 peer.last_write = Instant::now();
                             }
                         }
+                    } else if let Some(peer) = websocket_peers.get_mut(&id)
+                        && !peer.push_reply(message, consumed, hello)
+                    {
+                        tracing::warn!(
+                            event = "client_reply_backpressure",
+                            connection = id,
+                            limit = CLIENT_OUT,
+                            transport = "websocket",
+                            "dropping client with full reply queue"
+                        );
+                        websocket_peers.remove(&id);
+                        let first = connections.begin_detach(id);
+                        debug_assert!(first);
                     }
                 }
                 Ok(Outgoing::Event {
@@ -355,11 +427,26 @@ fn reactor(
                                 peer.last_write = Instant::now();
                             }
                         }
+                    } else if let Some(peer) = websocket_peers.get_mut(&id)
+                        && !peer.push_event(message)
+                    {
+                        tracing::warn!(
+                            event = "client_event_backpressure",
+                            connection = id,
+                            limit = CLIENT_EVENTS,
+                            transport = "websocket",
+                            "dropping client with full event queue"
+                        );
+                        websocket_peers.remove(&id);
+                        let first = connections.begin_detach(id);
+                        debug_assert!(first);
                     }
                 }
                 Ok(Outgoing::Close { connection: id }) => {
                     if let Some(peer) = peers.get_mut(&id) {
                         peer.delivery.close();
+                    } else if let Some(peer) = websocket_peers.get_mut(&id) {
+                        peer.close();
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -387,6 +474,23 @@ fn reactor(
                 debug_assert!(first);
             }
         }
+        let websocket_ids: Vec<_> = websocket_peers.keys().copied().collect();
+        for id in websocket_ids {
+            let alive = websocket_peers
+                .get_mut(&id)
+                .is_some_and(|peer| peer.service(id, &to_owner));
+            if !alive {
+                tracing::debug!(
+                    event = "client_detached",
+                    connection = id,
+                    transport = "websocket",
+                    "loopback client detached"
+                );
+                websocket_peers.remove(&id);
+                let first = connections.begin_detach(id);
+                debug_assert!(first);
+            }
+        }
         thread::sleep(Duration::from_millis(5));
     }
     for id in connections.active_ids() {
@@ -409,12 +513,28 @@ pub fn run(
     );
     let listener = service.listener().try_clone()?;
     listener.set_nonblocking(true)?;
+    let websocket_listener = service
+        .websocket_listener()
+        .map(TcpListener::try_clone)
+        .transpose()?;
+    if let Some(listener) = &websocket_listener {
+        listener.set_nonblocking(true)?;
+    }
+    let websocket_origins = service.websocket_allowed_origins().to_vec();
     let (incoming_tx, incoming_rx) = mpsc::sync_channel::<Incoming>(QUEUE);
     let (outgoing_tx, outgoing_rx) = mpsc::sync_channel::<Outgoing>(QUEUE);
     let net_stop = Arc::new(AtomicBool::new(false));
     let net_flag = net_stop.clone();
-    let reactor_thread =
-        thread::spawn(move || reactor(listener, incoming_tx, outgoing_rx, net_flag));
+    let reactor_thread = thread::spawn(move || {
+        reactor(
+            listener,
+            websocket_listener,
+            websocket_origins,
+            incoming_tx,
+            outgoing_rx,
+            net_flag,
+        )
+    });
     let mut app =
         Application::new(service.boot_id()).map_err(|_| io::Error::other("invalid boot"))?;
     let mut delivery = OwnerDelivery::new();
@@ -604,6 +724,187 @@ mod bounded_peer_tests {
     }
 
     #[test]
+    fn tcp_and_websocket_connections_draw_from_one_id_space() {
+        use std::collections::BTreeSet;
+        use tungstenite::{ClientRequestBuilder, Message, client, http::Uri};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let tcp_address = listener.local_addr().unwrap();
+        let websocket_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        websocket_listener.set_nonblocking(true).unwrap();
+        let websocket_address = websocket_listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(8);
+        let (_to_net, from_owner) = mpsc::sync_channel(8);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || {
+            reactor(
+                listener,
+                Some(websocket_listener),
+                vec!["http://127.0.0.1:3000".to_owned()],
+                to_owner,
+                from_owner,
+                flag,
+            )
+            .unwrap()
+        });
+
+        let mut tcp = TcpStream::connect(tcp_address).unwrap();
+        tcp.write_all(b"{\"v\":1,\"msg_id\":\"tcp\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n")
+            .unwrap();
+        let stream = TcpStream::connect(websocket_address).unwrap();
+        let uri: Uri = format!(
+            "ws://{websocket_address}{}",
+            crate::websocket::APPLICATION_PATH
+        )
+        .parse()
+        .unwrap();
+        let request = ClientRequestBuilder::new(uri)
+            .with_header("Origin", "http://127.0.0.1:3000")
+            .with_sub_protocol(crate::websocket::APPLICATION_SUBPROTOCOL);
+        let (mut websocket, _) = client(request, stream).unwrap();
+        websocket
+            .write(Message::Text(
+                r#"{"v":1,"msg_id":"ws","op":"hello","args":{"scope":null}}"#.into(),
+            ))
+            .unwrap();
+        websocket.flush().unwrap();
+
+        let mut identities = BTreeSet::new();
+        while identities.len() != 2 {
+            if let Incoming::Request(id, _) = from_net.recv_timeout(Duration::from_secs(2)).unwrap()
+            {
+                identities.insert(id);
+            }
+        }
+        assert_eq!(identities, BTreeSet::from([1, 2]));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn websocket_retains_completed_request_while_owner_mailbox_is_full() {
+        use tungstenite::{ClientRequestBuilder, Message, client, http::Uri};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let websocket_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        websocket_listener.set_nonblocking(true).unwrap();
+        let websocket_address = websocket_listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(1);
+        let (_to_net, from_owner) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || {
+            reactor(
+                listener,
+                Some(websocket_listener),
+                vec!["http://127.0.0.1:3000".to_owned()],
+                to_owner,
+                from_owner,
+                flag,
+            )
+            .unwrap()
+        });
+
+        let stream = TcpStream::connect(websocket_address).unwrap();
+        let uri: Uri = format!(
+            "ws://{websocket_address}{}",
+            crate::websocket::APPLICATION_PATH
+        )
+        .parse()
+        .unwrap();
+        let request = ClientRequestBuilder::new(uri)
+            .with_header("Origin", "http://127.0.0.1:3000")
+            .with_sub_protocol(crate::websocket::APPLICATION_SUBPROTOCOL);
+        let (mut websocket, _) = client(request, stream).unwrap();
+        websocket
+            .write(Message::Text(
+                r#"{"v":1,"msg_id":"first","op":"hello","args":{"scope":null}}"#.into(),
+            ))
+            .unwrap();
+        websocket
+            .write(Message::Text(
+                r#"{"v":1,"msg_id":"second","op":"hello","args":{"scope":null}}"#.into(),
+            ))
+            .unwrap();
+        websocket.flush().unwrap();
+
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Incoming::Request(1, request) if request.msg_id == "first"
+        ));
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Incoming::Request(1, request) if request.msg_id == "second"
+        ));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn nonreading_websocket_event_queue_overflow_detaches_only_that_connection() {
+        use tungstenite::{ClientRequestBuilder, client, http::Uri};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let websocket_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        websocket_listener.set_nonblocking(true).unwrap();
+        let websocket_address = websocket_listener.local_addr().unwrap();
+        let (to_owner, from_net) = mpsc::sync_channel(4);
+        let (to_net, from_owner) = mpsc::sync_channel(64);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let join = thread::spawn(move || {
+            reactor(
+                listener,
+                Some(websocket_listener),
+                vec!["http://127.0.0.1:3000".to_owned()],
+                to_owner,
+                from_owner,
+                flag,
+            )
+            .unwrap()
+        });
+        let stream = TcpStream::connect(websocket_address).unwrap();
+        let uri: Uri = format!(
+            "ws://{websocket_address}{}",
+            crate::websocket::APPLICATION_PATH
+        )
+        .parse()
+        .unwrap();
+        let request = ClientRequestBuilder::new(uri)
+            .with_header("Origin", "http://127.0.0.1:3000")
+            .with_sub_protocol(crate::websocket::APPLICATION_SUBPROTOCOL);
+        let (mut websocket, _) = client(request, stream).unwrap();
+        websocket
+            .write(tungstenite::Message::Text(
+                r#"{"v":1,"msg_id":"h","op":"hello","args":{"scope":null}}"#.into(),
+            ))
+            .unwrap();
+        websocket.flush().unwrap();
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Request(1, request) if request.op == "hello"
+        ));
+        for _ in 0..=CLIENT_EVENTS {
+            to_net
+                .send(Outgoing::Event {
+                    connection: 1,
+                    message: vec![b'x'; wire::APPLICATION_JSON_LIMIT],
+                })
+                .unwrap();
+        }
+        assert!(matches!(
+            from_net.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Incoming::Detach(1)
+        ));
+        stop.store(true, Ordering::Release);
+        join.join().unwrap();
+    }
+
+    #[test]
     fn a_complete_frame_at_the_exact_input_cap_is_dispatched_before_further_read() {
         let (mut peer, client) = peer();
         let mut frame =
@@ -661,7 +962,9 @@ mod bounded_peer_tests {
         let (to_net, from_owner) = mpsc::sync_channel(4);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
-        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let join = thread::spawn(move || {
+            reactor(listener, None, Vec::new(), to_owner, from_owner, flag).unwrap()
+        });
         let mut stream = TcpStream::connect(addr).unwrap();
         // TCP connect completion does not prove the nonblocking reactor has assigned
         // connection 1. Observing its request is the authoritative admission barrier.
@@ -709,7 +1012,9 @@ mod bounded_peer_tests {
         let (to_net, from_owner) = mpsc::sync_channel(64);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
-        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let join = thread::spawn(move || {
+            reactor(listener, None, Vec::new(), to_owner, from_owner, flag).unwrap()
+        });
         let mut nonreader = TcpStream::connect(addr).unwrap();
         // Without this barrier an early synthetic event is correctly discarded as
         // stale, and the test can then wait forever for a detach it never caused.
@@ -779,7 +1084,9 @@ mod bounded_peer_tests {
         let (_to_net, from_owner) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
-        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let join = thread::spawn(move || {
+            reactor(listener, None, Vec::new(), to_owner, from_owner, flag).unwrap()
+        });
         let hello = b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n";
         let mut admitted = VecDeque::new();
         for expected in 1..=MAX_CLIENTS as u64 {
@@ -837,7 +1144,9 @@ mod bounded_peer_tests {
         let (to_net, from_owner) = mpsc::sync_channel(64);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
-        let join = thread::spawn(move || reactor(listener, to_owner, from_owner, flag).unwrap());
+        let join = thread::spawn(move || {
+            reactor(listener, None, Vec::new(), to_owner, from_owner, flag).unwrap()
+        });
         let mut peer = TcpStream::connect(addr).unwrap();
         peer.write_all(b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}\n")
             .unwrap();
