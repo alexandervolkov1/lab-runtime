@@ -16,7 +16,7 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 consolidated external review: AUTHORIZED
+M12 consolidated external review: READY FOR EXTERNAL REVIEW
 M13: NOT AUTHORIZED
 ```
 
@@ -110,5 +110,22 @@ Implementation, dependency review, exact bounds and verification evidence are in
 backpressure and fault acceptance is complete in
 `M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md` and accepted. M12.5 real-browser
 ClojureScript smoke evidence is recorded in
-`M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is accepted. Consolidated M12 external
-review is the authorized current work.
+`M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is accepted. The consolidated source,
+bounds, security, parity and browser review is complete in
+`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and ready for external review. No production
+Rust changed during the consolidation.
+
+## Current stop gate
+
+```text
+M12.1: ACCEPTED
+M12.2: ACCEPTED
+M12.3: ACCEPTED
+M12.4: ACCEPTED
+M12.5: ACCEPTED
+
+M12 consolidated external review: READY FOR EXTERNAL REVIEW
+M13: NOT AUTHORIZED
+
+STATUS: M12_READY_FOR_EXTERNAL_REVIEW
+```

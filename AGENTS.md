@@ -12,6 +12,10 @@ ai/WORK.md
 ai/RELEASE_PLAN_TO_V0_1.md
 ai/M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md
 ai/M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md
+ai/M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md
+ai/M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md
+ai/M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md
+ai/M12_CONSOLIDATED_EXTERNAL_REVIEW.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -26,12 +30,22 @@ Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: AUTHORIZED
-Current phase: M12.3 implementation
+M12.3 bounded WebSocket/JSON transport: ACCEPTED
+M12.4 transport parity/fault acceptance: ACCEPTED
+M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
+M12 consolidated external review: READY FOR EXTERNAL REVIEW
+M13: NOT AUTHORIZED
+Current phase: M12 consolidated external review
 ```
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
+The accepted M12.3 implementation commit is
+`6fb867389426fa75033f54312fda8c5556c52ed7`.
+The accepted M12.4 implementation commit is
+`9b58e92cffa79087f60d78032bc34b89499ae961`.
+The accepted M12.5 implementation/evidence commit is
+`f291edf35a7805245ce19ea088b9ee899d57f30e`.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
