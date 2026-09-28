@@ -14,11 +14,12 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14: NOT AUTHORIZED
-Current phase: M13 Steel dependency safety resolution
+M14.1 Workbench architecture audit: AUTHORIZED
+M14 implementation: NOT AUTHORIZED
+Current phase: M14.1 Workbench architecture audit
 ```
 
 The accepted M12.2 implementation commit is
@@ -33,6 +34,8 @@ The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
 The accepted M13.1 audit commit is
 `81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
+The accepted M13 dependency-safety resolution commit is
+`7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -40,7 +43,8 @@ M13.1 external Steel host architecture/dependency audit is accepted in
 `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Steel dependency safety
 resolution is complete in `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found no
 acceptable current dependency candidate. M13.2 remains blocked and unauthorized;
-M14 remains unauthorized.
+M14.1 is authorized as a read-only Workbench architecture audit while M14
+implementation remains unauthorized.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
@@ -70,9 +74,9 @@ v0.1.0-preview.1
     ↓
 M12 WebSocket transport
     ↓
-M13 external Steel scripting host
-    ↓
 M14 GUI / Workbench / client-owned PresentationDocument
+    ↓
+future optional Steel-in-Workbench scripting, after dependency acceptance
     ↓
 thermal-plant-uno end-to-end integration validation
     ↓
@@ -85,8 +89,11 @@ M12 adds a bounded loopback WebSocket/JSON adapter to the same Application API,
 session state and global client budget as TCP/NDJSON. It must not create transport-
 specific operations, DTOs, errors, history or experiment semantics.
 
-M13 hosts Steel outside Runtime as an Application client. Steel crash or script
-termination must not destroy authoritative experiment state:
+The original separate external Steel-host implementation is deferred while its
+dependency graph is blocked. A later accepted Steel implementation should preferably
+be an optional Workbench subsystem using the same external Application client
+boundary. Steel crash or script termination must not destroy authoritative
+experiment state:
 
 ```text
 script lifetime != experiment lifetime

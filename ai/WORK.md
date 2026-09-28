@@ -1,10 +1,10 @@
-# Current work — M13 Steel dependency safety resolution
+# Current work — M14.1 Workbench architecture audit
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M13 Steel dependency safety resolution
+Current phase: M14.1 Workbench architecture audit
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -18,10 +18,11 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14: NOT AUTHORIZED
+M14.1 Workbench architecture audit: AUTHORIZED
+M14 implementation: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -36,6 +37,8 @@ The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
 The accepted M13.1 audit commit is
 `81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
+The accepted M13 dependency-safety resolution commit is
+`7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
 
 ## Completed preparation step
 
@@ -128,10 +131,11 @@ during the consolidation.
 ```text
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14: NOT AUTHORIZED
+M14.1 Workbench architecture audit: AUTHORIZED
+M14 implementation: NOT AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. The external
@@ -140,16 +144,12 @@ investigation of current upstream Steel and `mattwparas/steel-imbl` to determine
 whether an upstream-owned release or exact commit removes RUSTSEC-2026-0255 and the
 abandoned `im-rc` chain without a lab-runtime-owned fork.
 
-The investigation is complete in
-`M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`. Released `steel-core 0.8.3` and current
-upstream master retain the mandatory `im-rc -> sized-chunks` memory-safety blocker.
-The optional `steel-imbl` path adds separate `imbl-sized-chunks` and `bitmaps`
-memory-safety advisories and does not remove the old graph. No acceptable candidate
-was found.
+The accepted dependency investigation is
+`M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`. M13.2 remains blocked. Steel is a
+deferred optional Workbench scripting candidate and must not be added while its
+dependency gate remains unresolved.
 
-No Cargo file or production source changed. Steel was not added to the workspace,
-`apps/lab-steel` was not created, and M13.2/M14 remain unauthorized.
-
-```text
-STATUS: M13_DEPENDENCY_RESOLUTION_READY_FOR_EXTERNAL_REVIEW
-```
+M14.1 may add only `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md` and active coordination
+updates. It must not create a Workbench crate, add GUI/client/Steel dependencies,
+modify production Rust, add Application semantics, begin M14.2, or authorize M14
+implementation.

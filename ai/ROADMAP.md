@@ -14,11 +14,12 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14: NOT AUTHORIZED
-Current phase: M13 Steel dependency safety resolution
+M14.1 Workbench architecture audit: AUTHORIZED
+M14 implementation: NOT AUTHORIZED
+Current phase: M14.1 Workbench architecture audit
 ```
 
 The accepted M12.2 implementation commit is
@@ -33,6 +34,8 @@ The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
 The accepted M13.1 audit commit is
 `81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
+The accepted M13 dependency-safety resolution commit is
+`7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -119,11 +122,20 @@ endpoint. The read-only dependency safety resolution for the rejected
 `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`, found no acceptable current release or
 upstream commit. M13.2 remains blocked and unauthorized.
 
+The earlier separate `lab-steel` implementation sequence is deferred. Current
+sequencing builds the external native Workbench client first. If a later dependency
+review accepts Steel, the preferred placement is an optional subsystem inside the
+Workbench, using its one Application client boundary. Steel remains neither a
+Runtime subsystem nor a managed component.
+
 ## M14 — GUI/Workbench/presentation schema
 
 GUI and any future transport/language-neutral `PresentationDocument` are
 client-owned. Runtime must not acquire window, tab, row, column, plot, panel,
 layout, widget, slider, button, egui, or other presentation semantics.
+
+M14.1 is an authorized read-only architecture audit. M14 implementation is not
+authorized.
 
 ## Final release gate
 

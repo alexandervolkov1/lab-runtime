@@ -396,3 +396,10 @@ M13.2 remains blocked
 ```text
 STATUS: M13_DEPENDENCY_RESOLUTION_READY_FOR_EXTERNAL_REVIEW
 ```
+
+## External review acceptance
+
+External review accepted this dependency-safety resolution at commit
+`7a150cd8e15d990e00ad62b5c9d9b66c401b7086`. M13.2 remains blocked and
+unauthorized. M14.1 Workbench architecture audit is authorized; Steel remains a
+deferred optional Workbench scripting candidate.

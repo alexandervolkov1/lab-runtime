@@ -37,11 +37,12 @@ M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
-M13 dependency safety resolution: READY FOR EXTERNAL REVIEW
+M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14: NOT AUTHORIZED
-Current phase: M13 Steel dependency safety resolution
+M14.1 Workbench architecture audit: AUTHORIZED
+M14 implementation: NOT AUTHORIZED
+Current phase: M14.1 Workbench architecture audit
 ```
 
 The accepted M12.2 implementation commit is
@@ -56,6 +57,8 @@ The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
 The accepted M13.1 audit commit is
 `81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
+The accepted M13 dependency-safety resolution commit is
+`7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
