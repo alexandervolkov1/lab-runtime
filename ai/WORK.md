@@ -1,10 +1,10 @@
-# Current work — M14.1 Workbench architecture audit
+# Current work — M14.2 minimal native Application client
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.1 external review
+Current phase: M14.2 minimal native Application client
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -21,8 +21,9 @@ M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14.1 Workbench architecture audit: READY FOR EXTERNAL REVIEW
-M14.2: NOT AUTHORIZED
+M14.1 Workbench architecture audit: ACCEPTED
+M14.2 minimal native Application client: AUTHORIZED
+M14.3: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -39,6 +40,8 @@ The accepted M13.1 audit commit is
 `81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
 The accepted M13 dependency-safety resolution commit is
 `7a150cd8e15d990e00ad62b5c9d9b66c401b7086`.
+The accepted M14.1 architecture-audit commit is
+`6340aee32b563000bc6397a52aecd85ee945da1c`.
 
 ## Completed preparation step
 
@@ -134,8 +137,9 @@ M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
-M14.1 Workbench architecture audit: READY FOR EXTERNAL REVIEW
-M14.2: NOT AUTHORIZED
+M14.1 Workbench architecture audit: ACCEPTED
+M14.2 minimal native Application client: AUTHORIZED
+M14.3: NOT AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. The external
@@ -149,9 +153,8 @@ The accepted dependency investigation is
 deferred optional Workbench scripting candidate and must not be added while its
 dependency gate remains unresolved.
 
-The completed read-only M14.1 audit is
-`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. It found no new Runtime/Application
-semantic requirement and recommends a Workbench-private TCP/NDJSON client worker,
-client-owned bounded presentation persistence, and a later pinned glow-based egui
-stack. It did not create a Workbench crate, add GUI/client/Steel dependencies,
-modify production Rust or authorize M14.2.
+The accepted read-only M14.1 audit is
+`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. M14.2 may add only the private bounded
+TCP/NDJSON Application client and its tests/report. It must not add GUI,
+PresentationDocument or Steel dependencies/source, change Runtime/Application
+semantics, begin M14.3, or authorize later work.

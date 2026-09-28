@@ -1,5 +1,12 @@
 # M14.1 Workbench client architecture audit
 
+## External-review acceptance
+
+External review accepted M14.1 on 2026-09-28. The review-ready evidence below is
+preserved as written. Its implementation gate is now recorded in active
+coordination: M14.2 is authorized, M14.3 is not authorized, and M13.2 remains
+blocked on Steel dependency safety.
+
 ## Status and conclusion
 
 ```text
