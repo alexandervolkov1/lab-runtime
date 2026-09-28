@@ -33,9 +33,12 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 consolidated external review: READY FOR EXTERNAL REVIEW
-M13: NOT AUTHORIZED
-Current phase: M12 consolidated external review
+M12 WebSocket transport: ACCEPTED
+M13: OPEN
+M13.1 external Steel host architecture/dependency audit: AUTHORIZED
+M13 implementation: NOT AUTHORIZED
+M14: NOT AUTHORIZED
+Current phase: M13.1 external Steel host architecture/dependency audit
 ```
 
 The accepted M12.2 implementation commit is
@@ -46,6 +49,8 @@ The accepted M12.4 implementation commit is
 `9b58e92cffa79087f60d78032bc34b89499ae961`.
 The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
+The accepted M12 consolidated review-ready commit is
+`bb159f674f2cca1c50f903528b268cb070858604`.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

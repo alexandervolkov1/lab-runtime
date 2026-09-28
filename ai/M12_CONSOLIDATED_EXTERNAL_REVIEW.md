@@ -416,3 +416,12 @@ No unreviewed M12 change is a blocker. M13 remains explicitly unauthorized.
 ```text
 STATUS: M12_READY_FOR_EXTERNAL_REVIEW
 ```
+
+## External-review acceptance
+
+External review accepted the review-ready consolidation recorded by commit
+`bb159f674f2cca1c50f903528b268cb070858604` with no production, architecture,
+parity, security-policy or browser-acceptance blocker. M12 is closed and accepted.
+M13.1, a read-only external Steel host architecture/dependency audit, is authorized;
+M13 implementation and M14 remain unauthorized. The READY_FOR_EXTERNAL_REVIEW
+evidence above is retained unchanged.

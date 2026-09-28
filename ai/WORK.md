@@ -1,10 +1,10 @@
-# Current work — M12 consolidated external review
+# Current work — M13.1 external Steel host architecture/dependency audit
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12 consolidated external review
+Current phase: M13.1 external Steel host architecture/dependency audit
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -16,8 +16,11 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 consolidated external review: READY FOR EXTERNAL REVIEW
-M13: NOT AUTHORIZED
+M12 WebSocket transport: ACCEPTED
+M13: OPEN
+M13.1 external Steel host architecture/dependency audit: AUTHORIZED
+M13 implementation: NOT AUTHORIZED
+M14: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -28,6 +31,8 @@ The accepted M12.4 implementation commit is
 `9b58e92cffa79087f60d78032bc34b89499ae961`.
 The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
+The accepted M12 consolidated review-ready commit is
+`bb159f674f2cca1c50f903528b268cb070858604`.
 
 ## Completed preparation step
 
@@ -112,20 +117,20 @@ backpressure and fault acceptance is complete in
 ClojureScript smoke evidence is recorded in
 `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is accepted. The consolidated source,
 bounds, security, parity and browser review is complete in
-`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and ready for external review. No production
-Rust changed during the consolidation.
+`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and accepted. No production Rust changed
+during the consolidation.
 
-## Current stop gate
+## Current authorization
 
 ```text
-M12.1: ACCEPTED
-M12.2: ACCEPTED
-M12.3: ACCEPTED
-M12.4: ACCEPTED
-M12.5: ACCEPTED
-
-M12 consolidated external review: READY FOR EXTERNAL REVIEW
-M13: NOT AUTHORIZED
-
-STATUS: M12_READY_FOR_EXTERNAL_REVIEW
+M12 WebSocket transport: ACCEPTED
+M13: OPEN
+M13.1 external Steel host architecture/dependency audit: AUTHORIZED
+M13 implementation: NOT AUTHORIZED
+M14: NOT AUTHORIZED
 ```
+
+M13.1 is read-only with respect to production source. It may add only the audit
+report and update active coordination. It must not add a dependency, crate,
+executable, binding, Application operation or transport, and it must not begin
+M13.2.

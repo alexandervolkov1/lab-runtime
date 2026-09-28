@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12 consolidated external review
+Current phase: M13.1 external Steel host architecture/dependency audit
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -18,8 +18,11 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 consolidated external review: READY FOR EXTERNAL REVIEW
-M13: NOT AUTHORIZED
+M12 WebSocket transport: ACCEPTED
+M13: OPEN
+M13.1 external Steel host architecture/dependency audit: AUTHORIZED
+M13 implementation: NOT AUTHORIZED
+M14: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -30,6 +33,8 @@ The accepted M12.4 implementation commit is
 `9b58e92cffa79087f60d78032bc34b89499ae961`.
 The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
+The accepted M12 consolidated review-ready commit is
+`bb159f674f2cca1c50f903528b268cb070858604`.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -125,9 +130,10 @@ parity/fault acceptance is complete in
 `M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md` and accepted. M12.5 real-browser
 ClojureScript smoke evidence is in `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is
 accepted. The consolidated source, bounds, security, parity and browser review is
-recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is ready for external review.
-Practical integration, M13, M14, and final polished release documentation remain
-separately gated.
+recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. M13.1 is the
+authorized read-only external Steel host architecture/dependency audit. M13
+implementation, M14, practical integration and final polished release documentation
+remain separately gated.
 
 ## Later practical validation
 

@@ -12,9 +12,12 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 consolidated external review: READY FOR EXTERNAL REVIEW
-M13: NOT AUTHORIZED
-Current phase: M12 consolidated external review
+M12 WebSocket transport: ACCEPTED
+M13: OPEN
+M13.1 external Steel host architecture/dependency audit: AUTHORIZED
+M13 implementation: NOT AUTHORIZED
+M14: NOT AUTHORIZED
+Current phase: M13.1 external Steel host architecture/dependency audit
 ```
 
 The accepted M12.2 implementation commit is
@@ -25,6 +28,8 @@ The accepted M12.4 implementation commit is
 `9b58e92cffa79087f60d78032bc34b89499ae961`.
 The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
+The accepted M12 consolidated review-ready commit is
+`bb159f674f2cca1c50f903528b268cb070858604`.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -87,7 +92,7 @@ WebSocket / JSON --+
   accepted;
 - **M12.4:** parity, reconnect, backpressure and fault acceptance — accepted;
 - **M12.5:** browser/ClojureScript smoke acceptance — accepted;
-- **M12 external review:** ready for external review.
+- **M12 external review:** accepted.
 
 M12.1 through M12.5 are accepted. See
 `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md` and
@@ -95,7 +100,7 @@ M12.1 through M12.5 are accepted. See
 `M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.4 evidence is in
 `M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md`. M12.5 evidence is in
 `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is accepted. Consolidated evidence is in
-`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is ready for external review.
+`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted.
 
 ## M13 — external Steel scripting host
 
