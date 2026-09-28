@@ -13,9 +13,8 @@ M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12 WebSocket transport: ACCEPTED
-M13: OPEN
-M13.1 external Steel host architecture/dependency audit: AUTHORIZED
-M13 implementation: NOT AUTHORIZED
+M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 Current phase: M13.1 external Steel host architecture/dependency audit
 ```
@@ -107,6 +106,13 @@ M12.1 through M12.5 are accepted. See
 Steel is a future external Application client. It must not execute inside Runtime
 ownership, acquire transport/output authority, or make script lifetime equal
 experiment lifetime. Native real-time components remain native Rust.
+
+The M13.1 source/dependency audit is complete in
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md` and ready for external review. It
+recommends a one-process-per-script external host over the existing TCP/NDJSON
+Application endpoint. M13.2 remains unauthorized, and the current `steel-core 0.8.3`
+dependency graph has an unresolved advisory gate that must be reviewed before any
+dependency is added.
 
 ## M14 — GUI/Workbench/presentation schema
 

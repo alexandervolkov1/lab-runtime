@@ -13,9 +13,8 @@ M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12 WebSocket transport: ACCEPTED
-M13: OPEN
-M13.1 external Steel host architecture/dependency audit: AUTHORIZED
-M13 implementation: NOT AUTHORIZED
+M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 Current phase: M13.1 external Steel host architecture/dependency audit
 ```
@@ -32,9 +31,10 @@ The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
-recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. M13.1 is the
-authorized read-only external Steel host architecture/dependency audit. M13
-implementation and M14 remain unauthorized.
+recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
+M13.1 external Steel host architecture/dependency audit is complete in
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md` and ready for external review.
+M13.2 and M14 remain unauthorized.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

@@ -19,9 +19,8 @@ M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12 WebSocket transport: ACCEPTED
-M13: OPEN
-M13.1 external Steel host architecture/dependency audit: AUTHORIZED
-M13 implementation: NOT AUTHORIZED
+M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
 
@@ -131,9 +130,11 @@ parity/fault acceptance is complete in
 ClojureScript smoke evidence is in `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is
 accepted. The consolidated source, bounds, security, parity and browser review is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. M13.1 is the
-authorized read-only external Steel host architecture/dependency audit. M13
-implementation, M14, practical integration and final polished release documentation
-remain separately gated.
+completed read-only external Steel host architecture/dependency audit, recorded in
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md` and ready for external review.
+It recommends an external one-shot host over TCP/NDJSON and identifies an unresolved
+dependency gate in the current `steel-core 0.8.3` graph. M13.2, M14, practical
+integration and final polished release documentation remain separately gated.
 
 ## Later practical validation
 

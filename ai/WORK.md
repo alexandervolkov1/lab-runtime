@@ -17,9 +17,8 @@ M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12 WebSocket transport: ACCEPTED
-M13: OPEN
-M13.1 external Steel host architecture/dependency audit: AUTHORIZED
-M13 implementation: NOT AUTHORIZED
+M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
 
@@ -120,17 +119,26 @@ bounds, security, parity and browser review is complete in
 `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and accepted. No production Rust changed
 during the consolidation.
 
-## Current authorization
+## Completed M13.1 audit
 
 ```text
-M12 WebSocket transport: ACCEPTED
-M13: OPEN
-M13.1 external Steel host architecture/dependency audit: AUTHORIZED
-M13 implementation: NOT AUTHORIZED
+M12: ACCEPTED
+M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
 
-M13.1 is read-only with respect to production source. It may add only the audit
-report and update active coordination. It must not add a dependency, crate,
-executable, binding, Application operation or transport, and it must not begin
-M13.2.
+The read-only audit is recorded in
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. It confirms that Steel can remain
+an external one-shot Application client over TCP/NDJSON without changing Runtime,
+Application, session, deduplication, managed-component or presentation ownership.
+
+The audit adds no dependency, crate, executable, binding, operation or transport.
+It identifies a dependency gate in the current exact `steel-core 0.8.3` graph:
+RUSTSEC-2026-0255 is unfixed in transitive `sized-chunks`, reached through the
+abandoned `im-rc` chain. External review must resolve the dependency direction
+before M13.2 can be authorized.
+
+```text
+STATUS: M13_1_READY_FOR_EXTERNAL_REVIEW
+```
