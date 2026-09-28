@@ -11,8 +11,9 @@ M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
-M12.5 browser/ClojureScript smoke acceptance: AUTHORIZED
-Current phase: M12.5 browser/ClojureScript smoke acceptance
+M12.5 browser/ClojureScript smoke acceptance: READY FOR EXTERNAL REVIEW
+M13: NOT AUTHORIZED
+Current phase: M12.5 external review
 ```
 
 The accepted M12.2 implementation commit is
