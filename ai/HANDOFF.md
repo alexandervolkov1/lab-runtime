@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.5 external review
+Current phase: M12 consolidated external review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -17,7 +17,8 @@ M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
-M12.5 browser/ClojureScript smoke acceptance: READY FOR EXTERNAL REVIEW
+M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
+M12 consolidated external review: AUTHORIZED
 M13: NOT AUTHORIZED
 ```
 
@@ -27,6 +28,8 @@ The accepted M12.3 implementation commit is
 `6fb867389426fa75033f54312fda8c5556c52ed7`.
 The accepted M12.4 implementation commit is
 `9b58e92cffa79087f60d78032bc34b89499ae961`.
+The accepted M12.5 implementation/evidence commit is
+`f291edf35a7805245ce19ea088b9ee899d57f30e`.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -121,8 +124,9 @@ are finite. Implementation and verification evidence is in
 parity/fault acceptance is complete in
 `M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md` and accepted. M12.5 real-browser
 ClojureScript smoke evidence is in `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is
-ready for external review. Practical integration, M13, M14, and final polished
-release documentation remain separately gated.
+accepted. The consolidated M12 external review is authorized. Practical
+integration, M13, M14, and final polished release documentation remain separately
+gated.
 
 ## Later practical validation
 

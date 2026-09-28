@@ -11,9 +11,10 @@ M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
-M12.5 browser/ClojureScript smoke acceptance: READY FOR EXTERNAL REVIEW
+M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
+M12 consolidated external review: AUTHORIZED
 M13: NOT AUTHORIZED
-Current phase: M12.5 external review
+Current phase: M12 consolidated external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -22,6 +23,8 @@ The accepted M12.3 implementation commit is
 `6fb867389426fa75033f54312fda8c5556c52ed7`.
 The accepted M12.4 implementation commit is
 `9b58e92cffa79087f60d78032bc34b89499ae961`.
+The accepted M12.5 implementation/evidence commit is
+`f291edf35a7805245ce19ea088b9ee899d57f30e`.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
