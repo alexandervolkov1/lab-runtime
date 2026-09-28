@@ -4,10 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+rust-version = "1.95"
 
 [dependencies]
+eframe = { version = "=0.36.2", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+egui_plot = { version = "=0.37.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+win-desktop-utils = { version = "=0.5.7", default-features = false, features = ["instance"] }
 
 [lints]
 workspace = true

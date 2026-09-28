@@ -176,6 +176,8 @@ pub(crate) enum ClientUpdate {
     ResnapshotRequired {
         reason: String,
         envelope: Option<Value>,
+        /// True when the worker closed the transport and a new hello is required.
+        connection_lost: bool,
     },
     /// Durable recovery could not be loaded, classified, or updated safely.
     RecoveryJournalProblem {

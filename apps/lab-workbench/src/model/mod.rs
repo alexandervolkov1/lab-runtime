@@ -152,8 +152,17 @@ impl WorkbenchModel {
                     self.client_error = Some("worker recovery notification exceeded bound".into());
                 }
             }
-            ClientUpdate::ResnapshotRequired { reason, .. } => {
-                self.observations.begin_rebuild();
+            ClientUpdate::ResnapshotRequired {
+                reason,
+                connection_lost,
+                ..
+            } => {
+                if connection_lost {
+                    self.connection = ConnectionState::Stale;
+                    self.observations.mark_stale();
+                } else {
+                    self.observations.begin_rebuild();
+                }
                 self.refresh_unresolved();
                 self.client_error = Some(reason);
             }
@@ -325,6 +334,9 @@ impl WorkbenchModel {
         let kind = envelope.get("kind").and_then(Value::as_str);
         let target = envelope.get("target");
         let data = envelope.get("data").cloned().unwrap_or(Value::Null);
+        let signal_point = (kind == Some("signal"))
+            .then(|| live_point_from_signal(&data))
+            .flatten();
         let reference = match kind {
             Some("reference") => target
                 .and_then(|value| value.get("id"))
@@ -354,7 +366,11 @@ impl WorkbenchModel {
             _ => None,
         };
         if let Some(reference) = reference {
-            self.observations.observe(reference, data, Some(cursor));
+            self.observations
+                .observe(reference.clone(), data, Some(cursor));
+            if let Some(point) = signal_point {
+                let _ = self.push_live_point(reference, point);
+            }
         }
         self.refresh_unresolved();
     }
@@ -413,7 +429,17 @@ impl WorkbenchModel {
                 _ => None,
             };
             if let Some(identity) = identity {
-                self.observations.observe(identity, record.clone(), None);
+                // Discovery descriptors establish identity, but a later event-sequence
+                // fence must not overwrite a fresher current projection obtained in
+                // the same rebuild (for example a signal sample or Reference state).
+                if !self
+                    .observations
+                    .entities
+                    .get(&identity)
+                    .is_some_and(|observation| observation.freshness == Freshness::Fresh)
+                {
+                    self.observations.observe(identity, record.clone(), None);
+                }
             }
         }
     }
@@ -471,6 +497,22 @@ fn parse_signal_ref(value: &Value) -> Option<RuntimeRef> {
         instrument: value.get("instrument")?.as_str()?.to_owned(),
         parameter: value.get("parameter")?.as_str()?.to_owned(),
     })
+}
+
+fn live_point_from_signal(value: &Value) -> Option<LivePoint> {
+    if value.get("quality").and_then(Value::as_str) != Some("good") {
+        return None;
+    }
+    let sample = value.get("value")?.as_f64()?;
+    let observed_ns = value
+        .get("observed_at_ns")?
+        .as_str()
+        .and_then(|text| text.parse::<f64>().ok())?;
+    let point = LivePoint {
+        time_seconds: observed_ns / 1_000_000_000.0,
+        value: sample,
+    };
+    (point.time_seconds.is_finite() && point.value.is_finite()).then_some(point)
 }
 
 fn entity_id(value: &Value) -> Option<String> {

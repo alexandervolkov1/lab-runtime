@@ -93,12 +93,16 @@ impl RuntimeObservations {
         }
     }
 
-    /// Marks the cache as rebuilding while preserving visibly stale values.
+    /// Starts a new observation epoch while preserving stale entity projections.
+    ///
+    /// Live display points are cleared because a rebuild follows lost event
+    /// continuity; joining the prior and later points would fabricate a line.
     pub(crate) fn begin_rebuild(&mut self) {
         self.freshness = Freshness::Rebuilding;
         for observation in self.entities.values_mut() {
             observation.freshness = Freshness::Stale;
         }
+        self.live.clear();
     }
 
     /// Marks an explicitly completed multi-projection rebuild fresh.

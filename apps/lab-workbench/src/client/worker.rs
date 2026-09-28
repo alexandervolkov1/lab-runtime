@@ -37,6 +37,9 @@ const READ_TURN_BYTES: usize = 8 * 1024;
 const COMMANDS_PER_TURN: usize = 8;
 const BOOTSTRAP_EVENTS: usize = 64;
 
+/// Renderer-neutral notification invoked only after an update enters the bounded queue.
+pub(crate) type WakeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
 fn connect_timeout_for_attempt(
     now: Instant,
     reattach_deadline: Option<Instant>,
@@ -75,6 +78,15 @@ impl ClientHandle {
         address: SocketAddr,
         journal_path: Option<PathBuf>,
     ) -> io::Result<Self> {
+        Self::spawn_with_recovery_journal_and_wake(address, journal_path, None)
+    }
+
+    /// Starts the client owner with durable recovery and an optional renderer wake hook.
+    pub(crate) fn spawn_with_recovery_journal_and_wake(
+        address: SocketAddr,
+        journal_path: Option<PathBuf>,
+        wake: Option<WakeCallback>,
+    ) -> io::Result<Self> {
         if !address.ip().is_loopback() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -98,6 +110,7 @@ impl ClientHandle {
                     command_rx,
                     update_tx,
                     worker_stop,
+                    wake,
                     #[cfg(test)]
                     worker_update_overflow,
                 )
@@ -294,6 +307,7 @@ struct Worker {
     journal_path: Option<PathBuf>,
     command_rx: Receiver<ClientCommand>,
     update_tx: SyncSender<ClientUpdate>,
+    wake: Option<WakeCallback>,
     stop: Arc<AtomicBool>,
     #[cfg(test)]
     update_overflow_observed: Arc<AtomicBool>,
@@ -325,6 +339,7 @@ impl Worker {
         command_rx: Receiver<ClientCommand>,
         update_tx: SyncSender<ClientUpdate>,
         stop: Arc<AtomicBool>,
+        wake: Option<WakeCallback>,
         #[cfg(test)] update_overflow_observed: Arc<AtomicBool>,
     ) -> Self {
         let (recovery, startup_journal_error) = load_startup_recovery(journal_path.as_deref());
@@ -333,6 +348,7 @@ impl Worker {
             journal_path,
             command_rx,
             update_tx,
+            wake,
             stop,
             #[cfg(test)]
             update_overflow_observed,
@@ -394,13 +410,14 @@ impl Worker {
             return;
         }
         match self.update_tx.try_send(update) {
-            Ok(()) => {}
+            Ok(()) => self.wake(),
             Err(TrySendError::Full(_)) => {
                 #[cfg(test)]
                 self.update_overflow_observed.store(true, Ordering::Release);
                 self.deferred_update = Some(ClientUpdate::ResnapshotRequired {
                     reason: "ordered_update_queue_full".into(),
                     envelope: None,
+                    connection_lost: true,
                 });
                 self.update_overflow = true;
             }
@@ -415,9 +432,15 @@ impl Worker {
             return;
         };
         match self.update_tx.try_send(update) {
-            Ok(()) => {}
+            Ok(()) => self.wake(),
             Err(TrySendError::Full(update)) => self.deferred_update = Some(update),
             Err(TrySendError::Disconnected(_)) => self.stop.store(true, Ordering::Release),
+        }
+    }
+
+    fn wake(&self) {
+        if let Some(wake) = &self.wake {
+            wake();
         }
     }
 
@@ -934,6 +957,7 @@ impl Worker {
                         self.emit(ClientUpdate::ResnapshotRequired {
                             reason: "event_gap".into(),
                             envelope: Some(value),
+                            connection_lost: false,
                         });
                         return;
                     }
@@ -979,6 +1003,7 @@ impl Worker {
                 self.emit(ClientUpdate::ResnapshotRequired {
                     reason: "reference_bootstrap_event_buffer_full".into(),
                     envelope: None,
+                    connection_lost: false,
                 });
                 self.bootstrap = None;
                 return;
@@ -1151,6 +1176,7 @@ impl Worker {
             self.emit(ClientUpdate::ResnapshotRequired {
                 reason: "event_gap".into(),
                 envelope: Some(value.clone()),
+                connection_lost: false,
             });
         }
         if matches!(
@@ -1589,7 +1615,9 @@ mod tests {
         io::{BufRead, BufReader, Write},
         net::TcpListener,
         path::PathBuf,
-        sync::atomic::{AtomicU64 as TestAtomicU64, Ordering as TestOrdering},
+        sync::atomic::{
+            AtomicU64 as TestAtomicU64, AtomicUsize as TestAtomicUsize, Ordering as TestOrdering,
+        },
         sync::mpsc,
     };
 
@@ -1698,9 +1726,37 @@ mod tests {
             command_rx,
             update_tx,
             Arc::new(AtomicBool::new(false)),
+            None,
             Arc::new(AtomicBool::new(false)),
         );
         (worker, update_rx)
+    }
+
+    #[test]
+    fn successful_bounded_update_publish_invokes_renderer_neutral_wake() {
+        let (_command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
+        let wakes = Arc::new(TestAtomicUsize::new(0));
+        let observed = Arc::clone(&wakes);
+        let mut worker = Worker::new(
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+            command_rx,
+            update_tx,
+            Arc::new(AtomicBool::new(false)),
+            Some(Arc::new(move || {
+                observed.fetch_add(1, TestOrdering::Release);
+            })),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        worker.emit(ClientUpdate::State(ConnectionState::Disconnected));
+
+        assert!(matches!(
+            update_rx.try_recv(),
+            Ok(ClientUpdate::State(ConnectionState::Disconnected))
+        ));
+        assert_eq!(wakes.load(TestOrdering::Acquire), 1);
     }
 
     fn apply_worker_updates(
@@ -2726,11 +2782,13 @@ mod tests {
         );
         let ClientUpdate::ResnapshotRequired {
             envelope: Some(envelope),
+            connection_lost,
             ..
         } = gap
         else {
             unreachable!()
         };
+        assert!(!connection_lost);
         assert_eq!(envelope["resync_required"], true);
         assert_eq!(envelope["oldest"]["seq"], "2");
         client.shutdown().unwrap();
@@ -2787,21 +2845,36 @@ mod tests {
             );
             thread::yield_now();
         }
-        let mut saw_resnapshot = false;
+        let mut resnapshot = None;
         let deadline = Instant::now() + TEST_TIMEOUT;
         while Instant::now() < deadline {
             match client.recv_timeout(Duration::from_millis(50)) {
-                Ok(ClientUpdate::ResnapshotRequired { reason, .. })
-                    if reason == "ordered_update_queue_full" =>
-                {
-                    saw_resnapshot = true;
-                    break;
+                Ok(update) => {
+                    if matches!(
+                        &update,
+                        ClientUpdate::ResnapshotRequired { reason, .. }
+                            if reason == "ordered_update_queue_full"
+                    ) {
+                        resnapshot = Some(update);
+                        break;
+                    }
                 }
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        assert!(saw_resnapshot);
+        assert!(matches!(
+            &resnapshot,
+            Some(ClientUpdate::ResnapshotRequired {
+                connection_lost: true,
+                ..
+            })
+        ));
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+        model.apply_client_update(ClientUpdate::Hello(hello_state(1)));
+        model.complete_rebuild();
+        model.apply_client_update(resnapshot.expect("pressure notification"));
+        assert_eq!(model.connection, ConnectionState::Stale);
         client.shutdown().unwrap();
         peer.join().unwrap();
     }

@@ -1,28 +1,31 @@
-//! Headless shell for the private Workbench client and renderer-neutral model.
+//! Native Workbench client with one bounded Application worker and client-owned GUI.
 
 mod client;
+mod gui;
 mod model;
+mod ownership;
 mod presentation;
 mod recovery;
 mod storage;
 
-use client::{ClientHandle, ClientUpdate};
-use model::WorkbenchModel;
-use presentation::{PresentationDocument, default_presentation_path, load_presentation};
-use recovery::{default_journal_path, load_journal};
-use serde_json::json;
-use std::{net::SocketAddr, process::ExitCode, time::Duration};
-
-const STARTUP_WAIT: Duration = Duration::from_secs(5);
+use presentation::default_presentation_path;
+use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 
 fn usage() {
-    eprintln!("usage: lab-workbench --connect 127.0.0.1:PORT [--scope SCOPE]");
+    eprintln!("usage: lab-workbench --connect 127.0.0.1:PORT [--scope SCOPE] [--workspace PATH]");
 }
 
-fn arguments() -> Result<(SocketAddr, Option<String>), &'static str> {
+struct Arguments {
+    address: SocketAddr,
+    scope: Option<String>,
+    workspace: Option<PathBuf>,
+}
+
+fn arguments() -> Result<Arguments, &'static str> {
     let mut args = std::env::args().skip(1);
     let mut address = None;
     let mut scope = None;
+    let mut workspace = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--connect" if address.is_none() => {
@@ -36,85 +39,36 @@ fn arguments() -> Result<(SocketAddr, Option<String>), &'static str> {
             "--scope" if scope.is_none() => {
                 scope = Some(args.next().ok_or("--scope needs a value")?);
             }
+            "--workspace" if workspace.is_none() => {
+                workspace = Some(PathBuf::from(
+                    args.next().ok_or("--workspace needs a path")?,
+                ));
+            }
             _ => return Err("unknown or duplicate argument"),
         }
     }
-    Ok((address.ok_or("--connect is required")?, scope))
+    Ok(Arguments {
+        address: address.ok_or("--connect is required")?,
+        scope,
+        workspace,
+    })
 }
 
 fn run() -> Result<(), String> {
-    let (address, scope) = arguments().map_err(str::to_owned)?;
-    let presentation_path = default_presentation_path().map_err(|error| error.to_string())?;
-    let presentation = if presentation_path.exists() {
-        load_presentation(&presentation_path).map_err(|error| error.to_string())?
-    } else {
-        PresentationDocument::empty("default")
+    let arguments = arguments().map_err(str::to_owned)?;
+    let workspace = match arguments.workspace {
+        Some(path) => path,
+        None => default_presentation_path()
+            .map_err(|error| error.to_string())?
+            .parent()
+            .expect("default presentation has a workspace parent")
+            .to_owned(),
     };
-    let mut model = WorkbenchModel::new(presentation);
-    let journal_path = default_journal_path().map_err(|error| error.to_string())?;
-    let desired_scope = scope.or_else(|| {
-        journal_path
-            .exists()
-            .then(|| {
-                load_journal(&journal_path)
-                    .ok()
-                    .map(|journal| journal.scope)
-            })
-            .flatten()
-    });
-    let client = ClientHandle::spawn_with_recovery_journal(address, Some(journal_path))
-        .map_err(|error| error.to_string())?;
-    client
-        .connect(desired_scope)
-        .map_err(|error| error.to_string())?;
-    let deadline = std::time::Instant::now() + STARTUP_WAIT;
-    let result = loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            break Err("hello did not complete before the startup deadline".to_owned());
-        }
-        match client.recv_timeout(remaining) {
-            Ok(update @ ClientUpdate::Hello(_)) => {
-                model.apply_client_update(update);
-                let hello = model.hello.as_ref().expect("hello update populated model");
-                println!(
-                    "{}",
-                    json!({"status":"connected","boot_id":hello.boot_id,
-                        "scope":hello.scope,"next_seq":hello.next_seq,
-                        "operations":hello.operations.len(),
-                        "capabilities":hello.capabilities.as_array().map_or(0,Vec::len)})
-                );
-                break Ok(());
-            }
-            Ok(update @ ClientUpdate::TransportFailure { .. }) => {
-                model.apply_client_update(update);
-                break Err(model
-                    .client_error
-                    .take()
-                    .unwrap_or_else(|| "transport failed".into()));
-            }
-            Ok(update @ ClientUpdate::Reply { .. }) => {
-                let error = match &update {
-                    ClientUpdate::Reply { envelope, .. }
-                        if envelope.get("type").and_then(serde_json::Value::as_str)
-                            == Some("error") =>
-                    {
-                        Some(format!("hello rejected: {envelope}"))
-                    }
-                    _ => None,
-                };
-                model.apply_client_update(update);
-                if let Some(error) = error {
-                    break Err(error);
-                }
-            }
-            Ok(update) => model.apply_client_update(update),
-            Err(error) => break Err(format!("client worker stopped during hello: {error}")),
-        }
-    };
-    let _ = client.disconnect();
-    client.shutdown().map_err(str::to_owned)?;
-    result
+    gui::run(gui::GuiLaunch {
+        address: arguments.address,
+        scope: arguments.scope,
+        workspace,
+    })
 }
 
 fn main() -> ExitCode {

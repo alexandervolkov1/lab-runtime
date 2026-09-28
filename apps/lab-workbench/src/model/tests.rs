@@ -146,6 +146,142 @@ fn live_display_window_evicts_only_oldest_display_points() {
 }
 
 #[test]
+fn only_good_finite_signal_events_add_authoritative_time_plot_points() {
+    let mut model = WorkbenchModel::new(presentation());
+    let cursor = |seq| EventCursor {
+        boot_id: "boot".into(),
+        seq,
+    };
+    let signal = RuntimeRef::Signal {
+        instrument: "1".into(),
+        parameter: "1".into(),
+    };
+    let event = |seq, quality: &str, value: serde_json::Value, observed: serde_json::Value| {
+        ClientUpdate::Event {
+            cursor: cursor(seq),
+            envelope: json!({
+                "kind":"signal",
+                "target":{"instrument":"1","parameter":"1"},
+                "data":{"signal":{"instrument":"1","parameter":"1"},
+                    "quality":quality,"value":value,"observed_at_ns":observed}
+            }),
+        }
+    };
+
+    model.apply_client_update(event(1, "good", json!(12.5), json!("2500000000")));
+    model.apply_client_update(event(
+        2,
+        "unavailable",
+        serde_json::Value::Null,
+        serde_json::Value::Null,
+    ));
+    model.apply_client_update(event(
+        3,
+        "good",
+        serde_json::Value::Null,
+        json!("3000000000"),
+    ));
+
+    let points = model.observations.live[&signal].points();
+    assert_eq!(points.len(), 1);
+    assert_eq!(
+        points[0],
+        LivePoint {
+            time_seconds: 2.5,
+            value: 12.5
+        }
+    );
+}
+
+#[test]
+fn lost_transport_resnapshot_is_not_ready_and_rebuild_starts_a_new_live_epoch() {
+    let signal = RuntimeRef::Signal {
+        instrument: "1".into(),
+        parameter: "1".into(),
+    };
+    let mut model = WorkbenchModel::new(presentation());
+    model.apply_client_update(ClientUpdate::Hello(hello("boot-a")));
+    model
+        .push_live_point(
+            signal.clone(),
+            LivePoint {
+                time_seconds: 1.0,
+                value: 2.0,
+            },
+        )
+        .unwrap();
+
+    model.apply_client_update(ClientUpdate::ResnapshotRequired {
+        reason: "ordered_update_queue_full".into(),
+        envelope: None,
+        connection_lost: true,
+    });
+    assert_eq!(model.connection, ConnectionState::Stale);
+    assert_eq!(model.observations.live[&signal].points().len(), 1);
+
+    model.apply_client_update(ClientUpdate::State(ConnectionState::Reattaching));
+    assert!(model.observations.live.is_empty());
+    model
+        .push_live_point(
+            signal.clone(),
+            LivePoint {
+                time_seconds: 4.0,
+                value: 5.0,
+            },
+        )
+        .unwrap();
+    assert_eq!(model.observations.live[&signal].points().len(), 1);
+    assert_eq!(model.observations.live[&signal].dropped(), 0);
+}
+
+#[test]
+fn disconnect_retains_cached_plot_but_gap_and_boot_change_start_new_live_epochs() {
+    let signal = RuntimeRef::Signal {
+        instrument: "1".into(),
+        parameter: "1".into(),
+    };
+    let mut model = WorkbenchModel::new(presentation());
+    model.apply_client_update(ClientUpdate::Hello(hello("boot-a")));
+    for value in 0..=LIVE_TRACE_POINTS {
+        model
+            .push_live_point(
+                signal.clone(),
+                LivePoint {
+                    time_seconds: value as f64,
+                    value: value as f64,
+                },
+            )
+            .unwrap();
+    }
+    model.apply_client_update(ClientUpdate::State(ConnectionState::Disconnected));
+    assert_eq!(
+        model.observations.live[&signal].points().len(),
+        LIVE_TRACE_POINTS
+    );
+    assert_eq!(model.observations.live[&signal].dropped(), 1);
+
+    model.apply_client_update(ClientUpdate::ResnapshotRequired {
+        reason: "event_gap".into(),
+        envelope: None,
+        connection_lost: false,
+    });
+    assert!(model.observations.live.is_empty());
+    model
+        .push_live_point(
+            signal.clone(),
+            LivePoint {
+                time_seconds: 3.0,
+                value: 4.0,
+            },
+        )
+        .unwrap();
+    assert_eq!(model.observations.live[&signal].points().len(), 1);
+    assert_eq!(model.observations.live[&signal].dropped(), 0);
+    model.apply_client_update(ClientUpdate::Hello(hello("boot-b")));
+    assert!(model.observations.live.is_empty());
+}
+
+#[test]
 fn rebuild_completion_is_explicit_and_disconnect_stales_every_entity() {
     let mut model = WorkbenchModel::new(presentation());
     model.apply_client_update(ClientUpdate::Hello(hello("boot")));
@@ -196,6 +332,7 @@ fn rebuild_completion_is_explicit_and_disconnect_stales_every_entity() {
     model.apply_client_update(ClientUpdate::ResnapshotRequired {
         reason: "event_gap".into(),
         envelope: None,
+        connection_lost: false,
     });
     assert_eq!(model.observations.freshness, Freshness::Rebuilding);
 
