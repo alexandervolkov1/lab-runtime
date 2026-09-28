@@ -18,9 +18,9 @@ M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: AUTHORIZED
+M14.2 minimal native Application client: READY FOR EXTERNAL RE-REVIEW
 M14.3: NOT AUTHORIZED
-Current phase: M14.2 minimal native Application client
+Current phase: M14.2 remediation external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -138,8 +138,9 @@ client-owned. Runtime must not acquire window, tab, row, column, plot, panel,
 layout, widget, slider, button, egui, or other presentation semantics.
 
 The read-only M14.1 architecture audit is accepted in
-`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. M14.2 is authorized only for the minimal
-native Application client. M14.3 is not authorized.
+`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The minimal private bounded native
+Application client is complete and ready for external re-review in
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`. M14.3 is not authorized.
 
 ## Final release gate
 

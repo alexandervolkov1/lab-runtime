@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lab-core", "apps/lab-runtime"]
+members = ["crates/lab-core", "apps/lab-runtime", "apps/lab-workbench"]
 resolver = "3"
 
 [workspace.package]

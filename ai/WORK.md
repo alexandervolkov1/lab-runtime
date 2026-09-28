@@ -1,10 +1,10 @@
-# Current work — M14.2 minimal native Application client
+# Current work — M14.2 remediation external review
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.2 minimal native Application client
+Current phase: M14.2 remediation external review
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -22,8 +22,9 @@ M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: AUTHORIZED
+M14.2 minimal native Application client: READY FOR EXTERNAL RE-REVIEW
 M14.3: NOT AUTHORIZED
+STATUS: M14_2_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -138,15 +139,15 @@ M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: AUTHORIZED
+M14.2 minimal native Application client: READY FOR EXTERNAL RE-REVIEW
 M14.3: NOT AUTHORIZED
+STATUS: M14_2_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
-M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. The external
-one-shot TCP/NDJSON host architecture is closed. The current slice is a read-only
-investigation of current upstream Steel and `mattwparas/steel-imbl` to determine
-whether an upstream-owned release or exact commit removes RUSTSEC-2026-0255 and the
-abandoned `im-rc` chain without a lab-runtime-owned fork.
+M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
+one-shot TCP/NDJSON host architecture is historical accepted evidence. The later
+dependency-safety investigation found no acceptable current Steel candidate, so
+M13.2 remains blocked while Workbench work proceeds independently.
 
 The accepted dependency investigation is
 `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md`. M13.2 remains blocked. Steel is a
@@ -154,7 +155,9 @@ deferred optional Workbench scripting candidate and must not be added while its
 dependency gate remains unresolved.
 
 The accepted read-only M14.1 audit is
-`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. M14.2 may add only the private bounded
-TCP/NDJSON Application client and its tests/report. It must not add GUI,
-PresentationDocument or Steel dependencies/source, change Runtime/Application
-semantics, begin M14.3, or authorize later work.
+`M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The completed private bounded TCP/NDJSON
+Application client and its evidence are in
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`, ready for external re-review after focused
+remediation. It adds no GUI,
+PresentationDocument or Steel dependency/source and changes no Runtime/Application
+semantics. M14.3 and later work remain unauthorized.

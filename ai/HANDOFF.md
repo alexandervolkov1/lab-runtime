@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.2 minimal native Application client
+Current phase: M14.2 remediation external review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -24,7 +24,7 @@ M13 dependency safety resolution: ACCEPTED
 M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
 M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: AUTHORIZED
+M14.2 minimal native Application client: READY FOR EXTERNAL RE-REVIEW
 M14.3: NOT AUTHORIZED
 ```
 
@@ -146,9 +146,10 @@ one-shot host over TCP/NDJSON. The current read-only Steel dependency safety
 resolution is complete in
 `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and found no acceptable current release
 or upstream commit. M13.2 remains blocked and unauthorized. The read-only Workbench
-architecture audit is accepted in `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. M14.2 is
-authorized only for the minimal native Application client; M14.3, practical
-integration and final polished release documentation remain separately gated.
+architecture audit is accepted in `M14_1_WORKBENCH_ARCHITECTURE_AUDIT.md`. The
+minimal native Application client is complete and ready for external re-review in
+`M14_2_MINIMAL_WORKBENCH_CLIENT.md`; M14.3, practical integration and final polished
+release documentation remain separately gated.
 
 ## Later practical validation
 
