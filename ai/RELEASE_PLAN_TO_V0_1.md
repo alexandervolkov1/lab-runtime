@@ -6,7 +6,10 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: Developer Preview Preparation
+v0.1.0-preview.1: PUBLISHED
+M12.1 WebSocket architecture audit: ACCEPTED
+M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
+Current phase: M12.2 external review
 ```
 
 Functionally complete means the accepted Runtime behavior is implemented and no
@@ -14,7 +17,7 @@ known preview-blocking correctness, safety or durability defect remains. It does
 mean production certification, exhaustive hardware qualification or final release
 readiness.
 
-## Preview preparation
+## Completed preview preparation
 
 The preview package needs concise, current developer material:
 
@@ -27,10 +30,52 @@ The preview package needs concise, current developer material:
 - bounded diagnostics collection;
 - reproducible preview packaging.
 
-This preparation must not change the accepted 42-operation / 25-capability API,
+This preparation did not change the accepted 42-operation / 25-capability API,
 SQLite schema, scheduler, output safety or Runtime ownership.
 
-## Practical validation after preview preparation
+## Current path to v0.1.0
+
+```text
+v0.1.0-preview.1
+    ↓
+M12 WebSocket transport
+    ↓
+M13 external Steel scripting host
+    ↓
+M14 GUI / Workbench / client-owned PresentationDocument
+    ↓
+thermal-plant-uno end-to-end integration validation
+    ↓
+final documentation / packaging / review
+    ↓
+v0.1.0
+```
+
+M12 adds a bounded loopback WebSocket/JSON adapter to the same Application API,
+session state and global client budget as TCP/NDJSON. It must not create transport-
+specific operations, DTOs, errors, history or experiment semantics.
+
+M13 hosts Steel outside Runtime as an Application client. Steel crash or script
+termination must not destroy authoritative experiment state:
+
+```text
+script lifetime != experiment lifetime
+```
+
+M14 keeps GUI/Workbench behavior in a separate client. A future
+`PresentationDocument` is client-owned and transport/language-neutral; it is not a
+Runtime experiment-semantic DTO.
+
+Across M12-M14:
+
+```text
+Runtime owns experiment semantics.
+Client owns presentation semantics.
+```
+
+No UI or scripting semantics may enter Runtime core.
+
+## End-to-end integration validation
 
 ```text
 Arduino thermal plant
@@ -42,9 +87,9 @@ Arduino thermal plant
 → Clojure/Clay system-identification notebook
 ```
 
-This validates extension and client boundaries in practice. It is not a prerequisite
-for M11 acceptance. WebSocket is optional future transport over the same Application
-semantics and is not required for the first workflow.
+This validates the completed transport, external scripting-client and presentation
+boundaries in practice. It is not retroactive evidence for M8-M11 acceptance and
+does not change physical-evidence limits.
 
 ## Final release gate
 
@@ -54,8 +99,9 @@ build/package acceptance and external release review.
 
 The final package should contain the executables, example deployment material,
 instrument definitions, developer documentation, applicable license files and
-checksums. It must not bundle historical AI reports, development fixtures, obsolete
-Lua/Babashka clients or a GUI.
+checksums. It must not bundle historical AI reports, development fixtures or
+obsolete Lua/Babashka clients. GUI/Workbench packaging, if provided, remains a
+separate client artifact and does not enter Runtime core.
 
 ## Residual qualification limits
 

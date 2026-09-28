@@ -10,6 +10,10 @@ use crate::{
     wire::{self, WireRequest},
 };
 
+mod coordination;
+
+use coordination::{AdmissionError, ClientDelivery, ConnectionCoordinator, OwnerDelivery};
+
 fn rejection(msg_id: Option<&str>, code: &str) -> serde_json::Value {
     let mut value = serde_json::json!({
         "v":protocol::PROTOCOL_VERSION,
@@ -22,16 +26,15 @@ fn rejection(msg_id: Option<&str>, code: &str) -> serde_json::Value {
 }
 
 fn encode_outgoing(value: &serde_json::Value) -> Vec<u8> {
-    wire::encode_frame(value).unwrap_or_else(|_| {
+    wire::encode_application_json(value).unwrap_or_else(|_| {
         let fallback = rejection(
             value.get("msg_id").and_then(serde_json::Value::as_str),
             "response_too_large",
         );
-        wire::encode_frame(&fallback).expect("fixed bounded protocol rejection")
+        wire::encode_application_json(&fallback).expect("fixed bounded protocol rejection")
     })
 }
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
@@ -69,13 +72,13 @@ enum Outgoing {
     },
     Reply {
         connection: u64,
-        frame: Vec<u8>,
+        message: Vec<u8>,
         consumed: bool,
         hello: bool,
     },
     Event {
         connection: u64,
-        frame: Vec<u8>,
+        message: Vec<u8>,
     },
 }
 
@@ -84,16 +87,9 @@ struct Peer {
     input: Vec<u8>,
     partial_since: Option<Instant>,
     handshake_since: Instant,
-    replied_hello: bool,
-    replies: VecDeque<Vec<u8>>,
-    events: VecDeque<Vec<u8>>,
+    delivery: ClientDelivery,
     writing: Option<(Vec<u8>, usize, bool)>,
-    last_reply: bool,
     last_write: Instant,
-    pending: usize,
-    pending_ids: BTreeSet<String>,
-    rejection: Option<Vec<u8>>,
-    closing: bool,
 }
 impl Peer {
     fn new(stream: TcpStream) -> Self {
@@ -103,38 +99,23 @@ impl Peer {
             input: Vec::with_capacity(wire::FRAME_LIMIT),
             partial_since: None,
             handshake_since: now,
-            replied_hello: false,
-            replies: VecDeque::new(),
-            events: VecDeque::new(),
+            delivery: ClientDelivery::new(),
             writing: None,
-            last_reply: false,
             last_write: now,
-            pending: 0,
-            pending_ids: BTreeSet::new(),
-            rejection: None,
-            closing: false,
         }
     }
     fn queued(&self) -> usize {
-        self.replies.len()
-            + self.events.len()
-            + usize::from(self.writing.is_some())
-            + usize::from(self.rejection.is_some())
-    }
-    fn reply_queued(&self) -> usize {
-        self.replies.len() + usize::from(self.writing.as_ref().is_some_and(|(_, _, reply)| *reply))
-    }
-    fn event_queued(&self) -> usize {
-        self.events.len() + usize::from(self.writing.as_ref().is_some_and(|(_, _, reply)| !*reply))
+        self.delivery
+            .queued(self.writing.as_ref().map(|(_, _, reply)| *reply))
     }
     fn read(&mut self, id: u64, to_owner: &SyncSender<Incoming>) -> io::Result<bool> {
-        if self.pending >= CLIENT_IN {
+        if self.delivery.pending_full() {
             return Ok(true);
         }
         if !self.dispatch_buffered(id, to_owner) {
             return Ok(false);
         }
-        if self.pending >= CLIENT_IN {
+        if self.delivery.pending_full() {
             return Ok(true);
         }
         let mut scratch = [0u8; SWEEP_BYTES];
@@ -168,14 +149,14 @@ impl Peer {
     }
     fn dispatch_buffered(&mut self, id: u64, to_owner: &SyncSender<Incoming>) -> bool {
         for _ in 0..4 {
-            if self.pending >= CLIENT_IN {
+            if self.delivery.pending_full() {
                 break;
             }
             let Some(end) = self.input.iter().position(|&b| b == b'\n') else {
                 break;
             };
             let frame = self.input[..=end].to_vec();
-            let request = match wire::decode_frame(&frame) {
+            let request = match wire::decode_ndjson_frame(&frame) {
                 Ok(r) => r,
                 Err(error) => {
                     // A complete malformed exchange can receive one bounded
@@ -189,8 +170,7 @@ impl Peer {
                                 .map(str::to_owned)
                         });
                     let rejection = rejection(correlation.as_deref(), error.code);
-                    self.rejection = Some(encode_outgoing(&rejection));
-                    self.closing = true;
+                    self.delivery.reject_and_close(encode_outgoing(&rejection));
                     tracing::warn!(
                         event = "client_request_malformed",
                         connection = id,
@@ -201,18 +181,16 @@ impl Peer {
                     return true;
                 }
             };
-            if self.pending_ids.contains(&request.msg_id) {
+            if self.delivery.request_is_in_flight(&request.msg_id) {
                 let rejection = rejection(Some(&request.msg_id), "duplicate_msg_id");
-                self.rejection = Some(encode_outgoing(&rejection));
-                self.closing = true;
+                self.delivery.reject_and_close(encode_outgoing(&rejection));
                 return true;
             }
             let request_msg_id = request.msg_id.clone();
             match to_owner.try_send(Incoming::Request(id, request)) {
                 Ok(()) => {
-                    self.pending_ids.insert(request_msg_id);
+                    self.delivery.request_admitted(request_msg_id);
                     self.input.drain(..=end);
-                    self.pending += 1;
                     self.partial_since = (!self.input.is_empty()).then(Instant::now);
                 }
                 Err(TrySendError::Full(_)) => break,
@@ -222,24 +200,16 @@ impl Peer {
         true
     }
     fn write(&mut self) -> io::Result<bool> {
-        if self.pending_ids.is_empty()
-            && self.reply_queued() < CLIENT_OUT
-            && let Some(rejection) = self.rejection.take()
-        {
-            self.replies.push_back(rejection);
-        }
+        let writing = self.writing.as_ref().map(|(_, _, reply)| *reply);
+        self.delivery.stage_rejection(writing);
         let mut budget = SWEEP_BYTES;
         for _ in 0..4 {
             if self.writing.is_none() {
-                let pick_event = self.last_reply && !self.events.is_empty();
-                self.writing = if pick_event {
-                    self.events.pop_front().map(|bytes| (bytes, 0, false))
-                } else {
-                    self.replies
-                        .pop_front()
-                        .map(|bytes| (bytes, 0, true))
-                        .or_else(|| self.events.pop_front().map(|bytes| (bytes, 0, false)))
-                };
+                self.writing = self.delivery.next_message().map(|(mut body, reply)| {
+                    // LF framing belongs exclusively to the TCP/NDJSON adapter.
+                    body.push(b'\n');
+                    (body, 0, reply)
+                });
             }
             let Some((bytes, offset, reply)) = &mut self.writing else {
                 break;
@@ -257,7 +227,7 @@ impl Peer {
                     budget -= count;
                     self.last_write = Instant::now();
                     if *offset == bytes.len() {
-                        self.last_reply = *reply;
+                        self.delivery.message_written(*reply);
                         self.writing = None;
                     }
                 }
@@ -269,7 +239,8 @@ impl Peer {
     }
     fn timed_out(&self) -> bool {
         let now = Instant::now();
-        (!self.replied_hello && now.duration_since(self.handshake_since) >= CLIENT_DEADLINE)
+        (!self.delivery.replied_hello()
+            && now.duration_since(self.handshake_since) >= CLIENT_DEADLINE)
             || self
                 .partial_since
                 .is_some_and(|t| now.duration_since(t) >= CLIENT_DEADLINE)
@@ -283,17 +254,16 @@ fn reactor(
     from_owner: Receiver<Outgoing>,
     stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let mut peers = BTreeMap::<u64, Peer>::new();
+    let mut peers = std::collections::BTreeMap::<u64, Peer>::new();
     // A full owner mailbox must never erase a detach. In-flight generations
     // count against the same eight-slot budget until their detach is delivered.
-    let mut pending_detach = VecDeque::<u64>::new();
-    let mut next_id = 1u64;
+    let mut connections = ConnectionCoordinator::new();
     let mut accepting = true;
     while !stop.load(Ordering::Acquire) {
-        while let Some(id) = pending_detach.front().copied() {
+        while let Some(id) = connections.pending_detach() {
             match to_owner.try_send(Incoming::Detach(id)) {
                 Ok(()) => {
-                    pending_detach.pop_front();
+                    connections.detach_delivered(id);
                 }
                 Err(TrySendError::Full(_)) => break,
                 Err(TrySendError::Disconnected(_)) => return Ok(()),
@@ -302,7 +272,7 @@ fn reactor(
         for _ in 0..if accepting { 8 } else { 0 } {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if peers.len() + pending_detach.len() >= MAX_CLIENTS {
+                    if connections.capacity_full() {
                         tracing::warn!(
                             event = "client_capacity_exhausted",
                             limit = MAX_CLIENTS,
@@ -312,15 +282,21 @@ fn reactor(
                         continue;
                     }
                     stream.set_nonblocking(true)?;
-                    let id = next_id;
-                    next_id = next_id
-                        .checked_add(1)
-                        .ok_or(io::Error::other("connection ID exhausted"))?;
+                    let id = match connections.admit() {
+                        Ok(id) => id,
+                        Err(AdmissionError::Capacity) => {
+                            drop(stream);
+                            continue;
+                        }
+                        Err(AdmissionError::Exhausted) => {
+                            return Err(io::Error::other("connection ID exhausted"));
+                        }
+                    };
                     peers.insert(id, Peer::new(stream));
                     tracing::debug!(
                         event = "client_accepted",
                         connection = id,
-                        active_clients = peers.len(),
+                        active_clients = connections.active_count(),
                         "loopback client accepted"
                     );
                 }
@@ -333,12 +309,14 @@ fn reactor(
                 Ok(Outgoing::StopAccept) => accepting = false,
                 Ok(Outgoing::Reply {
                     connection: id,
-                    frame,
+                    message,
                     consumed,
                     hello,
                 }) => {
                     if let Some(peer) = peers.get_mut(&id) {
-                        if peer.reply_queued() >= CLIENT_OUT {
+                        let was_idle = peer.queued() == 0;
+                        let writing = peer.writing.as_ref().map(|(_, _, reply)| *reply);
+                        if !peer.delivery.push_reply(message, consumed, hello, writing) {
                             tracing::warn!(
                                 event = "client_reply_backpressure",
                                 connection = id,
@@ -346,31 +324,23 @@ fn reactor(
                                 "dropping client with full reply queue"
                             );
                             peers.remove(&id);
-                            pending_detach.push_back(id);
+                            let first = connections.begin_detach(id);
+                            debug_assert!(first);
                         } else {
-                            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&frame)
-                                && let Some(msg_id) = value["msg_id"].as_str()
-                                && !(value["type"] == "operation" && value["state"] == "accepted")
-                            {
-                                peer.pending_ids.remove(msg_id);
-                            }
-                            if peer.queued() == 0 {
+                            if was_idle {
                                 peer.last_write = Instant::now();
-                            }
-                            peer.replied_hello |= hello;
-                            peer.replies.push_back(frame);
-                            if consumed {
-                                peer.pending = peer.pending.saturating_sub(1);
                             }
                         }
                     }
                 }
                 Ok(Outgoing::Event {
                     connection: id,
-                    frame,
+                    message,
                 }) => {
                     if let Some(peer) = peers.get_mut(&id) {
-                        if peer.event_queued() >= CLIENT_EVENTS {
+                        let was_idle = peer.queued() == 0;
+                        let writing = peer.writing.as_ref().map(|(_, _, reply)| *reply);
+                        if !peer.delivery.push_event(message, writing) {
                             tracing::warn!(
                                 event = "client_event_backpressure",
                                 connection = id,
@@ -378,18 +348,18 @@ fn reactor(
                                 "dropping client with full event queue"
                             );
                             peers.remove(&id);
-                            pending_detach.push_back(id);
+                            let first = connections.begin_detach(id);
+                            debug_assert!(first);
                         } else {
-                            if peer.queued() == 0 {
+                            if was_idle {
                                 peer.last_write = Instant::now();
                             }
-                            peer.events.push_back(frame);
                         }
                     }
                 }
                 Ok(Outgoing::Close { connection: id }) => {
                     if let Some(peer) = peers.get_mut(&id) {
-                        peer.closing = true;
+                        peer.delivery.close();
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -400,9 +370,9 @@ fn reactor(
         for id in ids {
             let alive = if let Some(peer) = peers.get_mut(&id) {
                 !peer.timed_out()
-                    && (peer.closing || peer.read(id, &to_owner).unwrap_or(false))
+                    && (peer.delivery.closing() || peer.read(id, &to_owner).unwrap_or(false))
                     && peer.write().unwrap_or(false)
-                    && !(peer.closing && peer.queued() == 0)
+                    && !(peer.delivery.closing() && peer.queued() == 0)
             } else {
                 false
             };
@@ -413,12 +383,13 @@ fn reactor(
                     "loopback client detached"
                 );
                 peers.remove(&id);
-                pending_detach.push_back(id);
+                let first = connections.begin_detach(id);
+                debug_assert!(first);
             }
         }
         thread::sleep(Duration::from_millis(5));
     }
-    for id in peers.keys().copied() {
+    for id in connections.active_ids() {
         let _ = to_owner.try_send(Incoming::Detach(id));
     }
     Ok(())
@@ -446,10 +417,7 @@ pub fn run(
         thread::spawn(move || reactor(listener, incoming_tx, outgoing_rx, net_flag));
     let mut app =
         Application::new(service.boot_id()).map_err(|_| io::Error::other("invalid boot"))?;
-    let mut queued = BTreeMap::<u64, VecDeque<WireRequest>>::new();
-    let mut closing = std::collections::BTreeSet::<u64>::new();
-    let mut close_sent = std::collections::BTreeSet::<u64>::new();
-    let mut rotation = 0usize;
+    let mut delivery = OwnerDelivery::new();
     let mut terminal_since: Option<Instant> = None;
     let mut accept_stop_sent = false;
     loop {
@@ -461,53 +429,44 @@ pub fn run(
             service.request_fatal_shutdown();
         }
         for (id, value) in app.poll_recording(&mut service) {
-            let frame = encode_outgoing(&value);
+            let message = encode_outgoing(&value);
             if outgoing_tx
                 .try_send(Outgoing::Reply {
                     connection: id,
-                    frame,
+                    message,
                     consumed: false,
                     hello: false,
                 })
                 .is_err()
+                && delivery.begin_close(id)
             {
                 app.detach(&service, id);
-                queued.remove(&id);
-                closing.insert(id);
             }
         }
         for (id, value) in app.poll_history(&mut service) {
-            let frame = encode_outgoing(&value);
+            let message = encode_outgoing(&value);
             if outgoing_tx
                 .try_send(Outgoing::Reply {
                     connection: id,
-                    frame,
+                    message,
                     consumed: false,
                     hello: false,
                 })
                 .is_err()
+                && delivery.begin_close(id)
             {
                 app.detach(&service, id);
-                queued.remove(&id);
-                closing.insert(id);
             }
         }
         for _ in 0..16 {
             match incoming_rx.try_recv() {
                 Ok(Incoming::Request(id, req)) => {
-                    if closing.contains(&id) {
-                        continue;
-                    }
-                    let q = queued.entry(id).or_default();
-                    if q.len() < CLIENT_IN {
-                        q.push_back(req);
-                    }
+                    delivery.admit_request(id, req);
                 }
                 Ok(Incoming::Detach(id)) => {
-                    queued.remove(&id);
-                    closing.remove(&id);
-                    close_sent.remove(&id);
-                    app.detach(&service, id);
+                    if delivery.network_detached(id) {
+                        app.detach(&service, id);
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -520,52 +479,48 @@ pub fn run(
                 }
             }
         }
-        let ids: Vec<_> = queued.keys().copied().collect();
-        if !ids.is_empty() {
-            for n in 0..ids.len().min(4) {
-                let id = ids[(rotation + n) % ids.len()];
-                let Some(req) = queued.get_mut(&id).and_then(VecDeque::pop_front) else {
-                    continue;
-                };
-                let hello = req.op == "hello";
-                for (index, value) in app.handle(&mut service, id, req).into_iter().enumerate() {
-                    let frame = encode_outgoing(&value);
-                    let hello = hello && value["type"] == "result";
-                    if outgoing_tx
-                        .try_send(Outgoing::Reply {
-                            connection: id,
-                            frame,
-                            consumed: index == 0,
-                            hello,
-                        })
-                        .is_err()
-                    {
-                        app.detach(&service, id);
-                        queued.remove(&id);
-                        closing.insert(id);
-                        break;
-                    }
-                }
-            }
-            rotation = (rotation + 1) % ids.len();
-        }
-        for id in queued.keys().copied() {
-            for event in app.pump_events(&service, id) {
-                let gap = event["code"] == "event_gap";
-                if gap {
-                    app.detach(&service, id);
-                    closing.insert(id);
-                }
-                let frame = encode_outgoing(&event);
+        for (id, request) in delivery.next_requests() {
+            let hello = request.op == "hello";
+            for (index, value) in app
+                .handle(&mut service, id, request)
+                .into_iter()
+                .enumerate()
+            {
+                let message = encode_outgoing(&value);
+                let hello = hello && value["type"] == "result";
                 if outgoing_tx
-                    .try_send(Outgoing::Event {
+                    .try_send(Outgoing::Reply {
                         connection: id,
-                        frame,
+                        message,
+                        consumed: index == 0,
+                        hello,
                     })
                     .is_err()
                 {
+                    if delivery.begin_close(id) {
+                        app.detach(&service, id);
+                    }
+                    break;
+                }
+            }
+        }
+        for id in delivery.connection_ids() {
+            for event in app.pump_events(&service, id) {
+                let gap = event["code"] == "event_gap";
+                if gap && delivery.begin_close(id) {
                     app.detach(&service, id);
-                    closing.insert(id);
+                }
+                let message = encode_outgoing(&event);
+                if outgoing_tx
+                    .try_send(Outgoing::Event {
+                        connection: id,
+                        message,
+                    })
+                    .is_err()
+                {
+                    if delivery.begin_close(id) {
+                        app.detach(&service, id);
+                    }
                     break;
                 }
                 if gap {
@@ -573,14 +528,12 @@ pub fn run(
                 }
             }
         }
-        for id in closing.iter().copied().collect::<Vec<_>>() {
-            if !close_sent.contains(&id)
-                && outgoing_tx
-                    .try_send(Outgoing::Close { connection: id })
-                    .is_ok()
+        for id in delivery.unsent_closes() {
+            if outgoing_tx
+                .try_send(Outgoing::Close { connection: id })
+                .is_ok()
             {
-                queued.remove(&id);
-                close_sent.insert(id);
+                delivery.close_sent(id);
             }
         }
         if service.is_stopping()
@@ -592,10 +545,10 @@ pub fn run(
         if let Some(status) = service.shutdown_step()? {
             if terminal_since.is_none() {
                 for (id, value) in app.finish_shutdown(&mut service, status) {
-                    let frame = encode_outgoing(&value);
+                    let message = encode_outgoing(&value);
                     let _ = outgoing_tx.try_send(Outgoing::Reply {
                         connection: id,
-                        frame,
+                        message,
                         consumed: false,
                         hello: false,
                     });
@@ -637,7 +590,10 @@ pub fn run(
 #[cfg(test)]
 mod bounded_peer_tests {
     use super::*;
-    use std::io::{BufRead, BufReader};
+    use std::{
+        collections::VecDeque,
+        io::{BufRead, BufReader},
+    };
 
     fn peer() -> (Peer, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -669,11 +625,10 @@ mod bounded_peer_tests {
         let past = Instant::now() - Duration::from_millis(2100);
         peer.handshake_since = past;
         assert!(peer.timed_out());
-        peer.replied_hello = true;
+        assert!(peer.delivery.push_reply(Vec::new(), false, true, None));
         peer.partial_since = Some(past);
         assert!(peer.timed_out());
         peer.partial_since = None;
-        peer.replies.push_back(vec![b'X'; wire::FRAME_LIMIT]);
         peer.last_write = past;
         assert!(peer.timed_out());
     }
@@ -681,8 +636,8 @@ mod bounded_peer_tests {
     #[test]
     fn one_sweep_partial_write_resumes_at_the_exact_byte_offset() {
         let (mut peer, mut client) = peer();
-        let frame = vec![b'x'; wire::FRAME_LIMIT];
-        peer.replies.push_back(frame.clone());
+        let body = vec![b'x'; wire::APPLICATION_JSON_LIMIT];
+        assert!(peer.delivery.push_reply(body.clone(), false, false, None));
         assert!(peer.write().unwrap());
         assert_eq!(peer.writing.as_ref().unwrap().1, SWEEP_BYTES);
         assert!(peer.write().unwrap());
@@ -692,6 +647,8 @@ mod bounded_peer_tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         client.read_exact(&mut received).unwrap();
+        let mut frame = body;
+        frame.push(b'\n');
         assert_eq!(received, frame);
     }
 
@@ -719,12 +676,14 @@ mod bounded_peer_tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let mut reader = BufReader::new(stream);
-        let gap = wire::encode_frame(&serde_json::json!({"v":1,"type":"error","code":"event_gap"}))
-            .unwrap();
+        let gap = wire::encode_application_json(
+            &serde_json::json!({"v":1,"type":"error","code":"event_gap"}),
+        )
+        .unwrap();
         to_net
             .send(Outgoing::Event {
                 connection: 1,
-                frame: gap,
+                message: gap,
             })
             .unwrap();
         to_net.send(Outgoing::Close { connection: 1 }).unwrap();
@@ -765,7 +724,7 @@ mod bounded_peer_tests {
             to_net
                 .send(Outgoing::Event {
                     connection: 1,
-                    frame: vec![b'x'; wire::FRAME_LIMIT],
+                    message: vec![b'x'; wire::APPLICATION_JSON_LIMIT],
                 })
                 .unwrap();
         }
@@ -779,15 +738,18 @@ mod bounded_peer_tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let mut reader = BufReader::new(second);
-        let stale =
-            wire::encode_frame(&serde_json::json!({"v":1,"type":"result","msg_id":"stale"}))
-                .unwrap();
-        let live = wire::encode_frame(&serde_json::json!({"v":1,"type":"result","msg_id":"live"}))
-            .unwrap();
+        let stale = wire::encode_application_json(
+            &serde_json::json!({"v":1,"type":"result","msg_id":"stale"}),
+        )
+        .unwrap();
+        let live = wire::encode_application_json(
+            &serde_json::json!({"v":1,"type":"result","msg_id":"live"}),
+        )
+        .unwrap();
         to_net
             .send(Outgoing::Reply {
                 connection: 1,
-                frame: stale,
+                message: stale,
                 consumed: false,
                 hello: false,
             })
@@ -795,7 +757,7 @@ mod bounded_peer_tests {
         to_net
             .send(Outgoing::Reply {
                 connection: 2,
-                frame: live,
+                message: live,
                 consumed: false,
                 hello: false,
             })
@@ -889,7 +851,7 @@ mod bounded_peer_tests {
             to_net
                 .send(Outgoing::Event {
                     connection: 1,
-                    frame: vec![b'x'; 1024],
+                    message: vec![b'x'; 1024],
                 })
                 .unwrap();
         }
@@ -914,9 +876,9 @@ mod bounded_peer_tests {
             "type":"result",
             "result":{"records":vec!["x".repeat(512); 40]}
         });
-        let frame = encode_outgoing(&value);
-        assert!(frame.len() <= wire::FRAME_LIMIT);
-        let response: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+        let message = encode_outgoing(&value);
+        assert!(message.len() <= wire::APPLICATION_JSON_LIMIT);
+        let response: serde_json::Value = serde_json::from_slice(&message).unwrap();
         assert_eq!(response["msg_id"], "large-result");
         assert_eq!(response["code"], "response_too_large");
         assert_eq!(response["category"], "protocol_error");

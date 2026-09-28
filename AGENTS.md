@@ -11,6 +11,7 @@ ai/ROADMAP.md
 ai/WORK.md
 ai/RELEASE_PLAN_TO_V0_1.md
 ai/M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md
+ai/M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -24,8 +25,9 @@ Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: AUTHORIZED
-Current phase: M12.2 implementation
+M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
+M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
+Current phase: M12.2 external review
 ```
 
 Functionally complete means the accepted Runtime functionality is implemented and no

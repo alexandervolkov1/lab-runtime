@@ -64,7 +64,7 @@ pub mod server;
 pub mod service;
 /// Finite process-local operation retention and reconnect deduplication.
 pub mod sessions;
-/// Bounded version-one NDJSON framing and strict host-side DTO validation.
+/// Bounded version-one Application JSON, NDJSON framing and strict DTO validation.
 pub mod wire;
 
 #[cfg(test)]

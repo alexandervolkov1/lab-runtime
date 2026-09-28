@@ -417,10 +417,10 @@ impl EventLog {
         let sequence = self.sequence.checked_add(1).ok_or(EventError::Exhausted)?;
         let record = json!({"v":1,"type":"event","boot_id":self.boot_id,"seq":sequence.to_string(),"published_at":nanos(at),
             "kind":kind,"target":target,"data":data,"request_id":cause.map(|(scope,seq)|json!({"scope":scope,"seq":seq.to_string()}))});
-        if crate::wire::encode_frame(&record)
+        if crate::wire::encode_application_json(&record)
             .map_err(|_| EventError::Oversized)?
             .len()
-            > EVENT_SIZE_LIMIT + 1
+            > EVENT_SIZE_LIMIT
         {
             return Err(EventError::Oversized);
         }

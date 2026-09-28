@@ -4,7 +4,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.2 implementation
+Current phase: M12.2 external review
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -12,7 +12,8 @@ Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: AUTHORIZED
+M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
+M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
 ```
 
 ## Completed preparation step
@@ -64,14 +65,21 @@ The read-only source audit is recorded in
 No production Rust, tests, Cargo/dependencies, configuration schema, Application
 operation/DTO, Runtime, Recorder, SQLite or safety semantics changed.
 
-## Authorized work
+## Completed M12.2 implementation
 
-M12.2 may extract the transport-neutral JSON codec and the smallest concrete shared
-connection/delivery seam while preserving the complete TCP/NDJSON contract. It must
-retain one serialized `Application`, one `SessionStore`, all accepted bounds,
-ordering, deadlines, fairness, shutdown and client-isolation behavior.
+M12.2 extracted the transport-neutral Application JSON codec and the smallest
+concrete shared connection/delivery seam while preserving the complete TCP/NDJSON
+contract. It retains one serialized `Application`, one `SessionStore`, the global
+eight-client capacity, and all accepted ordering, deadlines, fairness, shutdown and
+client-isolation behavior. The implementation and verification evidence is
+`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`.
 
-M12.2 must not add WebSocket, HTTP Upgrade, Origin/WebSocket configuration, an async
+M12.2 added no WebSocket, HTTP Upgrade, Origin/WebSocket configuration, async
 runtime, public Application semantics, capacity, scripting, presentation concepts,
 or changes to Runtime, Recorder, controller, output-authority or physical-safety
-semantics. Stop for external review after M12.2; do not begin M12.3 automatically.
+semantics.
+
+## Current authorization
+
+External review of M12.2 is the only current gate. M12.3 is not authorized. Do not
+add WebSocket or dependencies and do not cross the review gate automatically.

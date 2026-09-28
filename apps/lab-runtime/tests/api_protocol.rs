@@ -1,6 +1,9 @@
 //! Version-1 NDJSON rejects bounded-resource and authority violations.
 
-use lab_runtime::wire::{FRAME_LIMIT, decode_frame, encode_frame};
+use lab_runtime::wire::{
+    APPLICATION_JSON_LIMIT, FRAME_LIMIT, decode_application_json, decode_frame,
+    decode_ndjson_frame, encode_application_json, encode_frame, encode_ndjson_frame,
+};
 use serde_json::json;
 
 fn hello() -> Vec<u8> {
@@ -20,6 +23,88 @@ fn fragmented_safe_frame_and_crlf_decode_to_the_same_hello_request() {
         encode_frame(&json!({"v":1,"msg_id":"h1","type":"result","result":{"ok":true}})).unwrap();
     assert!(encoded.ends_with(b"\n"));
     assert!(encoded.len() <= FRAME_LIMIT);
+}
+
+#[test]
+fn application_json_and_ndjson_share_one_compatible_codec_at_the_exact_bounds() {
+    let hello_frame = hello();
+    let body = &hello_frame[..hello_frame.len() - 1];
+    let application_request = decode_application_json(body).unwrap();
+    assert_eq!(decode_ndjson_frame(&hello()).unwrap(), application_request);
+
+    let value = json!({"v":1,"msg_id":"h1","type":"result","result":{"ok":true}});
+    let body = encode_application_json(&value).unwrap();
+    let frame = encode_ndjson_frame(&value).unwrap();
+    assert_eq!(frame[..frame.len() - 1], body);
+    assert_eq!(frame.last(), Some(&b'\n'));
+    assert_eq!(frame, encode_frame(&value).unwrap());
+
+    let request = &hello_frame[..hello_frame.len() - 1];
+    let mut exact = vec![b' '; APPLICATION_JSON_LIMIT - request.len()];
+    exact.extend_from_slice(request);
+    assert_eq!(exact.len(), APPLICATION_JSON_LIMIT);
+    assert_eq!(decode_application_json(&exact).unwrap().op, "hello");
+    let mut exact_frame = exact.clone();
+    exact_frame.push(b'\n');
+    assert_eq!(exact_frame.len(), FRAME_LIMIT);
+    assert_eq!(decode_ndjson_frame(&exact_frame).unwrap().op, "hello");
+
+    exact.insert(0, b' ');
+    assert_eq!(exact.len(), APPLICATION_JSON_LIMIT + 1);
+    assert_eq!(
+        decode_application_json(&exact).unwrap_err().code,
+        "frame_too_large"
+    );
+}
+
+#[test]
+fn shared_application_json_codec_retains_strict_semantic_validation() {
+    let duplicate_top =
+        b"{\"v\":1,\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null}}";
+    assert_eq!(
+        decode_application_json(duplicate_top).unwrap_err().code,
+        "duplicate_key"
+    );
+    let duplicate_nested =
+        b"{\"v\":1,\"msg_id\":\"h\",\"op\":\"hello\",\"args\":{\"scope\":null,\"scope\":null}}";
+    assert_eq!(
+        decode_application_json(duplicate_nested).unwrap_err().code,
+        "duplicate_key"
+    );
+    let mut invalid_utf8 = duplicate_top.to_vec();
+    invalid_utf8[2] = 0xff;
+    assert_eq!(
+        decode_application_json(&invalid_utf8).unwrap_err().code,
+        "invalid_utf8"
+    );
+    let invalid_request_id = b"{\"v\":1,\"msg_id\":\"x\",\"op\":\"shutdown\",\"request_id\":{\"scope\":\"s\",\"seq\":\"01\"},\"args\":{}}";
+    assert_eq!(
+        decode_application_json(invalid_request_id)
+            .unwrap_err()
+            .code,
+        "invalid_id"
+    );
+    let invalid_args =
+        b"{\"v\":1,\"msg_id\":\"x\",\"op\":\"hello\",\"args\":{\"scope\":null,\"extra\":true}}";
+    assert_eq!(
+        decode_application_json(invalid_args).unwrap_err().code,
+        "invalid_args"
+    );
+    let exact_string = format!(
+        "{{\"v\":1,\"msg_id\":\"x\",\"op\":\"unknown\",\"args\":{{\"x\":\"{}\"}}}}",
+        "x".repeat(512)
+    );
+    assert!(decode_application_json(exact_string.as_bytes()).is_ok());
+    let oversized_string = format!(
+        "{{\"v\":1,\"msg_id\":\"x\",\"op\":\"unknown\",\"args\":{{\"x\":\"{}\"}}}}",
+        "x".repeat(513)
+    );
+    assert_eq!(
+        decode_application_json(oversized_string.as_bytes())
+            .unwrap_err()
+            .code,
+        "string_too_large"
+    );
 }
 
 #[test]

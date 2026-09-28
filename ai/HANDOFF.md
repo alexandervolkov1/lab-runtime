@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.2 implementation
+Current phase: M12.2 external review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -14,7 +14,8 @@ v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: AUTHORIZED
+M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
+M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
 ```
 
 External review accepted M11 at
@@ -94,10 +95,13 @@ serialized server through one shared delivery boundary and the existing single
 recommended local browser endpoint remains loopback-only and requires exact Origin
 allowlisting before Upgrade.
 
-M12.2 is authorized as a behavior-preserving refactor only. It must retain TCP/NDJSON
-as the sole transport, one serialized `Application`, one `SessionStore`, and the
-eight-client global capacity. Do not begin M12.3, practical integration, M13, M14,
-or final polished release documentation without separate authorization.
+M12.2 is implemented and recorded in
+`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. Shared Application JSON now sits below
+NDJSON framing, and one concrete coordinator owns checked connection IDs, the global
+eight-client pool, bounded per-client delivery, fair owner request scheduling and
+exact detach lifecycle. TCP/NDJSON remains the sole transport and all debug/release
+workspace gates pass. Do not begin M12.3, practical integration, M13, M14, or final
+polished release documentation without separate authorization.
 
 ## Later practical validation
 

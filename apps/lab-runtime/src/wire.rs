@@ -1,4 +1,5 @@
-//! Version-one JSON is a bounded transport adapter, never a Core domain type.
+//! Version-one Application JSON and NDJSON framing are bounded adapters, never
+//! Core domain types.
 //!
 //! Every frame is checked before recursion/owned values. Duplicate keys fail at
 //! all levels, so JSON spelling cannot change command identity invisibly.
@@ -18,6 +19,8 @@ use crate::protocol::{self, OperationKind};
 
 /// Maximum complete NDJSON frame including its line feed.
 pub const FRAME_LIMIT: usize = 16_384;
+/// Maximum transport-neutral Application JSON message body.
+pub const APPLICATION_JSON_LIMIT: usize = FRAME_LIMIT - 1;
 /// Maximum nested JSON arrays/objects admitted from any client.
 pub const DEPTH_LIMIT: usize = 16;
 /// Maximum lexical JSON values/object members in one frame.
@@ -144,8 +147,8 @@ impl<'de> Deserialize<'de> for Unique {
     }
 }
 
-/// Validate one complete UTF-8 NDJSON frame and map its fixed v1 operation shape.
-pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
+/// Validate one complete NDJSON frame and decode its Application JSON body.
+pub fn decode_ndjson_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
     if frame.len() > FRAME_LIMIT {
         return Err(WireError::new(
             "frame_too_large",
@@ -160,6 +163,17 @@ pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
     } else {
         &frame[..frame.len() - 1]
     };
+    decode_application_json(body)
+}
+
+/// Decode one bounded transport-neutral Application JSON request body.
+pub fn decode_application_json(body: &[u8]) -> Result<WireRequest, WireError> {
+    if body.len() > APPLICATION_JSON_LIMIT {
+        return Err(WireError::new(
+            "frame_too_large",
+            "frame exceeds 16384 bytes",
+        ));
+    }
     let text = std::str::from_utf8(body)
         .map_err(|_| WireError::new("invalid_utf8", "frame is not UTF-8"))?;
     lexical_limits(body)?;
@@ -251,8 +265,13 @@ pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
     })
 }
 
-/// Encode one owned response/event with the same hard outgoing frame limit.
-pub fn encode_frame(value: &Value) -> Result<Vec<u8>, WireError> {
+/// Decode one complete NDJSON frame using the accepted compatibility entry point.
+pub fn decode_frame(frame: &[u8]) -> Result<WireRequest, WireError> {
+    decode_ndjson_frame(frame)
+}
+
+/// Encode one bounded transport-neutral Application JSON response/event body.
+pub fn encode_application_json(value: &Value) -> Result<Vec<u8>, WireError> {
     // serde writes incrementally into a hard-cap writer, so an oversized owned
     // result never creates an unbounded second transport allocation.
     struct Limited {
@@ -261,7 +280,7 @@ pub fn encode_frame(value: &Value) -> Result<Vec<u8>, WireError> {
     }
     impl Write for Limited {
         fn write(&mut self, chunk: &[u8]) -> io::Result<usize> {
-            if chunk.len() > (FRAME_LIMIT - 1).saturating_sub(self.bytes.len()) {
+            if chunk.len() > APPLICATION_JSON_LIMIT.saturating_sub(self.bytes.len()) {
                 self.overflowed = true;
                 return Err(io::Error::other("outgoing frame limit"));
             }
@@ -283,8 +302,19 @@ pub fn encode_frame(value: &Value) -> Result<Vec<u8>, WireError> {
             WireError::new("encode_failed", "response could not be encoded")
         });
     }
-    limited.bytes.push(b'\n');
     Ok(limited.bytes)
+}
+
+/// Encode one Application JSON value as a complete LF-terminated NDJSON frame.
+pub fn encode_ndjson_frame(value: &Value) -> Result<Vec<u8>, WireError> {
+    let mut bytes = encode_application_json(value)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+/// Encode one NDJSON frame using the accepted compatibility entry point.
+pub fn encode_frame(value: &Value) -> Result<Vec<u8>, WireError> {
+    encode_ndjson_frame(value)
 }
 
 /// Parse u64 without signs, leading zeros or JSON-number precision loss.
