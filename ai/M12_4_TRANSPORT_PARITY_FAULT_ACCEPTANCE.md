@@ -370,3 +370,16 @@ all other M12.4 work is acceptance evidence.
 ```text
 STATUS: M12_4_READY_FOR_EXTERNAL_REVIEW
 ```
+
+## 16. External review acceptance
+
+External review accepted M12.4, including the one-line `request_conflict` mapping
+restoration and the remediated exact event-gap/Recorder-lifecycle oracles. The
+accepted implementation commit is:
+
+```text
+9b58e92cffa79087f60d78032bc34b89499ae961
+```
+
+M12.5 real-browser/ClojureScript smoke acceptance is authorized. M13 remains not
+authorized.

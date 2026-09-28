@@ -1,10 +1,10 @@
-# Current work — M12.4 transport parity/fault acceptance
+# Current work — M12.5 browser/ClojureScript smoke acceptance
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.4 external review
+Current phase: M12.5 browser/ClojureScript smoke acceptance
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -14,14 +14,16 @@ Practical integration phase: NOT STARTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
-M12.4 transport parity/fault acceptance: READY FOR EXTERNAL REVIEW
-M12.5 browser/ClojureScript smoke acceptance: NOT AUTHORIZED
+M12.4 transport parity/fault acceptance: ACCEPTED
+M12.5 browser/ClojureScript smoke acceptance: AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
 The accepted M12.3 implementation commit is
 `6fb867389426fa75033f54312fda8c5556c52ed7`.
+The accepted M12.4 implementation commit is
+`9b58e92cffa79087f60d78032bc34b89499ae961`.
 
 ## Completed preparation step
 
@@ -102,5 +104,5 @@ coordinator/Application/session store.
 Implementation, dependency review, exact bounds and verification evidence are in
 `M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is accepted. M12.4 parity, reconnect,
 backpressure and fault acceptance is complete in
-`M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md` and ready for external review. M12.5 is
-not authorized.
+`M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md` and accepted. M12.5 real-browser
+ClojureScript smoke acceptance is the authorized current work.
