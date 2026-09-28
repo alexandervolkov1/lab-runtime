@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.3 external review
+Current phase: M12.4 transport parity/fault acceptance
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -15,12 +15,14 @@ Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
-M12.4 transport parity/fault acceptance: NOT AUTHORIZED
+M12.3 bounded WebSocket/JSON transport: ACCEPTED
+M12.4 transport parity/fault acceptance: AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
+The accepted M12.3 implementation commit is
+`6fb867389426fa75033f54312fda8c5556c52ed7`.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -111,9 +113,9 @@ serialized `Application`, `SessionStore`, connection-ID space and global eight-c
 budget. Exact path, numeric Host, Origin allowlist and required subprotocol checks
 occur before Upgrade; text/message/frame/handshake/write state and close progression
 are finite. Implementation and verification evidence is in
-`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is ready for external review. Do not
-begin M12.4, practical integration, M13, M14, or final polished release documentation
-without separate authorization.
+`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is accepted and M12.4 transport
+parity/fault acceptance is authorized. Practical integration, M13, M14, and final
+polished release documentation remain separately gated.
 
 ## Later practical validation
 
@@ -128,9 +130,9 @@ Arduino thermal plant
 ```
 
 Arduino remains an external practical integration exercise, not retroactive M11
-evidence. The published `v0.1.0-preview.1` artifact remains TCP/NDJSON-only. Current
-uncommitted M12.3 work adds an optional WebSocket adapter for the same Application
-sessions, operations and DTOs and is awaiting external review.
+evidence. The published `v0.1.0-preview.1` artifact remains TCP/NDJSON-only. The
+accepted post-preview M12.3 implementation adds an optional WebSocket adapter for
+the same Application sessions, operations and DTOs.
 
 ## Residual limitations
 

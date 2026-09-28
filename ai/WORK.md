@@ -1,10 +1,10 @@
-# Current work — M12.3 bounded WebSocket/JSON transport
+# Current work — M12.4 transport parity/fault acceptance
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.3 external review
+Current phase: M12.4 transport parity/fault acceptance
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -13,12 +13,14 @@ v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: READY FOR EXTERNAL REVIEW
-M12.4 transport parity/fault acceptance: NOT AUTHORIZED
+M12.3 bounded WebSocket/JSON transport: ACCEPTED
+M12.4 transport parity/fault acceptance: AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
+The accepted M12.3 implementation commit is
+`6fb867389426fa75033f54312fda8c5556c52ed7`.
 
 ## Completed preparation step
 
@@ -97,5 +99,5 @@ Application operations/DTOs/errors, UI/scripting semantics, or second
 coordinator/Application/session store.
 
 Implementation, dependency review, exact bounds and verification evidence are in
-`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is ready for external review. M12.4 is
-not authorized.
+`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is accepted. M12.4 parity, reconnect,
+backpressure and fault acceptance is the authorized current work.
