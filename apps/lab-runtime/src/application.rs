@@ -423,7 +423,7 @@ impl Application {
         let now = service.clock().now();
         match self.sessions.admit(&scope, rid.seq, payload.clone(), now) {
             Admission::Known(state) => return vec![operation_reply(&msg, &rid, state)],
-            Admission::Conflict => return vec![error_reply(&msg, "request_id_conflict")],
+            Admission::Conflict => return vec![error_reply(&msg, "request_conflict")],
             Admission::Unknown => return vec![error_reply(&msg, "outcome_unknown")],
             Admission::Gap => return vec![error_reply(&msg, "sequence_gap")],
             Admission::Busy => return vec![error_reply(&msg, "busy")],

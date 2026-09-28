@@ -4,7 +4,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.4 transport parity/fault acceptance
+Current phase: M12.4 external review
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -14,7 +14,8 @@ Practical integration phase: NOT STARTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
-M12.4 transport parity/fault acceptance: AUTHORIZED
+M12.4 transport parity/fault acceptance: READY FOR EXTERNAL REVIEW
+M12.5 browser/ClojureScript smoke acceptance: NOT AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -100,4 +101,6 @@ coordinator/Application/session store.
 
 Implementation, dependency review, exact bounds and verification evidence are in
 `M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.3 is accepted. M12.4 parity, reconnect,
-backpressure and fault acceptance is the authorized current work.
+backpressure and fault acceptance is complete in
+`M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md` and ready for external review. M12.5 is
+not authorized.

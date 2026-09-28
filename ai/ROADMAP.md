@@ -10,8 +10,9 @@ v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
-M12.4 transport parity/fault acceptance: AUTHORIZED
-Current phase: M12.4 transport parity/fault acceptance
+M12.4 transport parity/fault acceptance: READY FOR EXTERNAL REVIEW
+M12.5 browser/ClojureScript smoke acceptance: NOT AUTHORIZED
+Current phase: M12.4 external review
 ```
 
 The accepted M12.2 implementation commit is
@@ -78,14 +79,16 @@ WebSocket / JSON --+
 - **M12.2:** transport-neutral server seam, with unchanged TCP behavior — accepted;
 - **M12.3:** bounded local WebSocket/JSON transport and browser Origin policy —
   accepted;
-- **M12.4:** parity, reconnect, backpressure and fault acceptance — authorized;
-- **M12.5:** browser/ClojureScript smoke acceptance;
+- **M12.4:** parity, reconnect, backpressure and fault acceptance — ready for
+  external review;
+- **M12.5:** browser/ClojureScript smoke acceptance — not authorized;
 - **M12 external review.**
 
 M12.1 through M12.3 are accepted. See
 `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md` and
 `M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`; M12.3 evidence is in
-`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.4 is the authorized current work.
+`M12_3_BOUNDED_WEBSOCKET_TRANSPORT.md`. M12.4 evidence is in
+`M12_4_TRANSPORT_PARITY_FAULT_ACCEPTANCE.md`. Do not begin M12.5 automatically.
 
 ## M13 — external Steel scripting host
 
