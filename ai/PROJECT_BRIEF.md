@@ -12,8 +12,8 @@ Runtime owns experiment semantics.
 Clients own presentation semantics.
 ```
 
-The Runtime contains no GUI or Presentation API. The workspace now contains the
-headless `lab-workbench` external client/model under review, but no GUI, scripting
+The Runtime contains no GUI or Presentation API. The workspace contains the accepted
+external native `lab-workbench` client/model/observational GUI, but no scripting
 runtime or dynamic plugin system.
 
 ## Accepted state
@@ -36,10 +36,10 @@ M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal eframe/egui GUI: READY FOR EXTERNAL RE-REVIEW
-M14.5: NOT AUTHORIZED
-Current phase: M14.4 minimal eframe/egui GUI external re-review
-STATUS: M14_4_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
+M14.4 minimal eframe/egui GUI: ACCEPTED
+M14.5 operator controls + properties/config: AUTHORIZED
+M14.6 reconnect/recovery/fault acceptance: NOT AUTHORIZED
+Current phase: M14.5 operator controls + properties/config
 ```
 
 The accepted M12.2 implementation commit is
@@ -62,6 +62,8 @@ The accepted M14.2 implementation commit is
 `bdedf9455305f693a9537f698403c3bbb3840c51`.
 The accepted M14.3 implementation commit is
 `f01567ba2165b24b9551e3b0acf5b100b0169f32`.
+The accepted M14.4 implementation commit is
+`116aba631fe47ea24412dd3d4b50e9b00eafc8df`.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -123,9 +125,10 @@ external Application client. Its minimal native M14.2 client is accepted in
 `M14_2_MINIMAL_WORKBENCH_CLIENT.md`; its M14.3 client-owned model/persistence is
 accepted after focused model-state and recovery-projection remediation in
 `M14_3_WORKBENCH_MODEL_PRESENTATION.md`. The minimal native GUI is complete in
-`M14_4_MINIMAL_GUI.md` with its overflow/live-continuity remediation and is ready for
-external re-review. M14.5 is not authorized, and
-any future Steel integration remains a deferred optional Workbench subsystem.
+`M14_4_MINIMAL_GUI.md` with its accepted overflow/live-continuity remediation.
+M14.5 operator controls and property/configuration workflows are authorized; M14.6
+is not authorized, and any future Steel integration remains a deferred optional
+Workbench subsystem.
 
 Final polished release documentation is a later gate.
 

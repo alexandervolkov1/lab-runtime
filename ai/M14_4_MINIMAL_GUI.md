@@ -6,12 +6,17 @@
 M14.3: ACCEPTED
 
 M14.4 minimal eframe/egui GUI:
-READY FOR EXTERNAL RE-REVIEW
+ACCEPTED
 
-M14.5: NOT AUTHORIZED
+M14.5 operator controls + properties/config: AUTHORIZED
 
-STATUS: M14_4_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
+M14.6: NOT AUTHORIZED
 ```
+
+External review accepted M14.4, including the overflow reconnect and live
+observation-epoch remediation, at implementation commit
+`116aba631fe47ea24412dd3d4b50e9b00eafc8df`. The original re-review evidence below
+is retained as the historical review package.
 
 M14.4 adds the first native observational Workbench window. It does not add an
 Application operation, Runtime DTO, experiment mutation control, Steel, or Runtime

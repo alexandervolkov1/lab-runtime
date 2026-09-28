@@ -20,10 +20,10 @@ M13.2: NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal eframe/egui GUI: READY FOR EXTERNAL RE-REVIEW
-M14.5: NOT AUTHORIZED
-Current phase: M14.4 minimal eframe/egui GUI external re-review
-STATUS: M14_4_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
+M14.4 minimal eframe/egui GUI: ACCEPTED
+M14.5 operator controls + properties/config: AUTHORIZED
+M14.6 reconnect/recovery/fault acceptance: NOT AUTHORIZED
+Current phase: M14.5 operator controls + properties/config
 ```
 
 The accepted M12.2 implementation commit is
@@ -46,6 +46,8 @@ The accepted M14.2 implementation commit is
 `bdedf9455305f693a9537f698403c3bbb3840c51`.
 The accepted M14.3 implementation commit is
 `f01567ba2165b24b9551e3b0acf5b100b0169f32`.
+The accepted M14.4 implementation commit is
+`116aba631fe47ea24412dd3d4b50e9b00eafc8df`.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -150,8 +152,8 @@ Application client is accepted in `M14_2_MINIMAL_WORKBENCH_CLIENT.md`; the M14.3
 client-owned model and persistence implementation is accepted in
 `M14_3_WORKBENCH_MODEL_PRESENTATION.md`. The minimal native GUI implementation and
 evidence and overflow/live-continuity remediation are in `M14_4_MINIMAL_GUI.md`,
-ready for external re-review. M14.5 remains
-unauthorized.
+and accepted. M14.5 operator controls and property/configuration workflows are
+authorized; M14.6 remains unauthorized.
 
 ## Final release gate
 
