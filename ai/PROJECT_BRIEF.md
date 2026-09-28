@@ -27,11 +27,12 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 WebSocket transport: ACCEPTED
-M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M12: ACCEPTED
+M13.1: ACCEPTED
+M13 dependency safety resolution: AUTHORIZED
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
-Current phase: M13.1 external Steel host architecture/dependency audit
+Current phase: M13 Steel dependency safety resolution
 ```
 
 The accepted M12.2 implementation commit is
@@ -44,6 +45,8 @@ The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
 The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
+The accepted M13.1 audit commit is
+`81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -94,10 +97,10 @@ M12.4 parity, migration, bounded-fault and shutdown evidence is recorded in
 ClojureScript smoke evidence is recorded in
 `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is accepted. The consolidated source,
 bounds, security, parity and browser review is recorded in
-`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The completed read-only M13.1
+`M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The accepted read-only M13.1
 external Steel host architecture/dependency audit is recorded in
-`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md` and ready for external review.
-M13.2 is not authorized.
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Steel dependency safety
+resolution is authorized; M13.2 is not authorized.
 
 Final polished release documentation is a later gate.
 

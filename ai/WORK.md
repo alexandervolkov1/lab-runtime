@@ -1,10 +1,10 @@
-# Current work — M13.1 external Steel host architecture/dependency audit
+# Current work — M13 Steel dependency safety resolution
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M13.1 external Steel host architecture/dependency audit
+Current phase: M13 Steel dependency safety resolution
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -16,8 +16,9 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 WebSocket transport: ACCEPTED
-M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M12: ACCEPTED
+M13.1: ACCEPTED
+M13 dependency safety resolution: AUTHORIZED
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
@@ -32,6 +33,8 @@ The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
 The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
+The accepted M13.1 audit commit is
+`81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
 
 ## Completed preparation step
 
@@ -119,26 +122,22 @@ bounds, security, parity and browser review is complete in
 `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and accepted. No production Rust changed
 during the consolidation.
 
-## Completed M13.1 audit
+## Current authorization
 
 ```text
 M12: ACCEPTED
-M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M13.1: ACCEPTED
+M13 dependency safety resolution: AUTHORIZED
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
 
-The read-only audit is recorded in
-`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. It confirms that Steel can remain
-an external one-shot Application client over TCP/NDJSON without changing Runtime,
-Application, session, deduplication, managed-component or presentation ownership.
+M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. The external
+one-shot TCP/NDJSON host architecture is closed. The current slice is a read-only
+investigation of current upstream Steel and `mattwparas/steel-imbl` to determine
+whether an upstream-owned release or exact commit removes RUSTSEC-2026-0255 and the
+abandoned `im-rc` chain without a lab-runtime-owned fork.
 
-The audit adds no dependency, crate, executable, binding, operation or transport.
-It identifies a dependency gate in the current exact `steel-core 0.8.3` graph:
-RUSTSEC-2026-0255 is unfixed in transitive `sized-chunks`, reached through the
-abandoned `im-rc` chain. External review must resolve the dependency direction
-before M13.2 can be authorized.
-
-```text
-STATUS: M13_1_READY_FOR_EXTERNAL_REVIEW
-```
+This slice may add only `M13_STEEL_DEPENDENCY_SAFETY_RESOLUTION.md` and active
+coordination updates. It must not modify Cargo files or production source, add Steel
+to the workspace, create `apps/lab-steel`, authorize M13.2, or begin M14.

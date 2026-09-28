@@ -12,11 +12,12 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 WebSocket transport: ACCEPTED
-M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M12: ACCEPTED
+M13.1: ACCEPTED
+M13 dependency safety resolution: AUTHORIZED
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
-Current phase: M13.1 external Steel host architecture/dependency audit
+Current phase: M13 Steel dependency safety resolution
 ```
 
 The accepted M12.2 implementation commit is
@@ -29,6 +30,8 @@ The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
 The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
+The accepted M13.1 audit commit is
+`81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -107,12 +110,11 @@ Steel is a future external Application client. It must not execute inside Runtim
 ownership, acquire transport/output authority, or make script lifetime equal
 experiment lifetime. Native real-time components remain native Rust.
 
-The M13.1 source/dependency audit is complete in
-`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md` and ready for external review. It
-recommends a one-process-per-script external host over the existing TCP/NDJSON
-Application endpoint. M13.2 remains unauthorized, and the current `steel-core 0.8.3`
-dependency graph has an unresolved advisory gate that must be reviewed before any
-dependency is added.
+The M13.1 source/dependency audit is accepted in
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. It establishes a
+one-process-per-script external host over the existing TCP/NDJSON Application
+endpoint. The current authorized slice is a read-only dependency safety resolution
+for the rejected `steel-core 0.8.3` graph. M13.2 remains unauthorized.
 
 ## M14 — GUI/Workbench/presentation schema
 

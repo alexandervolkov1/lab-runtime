@@ -680,3 +680,10 @@ no UI or scripting semantics enter Runtime core
 ```text
 STATUS: M13_1_READY_FOR_EXTERNAL_REVIEW
 ```
+
+## External review acceptance
+
+External review accepted M13.1 at review-ready commit
+`81e303de18021c49c526b12bb1f77f8ea75ae2d9`. The external one-shot TCP/NDJSON host
+architecture is accepted. The `steel-core 0.8.3` dependency graph is not accepted;
+M13 dependency safety resolution is authorized while M13.2 remains unauthorized.

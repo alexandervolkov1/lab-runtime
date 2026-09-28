@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M13.1 external Steel host architecture/dependency audit
+Current phase: M13 Steel dependency safety resolution
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -18,8 +18,9 @@ M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
 M12.4 transport parity/fault acceptance: ACCEPTED
 M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12 WebSocket transport: ACCEPTED
-M13.1 external Steel host architecture/dependency audit: READY FOR EXTERNAL REVIEW
+M12: ACCEPTED
+M13.1: ACCEPTED
+M13 dependency safety resolution: AUTHORIZED
 M13.2: NOT AUTHORIZED
 M14: NOT AUTHORIZED
 ```
@@ -34,6 +35,8 @@ The accepted M12.5 implementation/evidence commit is
 `f291edf35a7805245ce19ea088b9ee899d57f30e`.
 The accepted M12 consolidated review-ready commit is
 `bb159f674f2cca1c50f903528b268cb070858604`.
+The accepted M13.1 audit commit is
+`81e303de18021c49c526b12bb1f77f8ea75ae2d9`.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -130,11 +133,11 @@ parity/fault acceptance is complete in
 ClojureScript smoke evidence is in `M12_5_BROWSER_CLOJURESCRIPT_SMOKE.md` and is
 accepted. The consolidated source, bounds, security, parity and browser review is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. M13.1 is the
-completed read-only external Steel host architecture/dependency audit, recorded in
-`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md` and ready for external review.
-It recommends an external one-shot host over TCP/NDJSON and identifies an unresolved
-dependency gate in the current `steel-core 0.8.3` graph. M13.2, M14, practical
-integration and final polished release documentation remain separately gated.
+accepted read-only external Steel host architecture/dependency audit, recorded in
+`M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. It establishes an external
+one-shot host over TCP/NDJSON. The current phase is the authorized read-only Steel
+dependency safety resolution; M13.2, M14, practical integration and final polished
+release documentation remain separately gated.
 
 ## Later practical validation
 
