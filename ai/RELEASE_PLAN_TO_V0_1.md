@@ -8,9 +8,13 @@ Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
-Current phase: M12.2 external review
+M12.2 transport-neutral server seam: ACCEPTED
+M12.3 bounded WebSocket/JSON transport: AUTHORIZED
+Current phase: M12.3 implementation
 ```
+
+The accepted M12.2 implementation commit is
+`0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

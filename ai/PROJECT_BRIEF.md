@@ -23,10 +23,13 @@ Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
-M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
-Current phase: M12.2 external review
+M12.2 transport-neutral server seam: ACCEPTED
+M12.3 bounded WebSocket/JSON transport: AUTHORIZED
+Current phase: M12.3 implementation
 ```
+
+The accepted M12.2 implementation commit is
+`0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -69,7 +72,8 @@ The accepted read-only M12.1 audit established the source-derived path for addin
 second loopback WebSocket/JSON transport to the same Application instance. M12.2
 implemented the behavior-preserving transport-neutral JSON and bounded delivery
 seams while retaining TCP/NDJSON as the only transport. Its evidence is
-`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`; M12.3 remains unauthorized.
+`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. M12.3 is authorized to add the first
+bounded loopback WebSocket/JSON adapter through that same seam.
 
 Final polished release documentation is a later gate.
 

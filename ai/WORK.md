@@ -4,7 +4,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.2 external review
+Current phase: M12.3 implementation
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -12,9 +12,12 @@ Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
-M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
+M12.2 transport-neutral server seam: ACCEPTED
+M12.3 bounded WebSocket/JSON transport: AUTHORIZED
 ```
+
+The accepted M12.2 implementation commit is
+`0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
 
 ## Completed preparation step
 
@@ -81,5 +84,14 @@ semantics.
 
 ## Current authorization
 
-External review of M12.2 is the only current gate. M12.3 is not authorized. Do not
-add WebSocket or dependencies and do not cross the review gate automatically.
+M12.3 may add one optional IPv4-loopback WebSocket/JSON listener through the accepted
+M12.2 coordinator, shared Application JSON codec, bounded delivery path, serialized
+`Application`, and `SessionStore`. TCP plus WebSocket retains one eight-client pool.
+
+M12.3 must implement exact path/Host/Origin/subprotocol Upgrade validation, bounded
+handshake/message/frame/write state, text-only Application messages, finite
+ping/pong/close progress, additive readiness and failure isolation. It must not add
+an async runtime, TLS, authentication framework, Application operations/DTOs/errors,
+UI/scripting semantics, or a second coordinator/Application/session store.
+
+Stop for external review after M12.3. M12.4 is not authorized.

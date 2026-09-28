@@ -8,10 +8,13 @@ Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
 v0.1.0-preview.1: PUBLISHED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
-M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
-Current phase: M12.2 external review
+M12.2 transport-neutral server seam: ACCEPTED
+M12.3 bounded WebSocket/JSON transport: AUTHORIZED
+Current phase: M12.3 implementation
 ```
+
+The accepted M12.2 implementation commit is
+`0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -68,16 +71,16 @@ WebSocket / JSON --+
 ```
 
 - **M12.1:** read-only architecture audit — accepted;
-- **M12.2:** transport-neutral server seam, with unchanged TCP behavior — ready for
-  external review;
-- **M12.3:** bounded local WebSocket/JSON transport and browser Origin policy;
+- **M12.2:** transport-neutral server seam, with unchanged TCP behavior — accepted;
+- **M12.3:** bounded local WebSocket/JSON transport and browser Origin policy —
+  authorized;
 - **M12.4:** parity, reconnect, backpressure and fault acceptance;
 - **M12.5:** browser/ClojureScript smoke acceptance;
 - **M12 external review.**
 
-M12.1 is accepted and M12.2 is ready for external review. See
+M12.1 and M12.2 are accepted; M12.3 alone is authorized. See
 `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md` and
-`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. Do not start M12.3 automatically.
+`M12_2_TRANSPORT_NEUTRAL_SERVER_SEAM.md`. Do not start M12.4 automatically.
 
 ## M13 — external Steel scripting host
 

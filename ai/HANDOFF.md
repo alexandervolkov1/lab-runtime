@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M12.2 external review
+Current phase: M12.3 implementation
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -14,9 +14,12 @@ v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: READY FOR EXTERNAL REVIEW
-M12.3 bounded WebSocket/JSON transport: NOT AUTHORIZED
+M12.2 transport-neutral server seam: ACCEPTED
+M12.3 bounded WebSocket/JSON transport: AUTHORIZED
 ```
+
+The accepted M12.2 implementation commit is
+`0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -100,8 +103,10 @@ M12.2 is implemented and recorded in
 NDJSON framing, and one concrete coordinator owns checked connection IDs, the global
 eight-client pool, bounded per-client delivery, fair owner request scheduling and
 exact detach lifecycle. TCP/NDJSON remains the sole transport and all debug/release
-workspace gates pass. Do not begin M12.3, practical integration, M13, M14, or final
-polished release documentation without separate authorization.
+workspace gates pass. M12.3 alone is authorized to add the bounded loopback
+WebSocket/JSON adapter with the accepted browser Origin policy. Do not begin M12.4,
+practical integration, M13, M14, or final polished release documentation without
+separate authorization.
 
 ## Later practical validation
 
