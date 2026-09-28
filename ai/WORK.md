@@ -1,16 +1,18 @@
-# Current work — Developer Preview Preparation
+# Current work — M12.2 transport-neutral server seam
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: Developer Preview Preparation
+Current phase: M12.2 implementation
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
+M12.1 WebSocket architecture audit: ACCEPTED
+M12.2 transport-neutral server seam: AUTHORIZED
 ```
 
 ## Completed preparation step
@@ -44,7 +46,32 @@ GitHub pre-release `v0.1.0-preview.1` was built from and tagged at
 `70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`. The tag is immutable; the current
 coordination HEAD may be later because this publication record is docs-only.
 
-## Next work after this task
+## Completed M12.1 audit
 
-Do not publish the artifact or begin Arduino, Clojure, Clay, WebSocket, practical
-integration, or final release-documentation work automatically.
+The read-only source audit is recorded in
+`M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md`. It establishes:
+
+- the actual TCP/reactor/Application/ServiceHost boundary;
+- current connection, session, dedup, subscription, replay and history ownership;
+- exact network/Application bounds and a single global client budget;
+- the required split between shared Application JSON and NDJSON framing;
+- cross-transport scope reattachment semantics;
+- a loopback-only browser Origin policy;
+- a synchronous/nonblocking WebSocket library direction without adding a
+  dependency;
+- M12.2-M12.5 review slices and the future acceptance matrix.
+
+No production Rust, tests, Cargo/dependencies, configuration schema, Application
+operation/DTO, Runtime, Recorder, SQLite or safety semantics changed.
+
+## Authorized work
+
+M12.2 may extract the transport-neutral JSON codec and the smallest concrete shared
+connection/delivery seam while preserving the complete TCP/NDJSON contract. It must
+retain one serialized `Application`, one `SessionStore`, all accepted bounds,
+ordering, deadlines, fairness, shutdown and client-isolation behavior.
+
+M12.2 must not add WebSocket, HTTP Upgrade, Origin/WebSocket configuration, an async
+runtime, public Application semantics, capacity, scripting, presentation concepts,
+or changes to Runtime, Recorder, controller, output-authority or physical-safety
+semantics. Stop for external review after M12.2; do not begin M12.3 automatically.

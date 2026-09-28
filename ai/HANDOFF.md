@@ -6,13 +6,15 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: Developer Preview Preparation
+Current phase: M12.2 implementation
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
 Practical integration phase: NOT STARTED
 Final release documentation/audit: NOT AUTHORIZED
+M12.1 WebSocket architecture audit: ACCEPTED
+M12.2 transport-neutral server seam: AUTHORIZED
 ```
 
 External review accepted M11 at
@@ -79,10 +81,23 @@ Its immutable release tag points to packaged source commit
 `70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`; later coordination-only commits do
 not move that tag.
 
-## Next authorized direction
+## Current M12 work
 
-Practical integration and final polished release documentation remain not started
-and require separate authorization.
+External review accepted `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md` as the
+source-derived current transport/Application boundary, exact bounds and ownership,
+browser security policy, recommended synchronous/nonblocking implementation
+direction, milestone slicing, and future acceptance matrix.
+
+The audit found no architectural contradiction. WebSocket can join the current
+serialized server through one shared delivery boundary and the existing single
+`Application`. TCP + WebSocket must retain one global eight-client budget. The
+recommended local browser endpoint remains loopback-only and requires exact Origin
+allowlisting before Upgrade.
+
+M12.2 is authorized as a behavior-preserving refactor only. It must retain TCP/NDJSON
+as the sole transport, one serialized `Application`, one `SessionStore`, and the
+eight-client global capacity. Do not begin M12.3, practical integration, M13, M14,
+or final polished release documentation without separate authorization.
 
 ## Later practical validation
 
@@ -97,8 +112,9 @@ Arduino thermal plant
 ```
 
 Arduino remains an external practical integration exercise, not retroactive M11
-evidence. WebSocket is optional future transport over the same Application semantics
-and is not required for the first Clojure/Clay workflow.
+evidence. TCP/NDJSON remains the only implemented transport. M12.1 designed, but
+did not implement, a future WebSocket adapter for the same Application sessions,
+operations and DTOs.
 
 ## Residual limitations
 

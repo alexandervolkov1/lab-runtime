@@ -10,6 +10,7 @@ ai/HANDOFF.md
 ai/ROADMAP.md
 ai/WORK.md
 ai/RELEASE_PLAN_TO_V0_1.md
+ai/M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -21,7 +22,10 @@ historical context and never overrides it.
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: Developer Preview Preparation
+v0.1.0-preview.1: PUBLISHED
+M12.1 WebSocket architecture audit: ACCEPTED
+M12.2 transport-neutral server seam: AUTHORIZED
+Current phase: M12.2 implementation
 ```
 
 Functionally complete means the accepted Runtime functionality is implemented and no

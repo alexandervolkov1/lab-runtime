@@ -21,7 +21,10 @@ dynamic plugin system.
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: Developer Preview Preparation
+v0.1.0-preview.1: PUBLISHED
+M12.1 WebSocket architecture audit: ACCEPTED
+M12.2 transport-neutral server seam: AUTHORIZED
+Current phase: M12.2 implementation
 ```
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
@@ -60,6 +63,12 @@ safety/failure, extension, and getting-started references are complete. A
 reproducible Windows x86_64 developer-preview package is ready locally and
 `v0.1.0-preview.1` is published as a GitHub pre-release from source commit
 `70abaf6136a8baa93dfe31aa5d8a7cc56e54ef6e`.
+
+The accepted read-only M12.1 audit established the source-derived path for adding a
+second loopback WebSocket/JSON transport to the same Application instance. The
+accepted evidence is `M12_1_WEBSOCKET_ARCHITECTURE_AUDIT.md`. M12.2 is authorized
+only to extract the behavior-preserving transport-neutral server seam; WebSocket
+implementation remains outside M12.2.
 
 Final polished release documentation is a later gate.
 
