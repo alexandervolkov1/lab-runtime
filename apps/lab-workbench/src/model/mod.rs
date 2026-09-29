@@ -15,7 +15,8 @@ pub(crate) use command::{
     LabCommand, UiCommand, UiCommandError, WorkbenchCommand, apply_ui_command,
 };
 pub(crate) use exact_retry::{
-    ExactRetryError, ExactRetryState, ExactRetryWorkflow, PreparedExactRetry,
+    EXACT_RETRY_WARNING, ExactRetryError, ExactRetryState, ExactRetrySubmitter, ExactRetryWorkflow,
+    PreparedExactRetry,
 };
 pub(crate) use operator::{
     ControllerLifecycleIntent, OperatorIntent, OperatorIntentError, OperatorWarning,
@@ -25,7 +26,7 @@ pub(crate) use operator::{
 pub(crate) use projections::{Freshness, LIVE_TRACE_POINTS, LivePoint, RuntimeObservations};
 pub(crate) use recovery_status::{
     RecoveryAttachment, RecoveryRecordPresentation, RecoveryStatusError, RecoveryStatusState,
-    RecoveryStatusTracker, StatusEligibility,
+    RecoveryStatusSubmitter, RecoveryStatusTracker, StatusEligibility,
 };
 
 use crate::{

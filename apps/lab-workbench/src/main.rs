@@ -88,6 +88,7 @@ mod operator_boundary_tests {
     fn ordinary_gui_source_has_no_raw_or_prohibited_application_mutations() {
         let source = include_str!("gui/app.rs");
         assert!(!source.contains(".mutation("));
+        assert!(!source.contains(".retry_mutation("));
         for prohibited in [
             "runtime_shutdown",
             "emulator_publish",

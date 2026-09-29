@@ -255,6 +255,18 @@ impl Default for OperatorWorkflow {
 }
 
 impl OperatorWorkflow {
+    /// Recovery interaction may coexist only with Idle or matching Ambiguous intent.
+    pub(crate) fn allows_exact_retry(&self, identity: &MutationIdentity) -> bool {
+        match &self.state {
+            OperatorWorkflowState::Idle => true,
+            OperatorWorkflowState::Ambiguous {
+                identity: Some(retained),
+                ..
+            } => retained == identity,
+            _ => false,
+        }
+    }
+
     pub(crate) fn begin(
         &mut self,
         model: &WorkbenchModel,
@@ -1847,6 +1859,36 @@ mod tests {
             } if actual == &identity
         ));
         assert_eq!(sender.sent.borrow().len(), 1);
+    }
+
+    #[test]
+    fn exact_retry_coexists_only_with_idle_or_same_identity_ambiguity() {
+        let identity = MutationIdentity {
+            scope: "scope".into(),
+            seq: 7,
+        };
+        let other = MutationIdentity {
+            scope: "scope".into(),
+            seq: 8,
+        };
+        assert!(OperatorWorkflow::default().allows_exact_retry(&identity));
+
+        let (model, mut workflow) = reference_workflow();
+        let sender = FakeSubmitter::default();
+        workflow.confirm(&model, &sender).unwrap();
+        assert!(!workflow.allows_exact_retry(&identity));
+        let OperatorWorkflowState::Submitted { prepared, .. } = &workflow.state else {
+            panic!("expected submitted")
+        };
+        let prepared = prepared.clone();
+        workflow.state = OperatorWorkflowState::Ambiguous {
+            prepared: prepared.clone(),
+            identity: Some(identity.clone()),
+        };
+        assert!(workflow.allows_exact_retry(&identity));
+        assert!(!workflow.allows_exact_retry(&other));
+        workflow.state = OperatorWorkflowState::AwaitingConfirmation(prepared);
+        assert!(!workflow.allows_exact_retry(&identity));
     }
 
     #[test]

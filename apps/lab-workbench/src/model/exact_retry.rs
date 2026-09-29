@@ -151,6 +151,52 @@ pub(crate) struct ExactRetryWorkflow {
 }
 
 impl ExactRetryWorkflow {
+    /// Uses the exact preparation path without changing workflow state.
+    pub(crate) fn can_begin(
+        &self,
+        model: &WorkbenchModel,
+        status: &RecoveryStatusTracker,
+        identity: &MutationIdentity,
+    ) -> bool {
+        matches!(self.state, ExactRetryState::Idle)
+            && prepare(model, status, identity.clone()).is_ok()
+    }
+
+    /// Exact identity currently owned by the single retry interaction, if any.
+    pub(crate) fn active_identity(&self) -> Option<&MutationIdentity> {
+        let prepared = match &self.state {
+            ExactRetryState::Idle => return None,
+            ExactRetryState::AwaitingConfirmation(prepared)
+            | ExactRetryState::Submitted { prepared, .. }
+            | ExactRetryState::Accepted { prepared, .. }
+            | ExactRetryState::Completed { prepared }
+            | ExactRetryState::Failed { prepared }
+            | ExactRetryState::OutcomeUnknown { prepared }
+            | ExactRetryState::LocalFailure { prepared, .. }
+            | ExactRetryState::ApplicationFailure { prepared, .. }
+            | ExactRetryState::Interrupted { prepared }
+            | ExactRetryState::DraftStale { prepared } => prepared,
+        };
+        Some(&prepared.record.identity)
+    }
+
+    /// Prevents a contradictory Check Status action for the active retry identity.
+    pub(crate) fn blocks_status(&self, identity: &MutationIdentity) -> bool {
+        self.active_identity() == Some(identity)
+    }
+
+    /// Whether the frozen confirmation still has the same renderer-neutral authority.
+    pub(crate) fn confirmation_is_current(
+        &self,
+        model: &WorkbenchModel,
+        status: &RecoveryStatusTracker,
+    ) -> bool {
+        matches!(
+            &self.state,
+            ExactRetryState::AwaitingConfirmation(prepared) if prepared.is_current(model, status)
+        )
+    }
+
     pub(crate) fn begin(
         &mut self,
         model: &WorkbenchModel,
@@ -180,9 +226,16 @@ impl ExactRetryWorkflow {
             };
             return Err(ExactRetryError::DraftStale);
         }
-        let command_id = submitter
-            .retry_exact(prepared.record.identity.clone())
-            .map_err(ExactRetryError::LocalSubmission)?;
+        let command_id = match submitter.retry_exact(prepared.record.identity.clone()) {
+            Ok(command_id) => command_id,
+            Err(error) => {
+                self.state = ExactRetryState::LocalFailure {
+                    prepared,
+                    reason: bounded_message(&error.to_string()),
+                };
+                return Err(ExactRetryError::LocalSubmission(error));
+            }
+        };
         self.state = ExactRetryState::Submitted {
             command_id,
             prepared,
@@ -468,9 +521,15 @@ mod tests {
         let submitter = FakeRetrySubmitter::default();
         let mut workflow = ExactRetryWorkflow::default();
 
+        assert!(workflow.can_begin(&model, &status, &retained.identity));
+
         workflow
             .begin(&model, &status, retained.identity.clone())
             .unwrap();
+        assert_eq!(workflow.active_identity(), Some(&retained.identity));
+        assert!(workflow.blocks_status(&retained.identity));
+        assert!(workflow.confirmation_is_current(&model, &status));
+        assert!(!workflow.can_begin(&model, &status, &retained.identity));
         let ExactRetryState::AwaitingConfirmation(prepared) = &workflow.state else {
             panic!("expected confirmation")
         };

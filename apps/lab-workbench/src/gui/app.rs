@@ -5,8 +5,9 @@ use crate::{
     client::ClientHandle,
     client::types::{ConnectionState, KnownAdmission, RecoveryQuarantineReason},
     model::{
-        ControllerLifecycleIntent, Freshness, OperatorIntent, OperatorWarning, OperatorWorkflow,
-        OperatorWorkflowState, PROPERTY_TEXT_BYTES, PidCandidate, PropertyMutationCandidate,
+        ControllerLifecycleIntent, EXACT_RETRY_WARNING, ExactRetryState, ExactRetryWorkflow,
+        Freshness, OperatorIntent, OperatorWarning, OperatorWorkflow, OperatorWorkflowState,
+        PROPERTY_TEXT_BYTES, PidCandidate, PreparedExactRetry, PropertyMutationCandidate,
         RECORDING_LABEL_BYTES, RecoveryAttachment, RecoveryRecordPresentation, RecoveryStatusState,
         RecoveryStatusTracker, StatusEligibility, UiCommand, WorkbenchModel,
     },
@@ -35,6 +36,7 @@ pub(crate) struct WorkbenchApp {
     rebuild: RebuildCoordinator,
     operator: OperatorWorkflow,
     recovery_status: RecoveryStatusTracker,
+    exact_retry: ExactRetryWorkflow,
     selected: Option<RuntimeRef>,
     editor_target: Option<RuntimeRef>,
     controller_editor_revision: Option<Value>,
@@ -83,6 +85,7 @@ impl WorkbenchApp {
             rebuild: RebuildCoordinator::default(),
             operator: OperatorWorkflow::default(),
             recovery_status: RecoveryStatusTracker::default(),
+            exact_retry: ExactRetryWorkflow::default(),
             selected: None,
             editor_target: None,
             controller_editor_revision: None,
@@ -114,6 +117,8 @@ impl WorkbenchApp {
         for update in updates {
             self.model.apply_client_update(update.clone());
             self.recovery_status.after_update(&update);
+            self.exact_retry
+                .after_update(&update, &self.model, &self.recovery_status);
             self.operator.after_update(&update);
             self.rebuild.after_update(&update, &mut self.model, client);
         }
@@ -256,7 +261,6 @@ impl WorkbenchApp {
                 }
                 if records.is_empty() && self.model.recovery.quarantined.is_empty() {
                     ui.label("No retained recovery records");
-                    return;
                 }
                 for record in records {
                     self.render_recovery_record(ui, record);
@@ -285,6 +289,7 @@ impl WorkbenchApp {
                         });
                     }
                 }
+                self.render_exact_retry(ui);
             });
     }
 
@@ -322,9 +327,15 @@ impl WorkbenchApp {
                 );
             }
         }
+        let availability = recovery_action_availability(
+            &self.model,
+            &self.recovery_status,
+            &self.exact_retry,
+            &self.operator,
+            &record,
+        );
         let pending = matches!(record.status, RecoveryStatusState::Pending { .. });
-        let eligible = record.eligibility == StatusEligibility::Eligible && !pending;
-        let response = ui.add_enabled(eligible, egui::Button::new("Check Status"));
+        let response = ui.add_enabled(availability.check_status, egui::Button::new("Check Status"));
         if response.clicked()
             && let Some(client) = self.client.as_ref()
             && let Err(error) =
@@ -333,11 +344,107 @@ impl WorkbenchApp {
         {
             self.model.client_error = Some(error.to_string());
         }
-        if !eligible && !pending {
+        if !availability.check_status && !pending {
             ui.small(format!(
                 "Check Status unavailable: {}",
                 status_eligibility_text(record.eligibility)
             ));
+        }
+        if ui
+            .add_enabled(availability.exact_retry, egui::Button::new("Exact Retry…"))
+            .clicked()
+            && let Err(error) =
+                self.exact_retry
+                    .begin(&self.model, &self.recovery_status, record.identity)
+        {
+            self.model.client_error = Some(error.to_string());
+        }
+    }
+
+    fn render_exact_retry(&mut self, ui: &mut egui::Ui) {
+        let state = self.exact_retry.state.clone();
+        let Some(message) = exact_retry_state_message(&state) else {
+            return;
+        };
+        ui.separator();
+        ui.strong("Exact Retry");
+        match &state {
+            ExactRetryState::AwaitingConfirmation(prepared) => {
+                let view = exact_retry_confirmation_view(prepared);
+                ui.colored_label(Color32::YELLOW, message);
+                ui.monospace(format!(
+                    "scope={} seq={} operation={} admission={:?}",
+                    view.scope, view.seq, view.operation, view.admission
+                ));
+                ui.label("Exact worker-retained arguments (read-only):");
+                ui.monospace(view.args);
+                ui.colored_label(Color32::YELLOW, view.warning);
+                let current = self
+                    .exact_retry
+                    .confirmation_is_current(&self.model, &self.recovery_status);
+                if !current {
+                    ui.colored_label(
+                        Color32::LIGHT_RED,
+                        "Recovery evidence/session changed before confirmation. Review the current record again.",
+                    );
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(current, egui::Button::new("Confirm Exact Retry"))
+                        .clicked()
+                        && let Some(client) = self.client.as_ref()
+                    {
+                        let _ =
+                            self.exact_retry
+                                .confirm(&self.model, &self.recovery_status, client);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.exact_retry.cancel_or_acknowledge();
+                    }
+                });
+            }
+            ExactRetryState::Idle => {}
+            ExactRetryState::Submitted { .. } | ExactRetryState::Accepted { .. } => {
+                ui.colored_label(Color32::LIGHT_BLUE, message);
+            }
+            ExactRetryState::Completed { .. } => {
+                ui.colored_label(Color32::LIGHT_GREEN, message);
+                ui.label(
+                    "Displayed device and experiment state remains authoritative through normal Runtime observations.",
+                );
+                if ui.button("Acknowledge").clicked() {
+                    self.exact_retry.cancel_or_acknowledge();
+                }
+            }
+            ExactRetryState::Failed { .. } => {
+                ui.colored_label(Color32::LIGHT_RED, message);
+                ui.label("This operation outcome is not a physical-safety claim.");
+                if ui.button("Acknowledge").clicked() {
+                    self.exact_retry.cancel_or_acknowledge();
+                }
+            }
+            ExactRetryState::OutcomeUnknown { .. }
+            | ExactRetryState::Interrupted { .. }
+            | ExactRetryState::DraftStale { .. } => {
+                ui.colored_label(Color32::YELLOW, message);
+                if ui.button("Acknowledge").clicked() {
+                    self.exact_retry.cancel_or_acknowledge();
+                }
+            }
+            ExactRetryState::LocalFailure { reason, .. } => {
+                ui.colored_label(Color32::YELLOW, message);
+                ui.monospace(reason);
+                if ui.button("Acknowledge").clicked() {
+                    self.exact_retry.cancel_or_acknowledge();
+                }
+            }
+            ExactRetryState::ApplicationFailure { code, .. } => {
+                ui.colored_label(Color32::YELLOW, message);
+                ui.monospace(code);
+                if ui.button("Acknowledge").clicked() {
+                    self.exact_retry.cancel_or_acknowledge();
+                }
+            }
         }
     }
 
@@ -572,7 +679,7 @@ impl WorkbenchApp {
                     } else {
                         Color32::LIGHT_RED
                     },
-                    format!("Reconciled terminal: {admission:?}"),
+                    reconciled_operator_message(&admission),
                 );
                 ui.label(prepared.confirmation);
                 ui.label(format!(
@@ -1189,6 +1296,88 @@ fn status_eligibility_text(eligibility: StatusEligibility) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RecoveryActionAvailability {
+    check_status: bool,
+    exact_retry: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ExactRetryConfirmationView {
+    scope: String,
+    seq: u64,
+    operation: String,
+    admission: KnownAdmission,
+    args: String,
+    warning: &'static str,
+}
+
+fn exact_retry_confirmation_view(prepared: &PreparedExactRetry) -> ExactRetryConfirmationView {
+    ExactRetryConfirmationView {
+        scope: prepared.record.identity.scope.clone(),
+        seq: prepared.record.identity.seq,
+        operation: prepared.record.op.clone(),
+        admission: prepared.record.admission,
+        args: bounded_value_text(&prepared.record.args),
+        warning: EXACT_RETRY_WARNING,
+    }
+}
+
+fn recovery_action_availability(
+    model: &WorkbenchModel,
+    status: &RecoveryStatusTracker,
+    exact_retry: &ExactRetryWorkflow,
+    operator: &OperatorWorkflow,
+    record: &RecoveryRecordPresentation,
+) -> RecoveryActionAvailability {
+    let status_pending = matches!(record.status, RecoveryStatusState::Pending { .. });
+    RecoveryActionAvailability {
+        check_status: record.eligibility == StatusEligibility::Eligible
+            && !status_pending
+            && !exact_retry.blocks_status(&record.identity),
+        exact_retry: operator.allows_exact_retry(&record.identity)
+            && exact_retry.can_begin(model, status, &record.identity),
+    }
+}
+
+fn exact_retry_state_message(state: &ExactRetryState) -> Option<&'static str> {
+    match state {
+        ExactRetryState::Idle => None,
+        ExactRetryState::AwaitingConfirmation(_) => {
+            Some("Review the exact retained identity and payload before confirming Exact Retry.")
+        }
+        ExactRetryState::Submitted { .. } => {
+            Some("Exact Retry submitted. Admission/outcome not yet known.")
+        }
+        ExactRetryState::Accepted { .. } => {
+            Some("Runtime reports this exact request identity as accepted/in progress.")
+        }
+        ExactRetryState::Completed { .. } => {
+            Some("Runtime reports the retained operation completed.")
+        }
+        ExactRetryState::Failed { .. } => Some("Runtime reports the retained operation failed."),
+        ExactRetryState::OutcomeUnknown { .. } => Some(
+            "Runtime no longer knows the retained outcome for this request identity. The original recovery evidence remains unresolved.",
+        ),
+        ExactRetryState::LocalFailure { .. } => {
+            Some("Exact Retry was not submitted by the client. Recovery evidence is unchanged.")
+        }
+        ExactRetryState::ApplicationFailure { .. } => Some(
+            "The Exact Retry request was rejected or failed to reconcile. The underlying original mutation is not classified as Failed by this response.",
+        ),
+        ExactRetryState::Interrupted { .. } => {
+            Some("Exact Retry exchange was interrupted. No automatic retry was performed.")
+        }
+        ExactRetryState::DraftStale { .. } => Some(
+            "Recovery evidence/session changed before confirmation. Review the current record again.",
+        ),
+    }
+}
+
+fn reconciled_operator_message(admission: &KnownAdmission) -> String {
+    format!("Previously ambiguous operator action reconciled: {admission:?}")
+}
+
 fn quarantine_reason_text(reason: RecoveryQuarantineReason) -> &'static str {
     match reason {
         RecoveryQuarantineReason::InstanceChanged => "Runtime instance changed",
@@ -1262,7 +1451,7 @@ fn runtime_ref_label(reference: &RuntimeRef) -> String {
 fn bounded_value_text(value: &serde_json::Value) -> String {
     let mut text = value.to_string();
     if text.len() > 1024 {
-        text.truncate(1024);
+        truncate_utf8(&mut text, 1024);
         text.push('…');
     }
     text
@@ -1454,11 +1643,93 @@ mod tests {
     use crate::{
         client::{
             ClientUpdate,
-            types::{EventCursor, HelloState, KnownAdmission, MutationIdentity, RecoveryRecord},
+            types::{
+                CommandSendError, EventCursor, HelloState, KnownAdmission, MutationIdentity,
+                QuarantinedRecoveryRecord, RecoveryQuarantineReason, RecoveryRecord,
+            },
         },
+        model::{ExactRetryError, ExactRetrySubmitter, RecoveryStatusSubmitter},
         presentation::PresentationDocument,
     };
+    use std::cell::RefCell;
     use std::sync::mpsc::sync_channel;
+
+    #[derive(Default)]
+    struct FakeStatusSubmitter {
+        sent: RefCell<Vec<MutationIdentity>>,
+    }
+
+    impl RecoveryStatusSubmitter for FakeStatusSubmitter {
+        fn operation_status(&self, identity: MutationIdentity) -> Result<u64, CommandSendError> {
+            self.sent.borrow_mut().push(identity);
+            Ok(71)
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeRetrySubmitter {
+        sent: RefCell<Vec<MutationIdentity>>,
+    }
+
+    impl ExactRetrySubmitter for FakeRetrySubmitter {
+        fn retry_exact(&self, identity: MutationIdentity) -> Result<u64, CommandSendError> {
+            self.sent.borrow_mut().push(identity);
+            Ok(81)
+        }
+    }
+
+    fn recovery_record(seq: u64, admission: KnownAdmission) -> RecoveryRecord {
+        RecoveryRecord {
+            boot_id: "boot".into(),
+            identity: MutationIdentity {
+                scope: "scope".into(),
+                seq,
+            },
+            op: "reference_retune".into(),
+            args: json!({"reference":"1","target":2.0,"rate":1.0}),
+            admission,
+        }
+    }
+
+    fn recovery_model(records: Vec<RecoveryRecord>) -> WorkbenchModel {
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("recovery-gui"));
+        model.apply_client_update(ClientUpdate::Hello(HelloState {
+            boot_id: "boot".into(),
+            scope: "scope".into(),
+            next_seq: 9,
+            operations: vec!["operation_status".into()],
+            capabilities: json!([]),
+            limits: json!({}),
+            event_oldest: EventCursor {
+                boot_id: "boot".into(),
+                seq: 0,
+            },
+            event_latest: EventCursor {
+                boot_id: "boot".into(),
+                seq: 0,
+            },
+        }));
+        model.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: records,
+            quarantined: Vec::new(),
+        });
+        model
+    }
+
+    fn apply_recovery_update(
+        model: &mut WorkbenchModel,
+        status: &mut RecoveryStatusTracker,
+        retry: &mut ExactRetryWorkflow,
+        records: Vec<RecoveryRecord>,
+    ) {
+        let update = ClientUpdate::RecoveryProjection {
+            active: records,
+            quarantined: Vec::new(),
+        };
+        model.apply_client_update(update.clone());
+        status.after_update(&update);
+        retry.after_update(&update, model, status);
+    }
 
     #[test]
     fn gui_drain_is_bounded_to_the_worker_queue_capacity() {
@@ -1641,5 +1912,246 @@ mod tests {
                 "capabilities":{"reconnect":true}}),
         );
         assert!(resource_reconnect_enabled(&model, "3", true, true));
+    }
+
+    #[test]
+    fn recovery_row_actions_share_renderer_neutral_retry_and_status_eligibility() {
+        let first = recovery_record(1, KnownAdmission::Ambiguous);
+        let second = recovery_record(2, KnownAdmission::Accepted);
+        let mut model = recovery_model(vec![first.clone(), second.clone()]);
+        let mut status = RecoveryStatusTracker::default();
+        let mut retry = ExactRetryWorkflow::default();
+        let operator = OperatorWorkflow::default();
+        let rows = status.presentations(&model);
+
+        assert_eq!(
+            recovery_action_availability(&model, &status, &retry, &operator, &rows[0]),
+            RecoveryActionAvailability {
+                check_status: true,
+                exact_retry: true,
+            }
+        );
+
+        retry
+            .begin(&model, &status, first.identity.clone())
+            .unwrap();
+        assert_eq!(
+            recovery_action_availability(&model, &status, &retry, &operator, &rows[0]),
+            RecoveryActionAvailability {
+                check_status: false,
+                exact_retry: false,
+            }
+        );
+        retry.cancel_or_acknowledge();
+
+        let status_submitter = FakeStatusSubmitter::default();
+        status
+            .check_status(&model, &status_submitter, first.identity.clone())
+            .unwrap();
+        let rows = status.presentations(&model);
+        assert!(
+            !recovery_action_availability(&model, &status, &retry, &operator, &rows[0]).exact_retry
+        );
+        assert_eq!(
+            recovery_action_availability(&model, &status, &retry, &operator, &rows[1]),
+            RecoveryActionAvailability {
+                check_status: true,
+                exact_retry: true,
+            }
+        );
+
+        model.recovery_problem = Some("journal unavailable".into());
+        let rows = status.presentations(&model);
+        assert!(
+            !recovery_action_availability(&model, &status, &retry, &operator, &rows[1]).exact_retry
+        );
+        model.recovery_problem = None;
+        model.recovery.quarantined.push(QuarantinedRecoveryRecord {
+            record: recovery_record(3, KnownAdmission::Ambiguous),
+            reason: RecoveryQuarantineReason::InstanceChanged,
+        });
+        let rows = status.presentations(&model);
+        assert!(
+            !recovery_action_availability(&model, &status, &retry, &operator, &rows[1]).exact_retry
+        );
+        model.recovery.quarantined.clear();
+        model.connection = ConnectionState::Stale;
+        let rows = status.presentations(&model);
+        assert!(
+            !recovery_action_availability(&model, &status, &retry, &operator, &rows[1]).exact_retry
+        );
+
+        model.connection = ConnectionState::Ready;
+        model.recovery.mutations = vec![recovery_record(4, KnownAdmission::Completed)];
+        let rows = status.presentations(&model);
+        assert!(
+            !recovery_action_availability(&model, &status, &retry, &operator, &rows[0]).exact_retry
+        );
+    }
+
+    #[test]
+    fn exact_retry_confirmation_is_read_only_and_submits_one_identity() {
+        let record = recovery_record(5, KnownAdmission::Ambiguous);
+        let mut model = recovery_model(vec![record.clone()]);
+        let mut status = RecoveryStatusTracker::default();
+        let mut retry = ExactRetryWorkflow::default();
+        let submitter = FakeRetrySubmitter::default();
+
+        retry
+            .begin(&model, &status, record.identity.clone())
+            .unwrap();
+        assert!(submitter.sent.borrow().is_empty());
+        let ExactRetryState::AwaitingConfirmation(prepared) = &retry.state else {
+            panic!("confirmation was not opened");
+        };
+        let view = exact_retry_confirmation_view(prepared);
+        assert_eq!(view.scope, "scope");
+        assert_eq!(view.seq, 5);
+        assert_eq!(view.operation, "reference_retune");
+        assert_eq!(view.admission, KnownAdmission::Ambiguous);
+        assert!(view.args.contains("\"target\":2.0"));
+        assert_eq!(view.warning, EXACT_RETRY_WARNING);
+        let mut unicode = prepared.clone();
+        unicode.record.args = json!({"text":"я".repeat(2_000)});
+        let bounded = exact_retry_confirmation_view(&unicode).args;
+        assert!(bounded.ends_with('…'));
+        assert!(bounded.len() <= 1024 + '…'.len_utf8());
+
+        retry.confirm(&model, &status, &submitter).unwrap();
+        assert_eq!(
+            submitter.sent.borrow().as_slice(),
+            std::slice::from_ref(&record.identity)
+        );
+        assert!(retry.confirm(&model, &status, &submitter).is_err());
+        assert_eq!(submitter.sent.borrow().len(), 1);
+        assert_eq!(
+            exact_retry_state_message(&retry.state),
+            Some("Exact Retry submitted. Admission/outcome not yet known.")
+        );
+        assert!(model.actions.is_empty());
+
+        let mut accepted = record.clone();
+        accepted.admission = KnownAdmission::Accepted;
+        apply_recovery_update(&mut model, &mut status, &mut retry, vec![accepted.clone()]);
+        assert!(matches!(retry.state, ExactRetryState::Accepted { .. }));
+        let rows = status.presentations(&model);
+        assert!(
+            !recovery_action_availability(
+                &model,
+                &status,
+                &retry,
+                &OperatorWorkflow::default(),
+                &rows[0]
+            )
+            .check_status
+        );
+
+        accepted.admission = KnownAdmission::Completed;
+        apply_recovery_update(&mut model, &mut status, &mut retry, vec![accepted]);
+        assert_eq!(
+            exact_retry_state_message(&retry.state),
+            Some("Runtime reports the retained operation completed.")
+        );
+        retry.cancel_or_acknowledge();
+        assert_eq!(retry.state, ExactRetryState::Idle);
+        assert!(model.actions.is_empty());
+    }
+
+    #[test]
+    fn changed_retry_evidence_stales_confirmation_without_a_send() {
+        let record = recovery_record(6, KnownAdmission::Ambiguous);
+        let mut model = recovery_model(vec![record.clone()]);
+        let status = RecoveryStatusTracker::default();
+        let mut retry = ExactRetryWorkflow::default();
+        let submitter = FakeRetrySubmitter::default();
+        retry
+            .begin(&model, &status, record.identity.clone())
+            .unwrap();
+
+        let mut changed = record;
+        changed.args = json!({"reference":"1","target":99.0,"rate":1.0});
+        model.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![changed],
+            quarantined: Vec::new(),
+        });
+        assert_eq!(
+            retry.confirm(&model, &status, &submitter),
+            Err(ExactRetryError::DraftStale)
+        );
+        assert!(matches!(retry.state, ExactRetryState::DraftStale { .. }));
+        assert!(submitter.sent.borrow().is_empty());
+        assert_eq!(
+            exact_retry_state_message(&retry.state),
+            Some(
+                "Recovery evidence/session changed before confirmation. Review the current record again."
+            )
+        );
+    }
+
+    #[test]
+    fn retry_and_reconciled_terminal_wording_preserves_authority_boundaries() {
+        let prepared = PreparedExactRetry {
+            record: recovery_record(7, KnownAdmission::Ambiguous),
+            boot_id: "boot".into(),
+            scope: "scope".into(),
+        };
+        let cases = [
+            (
+                ExactRetryState::Accepted {
+                    command_id: 1,
+                    prepared: prepared.clone(),
+                },
+                "Runtime reports this exact request identity as accepted/in progress.",
+            ),
+            (
+                ExactRetryState::Completed {
+                    prepared: prepared.clone(),
+                },
+                "Runtime reports the retained operation completed.",
+            ),
+            (
+                ExactRetryState::Failed {
+                    prepared: prepared.clone(),
+                },
+                "Runtime reports the retained operation failed.",
+            ),
+            (
+                ExactRetryState::OutcomeUnknown {
+                    prepared: prepared.clone(),
+                },
+                "Runtime no longer knows the retained outcome for this request identity. The original recovery evidence remains unresolved.",
+            ),
+            (
+                ExactRetryState::ApplicationFailure {
+                    prepared: prepared.clone(),
+                    code: "outcome_conflict".into(),
+                },
+                "The Exact Retry request was rejected or failed to reconcile. The underlying original mutation is not classified as Failed by this response.",
+            ),
+            (
+                ExactRetryState::LocalFailure {
+                    prepared: prepared.clone(),
+                    reason: "client busy".into(),
+                },
+                "Exact Retry was not submitted by the client. Recovery evidence is unchanged.",
+            ),
+            (
+                ExactRetryState::Interrupted {
+                    prepared: prepared.clone(),
+                },
+                "Exact Retry exchange was interrupted. No automatic retry was performed.",
+            ),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(exact_retry_state_message(&state), Some(expected));
+        }
+        assert_eq!(
+            reconciled_operator_message(&KnownAdmission::Completed),
+            "Previously ambiguous operator action reconciled: Completed"
+        );
+        assert_eq!(
+            reconciled_operator_message(&KnownAdmission::Failed),
+            "Previously ambiguous operator action reconciled: Failed"
+        );
     }
 }
