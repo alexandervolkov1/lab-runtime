@@ -1,96 +1,138 @@
 # lab-runtime
 
-`lab-runtime` is a headless Rust runtime for laboratory automation. It combines
-periodic physical and virtual acquisition, bounded recent history, native control,
-central output safety, durable SQLite recording, and a local language-neutral
-Application API.
+`lab-runtime` is a local laboratory automation system with two separate executables:
 
-The v0.1 core is functionally complete and has passed its developer-preview
-technical gate. This means the accepted functionality has no known
-preview-blocking correctness, safety, or durability defect; it is not production
-certification or exhaustive physical qualification.
+- `lab-runtime` owns authoritative experiment state and behavior;
+- `lab-workbench` is the native operator and presentation client.
 
-## Developer Preview
+The Runtime coordinates devices and resources, measurements, References, controllers,
+output authority, configuration, Recorder/SQLite, client sessions, mutation
+deduplication, and retained operation outcomes. Workbench connects through the same
+language-neutral Application API available to other clients and provides live plots,
+typed operator workflows, and manual recovery/reconciliation.
 
-The current Developer Preview is published as a GitHub Pre-release:
-
-- [Download v0.1.0-preview.1](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1)
-
-The Windows x86_64 package is
-`lab-runtime-developer-preview-windows-x86_64.zip`. A matching SHA-256 checksum
-file is included with the release assets. This is not a stable production release.
-
-## Design boundary
+## Why two processes?
 
 ```text
-Runtime owns experiment semantics.
-Clients own presentation semantics.
+lab-runtime.exe                         lab-workbench.exe
+----------------                         -----------------
+authoritative experiment state    <->   private Rust Application client
+devices, References, controllers        WorkbenchModel
+resources and output authority           PresentationDocument
+Recorder and configuration               native egui GUI
+sessions and operation outcomes          plots and operator/recovery workflows
+
+                     Application API
 ```
 
-The Runtime is the sole authoritative mutable experiment owner. Clients query
-committed state and submit bounded operations over local TCP/NDJSON. A client does
-not own the experiment, and disconnecting it does not roll back admitted work.
-There is no GUI, Presentation API, bundled client SDK, scripting runtime, or remote
-security model in the current preview.
+Runtime owns experiment semantics. Workbench owns presentation semantics.
 
-## Included
+Workbench lifetime is not Runtime lifetime, and GUI lifetime is not experiment
+lifetime. Closing, crashing, or disconnecting Workbench does not shut down Runtime,
+stop its Recorder, or roll back an admitted operation.
 
-- physical and virtual instruments with generation-fenced acquisition;
-- current measurements, bounded recent history, subscriptions, and durable history;
-- References, native PID controllers, finite leases, and central `OutputAuthority`;
-- SQLite experiment archives with provenance, gaps, and lifecycle sealing;
-- declarative deployment configuration and explicit physical-resource reconnect;
-- statically registered, bounded native managed components;
-- bounded, lossy diagnostic logging separate from experiment history;
-- 42 Application operations and 25 composition-dependent capabilities.
+## Current capabilities
 
-## Quick start
+- virtual instruments and declaratively configured physical resources;
+- current measurements, bounded recent history, live subscriptions, and durable
+  Recorder history;
+- References, native PID controllers, finite output leases, and central output
+  authority;
+- resource reconnect and typed configuration-property updates;
+- Runtime-owned SQLite recording with provenance, gaps, and lifecycle sealing;
+- one local Application API over TCP/NDJSON and optional loopback WebSocket/JSON;
+- a Windows-native Workbench with discovery, measurements, live plots, typed
+  Reference/controller/PID/resource/property/Recorder workflows, and manual recovery.
 
-Prerequisites are a current stable Rust toolchain and, on Windows, PowerShell.
+The full Application API is broader than the Workbench GUI. Workbench deliberately
+exposes a typed safe operator subset rather than a raw button for every API operation.
+See the [Application API reference](docs/application-api.md) for the complete surface.
+
+## Build and run
+
+Building the complete workspace, including Workbench, requires Rust 1.95 and Cargo.
+Workbench is native to Windows today; the commands below use PowerShell.
 
 ```powershell
-cargo build --workspace
-cargo test --workspace
-cargo run -p lab-runtime -- --serve --profile virtual-demo --port 0
+cargo build --workspace --locked
 ```
 
-The service prints one readiness JSON object containing the selected loopback
-`port`. Connect to `127.0.0.1:<port>` and exchange one UTF-8 JSON object per line.
-The first request is `hello`:
-
-```json
-{"v":1,"msg_id":"hello-1","op":"hello","args":{"scope":null}}
-```
-
-See [Getting started](docs/getting-started.md) for a complete local example and
-configuration-based startup.
-
-### Extracted developer-preview package
-
-From the extracted package root, start the safe virtual composition with:
+Start a safe virtual Runtime with a local Recorder database. Port `7420` must be free.
 
 ```powershell
-.\lab-runtime.exe --serve --config .\examples\runtime.virtual.toml
+$db = [IO.Path]::GetFullPath((Join-Path $PWD "demo.sqlite"))
+
+cargo run -p lab-runtime --locked -- `
+  --serve `
+  --profile virtual-demo `
+  --port 7420 `
+  --record-db $db `
+  --record-policy required
 ```
 
-The Windows x86_64 binary uses the operating-system UCRT and requires the Microsoft
-Visual C++ 2015–2022 x64 runtime (`VCRUNTIME140.dll`). No non-system application DLL
-is shipped; SQLite is built into the executable.
+In a second terminal, start Workbench with its own workspace:
 
-The starter configuration opens no serial port. It listens on loopback TCP port
-`7420`, writes its SQLite archive beside the configuration as
-`examples\history.sqlite`, and writes bounded diagnostic logs under
-`%LOCALAPPDATA%\lab-runtime\logs`. Stop it through the `runtime_shutdown`
-Application operation or `Ctrl+C`; see [Getting started](docs/getting-started.md).
+```powershell
+$workspace = [IO.Path]::GetFullPath((Join-Path $PWD ".workbench-demo"))
+
+cargo run -p lab-workbench --locked -- `
+  --connect 127.0.0.1:7420 `
+  --workspace $workspace
+```
+
+Workbench connects immediately. Wait until its status is **Fresh**, then select a
+signal in Discovery to see its authoritative observation and live plot.
+
+Connected is not the same as Fresh. Fresh means Workbench has rebuilt the required
+authoritative Runtime projections, established its aggregate subscription, and caught
+up to the rebuild barrier. Likewise, Accepted or Completed operation evidence is not
+by itself current physical or projection state.
+
+Follow [Getting started](docs/getting-started.md) for the complete virtual-demo
+workflow, including a Reference retune, Recorder start/stop, reconnect behavior, port
+selection, and a small API-client example.
+
+## Process lifetime and recovery
+
+- Explicit Workbench **Disconnect** performs no automatic reconnect. A later Connect
+  is a new user action.
+- After unexpected transport loss, Workbench may perform one bounded retained-scope
+  reattach episode while cached observations are visibly stale.
+- Closing or crashing Workbench leaves Runtime and its experiment-owned work alive.
+- Runtime shutdown is a separate explicit lifecycle action; close Workbench by closing
+  its window, not by shutting down Runtime.
+- Mutation recovery is manual. Workbench provides Check Status and confirmed Exact
+  Retry where the retained evidence permits it; mutations are never retried
+  automatically.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md)
-- [Architecture and concepts](docs/architecture.md)
+- [Getting started with Runtime and Workbench](docs/getting-started.md)
+- [Runtime architecture and concepts](docs/architecture.md)
 - [Application API reference](docs/application-api.md)
-- [Recorder and SQLite archive reference](docs/recorder-sqlite.md)
+- [Recorder and SQLite archive](docs/recorder-sqlite.md)
 - [Safety and failure behavior](docs/safety-and-failures.md)
 - [Extending the Runtime](docs/extending-runtime.md)
+
+## Current environment and limitations
+
+- Runtime listeners are local/loopback. This project has no remote-network security
+  qualification.
+- Native Workbench currently runs on Windows and currently connects over TCP. Runtime
+  may also expose its optional loopback WebSocket transport to other clients.
+- The system is not hard real-time and has not completed exhaustive physical,
+  multi-day, disk-full, power-loss, USB/driver, or hardware fault-injection
+  qualification.
+- ACK or register readback does not prove physical effect.
+- Not every Application operation is a Workbench GUI workflow.
+- No scripting language or embedded automation runtime is selected for v0.1.
+  Future automation is planned around the language-neutral Application API boundary.
+- Recovery evidence has no Discard/Forget action; invalidated evidence remains visible
+  and fail-closed.
+
+The published [v0.1.0-preview.1](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1)
+Windows package contains the headless Runtime. Build the current repository to use
+the native Workbench described here.
 
 ## Safety posture
 
@@ -101,20 +143,8 @@ requested != authorized != send_started != ACK != readback != physical_effect
 ```
 
 A started write with an ambiguous outcome is not blindly retried. Reconnect and a
-fresh `Good` measurement do not rearm a failed controller. Output requires fresh
-authority, a finite lease, current generation/epoch, and a final check immediately
-before the first possible byte.
-
-Recorder/SQLite is durable scientific and experiment-audit history. Diagnostic
-logs are bounded, lossy troubleshooting data and never experiment authority.
-
-## Preview limitations
-
-The current preview is not hard real-time and has no remote-network security
-qualification. It has not completed multi-day unattended, physical disk-full, real
-power-loss, exhaustive USB/driver, or hardware fault-injection qualification.
-ACK or register readback does not prove physical heater effect. The current
-transport is local TCP/NDJSON; additional transports are not implemented.
+fresh measurement do not rearm a failed controller. Recorder/SQLite is durable
+scientific and audit history; bounded diagnostic logs are not experiment authority.
 
 ## License
 
