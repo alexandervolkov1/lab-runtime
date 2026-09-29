@@ -30,6 +30,7 @@ ai/M14_6B2B1_EXACT_RETRY_CORE.md
 ai/M14_6B2B2_EXACT_RETRY_GUI.md
 ai/M14_6B3_BOUNDED_FAULT_REATTACH.md
 ai/M14_6B4_RECOVERY_FAULT_ACCEPTANCE.md
+ai/M15_1_DOCUMENTATION_PRODUCTIZATION_AUDIT.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -67,8 +68,11 @@ M14.6B3 bounded fault reattach: ACCEPTED
 M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
 M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
-Current phase: no later implementation phase authorized
-STATUS: M14_CONSOLIDATED_ACCEPTED
+M15.1 documentation/productization audit: ACCEPTED
+M15.2 README + getting started: AUTHORIZED
+M15.3+: NOT AUTHORIZED
+Current phase: M15.2 README + getting started
+STATUS: M15_2_README_GETTING_STARTED_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -105,7 +109,9 @@ commit is `21e4a6f623e39c102109703b22a5266a17f5e0e0`. The accepted M14.6B2B2
 implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. The accepted M14.6B3
 implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepted M14.6B4
 implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
-acceptance is granted; no later implementation phase is authorized.
+acceptance is granted. The accepted M15.1 documentation/productization audit commit is
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
+authorized; M15.3+ is not authorized.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

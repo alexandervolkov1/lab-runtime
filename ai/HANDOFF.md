@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: no later implementation phase authorized
+Current phase: M15.2 README + getting started
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -38,7 +38,10 @@ M14.6B3 bounded fault reattach: ACCEPTED
 M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
 M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
-STATUS: M14_CONSOLIDATED_ACCEPTED
+M15.1 documentation/productization audit: ACCEPTED
+M15.2 README + getting started: AUTHORIZED
+M15.3+: NOT AUTHORIZED
+STATUS: M15_2_README_GETTING_STARTED_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -69,6 +72,9 @@ The accepted M14.6A audit commit is
 `4e18801930939404a8e856521b86c55c20d71dc9`.
 The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
+The accepted M15.1 documentation/productization audit commit is
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
+authorized; M15.3+ is not authorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known

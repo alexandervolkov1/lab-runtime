@@ -1,10 +1,10 @@
-# Current work — M14 consolidated acceptance
+# Current work — M15.2 README + getting started
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: no later implementation phase authorized
+Current phase: M15.2 README + getting started
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -36,7 +36,10 @@ M14.6B3 bounded fault reattach: ACCEPTED
 M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
 M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
-STATUS: M14_CONSOLIDATED_ACCEPTED
+M15.1 documentation/productization audit: ACCEPTED
+M15.2 README + getting started: AUTHORIZED
+M15.3+: NOT AUTHORIZED
+STATUS: M15_2_README_GETTING_STARTED_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -67,6 +70,9 @@ The accepted M14.6A audit commit is
 `4e18801930939404a8e856521b86c55c20d71dc9`.
 The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
+The accepted M15.1 documentation/productization audit commit is
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
+authorized; M15.3+ is not authorized.
 
 ## Completed preparation step
 
@@ -211,7 +217,18 @@ commit is `21e4a6f623e39c102109703b22a5266a17f5e0e0`. The accepted M14.6B2B2
 implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. The accepted M14.6B3
 implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepted M14.6B4
 implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
-acceptance is granted; no later implementation phase is authorized.
+acceptance is granted. M15.1 is accepted at audit commit
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`; only M15.2 README + getting started is
+authorized.
+
+## Authorized M15.2 scope
+
+Rewrite only `README.md` and `docs/getting-started.md` as the current two-process
+product entry path. Verify the virtual-demo Runtime and native Workbench commands,
+describe Fresh and process-lifetime behavior accurately, retain the useful API-client
+introduction, and link only to existing public documents. M15.2 must not change Rust,
+Cargo/dependencies, Runtime/Application semantics, or select/add automation. M15.3+
+and M13.2 remain unauthorized.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in
