@@ -1,10 +1,10 @@
-# Current work — M14.5 operator controls + properties/config
+# Current work — M14.6A recovery/fault architecture audit
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.5 operator controls + properties/config
+Current phase: M14.6A recovery/fault architecture audit
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -19,14 +19,15 @@ M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
-M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
-M13.2: NOT AUTHORIZED
+M13.2 Steel: BLOCKED / NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
-M14.5 operator controls + properties/config: AUTHORIZED
-M14.6 reconnect/recovery/fault acceptance: NOT AUTHORIZED
+M14.5 operator controls + properties/config: ACCEPTED
+M14.6A recovery/fault audit: AUTHORIZED
+M14.6B implementation: NOT AUTHORIZED
+STATUS: M14_6A_AUDIT_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -51,6 +52,8 @@ The accepted M14.3 implementation commit is
 `f01567ba2165b24b9551e3b0acf5b100b0169f32`.
 The accepted M14.4 implementation commit is
 `116aba631fe47ea24412dd3d4b50e9b00eafc8df`.
+The accepted M14.5 implementation commit is
+`ab097ed5207ea426cbbd48611015da12ce534a43`.
 
 ## Completed preparation step
 
@@ -144,14 +147,14 @@ during the consolidation.
 M12: ACCEPTED
 M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
-M13.2: BLOCKED ON STEEL DEPENDENCY SAFETY
-M13.2: NOT AUTHORIZED
+M13.2 Steel: BLOCKED / NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
 M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
-M14.5 operator controls + properties/config: AUTHORIZED
-M14.6 reconnect/recovery/fault acceptance: NOT AUTHORIZED
+M14.5 operator controls + properties/config: ACCEPTED
+M14.6A recovery/fault audit: AUTHORIZED
+M14.6B implementation: NOT AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -172,5 +175,8 @@ Runtime/Application semantics. The client-owned Workbench model, presentation mo
 and bounded persistence are accepted after focused model-state and
 recovery-projection remediation in `M14_3_WORKBENCH_MODEL_PRESENTATION.md`. The
 minimal native GUI and focused overflow/live-continuity remediation are accepted in
-`M14_4_MINIMAL_GUI.md`. M14.5 operator controls and property/configuration workflows
-are authorized; M14.6 remains unauthorized.
+`M14_4_MINIMAL_GUI.md`. The typed operator controls, property/configuration workflows,
+real Runtime acceptance, and native GUI smoke are accepted in
+`M14_5_OPERATOR_CONTROLS.md` at implementation commit
+`ab097ed5207ea426cbbd48611015da12ce534a43`. M14.6A is authorized only as a
+recovery/fault architecture audit; M14.6B remains unauthorized.
