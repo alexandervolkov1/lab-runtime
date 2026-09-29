@@ -1,10 +1,10 @@
-# Current work — M14.6A recovery/fault architecture audit
+# Current work — M14.6A recovery/fault audit external review
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.6A recovery/fault architecture audit
+Current phase: M14.6A recovery/fault audit external review
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -25,9 +25,9 @@ M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: AUTHORIZED
+M14.6A recovery/fault audit: READY FOR EXTERNAL REVIEW
 M14.6B implementation: NOT AUTHORIZED
-STATUS: M14_6A_AUDIT_AUTHORIZED
+STATUS: M14_6A_RECOVERY_FAULT_AUDIT_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -153,7 +153,7 @@ M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: AUTHORIZED
+M14.6A recovery/fault audit: READY FOR EXTERNAL REVIEW
 M14.6B implementation: NOT AUTHORIZED
 ```
 
@@ -178,5 +178,6 @@ minimal native GUI and focused overflow/live-continuity remediation are accepted
 `M14_4_MINIMAL_GUI.md`. The typed operator controls, property/configuration workflows,
 real Runtime acceptance, and native GUI smoke are accepted in
 `M14_5_OPERATOR_CONTROLS.md` at implementation commit
-`ab097ed5207ea426cbbd48611015da12ce534a43`. M14.6A is authorized only as a
-recovery/fault architecture audit; M14.6B remains unauthorized.
+`ab097ed5207ea426cbbd48611015da12ce534a43`. The read-only M14.6A recovery/fault
+contract is ready for external review in `M14_6_RECOVERY_FAULT_AUDIT.md`; M14.6B
+remains unauthorized.

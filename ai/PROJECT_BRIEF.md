@@ -37,10 +37,10 @@ M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: AUTHORIZED
+M14.6A recovery/fault audit: READY FOR EXTERNAL REVIEW
 M14.6B implementation: NOT AUTHORIZED
-Current phase: M14.6A recovery/fault architecture audit
-STATUS: M14_6A_AUDIT_AUTHORIZED
+Current phase: M14.6A recovery/fault audit external review
+STATUS: M14_6A_RECOVERY_FAULT_AUDIT_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -131,9 +131,10 @@ accepted after focused model-state and recovery-projection remediation in
 `M14_4_MINIMAL_GUI.md` with its accepted overflow/live-continuity remediation. M14.5
 operator controls and property/configuration workflows are accepted in
 `M14_5_OPERATOR_CONTROLS.md` at implementation commit
-`ab097ed5207ea426cbbd48611015da12ce534a43`. M14.6A is authorized only as a
-recovery/fault architecture audit; M14.6B is not authorized, and any future Steel
-integration remains a deferred optional Workbench subsystem.
+`ab097ed5207ea426cbbd48611015da12ce534a43`. The read-only M14.6A recovery/fault
+contract is ready for external review in `M14_6_RECOVERY_FAULT_AUDIT.md`; M14.6B is
+not authorized, and any future Steel integration remains a deferred optional
+Workbench subsystem.
 
 Final polished release documentation is a later gate.
 

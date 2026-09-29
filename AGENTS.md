@@ -23,6 +23,7 @@ ai/M14_2_MINIMAL_WORKBENCH_CLIENT.md
 ai/M14_3_WORKBENCH_MODEL_PRESENTATION.md
 ai/M14_4_MINIMAL_GUI.md
 ai/M14_5_OPERATOR_CONTROLS.md
+ai/M14_6_RECOVERY_FAULT_AUDIT.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -49,10 +50,10 @@ M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: AUTHORIZED
+M14.6A recovery/fault audit: READY FOR EXTERNAL REVIEW
 M14.6B implementation: NOT AUTHORIZED
-Current phase: M14.6A recovery/fault architecture audit
-STATUS: M14_6A_AUDIT_AUTHORIZED
+Current phase: M14.6A recovery/fault audit external review
+STATUS: M14_6A_RECOVERY_FAULT_AUDIT_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -79,6 +80,8 @@ The accepted M14.4 implementation commit is
 `116aba631fe47ea24412dd3d4b50e9b00eafc8df`.
 The accepted M14.5 implementation commit is
 `ab097ed5207ea426cbbd48611015da12ce534a43`.
+The read-only M14.6A contract is ready for review in
+`ai/M14_6_RECOVERY_FAULT_AUDIT.md`; M14.6B remains unauthorized.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
