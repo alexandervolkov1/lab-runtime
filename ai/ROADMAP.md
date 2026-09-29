@@ -23,12 +23,13 @@ M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
 M14.6A recovery/fault audit: ACCEPTED
 M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
-M14.6B2A quarantine projection / restart classification: AUTHORIZED
-M14.6B2B Exact Retry UI: NOT AUTHORIZED
+M14.6B2A quarantine projection / restart classification: ACCEPTED
+M14.6B2B1 Exact Retry core / evidence lifecycle: AUTHORIZED
+M14.6B2B2 Exact Retry GUI: NOT AUTHORIZED
 M14.6B3 explicit-disconnect versus bounded fault reattach: NOT AUTHORIZED
 M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
-Current phase: M14.6B2A quarantine projection / restart classification
-STATUS: M14_6B2A_AUTHORIZED
+Current phase: M14.6B2B1 Exact Retry core / evidence lifecycle
+STATUS: M14_6B2B1_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -169,8 +170,10 @@ accepted in `M14_5_OPERATOR_CONTROLS.md` at implementation commit
 `M14_6_RECOVERY_FAULT_AUDIT.md` is accepted at commit
 `4e18801930939404a8e856521b86c55c20d71dc9`. M14.6B1 recovery status UI and
 one-shot `operation_status` are accepted at
-`1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`. Only M14.6B2A quarantine projection
-and restart classification are authorized; M14.6B2B–B4 remain unauthorized.
+`1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`. M14.6B2A quarantine projection
+and restart classification are accepted at implementation commit
+`f945d910cfeabbe8552634c53d95016e79a6eafa`. M14.6B2B1 is authorized;
+M14.6B2B2–B4 remain unauthorized.
 
 ## Final release gate
 
