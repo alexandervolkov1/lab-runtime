@@ -26,10 +26,10 @@ M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
 M14.6B2A quarantine projection / restart classification: ACCEPTED
 M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
 M14.6B2B2 Exact Retry GUI: ACCEPTED
-M14.6B3 explicit-disconnect versus bounded fault reattach: AUTHORIZED
-M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
-Current phase: M14.6B3 explicit-disconnect versus bounded fault reattach
-STATUS: M14_6B3_AUTHORIZED
+M14.6B3 bounded fault reattach: ACCEPTED
+M14.6B4 consolidated recovery/fault acceptance: AUTHORIZED
+Current phase: M14.6B4 consolidated recovery/fault acceptance
+STATUS: M14_6B4_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -174,8 +174,8 @@ one-shot `operation_status` are accepted at
 and restart classification are accepted at implementation commit
 `f945d910cfeabbe8552634c53d95016e79a6eafa`. The accepted M14.6B2B1 implementation
 commit is `21e4a6f623e39c102109703b22a5266a17f5e0e0`. The accepted M14.6B2B2
-implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. M14.6B3 is authorized;
-M14.6B4 remains unauthorized.
+implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. The accepted M14.6B3
+implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. M14.6B4 is authorized.
 
 ## Final release gate
 

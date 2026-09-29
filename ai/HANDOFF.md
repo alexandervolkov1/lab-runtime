@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.6B3 explicit-disconnect versus bounded fault reattach
+Current phase: M14.6B4 consolidated recovery/fault acceptance
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -32,9 +32,9 @@ M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
 M14.6B2A quarantine projection / restart classification: ACCEPTED
 M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
 M14.6B2B2 Exact Retry GUI: ACCEPTED
-M14.6B3 explicit-disconnect versus bounded fault reattach: AUTHORIZED
-M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
-STATUS: M14_6B3_AUTHORIZED
+M14.6B3 bounded fault reattach: ACCEPTED
+M14.6B4 consolidated recovery/fault acceptance: AUTHORIZED
+STATUS: M14_6B4_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -185,9 +185,10 @@ quarantine projection/restart classification is accepted at implementation commi
 `f945d910cfeabbe8552634c53d95016e79a6eafa`. The M14.6B2B1 Exact Retry core and
 evidence lifecycle are accepted at implementation commit
 `21e4a6f623e39c102109703b22a5266a17f5e0e0`. M14.6B2B2 Exact Retry GUI is accepted
-at implementation commit `eafd73adf43a8a566336bfe1a14370066fe06c5c`. M14.6B3 automatic fault
-reattach is authorized; consolidated process acceptance, practical integration, and final polished release
-documentation remain gated.
+at implementation commit `eafd73adf43a8a566336bfe1a14370066fe06c5c`. M14.6B3 bounded fault
+reattach is accepted at implementation commit `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`.
+M14.6B4 consolidated recovery/fault acceptance is authorized; practical integration
+and final polished release documentation remain gated.
 
 ## Later practical validation
 
