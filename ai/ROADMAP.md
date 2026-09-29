@@ -15,11 +15,13 @@ M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
 M12: ACCEPTED
 M13.1: ACCEPTED
 M13 dependency safety resolution: ACCEPTED
-M13.2 Steel: BLOCKED / NOT AUTHORIZED
+M13.2 Steel:
+BLOCKED ON STEEL DEPENDENCY SAFETY
+NOT AUTHORIZED
 M14.1 Workbench architecture audit: ACCEPTED
-M14.2 minimal native Application client: ACCEPTED
+M14.2 bounded native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal eframe/egui GUI: ACCEPTED
+M14.4 minimal native GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
 M14.6A recovery/fault audit: ACCEPTED
 M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
@@ -27,9 +29,11 @@ M14.6B2A quarantine projection / restart classification: ACCEPTED
 M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
 M14.6B2B2 Exact Retry GUI: ACCEPTED
 M14.6B3 bounded fault reattach: ACCEPTED
-M14.6B4 consolidated recovery/fault acceptance: AUTHORIZED
-Current phase: M14.6B4 consolidated recovery/fault acceptance
-STATUS: M14_6B4_AUTHORIZED
+M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
+M14.6 recovery/reconnect/fault acceptance: ACCEPTED
+M14 consolidated acceptance: ACCEPTED
+Current phase: no later implementation phase authorized
+STATUS: M14_CONSOLIDATED_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -175,7 +179,9 @@ and restart classification are accepted at implementation commit
 `f945d910cfeabbe8552634c53d95016e79a6eafa`. The accepted M14.6B2B1 implementation
 commit is `21e4a6f623e39c102109703b22a5266a17f5e0e0`. The accepted M14.6B2B2
 implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. The accepted M14.6B3
-implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. M14.6B4 is authorized.
+implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepted M14.6B4
+implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
+acceptance is granted; no later implementation phase is authorized.
 
 ## Final release gate
 
@@ -193,3 +199,46 @@ phase transition.
 - no schema or accepted semantic changes;
 - no claim of production certification, hard real-time or exhaustive physical
   qualification.
+
+
+## Accepted M14 consolidated invariants
+
+Runtime owns experiment semantics and Workbench owns presentation semantics.
+Workbench/GUI/future-script lifetime is not Runtime or experiment lifetime; Workbench
+failure, clean close, or OS termination does not stop Runtime, controllers, Recorder,
+or the experiment.
+
+One private bounded Rust Application client owns the socket, framing, hello/session/
+scope, message IDs, mutation sequence, subscription/cursor, recovery-journal
+interaction, and bounded retained-scope reconnect. No second Application owner was
+introduced. One WorkbenchModel and one PresentationDocument remain client-owned and
+never become Runtime experiment authority.
+
+Check Status and Exact Retry are explicit/manual; mutation, status, and Exact Retry
+are never replayed automatically. Exact bounded worker-owned recovery evidence and
+quarantined old-boot/scope evidence remain visible. Explicit Disconnect has no
+automatic reconnect and uses the accepted out-of-band/coalesced command-admission
+fence. Unexpected continuity loss gets one retained-scope episode with one absolute
+3 s deadline, connect timeout no greater than `min(2 s, remaining)`, and retry
+spacing of at least 10 ms.
+
+Fresh requires the complete authoritative rebuild barrier. Hello, process liveness,
+socket reconnect, an old event cursor, or mutation terminal outcome alone does not
+prove Fresh.
+
+The frozen 30-row M14.6A matrix and A-J scenarios pass. Process evidence comprises
+eight real-Runtime acceptances and one self-spawn Workbench plus scripted Application
+peer acceptance. Native Glow OS-termination evidence preserves Runtime, workspace,
+journal, and Reference authority; controller identity `1`, state `ready`, revision
+`1` are unchanged, and Recorder state `idle` with null `active_run`/`run_id` is
+unchanged. Recorder evidence intentionally proves the weaker authoritative idle
+continuity invariant, not active-run survival.
+
+Accepted verification: Workbench `160 passed; 9 ignored; 0 failed` three times;
+workspace debug and release each `680 passed; 11 ignored; 0 failed`; real Runtime
+`8 passed; 0 failed`; self-spawn/scripted `1 passed; 0 failed`; A-J and native
+Glow PASS; recorded focused fault/race repetitions 10/10; fmt, Clippy with warnings
+denied, and diff-check PASS.
+
+M13.2 remains blocked on Steel dependency safety and is not authorized. Discard/
+Forget, a later milestone, and automatic release are not authorized.
