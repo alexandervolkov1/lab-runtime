@@ -21,10 +21,13 @@ M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: READY FOR EXTERNAL REVIEW
-M14.6B implementation: NOT AUTHORIZED
-Current phase: M14.6A recovery/fault audit external review
-STATUS: M14_6A_RECOVERY_FAULT_AUDIT_READY_FOR_EXTERNAL_REVIEW
+M14.6A recovery/fault audit: ACCEPTED
+M14.6B1 recovery UI + one-shot operation_status: AUTHORIZED
+M14.6B2 exact retry / quarantine reconciliation: NOT AUTHORIZED
+M14.6B3 explicit-disconnect versus bounded fault reattach: NOT AUTHORIZED
+M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
+Current phase: M14.6B1 recovery UI + one-shot operation_status
+STATUS: M14_6B1_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -51,6 +54,8 @@ The accepted M14.4 implementation commit is
 `116aba631fe47ea24412dd3d4b50e9b00eafc8df`.
 The accepted M14.5 implementation commit is
 `ab097ed5207ea426cbbd48611015da12ce534a43`.
+The accepted M14.6A audit commit is
+`4e18801930939404a8e856521b86c55c20d71dc9`.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -65,9 +70,10 @@ persistence in `M14_3_WORKBENCH_MODEL_PRESENTATION.md` are also accepted. The mi
 eframe/egui GUI and focused remediation are accepted in `M14_4_MINIMAL_GUI.md`.
 M14.5 operator controls and property/configuration workflows are accepted in
 `M14_5_OPERATOR_CONTROLS.md` at implementation commit
-`ab097ed5207ea426cbbd48611015da12ce534a43`. The read-only recovery/fault contract
-is ready for external review in `M14_6_RECOVERY_FAULT_AUDIT.md`; M14.6B remains
-unauthorized.
+`ab097ed5207ea426cbbd48611015da12ce534a43`. The recovery/fault audit in
+`M14_6_RECOVERY_FAULT_AUDIT.md` is accepted at commit
+`4e18801930939404a8e856521b86c55c20d71dc9`. Only M14.6B1 recovery status UI and
+one-shot `operation_status` are authorized; M14.6B2–B4 remain unauthorized.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

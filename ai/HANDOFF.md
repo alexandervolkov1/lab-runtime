@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.6A recovery/fault audit external review
+Current phase: M14.6B1 recovery UI + one-shot operation_status
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -27,9 +27,12 @@ M14.2 minimal native Application client: ACCEPTED
 M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
 M14.4 minimal eframe/egui GUI: ACCEPTED
 M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: READY FOR EXTERNAL REVIEW
-M14.6B implementation: NOT AUTHORIZED
-STATUS: M14_6A_RECOVERY_FAULT_AUDIT_READY_FOR_EXTERNAL_REVIEW
+M14.6A recovery/fault audit: ACCEPTED
+M14.6B1 recovery UI + one-shot operation_status: AUTHORIZED
+M14.6B2 exact retry / quarantine reconciliation: NOT AUTHORIZED
+M14.6B3 explicit-disconnect versus bounded fault reattach: NOT AUTHORIZED
+M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
+STATUS: M14_6B1_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -56,6 +59,8 @@ The accepted M14.4 implementation commit is
 `116aba631fe47ea24412dd3d4b50e9b00eafc8df`.
 The accepted M14.5 implementation commit is
 `ab097ed5207ea426cbbd48611015da12ce534a43`.
+The accepted M14.6A audit commit is
+`4e18801930939404a8e856521b86c55c20d71dc9`.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -168,10 +173,12 @@ smoke evidence and focused overflow/live-continuity remediation are in
 `M14_4_MINIMAL_GUI.md` and accepted. The typed M14.5 operator controls,
 property/configuration workflows, real Runtime acceptance, and native GUI smoke are
 accepted in `M14_5_OPERATOR_CONTROLS.md` at implementation commit
-`ab097ed5207ea426cbbd48611015da12ce534a43`. The read-only recovery/fault contract
-is ready for external review in `M14_6_RECOVERY_FAULT_AUDIT.md`; M14.6B
-implementation, practical integration, and final polished release documentation
-remain separately gated.
+`ab097ed5207ea426cbbd48611015da12ce534a43`. The recovery/fault audit in
+`M14_6_RECOVERY_FAULT_AUDIT.md` is accepted at commit
+`4e18801930939404a8e856521b86c55c20d71dc9`. Only the renderer-neutral recovery
+status UI and one-shot `operation_status` slice M14.6B1 is authorized; exact retry,
+quarantine persistence, automatic fault reattach, consolidated process acceptance,
+practical integration, and final polished release documentation remain gated.
 
 ## Later practical validation
 
