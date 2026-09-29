@@ -8,6 +8,7 @@
 mod command;
 mod operator;
 mod projections;
+mod recovery_status;
 
 pub(crate) use command::{
     LabCommand, UiCommand, UiCommandError, WorkbenchCommand, apply_ui_command,
@@ -18,6 +19,10 @@ pub(crate) use operator::{
     PropertyMutationCandidate, RECORDING_LABEL_BYTES,
 };
 pub(crate) use projections::{Freshness, LIVE_TRACE_POINTS, LivePoint, RuntimeObservations};
+pub(crate) use recovery_status::{
+    RecoveryAttachment, RecoveryRecordPresentation, RecoveryStatusError, RecoveryStatusState,
+    RecoveryStatusTracker, StatusEligibility,
+};
 
 use crate::{
     client::types::{

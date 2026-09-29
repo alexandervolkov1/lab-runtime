@@ -7,7 +7,8 @@ use crate::{
     model::{
         ControllerLifecycleIntent, Freshness, OperatorIntent, OperatorWarning, OperatorWorkflow,
         OperatorWorkflowState, PROPERTY_TEXT_BYTES, PidCandidate, PropertyMutationCandidate,
-        RECORDING_LABEL_BYTES, UiCommand, WorkbenchModel,
+        RECORDING_LABEL_BYTES, RecoveryAttachment, RecoveryRecordPresentation, RecoveryStatusState,
+        RecoveryStatusTracker, StatusEligibility, UiCommand, WorkbenchModel,
     },
     ownership::WorkspaceOwnership,
     presentation::{
@@ -33,6 +34,7 @@ pub(crate) struct WorkbenchApp {
     client: Option<ClientHandle>,
     rebuild: RebuildCoordinator,
     operator: OperatorWorkflow,
+    recovery_status: RecoveryStatusTracker,
     selected: Option<RuntimeRef>,
     editor_target: Option<RuntimeRef>,
     controller_editor_revision: Option<Value>,
@@ -80,6 +82,7 @@ impl WorkbenchApp {
             client: Some(client),
             rebuild: RebuildCoordinator::default(),
             operator: OperatorWorkflow::default(),
+            recovery_status: RecoveryStatusTracker::default(),
             selected: None,
             editor_target: None,
             controller_editor_revision: None,
@@ -110,6 +113,7 @@ impl WorkbenchApp {
         );
         for update in updates {
             self.model.apply_client_update(update.clone());
+            self.recovery_status.after_update(&update);
             self.operator.after_update(&update);
             self.rebuild.after_update(&update, &mut self.model, client);
         }
@@ -217,6 +221,79 @@ impl WorkbenchApp {
                     self.model.recovery.reconciliation_required.len()
                 ),
             );
+        }
+        self.render_recovery(ui);
+    }
+
+    fn render_recovery(&mut self, ui: &mut egui::Ui) {
+        let records = self.recovery_status.presentations(&self.model);
+        egui::CollapsingHeader::new("Recovery / reconciliation")
+            .default_open(!records.is_empty() || self.model.recovery_problem.is_some())
+            .show(ui, |ui| {
+                if let Some(problem) = &self.model.recovery_problem {
+                    ui.colored_label(Color32::LIGHT_RED, problem);
+                }
+                if records.is_empty() {
+                    ui.label("No retained recovery records");
+                    return;
+                }
+                for record in records {
+                    self.render_recovery_record(ui, record);
+                    ui.separator();
+                }
+            });
+    }
+
+    fn render_recovery_record(&mut self, ui: &mut egui::Ui, record: RecoveryRecordPresentation) {
+        ui.horizontal_wrapped(|ui| {
+            ui.monospace(format!(
+                "scope={} seq={}",
+                record.identity.scope, record.identity.seq
+            ));
+            ui.label(format!("op={}", record.op));
+            ui.label(format!("admission={:?}", record.admission));
+            ui.label(recovery_attachment_text(record.attachment));
+        });
+        match &record.status {
+            RecoveryStatusState::Idle => {}
+            RecoveryStatusState::Pending { .. } => {
+                ui.colored_label(Color32::LIGHT_BLUE, "Check Status pending");
+            }
+            RecoveryStatusState::OutcomeUnknown => {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    "Runtime reported outcome_unknown; admission remains unresolved",
+                );
+            }
+            RecoveryStatusState::LocalFailure { message } => {
+                ui.colored_label(Color32::YELLOW, format!("Local status failure: {message}"));
+            }
+            RecoveryStatusState::ApplicationFailure { code } => {
+                ui.colored_label(Color32::YELLOW, format!("Application status error: {code}"));
+            }
+            RecoveryStatusState::Interrupted => {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    "Status request interrupted; it was not resubmitted",
+                );
+            }
+        }
+        let pending = matches!(record.status, RecoveryStatusState::Pending { .. });
+        let eligible = record.eligibility == StatusEligibility::Eligible && !pending;
+        let response = ui.add_enabled(eligible, egui::Button::new("Check Status"));
+        if response.clicked()
+            && let Some(client) = self.client.as_ref()
+            && let Err(error) =
+                self.recovery_status
+                    .check_status(&self.model, client, record.identity.clone())
+        {
+            self.model.client_error = Some(error.to_string());
+        }
+        if !eligible && !pending {
+            ui.small(format!(
+                "Check Status unavailable: {}",
+                status_eligibility_text(record.eligibility)
+            ));
         }
     }
 
@@ -1019,6 +1096,29 @@ fn freshness_label(ui: &mut egui::Ui, freshness: Freshness) {
         Freshness::Unknown => ("Unknown", Color32::GRAY),
     };
     ui.label(RichText::new(text).color(color).strong());
+}
+
+fn recovery_attachment_text(attachment: RecoveryAttachment) -> &'static str {
+    match attachment {
+        RecoveryAttachment::Attached => "attached to current boot/scope",
+        RecoveryAttachment::NoHello => "no authoritative hello",
+        RecoveryAttachment::BootMismatch => "different Runtime boot",
+        RecoveryAttachment::ScopeMismatch => "different retained scope",
+    }
+}
+
+fn status_eligibility_text(eligibility: StatusEligibility) -> &'static str {
+    match eligibility {
+        StatusEligibility::Eligible => "eligible",
+        StatusEligibility::ClientNotReady => "client is not Ready",
+        StatusEligibility::HelloMissing => "hello is unavailable",
+        StatusEligibility::OperationUnavailable => "operation_status is not advertised",
+        StatusEligibility::RecoveryJournalProblem => "recovery journal is unavailable",
+        StatusEligibility::RecordMissing => "recovery record is unavailable",
+        StatusEligibility::BootMismatch => "record belongs to another Runtime boot",
+        StatusEligibility::ScopeMismatch => "record belongs to another scope",
+        StatusEligibility::TerminalRecord => "record is already terminal",
+    }
 }
 
 fn awaiting_confirmation_current(
