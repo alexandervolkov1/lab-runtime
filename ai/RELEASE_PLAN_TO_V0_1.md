@@ -33,10 +33,11 @@ M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
 M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
-M15.2 README + getting started: AUTHORIZED
-M15.3+: NOT AUTHORIZED
-Current phase: M15.2 README + getting started
-STATUS: M15_2_README_GETTING_STARTED_AUTHORIZED
+M15.2 README + getting started: ACCEPTED
+M15.3 architecture + Application API reference: AUTHORIZED
+M15.4+: NOT AUTHORIZED
+Current phase: M15.3 architecture + Application API reference
+STATUS: M15_3_ARCHITECTURE_API_REFERENCE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -69,7 +70,8 @@ The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
 The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
-authorized; M15.3+ is not authorized.
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. Only M15.3 architecture +
+Application API reference is authorized; M15.4+ is not authorized.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -97,7 +99,8 @@ implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepte
 implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
 acceptance is granted. M15.1 is accepted at audit commit
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`; only M15.2 README + getting started is
-authorized.
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`; only M15.3 architecture +
+Application API reference is authorized.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

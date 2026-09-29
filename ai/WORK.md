@@ -1,10 +1,10 @@
-# Current work — M15.2 README + getting started
+# Current work — M15.3 architecture + Application API reference
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M15.2 README + getting started
+Current phase: M15.3 architecture + Application API reference
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -37,9 +37,10 @@ M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
 M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
-M15.2 README + getting started: AUTHORIZED
-M15.3+: NOT AUTHORIZED
-STATUS: M15_2_README_GETTING_STARTED_AUTHORIZED
+M15.2 README + getting started: ACCEPTED
+M15.3 architecture + Application API reference: AUTHORIZED
+M15.4+: NOT AUTHORIZED
+STATUS: M15_3_ARCHITECTURE_API_REFERENCE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -72,7 +73,8 @@ The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
 The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
-authorized; M15.3+ is not authorized.
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. Only M15.3 architecture +
+Application API reference is authorized; M15.4+ is not authorized.
 
 ## Completed preparation step
 
@@ -219,16 +221,17 @@ implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepte
 implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
 acceptance is granted. M15.1 is accepted at audit commit
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`; only M15.2 README + getting started is
-authorized.
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`; only M15.3 architecture +
+Application API reference is authorized.
 
-## Authorized M15.2 scope
+## Authorized M15.3 scope
 
-Rewrite only `README.md` and `docs/getting-started.md` as the current two-process
-product entry path. Verify the virtual-demo Runtime and native Workbench commands,
-describe Fresh and process-lifetime behavior accurately, retain the useful API-client
-introduction, and link only to existing public documents. M15.2 must not change Rust,
-Cargo/dependencies, Runtime/Application semantics, or select/add automation. M15.3+
-and M13.2 remain unauthorized.
+Create the canonical current architecture and Application API reference in
+`docs/architecture.md`, the compatibility `docs/application-api.md`, and the bounded
+`docs/api/` section. Derive operation, capability, error, and limit statements from
+accepted source and tests. M15.3 must not change Rust, Cargo/dependencies,
+Runtime/Application semantics, add tutorials/automation, or begin M15.4+. M13.2
+remains unauthorized.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in
