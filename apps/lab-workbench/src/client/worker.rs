@@ -709,6 +709,14 @@ impl Worker {
             self.reject(command_id, "client_not_ready");
             return;
         }
+        if self.journal_failed {
+            self.reject(command_id, "recovery_journal_unavailable");
+            return;
+        }
+        if self.has_unresolved_quarantine() {
+            self.reject(command_id, "recovery_quarantine_unresolved");
+            return;
+        }
         let Some(hello) = self.hello.as_ref() else {
             self.reject(command_id, "hello_missing");
             return;
@@ -726,13 +734,15 @@ impl Worker {
             self.reject(command_id, "recovery_identity_not_attached");
             return;
         }
-        if self.pending.values().any(|pending| {
-            pending
-                .mutation
-                .as_ref()
-                .is_some_and(|pending_record| pending_record.identity == identity)
-        }) {
-            self.reject(command_id, "recovery_still_in_flight");
+        if !matches!(
+            record.admission,
+            KnownAdmission::Pending | KnownAdmission::Accepted | KnownAdmission::Ambiguous
+        ) {
+            self.reject(command_id, "recovery_terminal");
+            return;
+        }
+        if self.recovery_action_in_flight(&identity) {
+            self.reject(command_id, "recovery_action_in_flight");
             return;
         }
         self.queue_request(
@@ -765,6 +775,10 @@ impl Worker {
             self.reject(command_id, "recovery_identity_not_attached");
             return;
         }
+        if self.recovery_action_in_flight(&identity) {
+            self.reject(command_id, "recovery_action_in_flight");
+            return;
+        }
         self.queue_request(
             command_id,
             "operation_status".into(),
@@ -772,6 +786,16 @@ impl Worker {
             None,
             Purpose::OperationStatus,
         );
+    }
+
+    fn recovery_action_in_flight(&self, identity: &MutationIdentity) -> bool {
+        self.pending.values().any(|pending| {
+            pending.status_identity.as_ref() == Some(identity)
+                || pending
+                    .mutation
+                    .as_ref()
+                    .is_some_and(|record| &record.identity == identity)
+        })
     }
 
     fn queue_subscribe(
@@ -1225,7 +1249,8 @@ impl Worker {
         ) {
             self.bootstrap = None;
         }
-        if let Some(record) = pending.mutation.as_ref()
+        if pending.purpose == Purpose::Mutation
+            && let Some(record) = pending.mutation.as_ref()
             && record.admission == KnownAdmission::Pending
         {
             let _ = self.try_remove_recovery(&record.identity);
@@ -1287,9 +1312,7 @@ impl Worker {
                     } else {
                         KnownAdmission::Failed
                     };
-                    if pending.purpose == Purpose::RetryMutation {
-                        let _ = self.try_remove_recovery(&record.identity);
-                    } else if !self.try_upsert_recovery(record.clone()) {
+                    if !self.try_upsert_recovery(record.clone()) {
                         self.fail_transport("recovery capacity invariant violated");
                         return;
                     }
@@ -2343,9 +2366,9 @@ mod tests {
     }
 
     #[test]
-    fn exact_retry_terminal_projection_retires_model_record() {
+    fn exact_retry_terminal_projection_retains_model_record() {
         let (mut worker, updates) = unit_worker();
-        let record = recovery_record(1, KnownAdmission::Completed);
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
         worker.hello = Some(hello_state(2));
         worker.recovery = vec![record.clone()];
         worker.pending.insert(
@@ -2376,10 +2399,12 @@ mod tests {
 
         assert!(seen.iter().any(|update| matches!(
             update,
-            ClientUpdate::RecoveryProjection { active, .. } if active.is_empty()
+            ClientUpdate::RecoveryProjection { active, .. }
+                if active.len() == 1 && active[0].admission == KnownAdmission::Completed
         )));
-        assert!(worker.recovery.is_empty());
-        assert!(model.recovery.mutations.is_empty());
+        assert_eq!(worker.recovery.len(), 1);
+        assert_eq!(worker.recovery[0].admission, KnownAdmission::Completed);
+        assert_eq!(model.recovery.mutations, worker.recovery);
         assert!(seen.iter().any(|update| matches!(
             update,
             ClientUpdate::Reply {
@@ -2388,6 +2413,237 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn exact_retry_terminal_is_durable_and_reloads_without_automatic_send() {
+        for (state, admission) in [
+            ("completed", KnownAdmission::Completed),
+            ("failed", KnownAdmission::Failed),
+        ] {
+            let path = journal_path(&format!("retry-terminal-{state}"));
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            save_test_journal(&path, std::slice::from_ref(&record));
+            let (mut worker, _updates) = unit_worker_with_journal(path.clone());
+            worker.state = ConnectionState::Ready;
+            worker.hello = Some(hello_state(2));
+            worker.pending.insert(
+                "1".into(),
+                PendingExchange {
+                    command_id: 1,
+                    msg_id: "1".into(),
+                    op: record.op.clone(),
+                    purpose: Purpose::RetryMutation,
+                    mutation: Some(record.clone()),
+                    status_identity: None,
+                    transmitted: true,
+                    deadline: None,
+                },
+            );
+
+            worker.handle_operation(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"operation","state":state,
+                    "result":{"revision":"2"}}),
+            );
+
+            assert_eq!(worker.recovery.len(), 1);
+            assert_eq!(worker.recovery[0].identity, record.identity);
+            assert_eq!(worker.recovery[0].op, record.op);
+            assert_eq!(worker.recovery[0].args, record.args);
+            assert_eq!(worker.recovery[0].admission, admission);
+            let persisted = load_journal(&path).unwrap().to_recovery_records();
+            assert_eq!(persisted, worker.recovery);
+
+            let (restarted, _restart_updates) = unit_worker_with_journal(path.clone());
+            assert_eq!(restarted.recovery, worker.recovery);
+            assert!(restarted.outgoing.is_empty());
+            assert!(restarted.pending.is_empty());
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn retry_public_error_never_erases_or_reclassifies_exact_evidence() {
+        for code in ["outcome_unknown", "busy"] {
+            let (mut worker, updates) = unit_worker();
+            let record = recovery_record(1, KnownAdmission::Pending);
+            worker.recovery = vec![record.clone()];
+            worker.pending.insert(
+                "1".into(),
+                PendingExchange {
+                    command_id: 1,
+                    msg_id: "1".into(),
+                    op: record.op.clone(),
+                    purpose: Purpose::RetryMutation,
+                    mutation: Some(record.clone()),
+                    status_identity: None,
+                    transmitted: true,
+                    deadline: None,
+                },
+            );
+
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":code}),
+            );
+
+            assert_eq!(worker.recovery, vec![record.clone()]);
+            assert!(updates.try_iter().any(|update| matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::PublicError,
+                    recovery: Some(recovery),
+                    envelope,
+                    ..
+                } if recovery == record && envelope["code"] == code
+            )));
+        }
+    }
+
+    #[test]
+    fn retry_worker_rejects_terminal_quarantine_and_journal_failure_before_wire() {
+        let identity = recovery_record(1, KnownAdmission::Ambiguous).identity;
+        for (reason, configure) in [
+            ("recovery_journal_unavailable", 0_u8),
+            ("recovery_quarantine_unresolved", 1_u8),
+            ("recovery_terminal", 2_u8),
+        ] {
+            let (mut worker, updates) = unit_worker();
+            worker.state = ConnectionState::Ready;
+            worker.hello = Some(hello_state(2));
+            let mut record = recovery_record(1, KnownAdmission::Ambiguous);
+            match configure {
+                0 => worker.journal_failed = true,
+                1 => {
+                    worker.quarantined_recovery = vec![QuarantinedRecoveryRecord {
+                        record: record.clone(),
+                        reason: RecoveryQuarantineReason::AttachedBootMismatch,
+                    }];
+                }
+                2 => record.admission = KnownAdmission::Completed,
+                _ => unreachable!(),
+            }
+            worker.recovery = vec![record];
+
+            worker.queue_retry(7, identity.clone());
+
+            assert!(worker.outgoing.is_empty());
+            assert!(worker.pending.is_empty());
+            assert!(updates.try_iter().any(|update| matches!(
+                update,
+                ClientUpdate::LocalRejected { command_id: 7, reason: actual }
+                    if actual == reason
+            )));
+        }
+    }
+
+    #[test]
+    fn status_and_retry_are_mutually_exclusive_and_duplicate_retry_is_single_wire_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (mut worker, updates) = unit_worker();
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        worker.state = ConnectionState::Ready;
+        worker.hello = Some(hello_state(2));
+        worker.recovery = vec![record.clone()];
+        worker.stream = Some(stream);
+
+        worker.queue_operation_status(1, record.identity.clone());
+        worker.queue_retry(2, record.identity.clone());
+        assert_eq!(worker.pending.len(), 1);
+        assert_eq!(worker.outgoing.len(), 1);
+        assert!(updates.try_iter().any(|update| matches!(
+            update,
+            ClientUpdate::LocalRejected { command_id: 2, reason }
+                if reason == "recovery_action_in_flight"
+        )));
+
+        worker.pending.clear();
+        worker.outgoing.clear();
+        worker.queue_retry(3, record.identity.clone());
+        worker.queue_operation_status(4, record.identity.clone());
+        worker.queue_retry(5, record.identity);
+        assert_eq!(worker.pending.len(), 1);
+        assert_eq!(worker.outgoing.len(), 1);
+        let rejected = updates
+            .try_iter()
+            .filter(|update| {
+                matches!(
+                    update,
+                    ClientUpdate::LocalRejected { command_id: 4 | 5, reason }
+                        if reason == "recovery_action_in_flight"
+                )
+            })
+            .count();
+        assert_eq!(rejected, 2);
+    }
+
+    #[test]
+    fn terminal_retry_under_update_pressure_keeps_durable_restart_evidence() {
+        let path = journal_path("retry-terminal-pressure");
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        save_test_journal(&path, std::slice::from_ref(&record));
+        let (_command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, updates) = mpsc::sync_channel(1);
+        let mut worker = Worker::new(
+            "127.0.0.1:1".parse().unwrap(),
+            Some(path.clone()),
+            command_rx,
+            update_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        worker.state = ConnectionState::Ready;
+        worker.hello = Some(hello_state(2));
+        worker.pending.insert(
+            "1".into(),
+            PendingExchange {
+                command_id: 1,
+                msg_id: "1".into(),
+                op: record.op.clone(),
+                purpose: Purpose::RetryMutation,
+                mutation: Some(record.clone()),
+                status_identity: None,
+                transmitted: true,
+                deadline: None,
+            },
+        );
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+        model.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![record.clone()],
+            quarantined: Vec::new(),
+        });
+        worker.emit(ClientUpdate::State(ConnectionState::Ready));
+
+        worker.handle_operation(
+            "1".into(),
+            json!({"v":1,"msg_id":"1","type":"operation","state":"completed",
+                "result":{"revision":"2"}}),
+        );
+
+        assert_eq!(worker.recovery[0].admission, KnownAdmission::Completed);
+        assert_eq!(
+            load_journal(&path).unwrap().to_recovery_records(),
+            worker.recovery
+        );
+        model.apply_client_update(updates.try_recv().unwrap());
+        assert_recovery_evidence_visible(&model, &record);
+        worker.flush_deferred_update();
+        model.apply_client_update(updates.try_recv().unwrap());
+        assert_eq!(model.connection, ConnectionState::Stale);
+        assert_recovery_evidence_visible(&model, &record);
+
+        let (restarted, _restart_updates) = unit_worker_with_journal(path.clone());
+        assert_eq!(restarted.recovery[0].admission, KnownAdmission::Completed);
+        assert_eq!(restarted.recovery[0].identity, record.identity);
+        assert_eq!(restarted.recovery[0].op, record.op);
+        assert_eq!(restarted.recovery[0].args, record.args);
+        assert!(restarted.outgoing.is_empty());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -3048,7 +3304,7 @@ mod tests {
         let in_flight = client.retry_mutation(record.identity.clone()).unwrap();
         wait_for(&client, |update| {
             matches!(update, ClientUpdate::LocalRejected { command_id, reason }
-                if *command_id == in_flight && reason == "recovery_still_in_flight")
+                if *command_id == in_flight && reason == "recovery_action_in_flight")
         });
         client.disconnect().unwrap();
         wait_for(&client, |update| {

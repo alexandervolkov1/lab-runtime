@@ -6,12 +6,16 @@
 )]
 
 mod command;
+mod exact_retry;
 mod operator;
 mod projections;
 mod recovery_status;
 
 pub(crate) use command::{
     LabCommand, UiCommand, UiCommandError, WorkbenchCommand, apply_ui_command,
+};
+pub(crate) use exact_retry::{
+    ExactRetryError, ExactRetryState, ExactRetryWorkflow, PreparedExactRetry,
 };
 pub(crate) use operator::{
     ControllerLifecycleIntent, OperatorIntent, OperatorIntentError, OperatorWarning,

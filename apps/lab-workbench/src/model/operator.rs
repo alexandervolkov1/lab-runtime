@@ -7,7 +7,9 @@
 
 use super::{Freshness, WorkbenchModel};
 use crate::{
-    client::types::{CommandSendError, ConnectionState, MutationIdentity, ReplyKind},
+    client::types::{
+        CommandSendError, ConnectionState, KnownAdmission, MutationIdentity, ReplyKind,
+    },
     client::{ClientHandle, ClientUpdate},
     presentation::RuntimeRef,
 };
@@ -213,6 +215,11 @@ pub(crate) enum OperatorWorkflowState {
         prepared: PreparedOperatorIntent,
         identity: Option<MutationIdentity>,
     },
+    ReconciledTerminal {
+        prepared: PreparedOperatorIntent,
+        identity: MutationIdentity,
+        admission: KnownAdmission,
+    },
 }
 
 impl OperatorWorkflowState {
@@ -294,6 +301,45 @@ impl OperatorWorkflow {
     }
 
     pub(crate) fn after_update(&mut self, update: &ClientUpdate) {
+        if let OperatorWorkflowState::Ambiguous { prepared, identity } = &self.state {
+            match identity {
+                Some(identity) => {
+                    if let ClientUpdate::RecoveryProjection { active, .. } = update
+                        && let Some(record) = active.iter().find(|record| {
+                            record.identity == *identity
+                                && matches!(
+                                    record.admission,
+                                    KnownAdmission::Completed | KnownAdmission::Failed
+                                )
+                        })
+                    {
+                        self.state = OperatorWorkflowState::ReconciledTerminal {
+                            prepared: prepared.clone(),
+                            identity: identity.clone(),
+                            admission: record.admission,
+                        };
+                    }
+                }
+                None => {
+                    let records = match update {
+                        ClientUpdate::ReconciliationRequired { records } => {
+                            Some(records.as_slice())
+                        }
+                        ClientUpdate::RecoveryProjection { active, .. } => Some(active.as_slice()),
+                        _ => None,
+                    };
+                    if let Some(identity) =
+                        records.and_then(|records| exact_recovery_identity(records, prepared))
+                    {
+                        self.state = OperatorWorkflowState::Ambiguous {
+                            prepared: prepared.clone(),
+                            identity: Some(identity),
+                        };
+                    }
+                }
+            }
+            return;
+        }
         let (command_id, prepared, known_identity) = match &self.state {
             OperatorWorkflowState::Submitted {
                 command_id,
@@ -351,18 +397,15 @@ impl OperatorWorkflow {
                     conflict: false,
                 };
             }
-            ClientUpdate::ReconciliationRequired { records }
-                if records.iter().any(|record| {
-                    record.op == prepared.operation
-                        && known_identity
-                            .as_ref()
-                            .is_none_or(|identity| identity == &record.identity)
-                }) =>
-            {
-                self.state = OperatorWorkflowState::Ambiguous {
-                    prepared,
-                    identity: known_identity,
+            ClientUpdate::ReconciliationRequired { records } => {
+                let identity = match known_identity {
+                    Some(identity) if records.iter().any(|record| record.identity == identity) => {
+                        Some(identity)
+                    }
+                    Some(_) => return,
+                    None => exact_recovery_identity(records, &prepared),
                 };
+                self.state = OperatorWorkflowState::Ambiguous { prepared, identity };
             }
             ClientUpdate::TransportFailure { .. }
             | ClientUpdate::ResnapshotRequired {
@@ -377,6 +420,22 @@ impl OperatorWorkflow {
             _ => {}
         }
     }
+}
+
+fn exact_recovery_identity(
+    records: &[crate::client::types::RecoveryRecord],
+    prepared: &PreparedOperatorIntent,
+) -> Option<MutationIdentity> {
+    let mut matches = records.iter().filter(|record| {
+        record.op == prepared.operation
+            && record.args == prepared.args
+            && matches!(
+                record.admission,
+                KnownAdmission::Pending | KnownAdmission::Accepted | KnownAdmission::Ambiguous
+            )
+    });
+    let identity = matches.next()?.identity.clone();
+    matches.next().is_none().then_some(identity)
 }
 
 pub(crate) fn prepare(
@@ -1608,6 +1667,189 @@ mod tests {
     }
 
     #[test]
+    fn submitted_ambiguity_recovers_only_one_exact_unresolved_identity() {
+        for (through_transport, terminal) in [
+            (true, KnownAdmission::Completed),
+            (false, KnownAdmission::Failed),
+        ] {
+            let (model, mut workflow) = reference_workflow();
+            let sender = FakeSubmitter::default();
+            workflow.confirm(&model, &sender).unwrap();
+            let OperatorWorkflowState::Submitted { prepared, .. } = &workflow.state else {
+                panic!("expected submitted workflow")
+            };
+            let prepared = prepared.clone();
+            let identity = MutationIdentity {
+                scope: "scope".into(),
+                seq: 11,
+            };
+            let unresolved = RecoveryRecord {
+                boot_id: "boot".into(),
+                identity: identity.clone(),
+                op: prepared.operation.into(),
+                args: prepared.args.clone(),
+                admission: KnownAdmission::Ambiguous,
+            };
+
+            if through_transport {
+                workflow.after_update(&ClientUpdate::TransportFailure {
+                    reason: "lost after wire transmission".into(),
+                });
+                assert!(matches!(
+                    workflow.state,
+                    OperatorWorkflowState::Ambiguous { identity: None, .. }
+                ));
+            }
+            workflow.after_update(&ClientUpdate::ReconciliationRequired {
+                records: vec![unresolved.clone()],
+            });
+            assert!(matches!(
+                workflow.state,
+                OperatorWorkflowState::Ambiguous {
+                    identity: Some(ref actual),
+                    ..
+                } if actual == &identity
+            ));
+
+            workflow.after_update(&ClientUpdate::RecoveryProjection {
+                active: vec![RecoveryRecord {
+                    admission: terminal,
+                    ..unresolved
+                }],
+                quarantined: Vec::new(),
+            });
+            assert!(matches!(
+                workflow.state,
+                OperatorWorkflowState::ReconciledTerminal {
+                    identity: ref actual,
+                    admission,
+                    ..
+                } if actual == &identity && admission == terminal
+            ));
+            workflow.cancel_or_acknowledge();
+            assert!(matches!(workflow.state, OperatorWorkflowState::Idle));
+            assert_eq!(sender.sent.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn nonunique_inexact_terminal_and_quarantined_records_never_supply_identity() {
+        let (model, mut workflow) = reference_workflow();
+        let sender = FakeSubmitter::default();
+        workflow.confirm(&model, &sender).unwrap();
+        let OperatorWorkflowState::Submitted { prepared, .. } = &workflow.state else {
+            panic!("expected submitted workflow")
+        };
+        let prepared = prepared.clone();
+        let exact = |seq, admission| RecoveryRecord {
+            boot_id: "boot".into(),
+            identity: MutationIdentity {
+                scope: "scope".into(),
+                seq,
+            },
+            op: prepared.operation.into(),
+            args: prepared.args.clone(),
+            admission,
+        };
+
+        let mut different_args = exact(1, KnownAdmission::Ambiguous);
+        different_args.args = json!({"different":true});
+        workflow.after_update(&ClientUpdate::ReconciliationRequired {
+            records: vec![different_args],
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous { identity: None, .. }
+        ));
+
+        workflow.after_update(&ClientUpdate::ReconciliationRequired {
+            records: vec![
+                exact(2, KnownAdmission::Pending),
+                exact(3, KnownAdmission::Accepted),
+            ],
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous { identity: None, .. }
+        ));
+
+        workflow.after_update(&ClientUpdate::ReconciliationRequired {
+            records: vec![exact(4, KnownAdmission::Completed)],
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous { identity: None, .. }
+        ));
+
+        workflow.after_update(&ClientUpdate::RecoveryProjection {
+            active: Vec::new(),
+            quarantined: vec![QuarantinedRecoveryRecord {
+                record: exact(5, KnownAdmission::Ambiguous),
+                reason: RecoveryQuarantineReason::AttachedScopeMismatch,
+            }],
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous { identity: None, .. }
+        ));
+        assert_eq!(sender.sent.borrow().len(), 1);
+    }
+
+    #[test]
+    fn accepted_identity_is_never_replaced_by_unrelated_recovery_evidence() {
+        let (model, mut workflow) = reference_workflow();
+        let sender = FakeSubmitter::default();
+        workflow.confirm(&model, &sender).unwrap();
+        let OperatorWorkflowState::Submitted { prepared, .. } = &workflow.state else {
+            panic!("expected submitted workflow")
+        };
+        let prepared = prepared.clone();
+        let identity = MutationIdentity {
+            scope: "scope".into(),
+            seq: 21,
+        };
+        let accepted = RecoveryRecord {
+            boot_id: "boot".into(),
+            identity: identity.clone(),
+            op: prepared.operation.into(),
+            args: prepared.args.clone(),
+            admission: KnownAdmission::Accepted,
+        };
+        workflow.after_update(&ClientUpdate::Reply {
+            command_id: 7,
+            msg_id: "7".into(),
+            op: prepared.operation.into(),
+            kind: ReplyKind::MutationAccepted,
+            envelope: json!({"type":"operation","state":"accepted"}),
+            recovery: Some(accepted),
+        });
+        workflow.after_update(&ClientUpdate::TransportFailure {
+            reason: "lost after acceptance".into(),
+        });
+        workflow.after_update(&ClientUpdate::RecoveryProjection {
+            active: vec![RecoveryRecord {
+                boot_id: "boot".into(),
+                identity: MutationIdentity {
+                    scope: "scope".into(),
+                    seq: 22,
+                },
+                op: prepared.operation.into(),
+                args: prepared.args,
+                admission: KnownAdmission::Completed,
+            }],
+            quarantined: Vec::new(),
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous {
+                identity: Some(ref actual),
+                ..
+            } if actual == &identity
+        ));
+        assert_eq!(sender.sent.borrow().len(), 1);
+    }
+
+    #[test]
     fn boot_change_invalidates_reference_and_state_guarded_confirmations() {
         let (mut reference_model, mut reference_workflow) = reference_workflow();
         let mut next_hello = reference_model.hello.clone().unwrap();
@@ -1665,5 +1907,117 @@ mod tests {
             Err(OperatorIntentError::DraftStale)
         );
         assert!(sender.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn ambiguous_workflow_reconciles_only_from_matching_authoritative_terminal_projection() {
+        let target = RuntimeRef::Reference {
+            reference: "1".into(),
+        };
+        let mut model = model(&["reference_retune"]);
+        observe(
+            &mut model,
+            target,
+            json!({"reference":"1","revision":"7","kind":"ramp"}),
+        );
+        let prepared = prepare(
+            &model,
+            OperatorIntent::RetuneReference {
+                reference: "1".into(),
+                target: 4.0,
+                rate: 1.0,
+            },
+        )
+        .unwrap();
+        let identity = MutationIdentity {
+            scope: "scope".into(),
+            seq: 7,
+        };
+        let retained = |identity: MutationIdentity, admission| RecoveryRecord {
+            boot_id: "boot".into(),
+            identity,
+            op: prepared.operation.into(),
+            args: prepared.args.clone(),
+            admission,
+        };
+
+        for admission in [KnownAdmission::Completed, KnownAdmission::Failed] {
+            let mut workflow = OperatorWorkflow {
+                state: OperatorWorkflowState::Ambiguous {
+                    prepared: prepared.clone(),
+                    identity: Some(identity.clone()),
+                },
+                accepted_observed: true,
+            };
+            workflow.after_update(&ClientUpdate::RecoveryProjection {
+                active: vec![retained(
+                    MutationIdentity {
+                        scope: "scope".into(),
+                        seq: 8,
+                    },
+                    admission,
+                )],
+                quarantined: Vec::new(),
+            });
+            assert!(matches!(
+                workflow.state,
+                OperatorWorkflowState::Ambiguous { .. }
+            ));
+
+            workflow.after_update(&ClientUpdate::RecoveryProjection {
+                active: vec![retained(identity.clone(), KnownAdmission::Accepted)],
+                quarantined: Vec::new(),
+            });
+            assert!(matches!(
+                workflow.state,
+                OperatorWorkflowState::Ambiguous { .. }
+            ));
+
+            workflow.after_update(&ClientUpdate::RecoveryProjection {
+                active: vec![retained(identity.clone(), admission)],
+                quarantined: Vec::new(),
+            });
+            assert!(matches!(
+                workflow.state,
+                OperatorWorkflowState::ReconciledTerminal {
+                    identity: ref reconciled,
+                    admission: actual,
+                    ..
+                } if reconciled == &identity && actual == admission
+            ));
+            workflow.cancel_or_acknowledge();
+            assert!(matches!(workflow.state, OperatorWorkflowState::Idle));
+        }
+
+        let mut workflow = OperatorWorkflow {
+            state: OperatorWorkflowState::Ambiguous {
+                prepared: prepared.clone(),
+                identity: Some(identity.clone()),
+            },
+            accepted_observed: true,
+        };
+        workflow.after_update(&ClientUpdate::Reply {
+            command_id: 99,
+            msg_id: "99".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::PublicError,
+            envelope: json!({"type":"error","code":"outcome_unknown"}),
+            recovery: None,
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous { .. }
+        ));
+        workflow.after_update(&ClientUpdate::RecoveryProjection {
+            active: Vec::new(),
+            quarantined: vec![QuarantinedRecoveryRecord {
+                record: retained(identity, KnownAdmission::Ambiguous),
+                reason: RecoveryQuarantineReason::AttachedBootMismatch,
+            }],
+        });
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Ambiguous { .. }
+        ));
     }
 }

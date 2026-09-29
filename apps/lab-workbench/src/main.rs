@@ -125,17 +125,22 @@ mod runtime_acceptance {
         process::{Child, Command, Stdio},
         sync::mpsc,
         thread,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     const ACCEPTANCE_TIMEOUT: Duration = Duration::from_secs(5);
 
-    struct RuntimeChild(Child);
+    struct RuntimeChild(Child, Option<PathBuf>);
 
     impl Drop for RuntimeChild {
         fn drop(&mut self) {
             let _ = self.0.kill();
             let _ = self.0.wait();
+            if let Some(path) = self.1.as_ref() {
+                let _ = std::fs::remove_file(path);
+                let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+                let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+            }
         }
     }
 
@@ -156,6 +161,45 @@ mod runtime_acceptance {
     }
 
     fn start_runtime() -> (RuntimeChild, std::net::SocketAddr) {
+        start_runtime_with_args(
+            &["--serve", "--profile", "virtual-demo", "--port", "0"],
+            None,
+        )
+    }
+
+    fn start_runtime_with_recorder() -> (RuntimeChild, std::net::SocketAddr) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let database = std::env::temp_dir().join(format!(
+            "lab-workbench-m14-6b2b1-{}-{suffix}.sqlite",
+            std::process::id()
+        ));
+        let database_text = database
+            .to_str()
+            .expect("temporary database path")
+            .to_owned();
+        start_runtime_with_args(
+            &[
+                "--serve",
+                "--profile",
+                "virtual-demo",
+                "--port",
+                "0",
+                "--record-db",
+                database_text.as_str(),
+                "--record-policy",
+                "best-effort",
+            ],
+            Some(database),
+        )
+    }
+
+    fn start_runtime_with_args(
+        arguments: &[&str],
+        recorder_path: Option<PathBuf>,
+    ) -> (RuntimeChild, std::net::SocketAddr) {
         let binary = runtime_binary();
         assert!(
             binary.is_file(),
@@ -163,7 +207,7 @@ mod runtime_acceptance {
             binary.display()
         );
         let mut child = Command::new(binary)
-            .args(["--serve", "--profile", "virtual-demo", "--port", "0"])
+            .args(arguments)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -182,7 +226,7 @@ mod runtime_acceptance {
         let ready: Value = serde_json::from_str(&line).expect("Runtime readiness JSON");
         let port = ready["port"].as_u64().expect("Runtime readiness TCP port") as u16;
         (
-            RuntimeChild(child),
+            RuntimeChild(child, recorder_path),
             std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         )
     }
@@ -451,21 +495,6 @@ mod runtime_acceptance {
         ));
         assert_eq!(status["state"], "completed");
 
-        client.retry_mutation(record.identity.clone()).unwrap();
-        let retained = wait_for(&client, |update| {
-            matches!(
-                update,
-                ClientUpdate::Reply {
-                    kind: ReplyKind::MutationCompleted,
-                    ..
-                }
-            )
-        });
-        let ClientUpdate::Reply { envelope, .. } = retained else {
-            unreachable!()
-        };
-        assert_eq!(envelope["result"], status["result"]);
-
         client.query("reference", json!({"reference":"1"})).unwrap();
         let after_retry_update = wait_for(
             &client,
@@ -542,5 +571,263 @@ mod runtime_acceptance {
 
         client.shutdown().unwrap();
         assert!(runtime.0.try_wait().unwrap().is_none());
+    }
+
+    #[test]
+    #[ignore = "M14.6B2B1 real Runtime retained-outcome Exact Retry acceptance"]
+    fn real_runtime_exact_retry_retained_outcome_never_reexecutes() {
+        let (mut runtime, address) = start_runtime_with_recorder();
+        let client = ClientHandle::spawn(address).unwrap();
+        client.connect(None).unwrap();
+        let ClientUpdate::Hello(hello) =
+            wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)))
+        else {
+            unreachable!()
+        };
+
+        client
+            .mutation(
+                "recording_start",
+                json!({"label":"M14.6B2B1 retained Exact Retry"}),
+            )
+            .unwrap();
+        let accepted = wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                }
+            )
+        });
+        let ClientUpdate::Reply {
+            recovery: Some(original),
+            ..
+        } = accepted
+        else {
+            panic!("accepted recording start omitted recovery evidence")
+        };
+        client.disconnect().unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::State(super::client::types::ConnectionState::Disconnected)
+            )
+        });
+
+        client.connect(Some(hello.scope.clone())).unwrap();
+        let ClientUpdate::Hello(reattached) =
+            wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)))
+        else {
+            unreachable!()
+        };
+        assert_eq!(reattached.next_seq, 2);
+        client.retry_mutation(original.identity.clone()).unwrap();
+        let retained = wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationCompleted,
+                    ..
+                }
+            )
+        });
+        let ClientUpdate::Reply { envelope, .. } = retained else {
+            unreachable!()
+        };
+        let run_id = envelope["result"]["run_id"].clone();
+
+        client.query("recording_status", json!({})).unwrap();
+        let status = reply_result(wait_for(&client, |update| {
+            matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. }
+                if op == "recording_status")
+        }));
+        assert_eq!(status["state"], "recording", "{status:?}");
+        assert_eq!(status["run_id"], run_id);
+
+        client
+            .mutation("recording_stop", json!({"run_id":run_id}))
+            .unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                }
+            )
+        });
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationCompleted,
+                    ..
+                }
+            )
+        });
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
+    }
+
+    #[test]
+    #[ignore = "M14.6B2B1 real Runtime evicted-outcome Exact Retry acceptance"]
+    fn real_runtime_exact_retry_outcome_unknown_never_reexecutes() {
+        let (mut runtime, address) = start_runtime_with_recorder();
+        let client = ClientHandle::spawn(address).unwrap();
+        client.connect(None).unwrap();
+        let ClientUpdate::Hello(hello) =
+            wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)))
+        else {
+            unreachable!()
+        };
+
+        client
+            .mutation(
+                "recording_start",
+                json!({"label":"M14.6B2B1 exact retry evidence"}),
+            )
+            .unwrap();
+        let accepted = wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                }
+            )
+        });
+        let ClientUpdate::Reply {
+            recovery: Some(original),
+            ..
+        } = accepted
+        else {
+            panic!("accepted mutation omitted recovery evidence")
+        };
+        assert_eq!(original.identity.seq, 1);
+
+        client.disconnect().unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::State(super::client::types::ConnectionState::Disconnected)
+            )
+        });
+        client.connect(Some(hello.scope.clone())).unwrap();
+        let ClientUpdate::Hello(reattached) =
+            wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)))
+        else {
+            unreachable!()
+        };
+        assert_eq!(reattached.next_seq, 2);
+
+        client.query("recording_status", json!({})).unwrap();
+        let recording_before = reply_result(wait_for(&client, |update| {
+            matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. }
+                if op == "recording_status")
+        }));
+        assert_eq!(
+            recording_before["state"], "recording",
+            "{recording_before:?}"
+        );
+        let run_id = recording_before["run_id"].clone();
+
+        client
+            .mutation("recording_stop", json!({"run_id":run_id}))
+            .unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                }
+            )
+        });
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationCompleted,
+                    ..
+                }
+            )
+        });
+
+        for seq in 3..=35_u64 {
+            client.query("reference", json!({"reference":"1"})).unwrap();
+            let current = reply_result(wait_for(&client, |update| {
+                matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. }
+                    if op == "reference")
+            }));
+            let revision = current["revision"].as_str().unwrap();
+            let target = 20.0 + (seq % 2) as f64;
+            client
+                .mutation(
+                    "reference_retune",
+                    json!({"reference":"1","expected_revision":revision,
+                        "target":target,"rate":2.0}),
+                )
+                .unwrap();
+            wait_for(&client, |update| {
+                matches!(
+                    update,
+                    ClientUpdate::Reply {
+                        kind: ReplyKind::MutationAccepted,
+                        ..
+                    }
+                )
+            });
+            wait_for(&client, |update| {
+                matches!(
+                    update,
+                    ClientUpdate::Reply {
+                        kind: ReplyKind::MutationCompleted,
+                        ..
+                    }
+                )
+            });
+        }
+
+        client.retry_mutation(original.identity.clone()).unwrap();
+        let unknown = wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::PublicError,
+                    envelope,
+                    ..
+                } if envelope.get("code").and_then(Value::as_str) == Some("outcome_unknown")
+            )
+        });
+        assert!(matches!(unknown, ClientUpdate::Reply { .. }));
+
+        client.query("recording_status", json!({})).unwrap();
+        let recording_after = reply_result(wait_for(&client, |update| {
+            matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. }
+                if op == "recording_status")
+        }));
+        assert_eq!(recording_after["state"], "idle", "{recording_after:?}");
+
+        client.disconnect().unwrap();
+        let reconciliation = wait_for(&client, |update| {
+            matches!(update, ClientUpdate::ReconciliationRequired { records }
+                if records.iter().any(|record| record.identity == original.identity))
+        });
+        let ClientUpdate::ReconciliationRequired { records } = reconciliation else {
+            unreachable!()
+        };
+        let retained = records
+            .iter()
+            .find(|record| record.identity == original.identity)
+            .unwrap();
+        assert_eq!(retained.op, original.op);
+        assert_eq!(retained.args, original.args);
+        assert_eq!(
+            retained.admission,
+            super::client::types::KnownAdmission::Accepted
+        );
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
     }
 }

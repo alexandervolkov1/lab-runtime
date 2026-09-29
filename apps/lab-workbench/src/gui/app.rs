@@ -561,6 +561,29 @@ impl WorkbenchApp {
                 }
                 ui.label("No automatic retry is performed; the worker-owned payload is immutable.");
             }
+            OperatorWorkflowState::ReconciledTerminal {
+                prepared,
+                identity,
+                admission,
+            } => {
+                ui.colored_label(
+                    if admission == KnownAdmission::Completed {
+                        Color32::LIGHT_GREEN
+                    } else {
+                        Color32::LIGHT_RED
+                    },
+                    format!("Reconciled terminal: {admission:?}"),
+                );
+                ui.label(prepared.confirmation);
+                ui.label(format!(
+                    "retained request {}:{}",
+                    identity.scope, identity.seq
+                ));
+                ui.label("Resolved from authoritative worker recovery evidence.");
+                if ui.button("Acknowledge").clicked() {
+                    self.operator.cancel_or_acknowledge();
+                }
+            }
         }
     }
 

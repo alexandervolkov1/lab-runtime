@@ -120,6 +120,11 @@ pub(crate) struct RecoveryStatusTracker {
 }
 
 impl RecoveryStatusTracker {
+    /// Whether one manual status request is outstanding for this exact identity.
+    pub(crate) fn is_pending(&self, identity: &MutationIdentity) -> bool {
+        matches!(self.state(identity), RecoveryStatusState::Pending { .. })
+    }
+
     /// Builds bounded read-only presentation rows from the authoritative model projection.
     pub(crate) fn presentations(&self, model: &WorkbenchModel) -> Vec<RecoveryRecordPresentation> {
         model
