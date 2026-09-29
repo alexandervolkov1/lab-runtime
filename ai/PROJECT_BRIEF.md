@@ -50,10 +50,11 @@ M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: AUTHORIZED
-M15.4+: NOT AUTHORIZED
-Current phase: M15.3 architecture + Application API reference
-STATUS: M15_3_ARCHITECTURE_API_REFERENCE_AUTHORIZED
+M15.3 architecture + Application API reference: ACCEPTED
+M15.4 Workbench user guide: AUTHORIZED
+M15.5+: NOT AUTHORIZED
+Current phase: M15.4 Workbench user guide
+STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -85,9 +86,11 @@ The accepted M14.6A audit commit is
 The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
 The accepted M15.1 documentation/productization audit commit is
-`8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
-accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. Only M15.3 architecture +
-Application API reference is authorized; M15.4+ is not authorized.
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
+Application API reference implementation commit is
+`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
+authorized; M15.5+ is not authorized.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -164,9 +167,11 @@ implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. The accepte
 implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepted M14.6B4
 implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
 acceptance is granted. M15.1 is accepted at audit commit
-`8cd89e2b58ba11248c2ce2532c165270a9c60797`; only M15.2 README + getting started is
-accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`; only M15.3 architecture +
-Application API reference is authorized. Future automation remains deferred and
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`; M15.2 README + getting started is
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
+Application API reference implementation commit is
+`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
+authorized; M15.5+ remains unauthorized. Future automation remains deferred and
 language-neutral.
 
 Final polished release documentation is a later gate.

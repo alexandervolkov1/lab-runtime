@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M15.3 architecture + Application API reference
+Current phase: M15.4 Workbench user guide
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -40,9 +40,10 @@ M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: AUTHORIZED
-M15.4+: NOT AUTHORIZED
-STATUS: M15_3_ARCHITECTURE_API_REFERENCE_AUTHORIZED
+M15.3 architecture + Application API reference: ACCEPTED
+M15.4 Workbench user guide: AUTHORIZED
+M15.5+: NOT AUTHORIZED
+STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -74,9 +75,11 @@ The accepted M14.6A audit commit is
 The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
 The accepted M15.1 documentation/productization audit commit is
-`8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
-accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. Only M15.3 architecture +
-Application API reference is authorized; M15.4+ is not authorized.
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
+Application API reference implementation commit is
+`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
+authorized; M15.5+ is not authorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known

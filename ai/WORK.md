@@ -1,10 +1,10 @@
-# Current work — M15.3 architecture + Application API reference
+# Current work — M15.4 Workbench user guide
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M15.3 architecture + Application API reference
+Current phase: M15.4 Workbench user guide
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -38,9 +38,10 @@ M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: AUTHORIZED
-M15.4+: NOT AUTHORIZED
-STATUS: M15_3_ARCHITECTURE_API_REFERENCE_AUTHORIZED
+M15.3 architecture + Application API reference: ACCEPTED
+M15.4 Workbench user guide: AUTHORIZED
+M15.5+: NOT AUTHORIZED
+STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -72,9 +73,11 @@ The accepted M14.6A audit commit is
 The accepted M14.6B1 implementation commit is
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`.
 The accepted M15.1 documentation/productization audit commit is
-`8cd89e2b58ba11248c2ce2532c165270a9c60797`. Only M15.2 README + getting started is
-accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. Only M15.3 architecture +
-Application API reference is authorized; M15.4+ is not authorized.
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
+Application API reference implementation commit is
+`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
+authorized; M15.5+ is not authorized.
 
 ## Completed preparation step
 
@@ -185,6 +188,15 @@ M14.6B3 bounded fault reattach: ACCEPTED
 M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
 M14.6 recovery/reconnect/fault acceptance: ACCEPTED
 M14 consolidated acceptance: ACCEPTED
+M15.1 documentation/productization audit: ACCEPTED
+M15.2 README + getting started: ACCEPTED
+M15.3 architecture + Application API reference: ACCEPTED
+M15.4 Workbench user guide: AUTHORIZED
+M15.5+: NOT AUTHORIZED
+
+Current phase: M15.4 Workbench user guide
+
+STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -220,18 +232,52 @@ implementation commit is `eafd73adf43a8a566336bfe1a14370066fe06c5c`. The accepte
 implementation commit is `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`. The accepted M14.6B4
 implementation commit is `801a4b559d82a903e9232cc08f5e7d27d714b1d5`. M14 consolidated
 acceptance is granted. M15.1 is accepted at audit commit
-`8cd89e2b58ba11248c2ce2532c165270a9c60797`; only M15.2 README + getting started is
-accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`; only M15.3 architecture +
-Application API reference is authorized.
+`8cd89e2b58ba11248c2ce2532c165270a9c60797`; M15.2 README + getting started is
+accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
+Application API reference implementation commit is
+`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
+authorized; M15.5+ remains unauthorized.
 
-## Authorized M15.3 scope
+## Authorized M15.4 scope
 
-Create the canonical current architecture and Application API reference in
-`docs/architecture.md`, the compatibility `docs/application-api.md`, and the bounded
-`docs/api/` section. Derive operation, capability, error, and limit statements from
-accepted source and tests. M15.3 must not change Rust, Cargo/dependencies,
-Runtime/Application semantics, add tutorials/automation, or begin M15.4+. M13.2
-remains unauthorized.
+M15.4 is product documentation only. Its canonical deliverable is
+`docs/workbench.md`. Minimal navigation or cross-link edits in existing public
+documentation are allowed only when needed to make the guide discoverable.
+
+The guide must describe the current accepted Workbench as implemented in
+`apps/lab-workbench/src/gui/`, `model/`, `presentation/`, `client/`, and `recovery/`
+and evidenced by accepted M14 tests/reports. It covers:
+
+- launching Workbench and connecting to a separately running Runtime;
+- Connected, Fresh, Rebuilding, and Stale states;
+- Discovery, observed-object selection, live signal plots, and bounded display-only
+  trace history;
+- typed operator controls for References, controller lifecycle/PID, resource
+  reconnect, configuration/properties, and Recorder status/start/stop;
+- confirmation and Submitted, Accepted, Completed, and Failed evidence;
+- explicit/manual Check Status and Exact Retry;
+- explicit Disconnect versus the bounded unexpected-fault reattach episode;
+- workspace and `PresentationDocument` ownership, including one Workbench process per
+  workspace;
+- corrupt presentation/recovery-state behavior at the level visible in the current
+  UI;
+- the boundary between Workbench presentation/cache and Runtime authority, including
+  that Workbench close/crash does not stop Runtime, controllers, Recorder, or the
+  experiment.
+
+M15.4 must not become the detailed recovery/fault reference: quarantine matrices,
+journal internals, complete fault lifecycle, and troubleshooting remain future M15.6
+work. It must not add raw NDJSON, Rust, or WebSocket tutorials; those remain future
+M15.5 work. It must not claim that Workbench owns experiment state, Completed proves
+physical effect, Fresh reconciles mutations, reconnect automatically runs status or
+Exact Retry, explicit Disconnect reconnects, GUI close sends `runtime_shutdown`,
+Workbench history is authoritative, all 42 API operations have GUI controls, or
+recovery evidence can be discarded/forgotten.
+
+M15.4 changes no Rust, tests, Cargo/dependencies, Runtime/Application/Workbench
+behavior, scripting/automation architecture, or historical review evidence. It does
+not select a scripting language. M15.5+ and M13.2 remain unauthorized; M13.2 remains
+blocked on Steel dependency safety.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in
