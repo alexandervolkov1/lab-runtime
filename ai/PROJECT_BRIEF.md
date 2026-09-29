@@ -51,10 +51,14 @@ M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
 M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: AUTHORIZED
-M15.5+: NOT AUTHORIZED
-Current phase: M15.4 Workbench user guide
-STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
+M15.4 Workbench user guide: ACCEPTED
+M15.5–M15.8:
+DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
+NOT AUTHORIZED
+M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.2–M16.7: NOT AUTHORIZED
+Current phase: M16.1 declarative simple-device architecture/API audit
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -89,8 +93,10 @@ The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ is not authorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
+without consolidated acceptance; M15.5–M15.8 are deferred and unauthorized until M16
+consolidated acceptance. Only the read-only M16.1 audit is authorized.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -170,9 +176,26 @@ acceptance is granted. M15.1 is accepted at audit commit
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`; M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ remains unauthorized. Future automation remains deferred and
-language-neutral.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
+without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
+consolidated acceptance. Only the read-only M16.1 audit is authorized.
+
+M16 targets bounded declarative simple devices that become ordinary Runtime
+Instrument, Signal, and Actuator entities after validation, without device-specific
+operational API or special Workbench/Recorder/history/controller paths. Writable
+parameters remain behind existing Runtime OutputAuthority and resource-generation
+fences; no public raw byte/command authority is permitted.
+
+```text
+persistent deployment configuration != current Runtime state != experiment procedure
+```
+
+Deployment describes the installed laboratory and reproducible safe baseline; a
+declarative definition maps a bounded physical protocol to typed parameters; the
+Application API authoritatively changes execution-time state/configuration; a future
+external procedure acts on semantic entities and does not know transport/protocol or
+OutputAuthority internals.
 
 Final polished release documentation is a later gate.
 

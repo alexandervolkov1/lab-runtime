@@ -35,10 +35,14 @@ M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
 M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: AUTHORIZED
-M15.5+: NOT AUTHORIZED
-Current phase: M15.4 Workbench user guide
-STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
+M15.4 Workbench user guide: ACCEPTED
+M15.5–M15.8:
+DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
+NOT AUTHORIZED
+M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.2–M16.7: NOT AUTHORIZED
+Current phase: M16.1 declarative simple-device architecture/API audit
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -73,8 +77,10 @@ The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ is not authorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
+without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
+consolidated acceptance. Only the read-only M16.1 audit is authorized.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -104,8 +110,12 @@ acceptance is granted. M15.1 is accepted at audit commit
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`; M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ remains unauthorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15.5–M15.8
+are deferred and unauthorized until M16 consolidated acceptance; final public API,
+tutorial, recovery, automation, and documentation-acceptance material should describe
+the post-M16 provisioning/configuration surface once. Consolidated M15 acceptance is
+not claimed.
 
 Functionally complete means the accepted Runtime behavior is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
@@ -137,9 +147,11 @@ M12 WebSocket transport
     ↓
 M14 GUI / Workbench / client-owned PresentationDocument
     ↓
-future optional Steel-in-Workbench scripting, after dependency acceptance
+M15.1–M15.4 accepted product documentation
     ↓
-thermal-plant-uno end-to-end integration validation
+M16 declarative simple-device layer
+    ↓
+M15.5–M15.8 final post-M16 documentation work
     ↓
 final documentation / packaging / review
     ↓
@@ -176,18 +188,21 @@ No UI or scripting semantics may enter Runtime core.
 ## End-to-end integration validation
 
 ```text
-Arduino thermal plant
-→ Rust physical instrument integration
-→ experiment-specific Clojure client
-→ Clay live browser view
-→ thermal experiments
-→ sealed SQLite archives
-→ Clojure/Clay system-identification notebook
+M16 declarative simple-device layer
+→ real Arduino thermal plant implemented as a declarative definition/instance
+→ real COM acceptance with no Arduino-specific Runtime driver
+→ external Clojure Application client / lab-orchestrator
+→ experiment procedures
+→ sealed Recorder SQLite archives
+→ Clojure/Clay analysis and system identification
 ```
 
-This validates the completed transport, external scripting-client and presentation
-boundaries in practice. It is not retroactive evidence for M8-M11 acceptance and
-does not change physical-evidence limits.
+M16 makes bounded simple devices ordinary Runtime instruments without device-specific
+operational API or special Workbench/Recorder/history/controller branches. Arduino is
+the first intended real-device use case after M16, not M16's architecture. The future
+Clojure client is external, knows the Application API and semantic laboratory
+identities, and does not know the Arduino wire protocol. This sequencing does not
+authorize scripting implementation, M16.2+, or M15.5–M15.8 now.
 
 ## Final release gate
 

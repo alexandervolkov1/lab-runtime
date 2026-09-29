@@ -35,10 +35,14 @@ M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
 M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: AUTHORIZED
-M15.5+: NOT AUTHORIZED
-Current phase: M15.4 Workbench user guide
-STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
+M15.4 Workbench user guide: ACCEPTED
+M15.5–M15.8:
+DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
+NOT AUTHORIZED
+M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.2–M16.7: NOT AUTHORIZED
+Current phase: M16.1 declarative simple-device architecture/API audit
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -73,8 +77,10 @@ The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ is not authorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
+without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
+consolidated acceptance. Only the read-only M16.1 audit is authorized.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -104,18 +110,19 @@ requires explicit authorization in `WORK.md`.
 After preview preparation, the planned exercise is:
 
 ```text
-Arduino thermal plant
-→ Rust physical instrument integration
-→ experiment-specific Clojure client
-→ Clay live browser view
-→ thermal experiments
-→ sealed SQLite archives
-→ Clojure/Clay system-identification notebook
+M16 declarative simple-device layer
+→ real Arduino thermal plant implemented as a declarative definition/instance
+→ real COM acceptance with no Arduino-specific Runtime driver
+→ external Clojure Application client / lab-orchestrator
+→ experiment procedures
+→ sealed Recorder SQLite archives
+→ Clojure/Clay analysis and system identification
 ```
 
-The Arduino remains an external instrument/emulator and is not required to accept
-M11 retroactively. Runtime continues to own experiment semantics; the Clojure/Clay
-client owns presentation semantics.
+Arduino is the first intended real-device acceptance/use case after M16, not the
+architecture of M16 itself. Runtime continues to own experiment semantics. The future
+Clojure client is an external Application client and does not know the Arduino wire
+protocol.
 
 The published preview contains TCP/NDJSON. The accepted post-preview M12.3 commit on
 `main` additionally contains the optional loopback WebSocket/JSON implementation.
@@ -196,14 +203,134 @@ acceptance is granted. M15.1 is accepted at audit commit
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`; M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ remains unauthorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15.5–M15.8
+are deferred and unauthorized until M16 consolidated acceptance. This sequencing
+lets final API/tutorial/recovery/automation and documentation-acceptance work describe
+the post-M16 provisioning/configuration surface once. Consolidated M15 acceptance is
+not claimed.
+
+## M16 — declarative simple-device integration
+
+M16 is mandatory before the remaining final M15 documentation work. Its product goal
+is that a user who knows only the small useful subset of a device protocol—such as
+READ measurement plus WRITE actuator plus ACK/readback—can describe it as bounded
+declarative configuration, provision it through the language-neutral Application
+boundary, and obtain ordinary Runtime Instrument, Signal, and Actuator entities
+without writing a device-specific Rust driver.
+
+After activation, declarative entities use existing generic paths:
+
+```text
+declarative Signal
+    → ordinary discovery
+    → current measurements
+    → subscriptions
+    → Workbench live plot
+    → Runtime recent history
+    → Recorder/durable history
+    → controller input
+
+declarative Actuator
+    → ordinary Runtime OutputAuthority path
+    → final authority/generation/deadline checks
+    → declarative encoder
+    → physical transport
+    → ACK
+    → optional separate readback
+```
+
+Workbench, Recorder, history, controller, and ordinary Application operation paths
+must not acquire special semantic branches merely because a device is declarative.
+Complex protocols that do not fit the bounded v1 model remain explicit native Rust
+adapters.
+
+### Configuration and procedure boundary
+
+The M16/M18 product boundary is:
+
+```text
+persistent deployment configuration != current Runtime state != experiment procedure
+
+TOML / deployment configuration
+    = what laboratory installation exists and its safe reproducible baseline
+
+declarative device definition
+    = how a bounded physical protocol maps to typed laboratory parameters
+
+Application API
+    = authoritative way to change Runtime state and configuration during execution
+
+future Clojure experiment script
+    = what to do over time with already-defined laboratory entities
+```
+
+The future external script knows semantic Reference, controller, Signal, and Actuator
+identities. It must not know COM port, baud rate, device address, protocol bytes, CRC,
+register offsets, raw scaling, SQLite paths, or OutputAuthority internals. Runtime/API
+mutations may change active state during execution without silently rewriting the
+original deployment source. This roadmap does not authorize scripting implementation
+or select a Runtime-owned automation language.
+
+### M16 sequence
+
+- **M16.1:** read-only, source-derived declarative-device architecture/API/bounds
+  audit; external review required. Only this slice is authorized.
+- **M16.2:** bounded serial request/response READ to a typed ordinary Signal.
+- **M16.3:** ordinary OutputAuthority to declarative WRITE, ACK, and optional separate
+  readback.
+- **M16.4:** bounded Application configuration-candidate provisioning: validate,
+  stage, explicit safe apply, then ordinary rediscovery.
+- **M16.5:** generic Workbench/plot/history/Recorder/controller/reconnect integration
+  acceptance with no declarative-device special branches.
+- **M16.6:** complete fault, bounds, provenance, and recovery acceptance.
+- **M16.7:** minimal unknown-device acceptance for READ measurement, WRITE actuator,
+  ACK, and READBACK without device-specific Runtime/Application/Workbench code.
+- **M16 consolidated external review:** required before M15.5–M15.8 resume.
+
+M16.2–M16.7 and consolidated acceptance are not authorized. Operation names, wire DTO
+shape, declarative schema format, and exact limits are not frozen by this roadmap;
+M16.1 must derive them from current source and accepted authority boundaries.
+
+### V1 direction and authority
+
+M16.1 audits a serial/COM-first, finite request/response subset: fixed-length or
+delimiter-terminated replies; bounded address/channel and template/extractor fields;
+integer, justified IEEE floating-point, and bounded ASCII numeric representations;
+signedness, endian, finite scale/offset, bounded prefix/suffix checks, selected fixed
+CRC/checksum algorithms, periodic reads, typed writes, ACK validation, optional
+independent readback, and finite timeout/queue/frame/parser bounds.
+
+V1 explicitly excludes arbitrary code, scripts, callbacks, loops, a general
+expression language, dynamic evaluation, unbounded parsing, general protocol state
+machines, user-defined allocation, and raw public byte operations. M16 must not add
+public operations equivalent to `send_raw_bytes`, `raw_serial_write`,
+`execute_device_command`, or `unchecked_register_write`.
+
+Declarative configuration never acquires transport or output authority. A writable
+parameter may only encode the final engineering value after existing Runtime-owned
+authority, generation, and deadline fences. ACK, readback, and physical effect remain
+distinct; ambiguity retains the existing fail-closed/no-blind-retry semantics.
+Recorder provenance must retain stable definition/hash/version, normalized
+configuration, instance, resource/binding generation, and existing build/Runtime
+identity. Declarative configuration cannot access arbitrary filesystem/network
+endpoints, open transports, alter Recorder storage directly, fabricate quality or
+ACK/readback, or create operations dynamically.
+
+Current Application configuration operations stage/apply Runtime-known candidates;
+they do not accept arbitrary externally supplied deployment definitions. M16.1 must
+audit the smallest bounded language-neutral additive surface by which a future client
+can submit a definition/instance candidate, obtain complete Runtime validation, stage
+it, explicitly safe-apply it, and rediscover an ordinary instrument. Candidate upload
+must not activate anything, and no operation names are chosen in this coordination
+transition.
 
 ## Final release gate
 
 The later final documentation/package audit will require polished architecture,
 protocol, archive, configuration, safety/recovery and operational documentation plus
-a reproducible checksummed Windows package. M15.4 does not authorize that later gate.
+a reproducible checksummed Windows package. M15.5–M15.8 remain deferred and
+unauthorized until M16 consolidated acceptance.
 
 ## Explicit non-goals
 

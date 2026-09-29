@@ -6,12 +6,12 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M15.4 Workbench user guide
+Current phase: M16.1 declarative simple-device architecture/API audit
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration phase: NOT STARTED
+Practical integration architecture: M16.1 AUTHORIZED
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
@@ -41,9 +41,13 @@ M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
 M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: AUTHORIZED
-M15.5+: NOT AUTHORIZED
-STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
+M15.4 Workbench user guide: ACCEPTED
+M15.5–M15.8:
+DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
+NOT AUTHORIZED
+M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.2–M16.7: NOT AUTHORIZED
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -78,8 +82,10 @@ The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ is not authorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15.5–M15.8
+are deferred and unauthorized until M16 consolidated acceptance; consolidated M15
+acceptance is not claimed. Only the read-only M16.1 audit is authorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -204,25 +210,27 @@ at implementation commit `eafd73adf43a8a566336bfe1a14370066fe06c5c`. M14.6B3 bou
 reattach is accepted at implementation commit `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`.
 M14.6B4 consolidated recovery/fault acceptance is accepted at implementation commit
 `801a4b559d82a903e9232cc08f5e7d27d714b1d5`; M14 consolidated acceptance is granted.
-Practical integration, final polished release documentation, and every later
-implementation phase remain gated and unauthorized.
+M16.1 is the only authorized practical-integration architecture work. M16.2–M16.7,
+remaining final M15 documentation, and every later implementation phase remain gated
+and unauthorized.
 
 ## Later practical validation
 
 ```text
-Arduino thermal plant
-→ Rust physical instrument integration
-→ experiment-specific Clojure client
-→ Clay live browser view
-→ thermal experiments
-→ sealed SQLite archives
-→ Clojure/Clay system-identification notebook
+M16 declarative simple-device layer
+→ real Arduino thermal plant as a declarative definition/instance
+→ real COM acceptance with no Arduino-specific Runtime driver
+→ external Clojure Application client / lab-orchestrator
+→ experiment procedures
+→ sealed Recorder SQLite archives
+→ Clojure/Clay analysis and system identification
 ```
 
-Arduino remains an external practical integration exercise, not retroactive M11
-evidence. The published `v0.1.0-preview.1` artifact remains TCP/NDJSON-only. The
-accepted post-preview M12.3 implementation adds an optional WebSocket adapter for
-the same Application sessions, operations and DTOs.
+M16 is mandatory before that real-device exercise. Arduino is its first intended
+real-device acceptance/use case, not M16's architecture. The future Clojure client is
+an external Application client that knows semantic laboratory entities, not COM,
+protocol bytes, CRC, register offsets, scaling, SQLite paths, or OutputAuthority
+internals. This does not authorize Clojure or any Runtime-owned scripting work now.
 
 ## Residual limitations
 

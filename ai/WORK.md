@@ -1,16 +1,16 @@
-# Current work — M15.4 Workbench user guide
+# Current work — M16.1 declarative simple-device architecture/API audit
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M15.4 Workbench user guide
+Current phase: M16.1 declarative simple-device architecture/API audit
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration phase: NOT STARTED
+Practical integration architecture: M16.1 AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -39,9 +39,13 @@ M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
 M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: AUTHORIZED
-M15.5+: NOT AUTHORIZED
-STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
+M15.4 Workbench user guide: ACCEPTED
+M15.5–M15.8:
+DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
+NOT AUTHORIZED
+M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.2–M16.7: NOT AUTHORIZED
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -76,8 +80,10 @@ The accepted M15.1 documentation/productization audit commit is
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`. M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ is not authorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
+without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
+consolidated acceptance. Only M16.1 is authorized.
 
 ## Completed preparation step
 
@@ -191,12 +197,16 @@ M14 consolidated acceptance: ACCEPTED
 M15.1 documentation/productization audit: ACCEPTED
 M15.2 README + getting started: ACCEPTED
 M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: AUTHORIZED
-M15.5+: NOT AUTHORIZED
+M15.4 Workbench user guide: ACCEPTED
+M15.5–M15.8:
+DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
+NOT AUTHORIZED
+M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.2–M16.7: NOT AUTHORIZED
 
-Current phase: M15.4 Workbench user guide
+Current phase: M16.1 declarative simple-device architecture/API audit
 
-STATUS: M15_4_WORKBENCH_USER_GUIDE_AUTHORIZED
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -235,49 +245,113 @@ acceptance is granted. M15.1 is accepted at audit commit
 `8cd89e2b58ba11248c2ce2532c165270a9c60797`; M15.2 README + getting started is
 accepted at `9a3cd58bc776ffe9939e7f0d97dd753769fd1b15`. The accepted M15.3 architecture +
 Application API reference implementation commit is
-`48383185309fc6810dff54b9656067280a535171`. Only M15.4 Workbench user guide is
-authorized; M15.5+ remains unauthorized.
+`48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
+implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
+without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
+consolidated acceptance so final API tutorials, recovery/automation documentation,
+and documentation acceptance describe the post-M16 product once.
 
-## Authorized M15.4 scope
+## Authorized M16.1 scope
 
-M15.4 is product documentation only. Its canonical deliverable is
-`docs/workbench.md`. Minimal navigation or cross-link edits in existing public
-documentation are allowed only when needed to make the guide discoverable.
+M16.1 is a read-only, source-derived declarative-device architecture, Application
+API, and bounds audit. It may create only its audit report and make the minimal active
+coordination updates separately authorized by review. It must not change production
+Rust, tests, Cargo/dependencies, configuration schemas, public Application behavior,
+Recorder/SQLite schemas, Workbench behavior, examples, or public documentation.
+External review is required before any implementation.
 
-The guide must describe the current accepted Workbench as implemented in
-`apps/lab-workbench/src/gui/`, `model/`, `presentation/`, `client/`, and `recovery/`
-and evidenced by accepted M14 tests/reports. It covers:
+The product goal is that a user who knows only the small useful subset of a device
+protocol—such as READ measurement plus WRITE actuator plus ACK/readback—can describe
+it as bounded declarative configuration, provision it through the language-neutral
+Application boundary, and obtain ordinary Runtime Instrument, Signal, and Actuator
+entities without a device-specific Rust driver.
 
-- launching Workbench and connecting to a separately running Runtime;
-- Connected, Fresh, Rebuilding, and Stale states;
-- Discovery, observed-object selection, live signal plots, and bounded display-only
-  trace history;
-- typed operator controls for References, controller lifecycle/PID, resource
-  reconnect, configuration/properties, and Recorder status/start/stop;
-- confirmation and Submitted, Accepted, Completed, and Failed evidence;
-- explicit/manual Check Status and Exact Retry;
-- explicit Disconnect versus the bounded unexpected-fault reattach episode;
-- workspace and `PresentationDocument` ownership, including one Workbench process per
-  workspace;
-- corrupt presentation/recovery-state behavior at the level visible in the current
-  UI;
-- the boundary between Workbench presentation/cache and Runtime authority, including
-  that Workbench close/crash does not stop Runtime, controllers, Recorder, or the
-  experiment.
+The audit must freeze:
 
-M15.4 must not become the detailed recovery/fault reference: quarantine matrices,
-journal internals, complete fault lifecycle, and troubleshooting remain future M15.6
-work. It must not add raw NDJSON, Rust, or WebSocket tutorials; those remain future
-M15.5 work. It must not claim that Workbench owns experiment state, Completed proves
-physical effect, Fresh reconciles mutations, reconnect automatically runs status or
-Exact Retry, explicit Disconnect reconnects, GUI close sends `runtime_shutdown`,
-Workbench history is authoritative, all 42 API operations have GUI controls, or
-recovery evidence can be discarded/forgotten.
+- the exact v1 bounded protocol feature subset and explicit non-goals;
+- separate definition and deployment-instance schema direction;
+- the bounded normalized/compiled trusted internal representation;
+- parsing, validation, ownership, activation, and atomic candidate rejection;
+- resource binding, reservation, generation, queue, deadline, and execution model;
+- READ/decode/quality semantics and ordinary Signal integration;
+- WRITE/encode, ACK, independent readback, and ambiguity semantics;
+- the unchanged Runtime-owned OutputAuthority path and final authority/generation/
+  deadline check before any possible output byte;
+- the smallest bounded language-neutral provisioning/configuration extension needed
+  for client-supplied candidates;
+- exact limits, Recorder provenance, fault matrix, deterministic acceptance strategy,
+  and M16.2–M16.7 implementation slices.
 
-M15.4 changes no Rust, tests, Cargo/dependencies, Runtime/Application/Workbench
-behavior, scripting/automation architecture, or historical review evidence. It does
-not select a scripting language. M15.5+ and M13.2 remain unauthorized; M13.2 remains
-blocked on Steel dependency safety.
+After activation, declarative signals and actuators must be ordinary entities. Signal
+discovery, current measurements, subscriptions, Workbench plots, Runtime recent
+history, Recorder/durable history, and controller inputs use existing generic paths.
+Writable values use ordinary OutputAuthority, resource reservation, generation and
+deadline fences before declarative encoding and transport. Workbench, Recorder,
+history, controller, and ordinary Application operations receive no special semantic
+branches for declarative devices.
+
+The audit must preserve this boundary:
+
+```text
+persistent deployment configuration != current Runtime state != experiment procedure
+
+deployment configuration = installed laboratory and safe reproducible baseline
+device definition         = bounded protocol mapped to typed laboratory parameters
+Application API           = authoritative execution-time state/configuration changes
+future external procedure = actions over already-defined semantic laboratory entities
+```
+
+A future Clojure external Application client may know Reference, controller, Signal,
+and Actuator identities. It must not know COM port, baud rate, device address,
+protocol bytes, CRC, register offsets, raw scaling, SQLite paths, or OutputAuthority
+internals. Runtime/API mutations may change active state without silently rewriting
+the original deployment source. No scripting implementation or Runtime-owned
+automation language is authorized.
+
+Candidate v1 protocol features to audit—not pre-frozen implementation details—are
+serial/COM first; finite request/response; fixed-length or delimiter termination;
+bounded address/channel, templates, prefix/suffix, and extractors; signed/unsigned
+integer, justified IEEE floating-point, and bounded ASCII numeric fields; endian;
+finite scale/offset; selected fixed checksum/CRC algorithms; periodic reads; typed
+writes; explicit ACK; optional independent readback; and finite queue, frame, parser,
+poll, and timeout bounds.
+
+V1 excludes arbitrary code, scripts, callbacks, loops, general expressions, dynamic
+evaluation, unbounded parser state or allocation, generic protocol state machines,
+and raw public byte access. Complex devices remain native Rust adapters. M16 must not
+add public operations equivalent to `send_raw_bytes`, `raw_serial_write`,
+`execute_device_command`, or `unchecked_register_write`.
+
+Declarative data is configuration, not executable code or authority. It must not
+access arbitrary filesystem/network endpoints, open transports, bypass configured
+resources or OutputAuthority, fabricate observation quality/ACK/readback/safe state,
+write Recorder SQLite directly, or create Application operations dynamically.
+
+Recorder provenance must identify the stable/hash/versioned definition, normalized
+configuration, instrument instance, resource/binding generation, and existing build/
+Runtime provenance without copying mutable client state into scientific authority.
+
+The audit must freeze explicit limits for definitions, encoded definition size,
+parameters per definition, instances, request/response bytes, template/extractor
+fields, checksum inputs, pending transactions, timeouts, poll rates, and ACK/readback
+state. It must account for malformed/unsupported/oversized definitions, truncated or
+invalid replies, prefix/status/checksum/numeric/range failures, timeout before send,
+ambiguous timeout after possible output, bad ACK, readback mismatch, reconnect/rebind
+with stale completion, queue saturation, revision conflict, failed apply preserving
+the active deployment, and client/Workbench death with Runtime continuing.
+
+Current `stage_configuration` handles Runtime-known deployment candidates and does
+not accept arbitrary client-supplied definitions. M16.1 must audit the smallest
+bounded additive candidate lifecycle that can eventually support submit, complete
+Runtime validation, stage, explicit safe apply, and ordinary rediscovery. Upload must
+not activate a candidate. The exact operation names, wire DTOs, schema format, and
+limits are not chosen by this coordination transition.
+
+Only M16.1 is authorized. M16.2 read-only vertical slice, M16.3 writable actuator,
+M16.4 provisioning implementation, M16.5 generic integration acceptance, M16.6 fault/
+bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance, and
+M16 consolidated review all remain unauthorized. M13.2 remains blocked on Steel
+dependency safety.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in
