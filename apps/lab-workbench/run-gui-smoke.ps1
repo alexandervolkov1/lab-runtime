@@ -44,6 +44,10 @@ function Wait-File([string]$Path, [int]$Seconds, [Diagnostics.Process]$Process) 
     throw "Timed out waiting for $Path"
 }
 
+function Convert-StableJson($Value) {
+    return ConvertTo-Json -InputObject $Value -Compress -Depth 20
+}
+
 try {
     New-Item -ItemType Directory -Path $temporary | Out-Null
     & cargo build -p lab-runtime -p lab-workbench --locked @cargoProfile
@@ -54,7 +58,8 @@ try {
     $runtimeInfo.UseShellExecute = $false
     $runtimeInfo.RedirectStandardOutput = $true
     $runtimeInfo.RedirectStandardError = $true
-    $runtimeInfo.Arguments = "--serve --profile virtual-demo --port 0"
+    $recorderDatabase = Join-Path $temporary "runtime-recorder.sqlite"
+    $runtimeInfo.Arguments = "--serve --profile virtual-demo --port 0 --record-db `"$recorderDatabase`" --record-policy best-effort"
     $runtime = [Diagnostics.Process]::Start($runtimeInfo)
     $readyTask = $runtime.StandardOutput.ReadLineAsync()
     if (-not $readyTask.Wait([TimeSpan]::FromSeconds(5))) {
@@ -87,6 +92,12 @@ try {
     $killReady = Join-Path $temporary "kill-ready.json"
     $workbench = Start-Workbench $firstWorkspace "LAB_WORKBENCH_GUI_KILL_READY" $killReady $readiness.port
     $killMetrics = Wait-File $killReady 35 $workbench
+    $preKill = Get-Content -LiteralPath $killReady -Raw | ConvertFrom-Json
+    if ($preKill.status -ne "ready_for_forced_termination") {
+        throw "Kill-probe did not obtain authoritative continuity evidence: $($preKill.reason)"
+    }
+    if ($null -eq $preKill.controller) { throw "Controller was not observed before Workbench termination" }
+    if ($null -eq $preKill.recorder) { throw "Recorder was not observed before Workbench termination" }
     if (-not $killMetrics.WindowObserved) { throw "No native kill-probe window was observed" }
     $workbench.Refresh()
     $idleCpuStart = $workbench.TotalProcessorTime.TotalMilliseconds
@@ -96,9 +107,44 @@ try {
     $idleCpuMilliseconds = $workbench.TotalProcessorTime.TotalMilliseconds - $idleCpuStart
     $idleMemoryEnd = $workbench.WorkingSet64
     $workbench.Kill()
-    $workbench.WaitForExit()
+    if (-not $workbench.WaitForExit(5000)) { throw "Forced Workbench termination was not finite" }
     $workbench = $null
     if ($runtime.HasExited) { throw "Runtime exited when the Workbench was forcibly terminated" }
+
+    # Reusing the same workspace is the executable ownership/journal oracle: the
+    # killed process must release the mutex, and its durable recovery file must
+    # remain parseable enough for a full authoritative rebuild and mutation cycle.
+    $restartResult = Join-Path $temporary "post-kill-gui-smoke.json"
+    $workbench = Start-Workbench $firstWorkspace "LAB_WORKBENCH_GUI_SMOKE_RESULT" $restartResult $readiness.port
+    $restartMetrics = Wait-File $restartResult 35 $workbench
+    $postKill = Get-Content -LiteralPath $restartResult -Raw | ConvertFrom-Json
+    if ($postKill.status -ne "pass") { throw "Post-kill GUI restart reported $($postKill.status): $($postKill.reason)" }
+    if (-not $restartMetrics.WindowObserved) { throw "No post-kill native Workbench window was observed" }
+    if ($null -eq $postKill.controller) { throw "Controller was not observed after Workbench termination" }
+    if ($null -eq $postKill.recorder) { throw "Recorder was not observed after Workbench termination" }
+    $controllerContinuity =
+        ($preKill.controller.controller -eq $postKill.controller.controller) -and
+        ((Convert-StableJson $preKill.controller.state) -eq (Convert-StableJson $postKill.controller.state)) -and
+        ((Convert-StableJson $preKill.controller.revision) -eq (Convert-StableJson $postKill.controller.revision))
+    if (-not $controllerContinuity) {
+        throw "Authoritative controller identity/state/revision changed across forced Workbench termination"
+    }
+    $recorderContinuity =
+        ((Convert-StableJson $preKill.recorder.state) -eq (Convert-StableJson $postKill.recorder.state)) -and
+        ((Convert-StableJson $preKill.recorder.active_run) -eq (Convert-StableJson $postKill.recorder.active_run)) -and
+        ((Convert-StableJson $preKill.recorder.run_id) -eq (Convert-StableJson $postKill.recorder.run_id))
+    if (-not $recorderContinuity) {
+        throw "Authoritative Recorder state/run identity changed across forced Workbench termination"
+    }
+    if ($postKill.original_reference_revision -ne $result.final_reference_revision) {
+        throw "Runtime reference revision did not survive forced Workbench termination"
+    }
+    if ([double]$postKill.desired_reference_target -le [double]$result.final_reference_target) {
+        throw "Post-kill Runtime mutation did not advance from the retained authoritative target"
+    }
+    if (-not $workbench.WaitForExit(5000)) { throw "Post-kill Workbench close was not finite" }
+    $workbench = $null
+    if ($runtime.HasExited) { throw "Runtime exited during post-kill Workbench recovery" }
 
     [pscustomobject]@{
         status = "pass"
@@ -124,16 +170,30 @@ try {
         controls_reenabled_after_fresh = $result.controls_reenabled_after_fresh
         runtime_alive_after_clean_close = (-not $runtime.HasExited)
         runtime_alive_after_forced_termination = (-not $runtime.HasExited)
+        workspace_reacquired_after_forced_termination = $true
+        journal_usable_after_forced_termination = $postKill.mutation_completed_observed
+        runtime_domain_fresh_after_forced_termination = ($postKill.freshness -eq "Fresh")
+        controller_observed_before_kill = ($null -ne $preKill.controller)
+        controller_observed_after_kill = ($null -ne $postKill.controller)
+        controller_continuity_proven = $controllerContinuity
+        controller_before_kill = $preKill.controller
+        controller_after_kill = $postKill.controller
+        recorder_observed_before_kill = ($null -ne $preKill.recorder)
+        recorder_observed_after_kill = ($null -ne $postKill.recorder)
+        recorder_continuity_proven = $recorderContinuity
+        recorder_before_kill = $preKill.recorder
+        recorder_after_kill = $postKill.recorder
+        authoritative_reference_continuity_after_forced_termination = $true
     } | ConvertTo-Json -Compress
 }
 finally {
     if ($null -ne $workbench -and -not $workbench.HasExited) {
         $workbench.Kill()
-        $workbench.WaitForExit()
+        [void]$workbench.WaitForExit(5000)
     }
     if ($null -ne $runtime -and -not $runtime.HasExited) {
         $runtime.Kill()
-        $runtime.WaitForExit()
+        [void]$runtime.WaitForExit(5000)
     }
     if (Test-Path -LiteralPath $temporary) {
         Remove-Item -LiteralPath $temporary -Recurse -Force

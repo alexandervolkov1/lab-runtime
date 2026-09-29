@@ -1202,9 +1202,28 @@ impl WorkbenchApp {
             && context.input(|input| input.viewport().minimized) == Some(true)
             && !probe.result_path.exists()
         {
+            let controller = authoritative_controller_snapshot(&self.model);
+            let recorder = authoritative_recorder_snapshot(&self.model);
             let _ = std::fs::write(
                 &probe.result_path,
-                json!({"status":"ready_for_forced_termination","renderer":"glow"}).to_string(),
+                json!({
+                    "status": if controller.is_some() && recorder.is_some() {
+                        "ready_for_forced_termination"
+                    } else {
+                        "fail"
+                    },
+                    "reason": if controller.is_none() {
+                        "authoritative_controller_missing"
+                    } else if recorder.is_none() {
+                        "authoritative_recorder_missing"
+                    } else {
+                        "ready"
+                    },
+                    "renderer":"glow",
+                    "controller": controller,
+                    "recorder": recorder,
+                })
+                .to_string(),
             );
         }
     }
@@ -1554,6 +1573,38 @@ fn has_fresh_reference(model: &WorkbenchModel) -> bool {
         })
 }
 
+fn authoritative_controller_snapshot(model: &WorkbenchModel) -> Option<Value> {
+    model
+        .observations
+        .entities
+        .iter()
+        .find_map(|(identity, observation)| match identity {
+            RuntimeRef::Controller { controller } if observation.freshness == Freshness::Fresh => {
+                Some(json!({
+                    "controller": controller,
+                    "state": observation.value.get("state")?,
+                    "revision": observation.value.get("revision")?,
+                }))
+            }
+            _ => None,
+        })
+}
+
+fn authoritative_recorder_snapshot(model: &WorkbenchModel) -> Option<Value> {
+    model
+        .observations
+        .entities
+        .get(&RuntimeRef::Recorder)
+        .filter(|observation| observation.freshness == Freshness::Fresh)
+        .and_then(|observation| {
+            Some(json!({
+                "state": observation.value.get("state")?,
+                "active_run": observation.value.get("active_run"),
+                "run_id": observation.value.get("run_id"),
+            }))
+        })
+}
+
 struct SmokeRun {
     result_path: PathBuf,
     started: Instant,
@@ -1602,6 +1653,11 @@ impl SmokeRun {
     }
 
     fn finish(self, passed: bool, model: &WorkbenchModel, reason: &str, context: &egui::Context) {
+        let final_reference = self.reference.as_ref().and_then(|reference| {
+            model.observations.entities.get(&RuntimeRef::Reference {
+                reference: reference.clone(),
+            })
+        });
         let result = json!({
             "status": if passed { "pass" } else { "fail" },
             "reason": reason,
@@ -1620,6 +1676,14 @@ impl SmokeRun {
             "authoritative_refresh_observed": self.authoritative_refresh_observed,
             "stale_controls_disabled": self.stale_controls_disabled,
             "controls_reenabled_after_fresh": self.controls_reenabled_after_fresh,
+            "original_reference_revision": self.original_revision,
+            "desired_reference_target": self.desired_target,
+            "final_reference_revision": final_reference
+                .and_then(|observation| observation.value.get("revision")),
+            "final_reference_target": final_reference
+                .and_then(|observation| observation.value.get("target")),
+            "controller": authoritative_controller_snapshot(model),
+            "recorder": authoritative_recorder_snapshot(model),
         });
         let _ = std::fs::write(&self.result_path, result.to_string());
         context.send_viewport_cmd(egui::ViewportCommand::Close);

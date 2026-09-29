@@ -111,19 +111,23 @@ mod runtime_acceptance {
     use super::{
         client::{
             ClientHandle, ClientUpdate,
-            types::{EventCursor, MutationIdentity, ReplyKind},
+            types::{ConnectionState, EventCursor, MutationIdentity, ReplyKind},
         },
         gui::rebuild::RebuildCoordinator,
         model::{
-            Freshness, OperatorIntent, OperatorWorkflow, OperatorWorkflowState, WorkbenchModel,
+            ExactRetryWorkflow, Freshness, OperatorIntent, OperatorWorkflow, OperatorWorkflowState,
+            RecoveryStatusTracker, WorkbenchModel,
         },
         presentation::{PresentationDocument, RuntimeRef},
+        recovery::load_journal,
     };
     use serde_json::{Value, json};
     use std::{
-        io::{BufRead, BufReader},
+        env, fs,
+        io::{BufRead, BufReader, Read, Write},
+        net::{SocketAddr, TcpListener},
         path::PathBuf,
-        process::{Child, Command, Stdio},
+        process::{Child, Command, ExitStatus, Stdio},
         sync::mpsc,
         thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -131,16 +135,65 @@ mod runtime_acceptance {
 
     const ACCEPTANCE_TIMEOUT: Duration = Duration::from_secs(5);
 
+    fn wait_for_exit(child: &mut Child, label: &str) -> ExitStatus {
+        let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        loop {
+            if let Some(status) = child.try_wait().expect("query child status") {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{label} did not exit before deadline"
+            );
+            thread::yield_now();
+        }
+    }
+
     struct RuntimeChild(Child, Option<PathBuf>);
 
     impl Drop for RuntimeChild {
         fn drop(&mut self) {
             let _ = self.0.kill();
-            let _ = self.0.wait();
+            let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+            while Instant::now() < deadline {
+                if self.0.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+                thread::yield_now();
+            }
             if let Some(path) = self.1.as_ref() {
                 let _ = std::fs::remove_file(path);
                 let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
                 let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+            }
+        }
+    }
+
+    impl RuntimeChild {
+        fn terminate(&mut self) -> ExitStatus {
+            self.0.kill().expect("terminate Runtime process");
+            wait_for_exit(&mut self.0, "Runtime")
+        }
+    }
+
+    struct AcceptanceChild(Child);
+
+    impl AcceptanceChild {
+        fn terminate(&mut self) -> ExitStatus {
+            self.0.kill().expect("terminate Workbench test helper");
+            wait_for_exit(&mut self.0, "Workbench test helper")
+        }
+    }
+
+    impl Drop for AcceptanceChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+            while Instant::now() < deadline {
+                if self.0.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+                thread::yield_now();
             }
         }
     }
@@ -166,6 +219,21 @@ mod runtime_acceptance {
             &["--serve", "--profile", "virtual-demo", "--port", "0"],
             None,
         )
+    }
+
+    fn start_runtime_on(port: u16) -> (RuntimeChild, SocketAddr) {
+        let port = port.to_string();
+        start_runtime_with_args(
+            &["--serve", "--profile", "virtual-demo", "--port", &port],
+            None,
+        )
+    }
+
+    fn unused_loopback_address() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve loopback port");
+        let address = listener.local_addr().expect("reserved loopback address");
+        drop(listener);
+        address
     }
 
     fn start_runtime_with_recorder() -> (RuntimeChild, std::net::SocketAddr) {
@@ -249,6 +317,21 @@ mod runtime_acceptance {
             panic!("expected Application reply")
         };
         envelope["result"].clone()
+    }
+
+    fn read_request(reader: &mut impl BufRead) -> Value {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("read Application request");
+        assert!(!line.is_empty(), "Application peer closed before request");
+        serde_json::from_str(&line).expect("Application request JSON")
+    }
+
+    fn write_value(writer: &mut impl Write, value: &Value) {
+        serde_json::to_writer(&mut *writer, value).expect("encode Application reply");
+        writer.write_all(b"\n").expect("write Application reply");
+        writer.flush().expect("flush Application reply");
     }
 
     fn apply_until(
@@ -830,5 +913,402 @@ mod runtime_acceptance {
         );
         assert!(runtime.0.try_wait().unwrap().is_none());
         client.shutdown().unwrap();
+    }
+
+    #[test]
+    #[ignore = "M14.6B4 scenario E Workbench process-crash recovery journal acceptance"]
+    fn b4_scenario_e_process_crash_preserves_exact_journal_without_auto_send() {
+        const CHILD_MODE: &str = "LAB_WORKBENCH_B4_CRASH_CHILD";
+        const CHILD_ADDRESS: &str = "LAB_WORKBENCH_B4_CRASH_ADDRESS";
+        const CHILD_JOURNAL: &str = "LAB_WORKBENCH_B4_CRASH_JOURNAL";
+        const TEST_NAME: &str = "runtime_acceptance::b4_scenario_e_process_crash_preserves_exact_journal_without_auto_send";
+
+        if env::var_os(CHILD_MODE).is_some() {
+            let address = env::var(CHILD_ADDRESS).unwrap().parse().unwrap();
+            let journal = PathBuf::from(env::var_os(CHILD_JOURNAL).unwrap());
+            let client = ClientHandle::spawn_with_recovery_journal(address, Some(journal)).unwrap();
+            client.connect(None).unwrap();
+            wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+            client
+                .mutation(
+                    "reference_retune",
+                    json!({"reference":"1","expected_revision":"1","target":7.5,"rate":1.25}),
+                )
+                .unwrap();
+            loop {
+                thread::park_timeout(Duration::from_secs(1));
+            }
+        }
+
+        let directory = env::temp_dir().join(format!(
+            "lab-workbench-b4-e-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let journal_path = directory.join("recovery-v1.json");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let child = Command::new(env::current_exe().unwrap())
+            .args(["--ignored", "--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_MODE, "1")
+            .env(CHILD_ADDRESS, address.to_string())
+            .env(CHILD_JOURNAL, &journal_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start Workbench crash helper");
+        let mut child = AcceptanceChild(child);
+        listener.set_nonblocking(true).unwrap();
+        let accept_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < accept_deadline =>
+                {
+                    thread::yield_now();
+                }
+                Err(error) => panic!("crash helper connection deadline: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream.set_read_timeout(Some(ACCEPTANCE_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(ACCEPTANCE_TIMEOUT)).unwrap();
+        let mut peer = BufReader::new(stream);
+        let hello = read_request(&mut peer);
+        write_value(
+            peer.get_mut(),
+            &json!({"v":1,"msg_id":hello["msg_id"],"type":"result",
+            "result":{"boot_id":"boot-e","scope":"scope-e","next_seq":"1",
+            "operations":["hello","reference_retune","operation_status"],
+            "capabilities":[],"limits":{"client_pending_requests":8},
+            "event_oldest":{"boot_id":"boot-e","seq":"0"},
+            "event_latest":{"boot_id":"boot-e","seq":"0"}}}),
+        );
+        let mutation = read_request(&mut peer);
+        assert_eq!(mutation["op"], "reference_retune");
+        assert_eq!(mutation["request_id"], json!({"scope":"scope-e","seq":"1"}));
+        assert_eq!(mutation["args"]["target"], 7.5);
+        let _ = child.terminate();
+        drop(peer);
+
+        let journal = load_journal(&journal_path).expect("crash preserves exact journal");
+        assert_eq!(journal.boot_id, "boot-e");
+        assert_eq!(journal.scope, "scope-e");
+        assert_eq!(journal.records.len(), 1);
+        assert_eq!(journal.records[0].op, "reference_retune");
+        assert_eq!(journal.records[0].args, mutation["args"]);
+
+        let restart_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        restart_listener.set_nonblocking(true).unwrap();
+        let restart_address = restart_listener.local_addr().unwrap();
+        let restarted =
+            ClientHandle::spawn_with_recovery_journal(restart_address, Some(journal_path.clone()))
+                .unwrap();
+        assert!(matches!(
+            restart_listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        restart_listener.set_nonblocking(false).unwrap();
+        let (quiet_tx, quiet_rx) = mpsc::channel();
+        let restart_peer = thread::spawn(move || {
+            let (stream, _) = restart_listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let hello = read_request(&mut reader);
+            assert_eq!(hello["args"]["scope"], "scope-e");
+            write_value(
+                reader.get_mut(),
+                &json!({"v":1,"msg_id":hello["msg_id"],"type":"result",
+                "result":{"boot_id":"boot-e","scope":"scope-e","next_seq":"1",
+                "operations":["hello","reference_retune","operation_status"],
+                "capabilities":[],"limits":{"client_pending_requests":8},
+                "event_oldest":{"boot_id":"boot-e","seq":"0"},
+                "event_latest":{"boot_id":"boot-e","seq":"0"}}}),
+            );
+            let mut byte = [0_u8; 1];
+            quiet_tx.send(reader.read(&mut byte)).unwrap();
+        });
+        restarted.connect(Some("scope-e".into())).unwrap();
+        wait_for(&restarted, |update| {
+            matches!(update, ClientUpdate::Hello(_))
+        });
+        let reconciliation = wait_for(&restarted, |update| {
+            matches!(update, ClientUpdate::ReconciliationRequired { .. })
+        });
+        let ClientUpdate::ReconciliationRequired { records } = reconciliation else {
+            unreachable!()
+        };
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].op, journal.records[0].op);
+        assert_eq!(records[0].args, journal.records[0].args);
+        assert!(quiet_rx.recv_timeout(ACCEPTANCE_TIMEOUT).unwrap().is_err());
+        restarted.shutdown().unwrap();
+        restart_peer.join().unwrap();
+        assert_eq!(
+            load_journal(&journal_path).unwrap().records,
+            journal.records
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "M14.6B4 scenario A real-process Runtime availability acceptance"]
+    fn b4_scenario_a_runtime_absent_then_manual_connect_reaches_fresh() {
+        let address = unused_loopback_address();
+        let directory = env::temp_dir().join(format!(
+            "lab-workbench-b4-a-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let journal_path = directory.join("recovery-v1.json");
+        let client =
+            ClientHandle::spawn_with_recovery_journal(address, Some(journal_path.clone())).unwrap();
+        assert!(!journal_path.exists());
+        client.connect(None).unwrap();
+        wait_for(&client, |update| {
+            matches!(update, ClientUpdate::TransportFailure { .. })
+        });
+        wait_for(&client, |update| {
+            matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
+        });
+
+        let (mut runtime, runtime_address) = start_runtime_on(address.port());
+        assert_eq!(runtime_address, address);
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("b4-a"));
+        let mut rebuild = RebuildCoordinator::default();
+        client.connect(None).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+        assert_eq!(model.connection, ConnectionState::Ready);
+        assert!(model.hello.is_some());
+        assert!(model.recovery_problem.is_none());
+        assert!(!journal_path.exists());
+        let reference = model.observations.entities[&RuntimeRef::Reference {
+            reference: "1".into(),
+        }]
+            .value
+            .clone();
+        client
+            .mutation(
+                "reference_retune",
+                json!({"reference":"1","expected_revision":reference["revision"],
+                    "target":reference["target"].as_f64().unwrap() + 0.125,"rate":2.0}),
+            )
+            .unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                }
+            )
+        });
+        assert!(journal_path.is_file());
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "M14.6B4 scenario B explicit Disconnect real-process acceptance"]
+    fn b4_scenario_b_explicit_disconnect_requires_manual_fresh_reconnect() {
+        let (mut runtime, address) = start_runtime();
+        let client = ClientHandle::spawn(address).unwrap();
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("b4-b"));
+        let mut rebuild = RebuildCoordinator::default();
+        client.connect(None).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+        let scope = model.hello.as_ref().unwrap().scope.clone();
+
+        client.disconnect().unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |update, _| {
+            matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
+        });
+        assert_eq!(model.observations.freshness, Freshness::Stale);
+        let quiet_deadline = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < quiet_deadline {
+            match client.recv_timeout(quiet_deadline.saturating_duration_since(Instant::now())) {
+                Ok(update) => assert!(!matches!(
+                    update,
+                    ClientUpdate::Hello(_)
+                        | ClientUpdate::State(ConnectionState::Connecting)
+                        | ClientUpdate::State(ConnectionState::Reattaching)
+                )),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(error) => panic!("client stopped during explicit disconnect proof: {error}"),
+            }
+        }
+        assert!(runtime.0.try_wait().unwrap().is_none());
+
+        client.connect(Some(scope.clone())).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+        assert_eq!(model.hello.as_ref().unwrap().scope, scope);
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
+    }
+
+    #[test]
+    #[ignore = "M14.6B4 scenario D Runtime restart and quarantine acceptance"]
+    fn b4_scenario_d_runtime_restart_quarantines_old_boot_and_builds_new_epoch() {
+        let (mut runtime_a, address) = start_runtime();
+        let client = ClientHandle::spawn(address).unwrap();
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("b4-d"));
+        let mut rebuild = RebuildCoordinator::default();
+        client.connect(None).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+        let boot_a = model.hello.as_ref().unwrap().boot_id.clone();
+        let target = RuntimeRef::Reference {
+            reference: "1".into(),
+        };
+        let reference = model.observations.entities[&target].value.clone();
+        let original_target = reference["target"].clone();
+        let mut stale_draft = OperatorWorkflow::default();
+        stale_draft
+            .begin(
+                &model,
+                OperatorIntent::RetuneReference {
+                    reference: "1".into(),
+                    target: reference["target"].as_f64().unwrap() + 0.75,
+                    rate: 2.0,
+                },
+            )
+            .unwrap();
+        client
+            .mutation(
+                "reference_retune",
+                json!({"reference":"1","expected_revision":reference["revision"],
+                    "target":reference["target"].as_f64().unwrap() + 0.5,"rate":2.0}),
+            )
+            .unwrap();
+        let accepted = apply_until(&client, &mut model, &mut rebuild, |update, _| {
+            matches!(
+                update,
+                ClientUpdate::Reply {
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                }
+            )
+        });
+        let ClientUpdate::Reply {
+            recovery: Some(old_record),
+            ..
+        } = accepted
+        else {
+            panic!("accepted mutation omitted recovery evidence")
+        };
+
+        let _ = runtime_a.terminate();
+        let (mut runtime_b, restarted_address) = start_runtime_on(address.port());
+        assert_eq!(restarted_address, address);
+        apply_until(&client, &mut model, &mut rebuild, |update, model| {
+            matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
+                && model
+                    .recovery
+                    .quarantined
+                    .iter()
+                    .any(|item| item.record.identity == old_record.identity)
+        });
+        assert_eq!(model.observations.freshness, Freshness::Stale);
+        assert!(model.recovery.mutations.is_empty());
+        assert!(model.recovery.quarantined.iter().any(|item| {
+            item.record.identity == old_record.identity
+                && item.record.op == old_record.op
+                && item.record.args == old_record.args
+        }));
+        let status = RecoveryStatusTracker::default();
+        assert!(!ExactRetryWorkflow::default().can_begin(&model, &status, &old_record.identity));
+
+        client.connect(None).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+        let boot_b = model.hello.as_ref().unwrap().boot_id.clone();
+        assert_ne!(boot_b, boot_a);
+        assert_eq!(
+            model.observations.entities[&target].value["target"], original_target,
+            "old-boot mutation was sent into Runtime B"
+        );
+        assert!(stale_draft.confirm(&model, &client).is_err());
+        assert!(model.recovery.quarantined.iter().any(|item| {
+            item.record.identity == old_record.identity
+                && item.record.op == old_record.op
+                && item.record.args == old_record.args
+        }));
+        assert!(runtime_b.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
+    }
+
+    #[test]
+    #[ignore = "M14.6B4 scenario J corrupt journal with real Runtime acceptance"]
+    fn b4_scenario_j_corrupt_journal_allows_fresh_observation_but_blocks_mutation() {
+        let directory = env::temp_dir().join(format!(
+            "lab-workbench-b4-j-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("recovery-v1.json");
+        let corrupt = b"{known-corrupt-journal\xff".to_vec();
+        fs::write(&path, &corrupt).unwrap();
+        let (mut runtime, address) = start_runtime();
+        let client =
+            ClientHandle::spawn_with_recovery_journal(address, Some(path.clone())).unwrap();
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("b4-j"));
+        let mut rebuild = RebuildCoordinator::default();
+        client.connect(None).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+        assert!(model.recovery_problem.is_some());
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+
+        let command_id = client
+            .mutation(
+                "reference_retune",
+                json!({"reference":"1","expected_revision":"1","target":2.0,"rate":1.0}),
+            )
+            .unwrap();
+        let rejected = wait_for(&client, |update| {
+            matches!(update, ClientUpdate::LocalRejected { command_id: id, reason }
+                if *id == command_id && reason == "recovery_journal_unavailable")
+        });
+        model.apply_client_update(rejected);
+        assert!(model.recovery.mutations.is_empty());
+        assert!(!ExactRetryWorkflow::default().can_begin(
+            &model,
+            &RecoveryStatusTracker::default(),
+            &MutationIdentity {
+                scope: model.hello.as_ref().unwrap().scope.clone(),
+                seq: 1,
+            },
+        ));
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

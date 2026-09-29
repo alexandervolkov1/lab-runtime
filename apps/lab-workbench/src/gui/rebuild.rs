@@ -665,7 +665,10 @@ mod tests {
     use crate::{
         client::types::ConnectionState, model::Freshness, presentation::PresentationDocument,
     };
-    use std::{cell::RefCell, collections::VecDeque};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::VecDeque,
+    };
 
     #[derive(Clone, Debug, PartialEq)]
     enum Sent {
@@ -677,6 +680,7 @@ mod tests {
     struct FakeClient {
         next: RefCell<u64>,
         sent: RefCell<VecDeque<Sent>>,
+        subscriptions: Cell<usize>,
     }
 
     impl RebuildClient for FakeClient {
@@ -690,6 +694,7 @@ mod tests {
 
         fn subscribe(&self, after: EventCursor, filter: Value) -> Result<u64, CommandSendError> {
             let id = next_id(&self.next);
+            self.subscriptions.set(self.subscriptions.get() + 1);
             self.sent
                 .borrow_mut()
                 .push_back(Sent::Subscribe(id, after, filter));
@@ -768,6 +773,82 @@ mod tests {
     ) {
         model.apply_client_update(update.clone());
         coordinator.after_update(&update, model, client);
+    }
+
+    fn complete_minimal_rebuild(
+        coordinator: &mut RebuildCoordinator,
+        model: &mut WorkbenchModel,
+        client: &FakeClient,
+    ) {
+        let Sent::Query(discover, op, _) = client.sent.borrow_mut().pop_front().unwrap() else {
+            panic!()
+        };
+        assert_eq!(op, "discover");
+        apply(
+            coordinator,
+            model,
+            client,
+            reply(
+                discover,
+                &op,
+                json!({"projection":"d","revision":{"boot_id":"boot","event_seq":"2"},
+                    "records":[],"next_index":null,"complete":true}),
+            ),
+        );
+        let Sent::Query(measurements, op, _) = client.sent.borrow_mut().pop_front().unwrap() else {
+            panic!()
+        };
+        assert_eq!(op, "measurements_current");
+        apply(
+            coordinator,
+            model,
+            client,
+            reply(
+                measurements,
+                &op,
+                json!({"projection":"m","revision":{"boot_id":"boot","event_seq":"3"},
+                    "records":[],"next_index":null,"complete":true}),
+            ),
+        );
+        let Sent::Query(fence, op, _) = client.sent.borrow_mut().pop_front().unwrap() else {
+            panic!()
+        };
+        assert_eq!(op, "discover");
+        apply(
+            coordinator,
+            model,
+            client,
+            reply(
+                fence,
+                &op,
+                json!({"projection":"f","revision":{"boot_id":"boot","event_seq":"5"},
+                    "records":[],"next_index":null,"complete":true}),
+            ),
+        );
+        let Sent::Subscribe(subscribe, after, _) = client.sent.borrow_mut().pop_front().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(after.seq, 2);
+        apply(
+            coordinator,
+            model,
+            client,
+            reply(
+                subscribe,
+                "subscribe",
+                json!({"subscription":"s","accepted_cursor":{"boot_id":"boot","seq":"2"}}),
+            ),
+        );
+        assert_eq!(model.observations.freshness, Freshness::Rebuilding);
+        apply(
+            coordinator,
+            model,
+            client,
+            ClientUpdate::SubscriptionProgress(json!({"cursor":{"boot_id":"boot","seq":"5"}})),
+        );
+        assert_eq!(model.observations.freshness, Freshness::Fresh);
+        assert!(client.sent.borrow().is_empty());
     }
 
     #[test]
@@ -1027,6 +1108,169 @@ mod tests {
     }
 
     #[test]
+    fn loss_at_three_rebuild_phases_restarts_one_complete_freshness_barrier() {
+        for phase in 0..3 {
+            let client = FakeClient::default();
+            let mut model = WorkbenchModel::new(PresentationDocument::empty("partial-rebuild"));
+            let mut coordinator = RebuildCoordinator::default();
+            apply(
+                &mut coordinator,
+                &mut model,
+                &client,
+                ClientUpdate::Hello(hello()),
+            );
+
+            let Sent::Query(discover, op, _) = client.sent.borrow_mut().pop_front().unwrap() else {
+                panic!()
+            };
+            apply(
+                &mut coordinator,
+                &mut model,
+                &client,
+                reply(
+                    discover,
+                    &op,
+                    json!({"projection":"d","revision":{"boot_id":"boot","event_seq":"2"},
+                        "records":[{"kind":"reference","id":{"id":"1"}}],
+                        "next_index":null,"complete":true}),
+                ),
+            );
+            if phase >= 1 {
+                let Sent::Query(measurements, op, _) =
+                    client.sent.borrow_mut().pop_front().unwrap()
+                else {
+                    panic!()
+                };
+                apply(
+                    &mut coordinator,
+                    &mut model,
+                    &client,
+                    reply(
+                        measurements,
+                        &op,
+                        json!({"projection":"m","revision":{"boot_id":"boot","event_seq":"3"},
+                            "records":[],"next_index":null,"complete":true}),
+                    ),
+                );
+            }
+            if phase == 2 {
+                let Sent::Query(reference, op, _) = client.sent.borrow_mut().pop_front().unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(op, "reference");
+                apply(
+                    &mut coordinator,
+                    &mut model,
+                    &client,
+                    reply(
+                        reference,
+                        &op,
+                        json!({"reference":"1","revision":"1","target":1.0}),
+                    ),
+                );
+                let Sent::Query(fence, op, _) = client.sent.borrow_mut().pop_front().unwrap()
+                else {
+                    panic!()
+                };
+                apply(
+                    &mut coordinator,
+                    &mut model,
+                    &client,
+                    reply(
+                        fence,
+                        &op,
+                        json!({"projection":"f","revision":{"boot_id":"boot","event_seq":"5"},
+                            "records":[],"next_index":null,"complete":true}),
+                    ),
+                );
+                let Sent::Subscribe(subscribe, _, _) =
+                    client.sent.borrow_mut().pop_front().unwrap()
+                else {
+                    panic!()
+                };
+                apply(
+                    &mut coordinator,
+                    &mut model,
+                    &client,
+                    reply(
+                        subscribe,
+                        "subscribe",
+                        json!({"subscription":"old","accepted_cursor":{"boot_id":"boot","seq":"2"}}),
+                    ),
+                );
+                assert_eq!(model.observations.freshness, Freshness::Rebuilding);
+            }
+
+            apply(
+                &mut coordinator,
+                &mut model,
+                &client,
+                ClientUpdate::ResnapshotRequired {
+                    reason: "transport_lost_during_rebuild".into(),
+                    envelope: None,
+                    connection_lost: true,
+                },
+            );
+            assert_ne!(
+                model.observations.freshness,
+                Freshness::Fresh,
+                "phase {phase}"
+            );
+            client.sent.borrow_mut().clear();
+            apply(
+                &mut coordinator,
+                &mut model,
+                &client,
+                ClientUpdate::State(ConnectionState::Reattaching),
+            );
+            assert!(client.sent.borrow().is_empty());
+
+            apply(
+                &mut coordinator,
+                &mut model,
+                &client,
+                ClientUpdate::Hello(hello()),
+            );
+            complete_minimal_rebuild(&mut coordinator, &mut model, &client);
+        }
+    }
+
+    #[test]
+    fn event_gap_rebuilds_same_connection_to_fresh_with_one_new_aggregate_subscription() {
+        let client = FakeClient::default();
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("event-gap"));
+        let mut coordinator = RebuildCoordinator::default();
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            ClientUpdate::Hello(hello()),
+        );
+        complete_minimal_rebuild(&mut coordinator, &mut model, &client);
+        assert_eq!(client.subscriptions.get(), 1);
+        assert_eq!(model.connection, ConnectionState::Ready);
+
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            ClientUpdate::ResnapshotRequired {
+                reason: "event_gap".into(),
+                envelope: Some(json!({"code":"event_gap"})),
+                connection_lost: false,
+            },
+        );
+        assert_eq!(model.connection, ConnectionState::Ready);
+        assert_eq!(model.observations.freshness, Freshness::Rebuilding);
+
+        complete_minimal_rebuild(&mut coordinator, &mut model, &client);
+        assert_eq!(client.subscriptions.get(), 2);
+        assert_eq!(model.connection, ConnectionState::Ready);
+        assert_eq!(model.observations.freshness, Freshness::Fresh);
+    }
+
+    #[test]
     fn operator_rebuild_queries_bounded_optional_domains_before_one_aggregate_subscription() {
         let client = FakeClient::default();
         let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
@@ -1141,6 +1385,46 @@ mod tests {
             ])
         );
         assert!(client.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn discovery_identity_pressure_fails_at_sixty_four_without_followup_growth() {
+        let client = FakeClient::default();
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("identity-pressure"));
+        let mut coordinator = RebuildCoordinator::default();
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            ClientUpdate::Hello(hello()),
+        );
+        let Sent::Query(discover, op, _) = client.sent.borrow_mut().pop_front().unwrap() else {
+            panic!()
+        };
+        let records = (0..=MAX_REBUILD_REFERENCES)
+            .map(|index| json!({"kind":"reference","id":{"id":index.to_string()}}))
+            .collect::<Vec<_>>();
+
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            reply(
+                discover,
+                &op,
+                json!({"projection":"d","revision":{"boot_id":"boot","event_seq":"2"},
+                    "records":records,"next_index":null,"complete":true}),
+            ),
+        );
+
+        assert!(
+            model
+                .client_error
+                .as_deref()
+                .is_some_and(|error| error.contains("rebuild bound exceeded"))
+        );
+        assert!(client.sent.borrow().is_empty());
+        assert_ne!(model.observations.freshness, Freshness::Fresh);
     }
 
     #[test]

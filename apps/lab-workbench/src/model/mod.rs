@@ -187,6 +187,9 @@ impl WorkbenchModel {
                 connection_lost,
                 ..
             } => {
+                // A cursor from the failed barrier cannot prove catch-up for the
+                // replacement subscription, even when event_gap keeps the socket.
+                self.recovery.event_cursor = None;
                 if connection_lost {
                     self.connection = ConnectionState::Stale;
                     self.observations.mark_stale();
