@@ -4,8 +4,8 @@ use super::{
     framing::{FrameDecoder, PendingWrite, encode_frame},
     types::{
         COMMAND_QUEUE, ClientCommand, ClientUpdate, CommandSendError, ConnectionState, EventCursor,
-        HelloState, KnownAdmission, MAX_IN_FLIGHT, MutationIdentity, RecoveryRecord, ReplyKind,
-        UPDATE_QUEUE,
+        HelloState, KnownAdmission, MAX_IN_FLIGHT, MutationIdentity, QuarantinedRecoveryRecord,
+        RecoveryQuarantineReason, RecoveryRecord, ReplyKind, UPDATE_QUEUE,
     },
 };
 use crate::recovery::{RecoveryJournal, load_journal, retire_journal, save_journal};
@@ -324,6 +324,7 @@ struct Worker {
     subscription_token: Option<String>,
     event_cursor: Option<EventCursor>,
     recovery: Vec<RecoveryRecord>,
+    quarantined_recovery: Vec<QuarantinedRecoveryRecord>,
     journal_failed: bool,
     startup_journal_error: Option<String>,
     sequence_blocked: bool,
@@ -365,6 +366,7 @@ impl Worker {
             subscription_token: None,
             event_cursor: None,
             recovery,
+            quarantined_recovery: Vec::with_capacity(MAX_IN_FLIGHT),
             journal_failed: startup_journal_error.is_some(),
             startup_journal_error,
             sequence_blocked: false,
@@ -376,7 +378,7 @@ impl Worker {
 
     fn run(mut self) {
         self.emit(ClientUpdate::State(ConnectionState::Disconnected));
-        self.emit_recovery_state();
+        self.emit_recovery_projection();
         if let Some(reason) = self.startup_journal_error.take() {
             self.emit(ClientUpdate::RecoveryJournalProblem { reason });
         }
@@ -503,14 +505,7 @@ impl Worker {
             ClientCommand::OperationStatus {
                 command_id,
                 identity,
-            } => {
-                self.queue_query(
-                    command_id,
-                    "operation_status".into(),
-                    json!({"request_id":identity.to_json()}),
-                    Purpose::OperationStatus,
-                );
-            }
+            } => self.queue_operation_status(command_id, identity),
             ClientCommand::Subscribe {
                 command_id,
                 after,
@@ -637,6 +632,10 @@ impl Worker {
             self.reject(command_id, "client_not_ready");
             return;
         }
+        if self.has_unresolved_quarantine() {
+            self.reject(command_id, "recovery_quarantine_unresolved");
+            return;
+        }
         if self.sequence_blocked {
             self.reject(command_id, "mutation_reconciliation_required");
             return;
@@ -691,7 +690,7 @@ impl Worker {
             return;
         }
         self.recovery = candidate;
-        self.emit_recovery_state();
+        self.emit_recovery_projection();
         self.sequence_blocked = true;
         if !self.queue_request(
             command_id,
@@ -742,6 +741,36 @@ impl Worker {
             record.args.clone(),
             Some(record),
             Purpose::RetryMutation,
+        );
+    }
+
+    fn queue_operation_status(&mut self, command_id: u64, identity: MutationIdentity) {
+        if self.state != ConnectionState::Ready {
+            self.reject(command_id, "client_not_ready");
+            return;
+        }
+        let Some(hello) = self.hello.as_ref() else {
+            self.reject(command_id, "hello_missing");
+            return;
+        };
+        let Some(record) = self
+            .recovery
+            .iter()
+            .find(|record| record.identity == identity)
+        else {
+            self.reject(command_id, "recovery_not_found");
+            return;
+        };
+        if record.boot_id != hello.boot_id || record.identity.scope != hello.scope {
+            self.reject(command_id, "recovery_identity_not_attached");
+            return;
+        }
+        self.queue_request(
+            command_id,
+            "operation_status".into(),
+            json!({"request_id":identity.to_json()}),
+            None,
+            Purpose::OperationStatus,
         );
     }
 
@@ -1078,13 +1107,25 @@ impl Worker {
             self.fail_transport("hello result was malformed");
             return;
         };
-        let journal_session_mismatch = self
-            .recovery
-            .iter()
-            .any(|record| record.boot_id != hello.boot_id || record.identity.scope != hello.scope);
+        let quarantine_reason = self.recovery.iter().find_map(|record| {
+            if record.boot_id != hello.boot_id {
+                Some(RecoveryQuarantineReason::AttachedBootMismatch)
+            } else if record.identity.scope != hello.scope {
+                Some(RecoveryQuarantineReason::AttachedScopeMismatch)
+            } else {
+                None
+            }
+        });
         self.desired_scope = Some(hello.scope.clone());
         self.retry_at = None;
         self.reattach_until = None;
+        if let Some(reason) = quarantine_reason
+            && !self.classify_active_recovery(reason)
+        {
+            self.note_journal_failure(
+                "bounded recovery quarantine classification failed; no mutation was sent".into(),
+            );
+        }
         for record in &mut self.recovery {
             if record.boot_id == hello.boot_id
                 && record.identity.scope == hello.scope
@@ -1097,23 +1138,20 @@ impl Worker {
                 record.admission = KnownAdmission::Accepted;
             }
         }
-        self.sequence_blocked = self.recovery.iter().any(|record| {
-            record.boot_id == hello.boot_id
-                && record.identity.scope == hello.scope
-                && record.identity.seq >= hello.next_seq
-                && !matches!(
-                    record.admission,
-                    KnownAdmission::Completed | KnownAdmission::Failed
-                )
-        });
-        self.hello = Some(hello.clone());
-        if journal_session_mismatch {
-            self.journal_failed = true;
-            self.emit(ClientUpdate::RecoveryJournalProblem {
-                reason: "loaded recovery journal does not match the attached boot/scope; no mutation was retried"
-                    .into(),
+        self.sequence_blocked = self.has_unresolved_quarantine()
+            || self.recovery.iter().any(|record| {
+                record.boot_id == hello.boot_id
+                    && record.identity.scope == hello.scope
+                    && record.identity.seq >= hello.next_seq
+                    && !matches!(
+                        record.admission,
+                        KnownAdmission::Completed | KnownAdmission::Failed
+                    )
             });
-        } else if !self.journal_failed
+        self.hello = Some(hello.clone());
+        if quarantine_reason.is_none()
+            && self.quarantined_recovery.is_empty()
+            && !self.journal_failed
             && let Err(error) = self.persist_recovery(&self.recovery)
         {
             self.note_journal_failure(format!(
@@ -1122,7 +1160,7 @@ impl Worker {
         }
         self.transition(ConnectionState::Ready);
         self.emit(ClientUpdate::Hello(hello));
-        self.emit_recovery_state();
+        self.emit_recovery_projection();
         if !self.recovery.is_empty() {
             self.emit(ClientUpdate::ReconciliationRequired {
                 records: self.recovery.clone(),
@@ -1148,18 +1186,20 @@ impl Worker {
         if pending.purpose == Purpose::Hello {
             self.reattach_until = None;
             if matches!(code, "instance_changed" | "scope_unknown") {
-                self.recovery.clear();
-                self.emit_recovery_state();
-                self.sequence_blocked = false;
-                self.desired_scope = None;
-                if self.journal_path.is_some() {
-                    self.journal_failed = true;
-                    self.emit(ClientUpdate::RecoveryJournalProblem {
-                        reason: format!(
-                            "retained recovery journal cannot be authoritative after {code}; no mutation was retried"
-                        ),
-                    });
+                let reason = if code == "instance_changed" {
+                    RecoveryQuarantineReason::InstanceChanged
+                } else {
+                    RecoveryQuarantineReason::ScopeUnknown
+                };
+                if !self.classify_active_recovery(reason) {
+                    self.note_journal_failure(
+                        "bounded recovery quarantine classification failed; no mutation was sent"
+                            .into(),
+                    );
                 }
+                self.emit_recovery_projection();
+                self.sequence_blocked = self.has_unresolved_quarantine();
+                self.desired_scope = None;
             }
             self.emit_reply(&pending, ReplyKind::PublicError, value, None);
             self.reset_transport_only();
@@ -1459,14 +1499,14 @@ impl Worker {
             // durability uncertainty without affecting Runtime progress.
             self.recovery = candidate;
             if changed {
-                self.emit_recovery_state();
+                self.emit_recovery_projection();
             }
             self.note_journal_failure(format!("could not update recovery journal: {error}"));
             return true;
         }
         self.recovery = candidate;
         if changed {
-            self.emit_recovery_state();
+            self.emit_recovery_projection();
         }
         true
     }
@@ -1482,15 +1522,47 @@ impl Worker {
             return false;
         }
         self.recovery = candidate;
-        self.emit_recovery_state();
+        self.emit_recovery_projection();
         true
     }
 
-    fn emit_recovery_state(&mut self) {
+    fn emit_recovery_projection(&mut self) {
         debug_assert!(self.recovery.len() <= MAX_IN_FLIGHT);
-        self.emit(ClientUpdate::RecoveryState {
-            records: self.recovery.clone(),
+        debug_assert!(self.quarantined_recovery.len() <= MAX_IN_FLIGHT);
+        self.emit(ClientUpdate::RecoveryProjection {
+            active: self.recovery.clone(),
+            quarantined: self.quarantined_recovery.clone(),
         });
+    }
+
+    fn classify_active_recovery(&mut self, reason: RecoveryQuarantineReason) -> bool {
+        let mut candidate = self.quarantined_recovery.clone();
+        for record in &self.recovery {
+            if let Some(existing) = candidate.iter().find(|existing| {
+                existing.record.boot_id == record.boot_id
+                    && existing.record.identity == record.identity
+            }) {
+                if existing.record != *record {
+                    return false;
+                }
+                continue;
+            }
+            if candidate.len() == MAX_IN_FLIGHT {
+                return false;
+            }
+            candidate.push(QuarantinedRecoveryRecord {
+                record: record.clone(),
+                reason,
+            });
+        }
+        self.quarantined_recovery = candidate;
+        self.recovery.clear();
+        self.sequence_blocked = self.has_unresolved_quarantine();
+        true
+    }
+
+    fn has_unresolved_quarantine(&self) -> bool {
+        !self.quarantined_recovery.is_empty()
     }
 
     fn persist_recovery(&self, records: &[RecoveryRecord]) -> Result<(), String> {
@@ -1663,12 +1735,16 @@ mod tests {
     }
 
     fn hello_reply(msg_id: &Value, scope: &str, next_seq: u64) -> Value {
+        hello_reply_for(msg_id, "boot", scope, next_seq)
+    }
+
+    fn hello_reply_for(msg_id: &Value, boot: &str, scope: &str, next_seq: u64) -> Value {
         json!({"v":1,"msg_id":msg_id,"type":"result","result":{
-            "boot_id":"boot","scope":scope,"next_seq":next_seq.to_string(),
+            "boot_id":boot,"scope":scope,"next_seq":next_seq.to_string(),
             "operations":["hello","reference","reference_retune","operation_status","subscribe","unsubscribe"],
             "capabilities":[],"limits":{"client_pending_requests":8},
-            "event_oldest":{"boot_id":"boot","seq":"0"},
-            "event_latest":{"boot_id":"boot","seq":"0"}
+            "event_oldest":{"boot_id":boot,"seq":"0"},
+            "event_latest":{"boot_id":boot,"seq":"0"}
         }})
     }
 
@@ -1732,6 +1808,453 @@ mod tests {
         (worker, update_rx)
     }
 
+    fn unit_worker_with_journal(path: PathBuf) -> (Worker, Receiver<ClientUpdate>) {
+        let (_command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
+        let worker = Worker::new(
+            "127.0.0.1:1".parse().unwrap(),
+            Some(path),
+            command_rx,
+            update_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        (worker, update_rx)
+    }
+
+    fn pending_hello(command_id: u64) -> PendingExchange {
+        PendingExchange {
+            command_id,
+            msg_id: command_id.to_string(),
+            op: "hello".into(),
+            purpose: Purpose::Hello,
+            mutation: None,
+            status_identity: None,
+            transmitted: true,
+            deadline: None,
+        }
+    }
+
+    fn save_test_journal(path: &Path, records: &[RecoveryRecord]) {
+        let journal =
+            RecoveryJournal::from_records("boot".into(), "scope".into(), 1, records).unwrap();
+        save_journal(path, &journal).unwrap();
+    }
+
+    fn assert_recovery_evidence_visible(model: &WorkbenchModel, record: &RecoveryRecord) {
+        let active = model
+            .recovery
+            .mutations
+            .iter()
+            .any(|candidate| candidate == record);
+        let quarantined = model
+            .recovery
+            .quarantined
+            .iter()
+            .any(|candidate| candidate.record == *record);
+        assert!(
+            active || quarantined || model.recovery_problem.is_some(),
+            "ordered update prefix falsely hid unresolved recovery evidence"
+        );
+    }
+
+    #[test]
+    fn matching_hello_keeps_loaded_recovery_active_and_quarantine_empty() {
+        let path = journal_path("matching-active");
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        save_test_journal(&path, std::slice::from_ref(&record));
+        let (mut worker, updates) = unit_worker_with_journal(path.clone());
+
+        worker.handle_hello_result(hello_reply_for(&json!("1"), "boot", "scope", 1));
+
+        assert_eq!(worker.recovery, vec![record]);
+        assert!(worker.quarantined_recovery.is_empty());
+        assert!(!worker.journal_failed);
+        assert!(updates.try_iter().any(|update| matches!(
+            update,
+            ClientUpdate::RecoveryProjection { active, quarantined }
+                if active.len() == 1 && quarantined.is_empty()
+        )));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn invalid_hello_quarantines_exact_records_without_changing_journal_bytes() {
+        for (code, reason) in [
+            (
+                "instance_changed",
+                RecoveryQuarantineReason::InstanceChanged,
+            ),
+            ("scope_unknown", RecoveryQuarantineReason::ScopeUnknown),
+        ] {
+            let path = journal_path(code);
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            save_test_journal(&path, std::slice::from_ref(&record));
+            let before = fs::read(&path).unwrap();
+            let (mut worker, updates) = unit_worker_with_journal(path.clone());
+            worker.pending.insert("1".into(), pending_hello(1));
+
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":code}),
+            );
+
+            assert!(worker.recovery.is_empty());
+            assert_eq!(
+                worker.quarantined_recovery,
+                vec![QuarantinedRecoveryRecord {
+                    record: record.clone(),
+                    reason,
+                }]
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert!(worker.outgoing.is_empty());
+            assert!(worker.pending.is_empty());
+            let seen = updates.try_iter().collect::<Vec<_>>();
+            assert!(seen.iter().any(|update| matches!(
+                update,
+                ClientUpdate::RecoveryProjection { active, quarantined }
+                    if active.is_empty()
+                        && quarantined.len() == 1
+                        && quarantined[0].reason == reason
+            )));
+            assert!(
+                !seen
+                    .iter()
+                    .any(|update| matches!(update, ClientUpdate::RecoveryJournalProblem { .. }))
+            );
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn successful_mismatched_hello_quarantines_and_blocks_mutation_and_status() {
+        for (boot, scope, reason) in [
+            (
+                "other-boot",
+                "scope",
+                RecoveryQuarantineReason::AttachedBootMismatch,
+            ),
+            (
+                "boot",
+                "other-scope",
+                RecoveryQuarantineReason::AttachedScopeMismatch,
+            ),
+        ] {
+            let path = journal_path("successful-mismatch");
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            save_test_journal(&path, std::slice::from_ref(&record));
+            let before = fs::read(&path).unwrap();
+            let (mut worker, updates) = unit_worker_with_journal(path.clone());
+
+            worker.handle_hello_result(hello_reply_for(&json!("1"), boot, scope, 1));
+            worker.queue_mutation(2, "reference_retune".into(), json!({"target":2.0}));
+            worker.queue_operation_status(3, record.identity.clone());
+
+            assert_eq!(worker.state, ConnectionState::Ready);
+            assert!(worker.recovery.is_empty());
+            assert_eq!(worker.quarantined_recovery.len(), 1);
+            assert_eq!(worker.quarantined_recovery[0].record, record);
+            assert_eq!(worker.quarantined_recovery[0].reason, reason);
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert!(worker.outgoing.is_empty());
+            let seen = updates.try_iter().collect::<Vec<_>>();
+            assert!(
+                seen.iter().any(|update| matches!(
+                    update,
+                    ClientUpdate::LocalRejected { command_id: 2, .. }
+                ))
+            );
+            assert!(seen.iter().any(|update| matches!(
+                update,
+                ClientUpdate::LocalRejected { command_id: 3, reason }
+                    if reason == "recovery_not_found"
+            )));
+            assert!(
+                !seen
+                    .iter()
+                    .any(|update| matches!(update, ClientUpdate::ReconciliationRequired { .. }))
+            );
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn successful_mismatched_hello_projection_is_prefix_safe() {
+        for (boot, scope, reason) in [
+            (
+                "other-boot",
+                "scope",
+                RecoveryQuarantineReason::AttachedBootMismatch,
+            ),
+            (
+                "boot",
+                "other-scope",
+                RecoveryQuarantineReason::AttachedScopeMismatch,
+            ),
+        ] {
+            let path = journal_path("successful-prefix");
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            save_test_journal(&path, std::slice::from_ref(&record));
+            let (mut worker, updates) = unit_worker_with_journal(path.clone());
+            let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+            model.apply_client_update(ClientUpdate::RecoveryProjection {
+                active: vec![record.clone()],
+                quarantined: Vec::new(),
+            });
+
+            worker.handle_hello_result(hello_reply_for(&json!("1"), boot, scope, 1));
+            let seen = updates.try_iter().collect::<Vec<_>>();
+
+            assert_eq!(seen.len(), 3);
+            assert!(matches!(
+                seen[0],
+                ClientUpdate::State(ConnectionState::Ready)
+            ));
+            assert!(matches!(seen[1], ClientUpdate::Hello(_)));
+            assert!(matches!(
+                &seen[2],
+                ClientUpdate::RecoveryProjection { active, quarantined }
+                    if active.is_empty()
+                        && quarantined.len() == 1
+                        && quarantined[0].reason == reason
+            ));
+            for update in seen {
+                model.apply_client_update(update);
+                assert_recovery_evidence_visible(&model, &record);
+            }
+            assert!(model.recovery.mutations.is_empty());
+            assert_eq!(model.recovery.quarantined[0].record, record);
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn hello_error_quarantine_projection_is_prefix_safe() {
+        for (code, reason) in [
+            (
+                "instance_changed",
+                RecoveryQuarantineReason::InstanceChanged,
+            ),
+            ("scope_unknown", RecoveryQuarantineReason::ScopeUnknown),
+        ] {
+            let path = journal_path("error-prefix");
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            save_test_journal(&path, std::slice::from_ref(&record));
+            let (mut worker, updates) = unit_worker_with_journal(path.clone());
+            let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+            model.apply_client_update(ClientUpdate::RecoveryProjection {
+                active: vec![record.clone()],
+                quarantined: Vec::new(),
+            });
+            worker.pending.insert("1".into(), pending_hello(1));
+
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":code}),
+            );
+            let seen = updates.try_iter().collect::<Vec<_>>();
+
+            assert_eq!(seen.len(), 3);
+            assert!(matches!(
+                &seen[0],
+                ClientUpdate::RecoveryProjection { active, quarantined }
+                    if active.is_empty()
+                        && quarantined.len() == 1
+                        && quarantined[0].reason == reason
+            ));
+            assert!(matches!(
+                seen[1],
+                ClientUpdate::Reply {
+                    kind: ReplyKind::PublicError,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                seen[2],
+                ClientUpdate::State(ConnectionState::Disconnected)
+            ));
+            for update in seen {
+                model.apply_client_update(update);
+                assert_recovery_evidence_visible(&model, &record);
+            }
+            assert!(model.recovery.mutations.is_empty());
+            assert_eq!(model.recovery.quarantined[0].record, record);
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn saturated_atomic_quarantine_handoff_keeps_old_evidence_until_fail_closed_update() {
+        let (_command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, updates) = mpsc::sync_channel(1);
+        let mut worker = Worker::new(
+            "127.0.0.1:1".parse().unwrap(),
+            None,
+            command_rx,
+            update_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        worker.recovery = vec![record.clone()];
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+        model.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![record.clone()],
+            quarantined: Vec::new(),
+        });
+
+        worker.emit(ClientUpdate::State(ConnectionState::Ready));
+        assert!(worker.classify_active_recovery(RecoveryQuarantineReason::AttachedBootMismatch));
+        worker.emit_recovery_projection();
+
+        assert!(worker.recovery.is_empty());
+        assert_eq!(worker.quarantined_recovery[0].record, record);
+        assert!(matches!(
+            worker.deferred_update,
+            Some(ClientUpdate::ResnapshotRequired {
+                connection_lost: true,
+                ..
+            })
+        ));
+        model.apply_client_update(updates.try_recv().unwrap());
+        assert_recovery_evidence_visible(&model, &record);
+
+        worker.flush_deferred_update();
+        let fail_closed = updates.try_recv().unwrap();
+        assert!(matches!(
+            fail_closed,
+            ClientUpdate::ResnapshotRequired {
+                connection_lost: true,
+                ..
+            }
+        ));
+        model.apply_client_update(fail_closed);
+        assert_eq!(model.connection, ConnectionState::Stale);
+        assert_recovery_evidence_visible(&model, &record);
+        assert!(updates.try_recv().is_err());
+    }
+
+    #[test]
+    fn restart_reclassifies_unchanged_journal_without_growth_or_auto_send() {
+        let path = journal_path("restart-quarantine");
+        let records = (1..=MAX_IN_FLIGHT as u64)
+            .map(|seq| recovery_record(seq, KnownAdmission::Ambiguous))
+            .collect::<Vec<_>>();
+        save_test_journal(&path, &records);
+        let before = fs::read(&path).unwrap();
+
+        for _ in 0..3 {
+            let (mut worker, _updates) = unit_worker_with_journal(path.clone());
+            worker.pending.insert("1".into(), pending_hello(1));
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":"instance_changed"}),
+            );
+            worker.pending.insert("2".into(), pending_hello(2));
+            worker.handle_error(
+                "2".into(),
+                json!({"v":1,"msg_id":"2","type":"error","code":"instance_changed"}),
+            );
+            assert!(worker.recovery.is_empty());
+            assert_eq!(worker.quarantined_recovery.len(), MAX_IN_FLIGHT);
+            assert!(worker.outgoing.is_empty());
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn scripted_instance_change_preserves_journal_and_emits_no_followup_request() {
+        let path = journal_path("scripted-instance-change");
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        save_test_journal(&path, std::slice::from_ref(&record));
+        let before = fs::read(&path).unwrap();
+        let (address, peer) = scripted_peer(|stream| {
+            let mut reader = BufReader::new(stream);
+            let hello = read_request(&mut reader);
+            write_value(
+                reader.get_mut(),
+                &json!({"v":1,"msg_id":hello["msg_id"],"type":"error",
+                    "accepted":false,"code":"instance_changed"}),
+            );
+            let mut unexpected = String::new();
+            match reader.read_line(&mut unexpected) {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                other => {
+                    panic!("classification emitted an unexpected request: {other:?} {unexpected}")
+                }
+            }
+        });
+        let client =
+            ClientHandle::spawn_with_recovery_journal(address, Some(path.clone())).unwrap();
+        client.connect(Some("scope".into())).unwrap();
+        let quarantine = wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::RecoveryProjection { quarantined, .. }
+                    if !quarantined.is_empty()
+            )
+        });
+        let ClientUpdate::RecoveryProjection {
+            active,
+            quarantined: records,
+        } = quarantine
+        else {
+            unreachable!()
+        };
+        assert!(active.is_empty());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record, record);
+        assert_eq!(records[0].reason, RecoveryQuarantineReason::InstanceChanged);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        client.shutdown().unwrap();
+        peer.join().unwrap();
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn manual_new_scope_can_rebuild_observations_but_quarantine_still_blocks_mutation() {
+        let path = journal_path("manual-new-scope");
+        let record = recovery_record(1, KnownAdmission::Ambiguous);
+        save_test_journal(&path, std::slice::from_ref(&record));
+        let before = fs::read(&path).unwrap();
+        let (mut worker, updates) = unit_worker_with_journal(path.clone());
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+        worker.pending.insert("1".into(), pending_hello(1));
+        worker.handle_error(
+            "1".into(),
+            json!({"v":1,"msg_id":"1","type":"error","code":"scope_unknown"}),
+        );
+        apply_worker_updates(&updates, &mut model);
+        assert_eq!(model.recovery.quarantined.len(), 1);
+
+        worker.handle_hello_result(hello_reply_for(&json!("2"), "new-boot", "new-scope", 1));
+        apply_worker_updates(&updates, &mut model);
+        model.complete_rebuild();
+
+        assert_eq!(model.connection, ConnectionState::Ready);
+        assert_eq!(model.observations.freshness, crate::model::Freshness::Fresh);
+        assert_eq!(model.recovery.quarantined.len(), 1);
+        assert!(model.quarantine_blocks_mutations());
+        worker.queue_mutation(3, "reference_retune".into(), json!({"target":3.0}));
+        assert!(worker.outgoing.is_empty());
+        assert!(updates.try_iter().any(|update| matches!(
+            update,
+            ClientUpdate::LocalRejected { command_id: 3, reason }
+                if reason == "recovery_quarantine_unresolved"
+        )));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn successful_bounded_update_publish_invokes_renderer_neutral_wake() {
         let (_command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
@@ -1778,8 +2301,9 @@ mod tests {
         worker.hello = Some(hello_state(1));
         worker.recovery = vec![record.clone()];
         let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
-        model.apply_client_update(ClientUpdate::RecoveryState {
-            records: vec![record],
+        model.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![record],
+            quarantined: Vec::new(),
         });
         assert_eq!(
             model.recovery.mutations[0].admission,
@@ -1808,8 +2332,8 @@ mod tests {
 
         assert!(seen.iter().any(|update| matches!(
             update,
-            ClientUpdate::RecoveryState { records }
-                if records[0].admission == KnownAdmission::Completed
+            ClientUpdate::RecoveryProjection { active, .. }
+                if active[0].admission == KnownAdmission::Completed
         )));
         assert_eq!(worker.recovery[0].admission, KnownAdmission::Completed);
         assert_eq!(
@@ -1838,8 +2362,9 @@ mod tests {
             },
         );
         let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
-        model.apply_client_update(ClientUpdate::RecoveryState {
-            records: vec![record],
+        model.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![record],
+            quarantined: Vec::new(),
         });
 
         worker.handle_operation(
@@ -1851,7 +2376,7 @@ mod tests {
 
         assert!(seen.iter().any(|update| matches!(
             update,
-            ClientUpdate::RecoveryState { records } if records.is_empty()
+            ClientUpdate::RecoveryProjection { active, .. } if active.is_empty()
         )));
         assert!(worker.recovery.is_empty());
         assert!(model.recovery.mutations.is_empty());
@@ -1897,7 +2422,7 @@ mod tests {
         worker.recovery = (1..=MAX_IN_FLIGHT as u64)
             .map(|seq| recovery_record(seq, KnownAdmission::Completed))
             .collect();
-        worker.emit_recovery_state();
+        worker.emit_recovery_projection();
         apply_worker_updates(&updates, &mut model);
         worker.hello = Some(hello_state(9));
         worker.state = ConnectionState::Ready;
@@ -1916,10 +2441,10 @@ mod tests {
 
         assert!(seen.iter().any(|update| matches!(
             update,
-            ClientUpdate::RecoveryState { records }
-                if records.len() == MAX_IN_FLIGHT
-                    && !records.iter().any(|record| record.identity.seq == 1)
-                    && records.iter().any(|record| record.identity.seq == 9)
+            ClientUpdate::RecoveryProjection { active, .. }
+                if active.len() == MAX_IN_FLIGHT
+                    && !active.iter().any(|record| record.identity.seq == 1)
+                    && active.iter().any(|record| record.identity.seq == 9)
         )));
         assert_eq!(worker.recovery, model.recovery.mutations);
         assert!(

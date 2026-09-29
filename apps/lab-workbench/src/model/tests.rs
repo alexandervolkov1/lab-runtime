@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     client::types::{
         ClientUpdate, ConnectionState, EventCursor, HelloState, KnownAdmission, MutationIdentity,
-        RecoveryRecord, ReplyKind,
+        QuarantinedRecoveryRecord, RecoveryQuarantineReason, RecoveryRecord, ReplyKind,
     },
     presentation::{
         AxisOptions, ConfigurationOwner, Plot, PresentationDocument, RuntimeRef, Trace, TraceStyle,
@@ -389,8 +389,9 @@ fn reconciliation_identity_never_overwrites_command_identity() {
         args: json!({"reference":"1","target":2.0,"expected_revision":"1"}),
         admission: KnownAdmission::Ambiguous,
     };
-    model.apply_client_update(ClientUpdate::RecoveryState {
-        records: vec![recovery.clone()],
+    model.apply_client_update(ClientUpdate::RecoveryProjection {
+        active: vec![recovery.clone()],
+        quarantined: Vec::new(),
     });
     model.apply_client_update(ClientUpdate::ReconciliationRequired {
         records: vec![recovery.clone()],
@@ -403,6 +404,50 @@ fn reconciliation_identity_never_overwrites_command_identity() {
         vec![recovery.identity.clone()]
     );
     assert_eq!(model.recovery.mutations, vec![recovery]);
+}
+
+#[test]
+fn quarantine_is_bounded_separate_evidence_and_never_reconciliation_authority() {
+    let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
+    let record = RecoveryRecord {
+        boot_id: "old-boot".into(),
+        identity: MutationIdentity {
+            scope: "old-scope".into(),
+            seq: 7,
+        },
+        op: "reference_retune".into(),
+        args: json!({"reference":"1","target":2.0,"expected_revision":"1"}),
+        admission: KnownAdmission::Ambiguous,
+    };
+    model.apply_client_update(ClientUpdate::RecoveryProjection {
+        active: vec![record.clone()],
+        quarantined: Vec::new(),
+    });
+    model.apply_client_update(ClientUpdate::ReconciliationRequired {
+        records: vec![record.clone()],
+    });
+    model.apply_client_update(ClientUpdate::RecoveryProjection {
+        active: Vec::new(),
+        quarantined: vec![QuarantinedRecoveryRecord {
+            record: record.clone(),
+            reason: RecoveryQuarantineReason::AttachedBootMismatch,
+        }],
+    });
+
+    assert!(model.recovery.mutations.is_empty());
+    assert!(model.recovery.reconciliation_required.is_empty());
+    assert_eq!(model.recovery.quarantined.len(), 1);
+    assert_eq!(model.recovery.quarantined[0].record, record);
+    assert!(model.recovery_problem.is_none());
+
+    model.apply_client_update(ClientUpdate::RecoveryJournalProblem {
+        reason: "journal read failure".into(),
+    });
+    assert_eq!(model.recovery.quarantined.len(), 1);
+    assert_eq!(
+        model.recovery_problem.as_deref(),
+        Some("journal read failure")
+    );
 }
 
 #[test]

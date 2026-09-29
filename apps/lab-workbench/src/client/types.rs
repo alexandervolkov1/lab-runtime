@@ -59,6 +59,22 @@ pub(crate) struct RecoveryRecord {
     pub(crate) admission: KnownAdmission,
 }
 
+/// Typed reason why retained evidence is not authority for the attached session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecoveryQuarantineReason {
+    InstanceChanged,
+    ScopeUnknown,
+    AttachedBootMismatch,
+    AttachedScopeMismatch,
+}
+
+/// Exact retained mutation evidence that cannot be reconciled in the current session.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QuarantinedRecoveryRecord {
+    pub(crate) record: RecoveryRecord,
+    pub(crate) reason: RecoveryQuarantineReason,
+}
+
 /// Runtime-advertised hello/session data consumed by the client owner.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HelloState {
@@ -156,9 +172,10 @@ pub(crate) enum ClientUpdate {
         envelope: Value,
         recovery: Option<RecoveryRecord>,
     },
-    /// Complete bounded projection of the recovery records owned by the worker.
-    RecoveryState {
-        records: Vec<RecoveryRecord>,
+    /// Atomic complete projection of active authority and quarantined evidence.
+    RecoveryProjection {
+        active: Vec<RecoveryRecord>,
+        quarantined: Vec<QuarantinedRecoveryRecord>,
     },
     Event {
         cursor: EventCursor,

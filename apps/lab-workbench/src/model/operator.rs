@@ -749,6 +749,7 @@ fn readiness(
         return Err(OperatorIntentError::OperationUnavailable);
     }
     if model.recovery_problem.is_some()
+        || model.quarantine_blocks_mutations()
         || !model.recovery.reconciliation_required.is_empty()
         || model.recovery.mutations.iter().any(|record| {
             matches!(
@@ -873,7 +874,10 @@ fn owner_id(owner: &crate::presentation::ConfigurationOwner) -> &str {
 mod tests {
     use super::*;
     use crate::{
-        client::types::{EventCursor, HelloState},
+        client::types::{
+            EventCursor, HelloState, KnownAdmission, MutationIdentity, QuarantinedRecoveryRecord,
+            RecoveryQuarantineReason, RecoveryRecord,
+        },
         model::RuntimeObservations,
         presentation::{ConfigurationOwner, PresentationDocument},
     };
@@ -969,6 +973,24 @@ mod tests {
             Err(OperatorIntentError::RecoveryBlocked)
         );
         model.recovery_problem = None;
+        model.recovery.quarantined.push(QuarantinedRecoveryRecord {
+            record: RecoveryRecord {
+                boot_id: "old-boot".into(),
+                identity: MutationIdentity {
+                    scope: "old-scope".into(),
+                    seq: 1,
+                },
+                op: "reference_retune".into(),
+                args: json!({"reference":"1","target":2.0}),
+                admission: KnownAdmission::Ambiguous,
+            },
+            reason: RecoveryQuarantineReason::AttachedBootMismatch,
+        });
+        assert_eq!(
+            prepare(&model, intent()),
+            Err(OperatorIntentError::RecoveryBlocked)
+        );
+        model.recovery.quarantined.clear();
         model
             .recovery
             .reconciliation_required

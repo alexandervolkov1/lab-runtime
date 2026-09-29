@@ -27,7 +27,7 @@ pub(crate) use recovery_status::{
 use crate::{
     client::types::{
         ClientUpdate, ConnectionState, EventCursor, HelloState, KnownAdmission, MAX_IN_FLIGHT,
-        MutationIdentity, RecoveryRecord, ReplyKind,
+        MutationIdentity, QuarantinedRecoveryRecord, RecoveryRecord, ReplyKind,
     },
     presentation::{ConfigurationOwner, PresentationDocument, RuntimeRef},
 };
@@ -52,6 +52,8 @@ pub(crate) struct ClientRecoveryState {
     pub(crate) event_cursor: Option<EventCursor>,
     /// Current bounded projection of all worker-owned recovery records.
     pub(crate) mutations: Vec<RecoveryRecord>,
+    /// Bounded uncertainty evidence that is not authority for the attached session.
+    pub(crate) quarantined: Vec<QuarantinedRecoveryRecord>,
     /// Mutation identities for which the worker requested authoritative reconciliation.
     pub(crate) reconciliation_required: Vec<MutationIdentity>,
 }
@@ -137,8 +139,11 @@ impl WorkbenchModel {
                 envelope,
                 ..
             } => self.apply_reply(command_id, &op, kind, envelope),
-            ClientUpdate::RecoveryState { records } => {
-                self.apply_recovery_projection(records);
+            ClientUpdate::RecoveryProjection {
+                active,
+                quarantined,
+            } => {
+                self.apply_recovery_projection(active, quarantined);
             }
             ClientUpdate::Event { cursor, envelope } => {
                 self.recovery.event_cursor = Some(cursor.clone());
@@ -265,6 +270,11 @@ impl WorkbenchModel {
     pub(crate) fn operator_action_capacity_available(&self) -> bool {
         self.actions.len() < MAX_OPERATOR_ACTIONS
             || self.actions.values().any(|state| state.is_terminal())
+    }
+
+    /// Whether detached uncertainty evidence must fail closed for new mutations.
+    pub(crate) fn quarantine_blocks_mutations(&self) -> bool {
+        !self.recovery.quarantined.is_empty()
     }
 
     /// Returns one caller-local action state without crossing into mutation identity.
@@ -407,12 +417,36 @@ impl WorkbenchModel {
         self.refresh_unresolved();
     }
 
-    fn apply_recovery_projection(&mut self, records: Vec<RecoveryRecord>) {
-        if records.len() > MAX_IN_FLIGHT {
+    fn apply_recovery_projection(
+        &mut self,
+        active: Vec<RecoveryRecord>,
+        quarantined: Vec<QuarantinedRecoveryRecord>,
+    ) {
+        if active.len() > MAX_IN_FLIGHT || quarantined.len() > MAX_IN_FLIGHT {
             self.client_error = Some("worker recovery projection exceeded bound".into());
             return;
         }
-        self.recovery.mutations = records;
+        let mut identities = BTreeSet::new();
+        let active_has_duplicate = active.iter().any(|record| {
+            !identities.insert((
+                record.boot_id.clone(),
+                record.identity.scope.clone(),
+                record.identity.seq,
+            ))
+        });
+        let quarantine_has_duplicate = quarantined.iter().any(|entry| {
+            !identities.insert((
+                entry.record.boot_id.clone(),
+                entry.record.identity.scope.clone(),
+                entry.record.identity.seq,
+            ))
+        });
+        if active_has_duplicate || quarantine_has_duplicate {
+            self.client_error = Some("worker recovery projection contained duplicates".into());
+            return;
+        }
+        self.recovery.mutations = active;
+        self.recovery.quarantined = quarantined;
         self.recovery.reconciliation_required.retain(|identity| {
             self.recovery.mutations.iter().any(|record| {
                 record.identity == *identity && requires_reconciliation(record.admission)

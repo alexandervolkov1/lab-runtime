@@ -3,7 +3,7 @@
 use super::rebuild::RebuildCoordinator;
 use crate::{
     client::ClientHandle,
-    client::types::{ConnectionState, KnownAdmission},
+    client::types::{ConnectionState, KnownAdmission, RecoveryQuarantineReason},
     model::{
         ControllerLifecycleIntent, Freshness, OperatorIntent, OperatorWarning, OperatorWorkflow,
         OperatorWorkflowState, PROPERTY_TEXT_BYTES, PidCandidate, PropertyMutationCandidate,
@@ -166,12 +166,20 @@ impl WorkbenchApp {
                 | ConnectionState::Reattaching
                 | ConnectionState::Ready
         );
+        let quarantined = !self.model.recovery.quarantined.is_empty();
+        let connect_label = if quarantined {
+            "Connect new scope"
+        } else {
+            "Connect"
+        };
         if ui
-            .add_enabled(!connected, egui::Button::new("Connect"))
+            .add_enabled(!connected, egui::Button::new(connect_label))
             .clicked()
             && let Some(client) = self.client.as_ref()
         {
-            let scope = self.model.recovery.scope.clone();
+            let scope = (!quarantined)
+                .then(|| self.model.recovery.scope.clone())
+                .flatten();
             if let Err(error) = client.connect(scope) {
                 self.model.client_error = Some(error.to_string());
             }
@@ -222,24 +230,60 @@ impl WorkbenchApp {
                 ),
             );
         }
+        if self.model.quarantine_blocks_mutations() {
+            ui.colored_label(
+                Color32::LIGHT_RED,
+                format!(
+                    "Quarantined recovery evidence: {}; new mutations are blocked",
+                    self.model.recovery.quarantined.len()
+                ),
+            );
+        }
         self.render_recovery(ui);
     }
 
     fn render_recovery(&mut self, ui: &mut egui::Ui) {
         let records = self.recovery_status.presentations(&self.model);
         egui::CollapsingHeader::new("Recovery / reconciliation")
-            .default_open(!records.is_empty() || self.model.recovery_problem.is_some())
+            .default_open(
+                !records.is_empty()
+                    || !self.model.recovery.quarantined.is_empty()
+                    || self.model.recovery_problem.is_some(),
+            )
             .show(ui, |ui| {
                 if let Some(problem) = &self.model.recovery_problem {
                     ui.colored_label(Color32::LIGHT_RED, problem);
                 }
-                if records.is_empty() {
+                if records.is_empty() && self.model.recovery.quarantined.is_empty() {
                     ui.label("No retained recovery records");
                     return;
                 }
                 for record in records {
                     self.render_recovery_record(ui, record);
                     ui.separator();
+                }
+                if !self.model.recovery.quarantined.is_empty() {
+                    ui.strong("Quarantined recovery evidence");
+                    ui.colored_label(
+                        Color32::LIGHT_RED,
+                        "Not attached to the current Runtime session. Status/retry unavailable. New experiment mutations remain blocked.",
+                    );
+                    for entry in &self.model.recovery.quarantined {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.monospace(format!(
+                                "boot={} scope={} seq={}",
+                                entry.record.boot_id,
+                                entry.record.identity.scope,
+                                entry.record.identity.seq
+                            ));
+                            ui.label(format!("op={}", entry.record.op));
+                            ui.label(format!("admission={:?}", entry.record.admission));
+                            ui.label(format!(
+                                "reason={}",
+                                quarantine_reason_text(entry.reason)
+                            ));
+                        });
+                    }
                 }
             });
     }
@@ -792,6 +836,7 @@ impl WorkbenchApp {
                 .as_ref()
                 .is_some_and(|hello| hello.operations.iter().any(|item| item == operation))
             && self.model.recovery_problem.is_none()
+            && !self.model.quarantine_blocks_mutations()
             && self.model.recovery.reconciliation_required.is_empty()
             && !self.model.recovery.mutations.iter().any(|record| {
                 matches!(
@@ -1118,6 +1163,15 @@ fn status_eligibility_text(eligibility: StatusEligibility) -> &'static str {
         StatusEligibility::BootMismatch => "record belongs to another Runtime boot",
         StatusEligibility::ScopeMismatch => "record belongs to another scope",
         StatusEligibility::TerminalRecord => "record is already terminal",
+    }
+}
+
+fn quarantine_reason_text(reason: RecoveryQuarantineReason) -> &'static str {
+    match reason {
+        RecoveryQuarantineReason::InstanceChanged => "Runtime instance changed",
+        RecoveryQuarantineReason::ScopeUnknown => "retained scope is unknown",
+        RecoveryQuarantineReason::AttachedBootMismatch => "attached Runtime boot differs",
+        RecoveryQuarantineReason::AttachedScopeMismatch => "attached scope differs",
     }
 }
 

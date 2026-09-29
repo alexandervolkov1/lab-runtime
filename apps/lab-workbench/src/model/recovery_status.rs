@@ -188,7 +188,7 @@ impl RecoveryStatusTracker {
     /// Consumes ordered worker updates without changing authoritative recovery records.
     pub(crate) fn after_update(&mut self, update: &ClientUpdate) {
         match update {
-            ClientUpdate::RecoveryState { records } => self.retain_current(records),
+            ClientUpdate::RecoveryProjection { active, .. } => self.retain_current(active),
             ClientUpdate::Reply {
                 command_id,
                 op,
@@ -368,7 +368,9 @@ fn bounded_message(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        client::types::{EventCursor, HelloState},
+        client::types::{
+            EventCursor, HelloState, QuarantinedRecoveryRecord, RecoveryQuarantineReason,
+        },
         presentation::PresentationDocument,
     };
     use serde_json::json;
@@ -560,6 +562,35 @@ mod tests {
     }
 
     #[test]
+    fn quarantined_identity_is_not_a_check_status_candidate() {
+        let quarantined = record(1, KnownAdmission::Ambiguous);
+        let mut model = model(vec![quarantined.clone()]);
+        let sender = FakeSubmitter::default();
+        let mut tracker = RecoveryStatusTracker::default();
+        assert_eq!(tracker.presentations(&model).len(), 1);
+
+        let classified = ClientUpdate::RecoveryProjection {
+            active: Vec::new(),
+            quarantined: vec![QuarantinedRecoveryRecord {
+                record: quarantined.clone(),
+                reason: RecoveryQuarantineReason::AttachedBootMismatch,
+            }],
+        };
+        model.apply_client_update(classified.clone());
+        tracker.after_update(&classified);
+
+        assert!(tracker.presentations(&model).is_empty());
+        assert_eq!(model.recovery.quarantined.len(), 1);
+        assert_eq!(
+            tracker.check_status(&model, &sender, quarantined.identity),
+            Err(RecoveryStatusError::Ineligible(
+                StatusEligibility::RecordMissing
+            ))
+        );
+        assert!(sender.sent.borrow().is_empty());
+    }
+
+    #[test]
     fn status_reply_never_mutates_admission_without_recovery_state() {
         for (wire_state, authoritative) in [
             ("accepted", KnownAdmission::Accepted),
@@ -577,8 +608,9 @@ mod tests {
                 model.recovery.mutations[0].admission,
                 KnownAdmission::Ambiguous
             );
-            let projection = ClientUpdate::RecoveryState {
-                records: vec![record(1, authoritative)],
+            let projection = ClientUpdate::RecoveryProjection {
+                active: vec![record(1, authoritative)],
+                quarantined: Vec::new(),
             };
             model.apply_client_update(projection.clone());
             tracker.after_update(&projection);
