@@ -9,7 +9,7 @@ $targetProfile = if ($Profile -eq "release") { "release" } else { "debug" }
 $cargoProfile = if ($Profile -eq "release") { @("--release") } else { @() }
 $runtimeExe = Join-Path $repo "target\$targetProfile\lab-runtime.exe"
 $workbenchExe = Join-Path $repo "target\$targetProfile\lab-workbench.exe"
-$temporary = Join-Path ([IO.Path]::GetTempPath()) ("lab-workbench-m14-4-" + [Guid]::NewGuid().ToString("N"))
+$temporary = Join-Path ([IO.Path]::GetTempPath()) ("lab-workbench-m14-5-" + [Guid]::NewGuid().ToString("N"))
 $runtime = $null
 $workbench = $null
 
@@ -69,6 +69,16 @@ try {
     $firstMetrics = Wait-File $smokeResult 35 $workbench
     $result = Get-Content -LiteralPath $smokeResult -Raw | ConvertFrom-Json
     if ($result.status -ne "pass") { throw "GUI smoke reported $($result.status): $($result.reason)" }
+    foreach ($required in @(
+        "confirmation_observed",
+        "mutation_accepted_observed",
+        "mutation_completed_observed",
+        "authoritative_refresh_observed",
+        "stale_controls_disabled",
+        "controls_reenabled_after_fresh"
+    )) {
+        if (-not $result.$required) { throw "GUI operator smoke did not prove $required" }
+    }
     if (-not $firstMetrics.WindowObserved) { throw "No native Workbench window was observed" }
     if (-not $workbench.WaitForExit(5000)) { throw "Workbench close was not finite" }
     $workbench = $null
@@ -106,6 +116,12 @@ try {
         fresh_after_reattach = $true
         live_signal_points = $result.live_signal_points
         reference_visible = $true
+        confirmation_observed = $result.confirmation_observed
+        mutation_accepted_observed = $result.mutation_accepted_observed
+        mutation_completed_observed = $result.mutation_completed_observed
+        authoritative_refresh_observed = $result.authoritative_refresh_observed
+        stale_controls_disabled = $result.stale_controls_disabled
+        controls_reenabled_after_fresh = $result.controls_reenabled_after_fresh
         runtime_alive_after_clean_close = (-not $runtime.HasExited)
         runtime_alive_after_forced_termination = (-not $runtime.HasExited)
     } | ConvertTo-Json -Compress

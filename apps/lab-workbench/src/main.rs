@@ -83,13 +83,39 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+mod operator_boundary_tests {
+    #[test]
+    fn ordinary_gui_source_has_no_raw_or_prohibited_application_mutations() {
+        let source = include_str!("gui/app.rs");
+        assert!(!source.contains(".mutation("));
+        for prohibited in [
+            "runtime_shutdown",
+            "emulator_publish",
+            "virtual_models_restart",
+            "stage_configuration",
+            "apply_configuration",
+            "reload_configuration",
+            "history_read",
+        ] {
+            assert!(
+                !source.contains(prohibited),
+                "ordinary GUI contains prohibited operation {prohibited}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod runtime_acceptance {
     use super::{
         client::{
             ClientHandle, ClientUpdate,
             types::{EventCursor, MutationIdentity, ReplyKind},
         },
-        model::{Freshness, WorkbenchModel},
+        gui::rebuild::RebuildCoordinator,
+        model::{
+            Freshness, OperatorIntent, OperatorWorkflow, OperatorWorkflowState, WorkbenchModel,
+        },
         presentation::{PresentationDocument, RuntimeRef},
     };
     use serde_json::{Value, json};
@@ -178,6 +204,162 @@ mod runtime_acceptance {
             panic!("expected Application reply")
         };
         envelope["result"].clone()
+    }
+
+    fn apply_until(
+        client: &ClientHandle,
+        model: &mut WorkbenchModel,
+        rebuild: &mut RebuildCoordinator,
+        mut predicate: impl FnMut(&ClientUpdate, &WorkbenchModel) -> bool,
+    ) -> ClientUpdate {
+        let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        loop {
+            let update = client
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("Workbench update before acceptance deadline");
+            model.apply_client_update(update.clone());
+            rebuild.after_update(&update, model, client);
+            if predicate(&update, model) {
+                return update;
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "M14.5 operator process acceptance; run after cargo build -p lab-runtime -p lab-workbench"]
+    fn real_runtime_operator_layer_confirms_completes_refreshes_and_never_retries_conflict() {
+        let (mut runtime, address) = start_runtime();
+        let client = ClientHandle::spawn(address).unwrap();
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("m14-5-acceptance"));
+        let mut rebuild = RebuildCoordinator::default();
+        client.connect(None).unwrap();
+        apply_until(&client, &mut model, &mut rebuild, |_, model| {
+            model.observations.freshness == Freshness::Fresh
+        });
+
+        let target = RuntimeRef::Reference {
+            reference: "1".into(),
+        };
+        let initial = model.observations.entities[&target].value.clone();
+        let original_target = initial["target"].as_f64().unwrap();
+        let mut workflow = OperatorWorkflow::default();
+        workflow
+            .begin(
+                &model,
+                OperatorIntent::RetuneReference {
+                    reference: "1".into(),
+                    target: original_target + 0.5,
+                    rate: 2.0,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::AwaitingConfirmation(_)
+        ));
+        let command_id = workflow.confirm(&model, &client).unwrap();
+        model
+            .track_operator_intent(command_id)
+            .expect("single operator workflow retains bounded action state");
+        let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        while Instant::now() < deadline {
+            let update = client
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            model.apply_client_update(update.clone());
+            workflow.after_update(&update);
+            rebuild.after_update(&update, &mut model, &client);
+            let authoritative = model
+                .observations
+                .entities
+                .get(&target)
+                .is_some_and(|item| {
+                    item.freshness == Freshness::Fresh
+                        && item.value["revision"] != initial["revision"]
+                        && item.value["target"] == json!(original_target + 0.5)
+                });
+            if matches!(workflow.state, OperatorWorkflowState::Completed { .. }) && authoritative {
+                break;
+            }
+        }
+        assert!(workflow.accepted_observed);
+        assert!(matches!(
+            workflow.state,
+            OperatorWorkflowState::Completed { .. }
+        ));
+        assert_eq!(
+            model.observations.entities[&target].value["target"],
+            json!(original_target + 0.5)
+        );
+
+        // Freeze an old draft, commit a second exact intent without applying its
+        // Reference event locally, then submit the old draft. Runtime, not the GUI,
+        // returns the optimistic-concurrency conflict.
+        let mut stale_draft = OperatorWorkflow::default();
+        stale_draft
+            .begin(
+                &model,
+                OperatorIntent::RetuneReference {
+                    reference: "1".into(),
+                    target: original_target + 0.75,
+                    rate: 2.0,
+                },
+            )
+            .unwrap();
+        let mut intervening = OperatorWorkflow::default();
+        intervening
+            .begin(
+                &model,
+                OperatorIntent::RetuneReference {
+                    reference: "1".into(),
+                    target: original_target + 1.0,
+                    rate: 2.0,
+                },
+            )
+            .unwrap();
+        intervening.confirm(&model, &client).unwrap();
+        loop {
+            let update = client.recv_timeout(ACCEPTANCE_TIMEOUT).unwrap();
+            intervening.after_update(&update);
+            if !matches!(update, ClientUpdate::Event { .. }) {
+                model.apply_client_update(update.clone());
+            }
+            if matches!(intervening.state, OperatorWorkflowState::Completed { .. }) {
+                break;
+            }
+        }
+
+        let observation_before_conflict = model.observations.entities[&target].value.clone();
+        stale_draft.confirm(&model, &client).unwrap();
+        loop {
+            let update = client.recv_timeout(ACCEPTANCE_TIMEOUT).unwrap();
+            stale_draft.after_update(&update);
+            model.apply_client_update(update);
+            if matches!(
+                stale_draft.state,
+                OperatorWorkflowState::Failed { conflict: true, .. }
+            ) {
+                break;
+            }
+        }
+        assert!(matches!(
+            stale_draft.state,
+            OperatorWorkflowState::Failed { conflict: true, .. }
+        ));
+        assert_eq!(
+            model.observations.entities[&target].value,
+            observation_before_conflict
+        );
+
+        client.disconnect().unwrap();
+        wait_for(&client, |update| {
+            matches!(
+                update,
+                ClientUpdate::State(super::client::types::ConnectionState::Disconnected)
+            )
+        });
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        client.shutdown().unwrap();
     }
 
     #[test]

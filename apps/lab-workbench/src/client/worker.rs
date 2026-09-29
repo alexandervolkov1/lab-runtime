@@ -2827,12 +2827,20 @@ mod tests {
                 &hello_reply(&hello["msg_id"], "boot:1", 1),
             );
             for seq in 1..=(UPDATE_QUEUE as u64 + 8) {
-                write_value(
-                    reader.get_mut(),
-                    &json!({"v":1,"type":"event","boot_id":"boot",
+                let event = json!({"v":1,"type":"event","boot_id":"boot",
                     "seq":seq.to_string(),"kind":"reference","target":{"id":"1"},
-                    "data":{"revision":seq.to_string()}}),
-                );
+                    "data":{"revision":seq.to_string()}});
+                let bytes = encode_frame(&event).unwrap();
+                if bytes
+                    .chunks(3)
+                    .try_for_each(|chunk| reader.get_mut().write_all(chunk))
+                    .is_err()
+                {
+                    // Queue saturation deliberately closes the transport. Depending
+                    // on scheduling, the test peer observes that as EOF or reset
+                    // before it has emitted every surplus event.
+                    break;
+                }
             }
         });
         let client = ClientHandle::spawn(address).unwrap();

@@ -6,10 +6,16 @@
 )]
 
 mod command;
+mod operator;
 mod projections;
 
 pub(crate) use command::{
     LabCommand, UiCommand, UiCommandError, WorkbenchCommand, apply_ui_command,
+};
+pub(crate) use operator::{
+    ControllerLifecycleIntent, OperatorIntent, OperatorIntentError, OperatorWarning,
+    OperatorWorkflow, OperatorWorkflowState, PROPERTY_TEXT_BYTES, PidCandidate,
+    PropertyMutationCandidate, RECORDING_LABEL_BYTES,
 };
 pub(crate) use projections::{Freshness, LIVE_TRACE_POINTS, LivePoint, RuntimeObservations};
 
@@ -21,7 +27,12 @@ use crate::{
     presentation::{ConfigurationOwner, PresentationDocument, RuntimeRef},
 };
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// Maximum retained operator actions, including current nonterminal work.
+pub(crate) const MAX_OPERATOR_ACTIONS: usize = 64;
+
+const OPERATOR_ACTION_CAPACITY_ERROR: &str = "operator action history is full of nonterminal work";
 
 /// Client recovery/session observations, separate from presentation persistence.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -82,8 +93,12 @@ pub(crate) struct WorkbenchModel {
     pub(crate) unresolved: BTreeSet<RuntimeRef>,
     /// Pending/terminal client action display state keyed by command ID.
     pub(crate) actions: BTreeMap<CommandId, OperatorActionState>,
+    /// Bounded insertion order used to retire only the oldest terminal action.
+    action_order: VecDeque<CommandId>,
     /// Last visible client-local failure.
     pub(crate) client_error: Option<String>,
+    /// Durable recovery-journal failure; separately gates mutation controls.
+    pub(crate) recovery_problem: Option<String>,
 }
 
 impl WorkbenchModel {
@@ -97,7 +112,9 @@ impl WorkbenchModel {
             presentation,
             unresolved: BTreeSet::new(),
             actions: BTreeMap::new(),
+            action_order: VecDeque::new(),
             client_error: None,
+            recovery_problem: None,
         };
         model.refresh_unresolved();
         model
@@ -128,7 +145,7 @@ impl WorkbenchModel {
                 }
             }
             ClientUpdate::ReferenceBootstrap {
-                command_id,
+                command_id: _,
                 snapshot,
                 subsequent_events,
             } => {
@@ -137,8 +154,6 @@ impl WorkbenchModel {
                     let seq = parse_cursor(&event).map(|cursor| cursor.seq);
                     self.apply_event(seq.unwrap_or_default(), event);
                 }
-                self.actions
-                    .insert(CommandId::new(command_id), OperatorActionState::Completed);
                 self.refresh_unresolved();
             }
             ClientUpdate::ReconciliationRequired { records } => {
@@ -169,11 +184,13 @@ impl WorkbenchModel {
             ClientUpdate::RecoveryJournalProblem { reason } => {
                 self.observations.mark_stale();
                 self.refresh_unresolved();
+                self.recovery_problem = Some(reason.clone());
                 self.client_error = Some(reason);
             }
             ClientUpdate::LocalRejected { command_id, reason } => {
-                self.actions
-                    .insert(CommandId::new(command_id), OperatorActionState::Failed);
+                if let Some(action) = self.actions.get_mut(&CommandId::new(command_id)) {
+                    *action = OperatorActionState::Failed;
+                }
                 self.client_error = Some(reason);
             }
             ClientUpdate::TransportFailure { reason } => {
@@ -210,11 +227,39 @@ impl WorkbenchModel {
     }
 
     /// Marks one submitted lab intent pending authoritative admission/result.
-    pub(crate) fn track_operator_intent(&mut self, command_id: u64) {
-        self.actions.insert(
-            CommandId::new(command_id),
-            OperatorActionState::PendingAdmission,
-        );
+    pub(crate) fn track_operator_intent(&mut self, command_id: u64) -> Result<(), &'static str> {
+        let command_id = CommandId::new(command_id);
+        if self.actions.contains_key(&command_id) {
+            self.client_error = Some("operator command ID was already tracked".into());
+            return Err("operator command ID was already tracked");
+        }
+        if self.actions.len() == MAX_OPERATOR_ACTIONS {
+            let Some(position) = self.action_order.iter().position(|candidate| {
+                self.actions
+                    .get(candidate)
+                    .is_some_and(|state| state.is_terminal())
+            }) else {
+                self.client_error = Some(OPERATOR_ACTION_CAPACITY_ERROR.into());
+                return Err(OPERATOR_ACTION_CAPACITY_ERROR);
+            };
+            let retired = self
+                .action_order
+                .remove(position)
+                .expect("located terminal action remains in bounded order");
+            self.actions.remove(&retired);
+        }
+        self.actions
+            .insert(command_id, OperatorActionState::PendingAdmission);
+        self.action_order.push_back(command_id);
+        debug_assert!(self.actions.len() <= MAX_OPERATOR_ACTIONS);
+        debug_assert_eq!(self.actions.len(), self.action_order.len());
+        Ok(())
+    }
+
+    /// Whether one new operator intent can be retained without losing active state.
+    pub(crate) fn operator_action_capacity_available(&self) -> bool {
+        self.actions.len() < MAX_OPERATOR_ACTIONS
+            || self.actions.values().any(|state| state.is_terminal())
     }
 
     /// Returns one caller-local action state without crossing into mutation identity.
@@ -226,6 +271,36 @@ impl WorkbenchModel {
     pub(crate) fn complete_rebuild(&mut self) {
         self.observations.complete_rebuild();
         self.refresh_unresolved();
+    }
+
+    /// Full controller config/PID is authoritative only from a current full query.
+    pub(crate) fn controller_detail_is_fresh(&self, controller: &str) -> bool {
+        self.observations.controller_detail_is_fresh(controller)
+    }
+
+    /// Revision covered by the last complete controller detail query.
+    pub(crate) fn controller_detail_revision(&self, controller: &str) -> Option<&Value> {
+        self.observations.controller_detail_revision(controller)
+    }
+
+    /// Retains cached controller config for display but removes mutation authority.
+    pub(crate) fn mark_controller_detail_stale(&mut self, controller: &str) {
+        self.observations.mark_controller_detail_stale(controller);
+    }
+
+    /// Full resource reconnect detail is authoritative only from a current query.
+    pub(crate) fn resource_detail_is_fresh(&self, resource: &str) -> bool {
+        self.observations.resource_detail_is_fresh(resource)
+    }
+
+    /// Transport generation covered by the last complete resource detail query.
+    pub(crate) fn resource_detail_generation(&self, resource: &str) -> Option<&Value> {
+        self.observations.resource_detail_generation(resource)
+    }
+
+    /// Retains resource metadata for display but removes reconnect authority.
+    pub(crate) fn mark_resource_detail_stale(&mut self, resource: &str) {
+        self.observations.mark_resource_detail_stale(resource);
     }
 
     /// Recomputes unresolved presentation references without changing the document.
@@ -279,12 +354,16 @@ impl WorkbenchModel {
     }
 
     fn apply_reply(&mut self, command_id: u64, op: &str, kind: ReplyKind, envelope: Value) {
-        let action = match kind {
-            ReplyKind::MutationAccepted => OperatorActionState::Accepted,
-            ReplyKind::MutationCompleted | ReplyKind::Result => OperatorActionState::Completed,
-            ReplyKind::MutationFailed | ReplyKind::PublicError => OperatorActionState::Failed,
-        };
-        self.actions.insert(CommandId::new(command_id), action);
+        if kind != ReplyKind::Result
+            && let Some(action) = self.actions.get_mut(&CommandId::new(command_id))
+        {
+            *action = match kind {
+                ReplyKind::MutationAccepted => OperatorActionState::Accepted,
+                ReplyKind::MutationCompleted => OperatorActionState::Completed,
+                ReplyKind::MutationFailed | ReplyKind::PublicError => OperatorActionState::Failed,
+                ReplyKind::Result => unreachable!("Result was excluded above"),
+            };
+        }
         if kind != ReplyKind::Result {
             return;
         }
@@ -293,12 +372,18 @@ impl WorkbenchModel {
         };
         match op {
             "reference" => self.observe_reference(result, None),
-            "controller" => self.observe_named(result, "controller", |id| RuntimeRef::Controller {
-                controller: id,
-            }),
-            "resource" => self.observe_named(result, "resource", |id| RuntimeRef::Resource {
-                resource: id,
-            }),
+            "controller" => {
+                if let Some(controller) = result.get("controller").and_then(Value::as_str) {
+                    self.observations
+                        .observe_controller_full(controller.to_owned(), result);
+                }
+            }
+            "resource" => {
+                if let Some(resource) = result.get("resource").and_then(Value::as_str) {
+                    self.observations
+                        .observe_resource_full(resource.to_owned(), result);
+                }
+            }
             "component" => self.observe_named(result, "component", |id| RuntimeRef::Component {
                 component: id,
             }),
@@ -344,24 +429,45 @@ impl WorkbenchModel {
                 .map(|id| RuntimeRef::Reference {
                     reference: id.to_owned(),
                 }),
-            Some("controller") => target
-                .and_then(|value| value.get("id"))
-                .and_then(Value::as_str)
-                .map(|id| RuntimeRef::Controller {
-                    controller: id.to_owned(),
-                }),
-            Some("resource") => target
-                .and_then(|value| value.get("id"))
-                .and_then(Value::as_str)
-                .map(|id| RuntimeRef::Resource {
-                    resource: id.to_owned(),
-                }),
+            Some("controller") => {
+                if let Some(controller) = target
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                {
+                    self.observations.observe_controller_event(
+                        controller.to_owned(),
+                        data.clone(),
+                        cursor,
+                    );
+                }
+                None
+            }
+            Some("resource") => {
+                if let Some(resource) = target
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                {
+                    self.observations.observe_resource_event(
+                        resource.to_owned(),
+                        data.clone(),
+                        cursor,
+                    );
+                }
+                None
+            }
             Some("component") => target
                 .and_then(|value| value.get("id"))
                 .and_then(Value::as_str)
                 .map(|id| RuntimeRef::Component {
                     component: id.to_owned(),
                 }),
+            Some("recorder") => Some(RuntimeRef::Recorder),
+            Some("configuration") => {
+                self.observations.mark_matching_stale(|identity| {
+                    matches!(identity, RuntimeRef::ConfigurationProperty { .. })
+                });
+                None
+            }
             Some("signal" | "measurement") => target.and_then(parse_signal_ref),
             _ => None,
         };
@@ -489,6 +595,12 @@ impl WorkbenchModel {
                 None,
             );
         }
+    }
+}
+
+impl OperatorActionState {
+    fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
     }
 }
 

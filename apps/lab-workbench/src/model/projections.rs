@@ -32,6 +32,24 @@ pub(crate) struct Observation {
     pub(crate) cursor: Option<u64>,
 }
 
+/// Freshness of the full controller configuration/detail projection.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ControllerDetail {
+    /// Revision for which the full query supplied config, bindings, and policy.
+    pub(crate) revision: Value,
+    /// Full detail is mutation-authoritative only while this is Fresh.
+    pub(crate) freshness: Freshness,
+}
+
+/// Freshness of full resource reconnect/configuration detail.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResourceDetail {
+    /// Transport generation for which the full query supplied reconnect metadata.
+    pub(crate) transport_generation: Value,
+    /// Full detail is mutation-authoritative only while this is Fresh.
+    pub(crate) freshness: Freshness,
+}
+
 /// One display-only live point; it is not Recorder data or physical evidence.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LivePoint {
@@ -80,6 +98,10 @@ pub(crate) struct RuntimeObservations {
     pub(crate) entities: BTreeMap<RuntimeRef, Observation>,
     /// Bounded live display buffers by stable identity.
     pub(crate) live: BTreeMap<RuntimeRef, LiveTraceBuffer>,
+    /// Full controller-detail authority, separate from narrow lifecycle events.
+    pub(crate) controller_details: BTreeMap<String, ControllerDetail>,
+    /// Full resource-detail authority, separate from narrow transport events.
+    pub(crate) resource_details: BTreeMap<String, ResourceDetail>,
     /// Overall freshness of the observation set.
     pub(crate) freshness: Freshness,
 }
@@ -91,6 +113,12 @@ impl RuntimeObservations {
         for observation in self.entities.values_mut() {
             observation.freshness = Freshness::Stale;
         }
+        for detail in self.controller_details.values_mut() {
+            detail.freshness = Freshness::Stale;
+        }
+        for detail in self.resource_details.values_mut() {
+            detail.freshness = Freshness::Stale;
+        }
     }
 
     /// Starts a new observation epoch while preserving stale entity projections.
@@ -101,6 +129,12 @@ impl RuntimeObservations {
         self.freshness = Freshness::Rebuilding;
         for observation in self.entities.values_mut() {
             observation.freshness = Freshness::Stale;
+        }
+        for detail in self.controller_details.values_mut() {
+            detail.freshness = Freshness::Stale;
+        }
+        for detail in self.resource_details.values_mut() {
+            detail.freshness = Freshness::Stale;
         }
         self.live.clear();
     }
@@ -120,5 +154,176 @@ impl RuntimeObservations {
                 cursor,
             },
         );
+    }
+
+    /// Replaces one controller with a complete query projection.
+    pub(crate) fn observe_controller_full(&mut self, controller: String, value: Value) {
+        let revision = value.get("revision").cloned().unwrap_or(Value::Null);
+        self.observe(
+            RuntimeRef::Controller {
+                controller: controller.clone(),
+            },
+            value,
+            None,
+        );
+        self.controller_details.insert(
+            controller,
+            ControllerDetail {
+                revision,
+                freshness: Freshness::Fresh,
+            },
+        );
+    }
+
+    /// Merges only event-owned dynamic controller fields and invalidates full detail
+    /// when the event announces another revision.
+    pub(crate) fn observe_controller_event(
+        &mut self,
+        controller: String,
+        event: Value,
+        cursor: u64,
+    ) {
+        let event_revision = event.get("revision").cloned().unwrap_or(Value::Null);
+        let target = RuntimeRef::Controller {
+            controller: controller.clone(),
+        };
+        let existing = self.entities.get_mut(&target);
+        if let Some(observation) = existing {
+            if let (Some(current), Some(update)) =
+                (observation.value.as_object_mut(), event.as_object())
+            {
+                for field in [
+                    "state",
+                    "status",
+                    "failure",
+                    "active",
+                    "paused",
+                    "revision",
+                    "last_tick",
+                    "latest_output",
+                ] {
+                    if let Some(value) = update.get(field) {
+                        current.insert(field.to_owned(), value.clone());
+                    }
+                }
+            } else {
+                observation.value = event;
+            }
+            observation.freshness = Freshness::Fresh;
+            observation.cursor = Some(cursor);
+        } else {
+            self.observe(target, event, Some(cursor));
+        }
+        if let Some(detail) = self.controller_details.get_mut(&controller)
+            && detail.revision != event_revision
+        {
+            detail.freshness = Freshness::Stale;
+        }
+    }
+
+    /// Whether full controller configuration corresponds to the current revision.
+    pub(crate) fn controller_detail_is_fresh(&self, controller: &str) -> bool {
+        self.controller_details
+            .get(controller)
+            .is_some_and(|detail| detail.freshness == Freshness::Fresh)
+    }
+
+    /// Revision covered by the last complete controller query.
+    pub(crate) fn controller_detail_revision(&self, controller: &str) -> Option<&Value> {
+        self.controller_details
+            .get(controller)
+            .map(|detail| &detail.revision)
+    }
+
+    /// Invalidates full controller detail while retaining it for stale display.
+    pub(crate) fn mark_controller_detail_stale(&mut self, controller: &str) {
+        if let Some(detail) = self.controller_details.get_mut(controller) {
+            detail.freshness = Freshness::Stale;
+        }
+    }
+
+    /// Replaces one resource with a complete query projection.
+    pub(crate) fn observe_resource_full(&mut self, resource: String, value: Value) {
+        let transport_generation = value
+            .get("transport_generation")
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.observe(
+            RuntimeRef::Resource {
+                resource: resource.clone(),
+            },
+            value,
+            None,
+        );
+        self.resource_details.insert(
+            resource,
+            ResourceDetail {
+                transport_generation,
+                freshness: Freshness::Fresh,
+            },
+        );
+    }
+
+    /// Merges event-owned transport facts without replacing full reconnect detail.
+    pub(crate) fn observe_resource_event(&mut self, resource: String, event: Value, cursor: u64) {
+        let event_generation = event.get("generation").cloned().unwrap_or(Value::Null);
+        let target = RuntimeRef::Resource {
+            resource: resource.clone(),
+        };
+        if let Some(observation) = self.entities.get_mut(&target) {
+            if let (Some(current), Some(update)) =
+                (observation.value.as_object_mut(), event.as_object())
+            {
+                for field in ["state", "queue_len", "active", "latest"] {
+                    if let Some(value) = update.get(field) {
+                        current.insert(field.to_owned(), value.clone());
+                    }
+                }
+                if let Some(generation) = update.get("generation") {
+                    current.insert("transport_generation".to_owned(), generation.clone());
+                }
+            } else {
+                observation.value = event;
+            }
+            observation.freshness = Freshness::Fresh;
+            observation.cursor = Some(cursor);
+        } else {
+            self.observe(target, event, Some(cursor));
+        }
+        if let Some(detail) = self.resource_details.get_mut(&resource)
+            && detail.transport_generation != event_generation
+        {
+            detail.freshness = Freshness::Stale;
+        }
+    }
+
+    /// Whether full reconnect metadata corresponds to the current transport generation.
+    pub(crate) fn resource_detail_is_fresh(&self, resource: &str) -> bool {
+        self.resource_details
+            .get(resource)
+            .is_some_and(|detail| detail.freshness == Freshness::Fresh)
+    }
+
+    /// Transport generation covered by the last complete resource query.
+    pub(crate) fn resource_detail_generation(&self, resource: &str) -> Option<&Value> {
+        self.resource_details
+            .get(resource)
+            .map(|detail| &detail.transport_generation)
+    }
+
+    /// Retains cached resource metadata for display but removes reconnect authority.
+    pub(crate) fn mark_resource_detail_stale(&mut self, resource: &str) {
+        if let Some(detail) = self.resource_details.get_mut(resource) {
+            detail.freshness = Freshness::Stale;
+        }
+    }
+
+    /// Marks one client-selected subset stale without changing unrelated projections.
+    pub(crate) fn mark_matching_stale(&mut self, predicate: impl Fn(&RuntimeRef) -> bool) {
+        for (identity, observation) in &mut self.entities {
+            if predicate(identity) {
+                observation.freshness = Freshness::Stale;
+            }
+        }
     }
 }
