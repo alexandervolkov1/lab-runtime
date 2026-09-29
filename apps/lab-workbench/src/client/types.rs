@@ -115,7 +115,6 @@ pub(crate) enum ClientCommand {
         command_id: u64,
         scope: Option<String>,
     },
-    Disconnect,
     Query {
         command_id: u64,
         op: String,
@@ -147,6 +146,22 @@ pub(crate) enum ClientCommand {
         reference: String,
     },
     ShutdownWorker,
+}
+
+impl ClientCommand {
+    pub(crate) fn command_id(&self) -> u64 {
+        match self {
+            Self::Connect { command_id, .. }
+            | Self::Query { command_id, .. }
+            | Self::Mutation { command_id, .. }
+            | Self::RetryMutation { command_id, .. }
+            | Self::OperationStatus { command_id, .. }
+            | Self::Subscribe { command_id, .. }
+            | Self::Unsubscribe { command_id }
+            | Self::BootstrapReference { command_id, .. } => *command_id,
+            Self::ShutdownWorker => unreachable!("worker shutdown has no command identity"),
+        }
+    }
 }
 
 /// Semantic class of one correlated Application response.

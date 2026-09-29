@@ -13,16 +13,11 @@ const MAX_REBUILD_CONTROLLERS: usize = 64;
 const MAX_REBUILD_RESOURCES: usize = 64;
 
 pub(crate) trait RebuildClient {
-    fn connect(&self, scope: Option<String>) -> Result<u64, CommandSendError>;
     fn query(&self, op: &str, args: Value) -> Result<u64, CommandSendError>;
     fn subscribe(&self, after: EventCursor, filter: Value) -> Result<u64, CommandSendError>;
 }
 
 impl RebuildClient for ClientHandle {
-    fn connect(&self, scope: Option<String>) -> Result<u64, CommandSendError> {
-        ClientHandle::connect(self, scope)
-    }
-
     fn query(&self, op: &str, args: Value) -> Result<u64, CommandSendError> {
         ClientHandle::query(self, op, args)
     }
@@ -53,7 +48,6 @@ enum Task {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RebuildPhase {
     Idle,
-    AwaitingHello { command_id: u64 },
     Waiting { command_id: u64, task: Task },
     CatchingUp { barrier: EventCursor },
     Complete,
@@ -120,27 +114,10 @@ impl RebuildCoordinator {
                 connection_lost, ..
             } => {
                 if *connection_lost {
-                    match client.connect(model.recovery.scope.clone()) {
-                        Ok(command_id) => {
-                            self.phase = RebuildPhase::AwaitingHello { command_id };
-                        }
-                        Err(error) => {
-                            self.fail(model, &format!("cannot reconnect for rebuild: {error}"));
-                        }
-                    }
+                    self.phase = RebuildPhase::Idle;
                 } else if let Some(hello) = model.hello.clone() {
                     self.begin(&hello, model, client);
                 }
-            }
-            ClientUpdate::LocalRejected { command_id, reason }
-                if matches!(
-                    self.phase,
-                    RebuildPhase::AwaitingHello {
-                        command_id: expected
-                    } if expected == *command_id
-                ) =>
-            {
-                self.fail(model, &format!("reconnect rejected: {reason}"));
             }
             ClientUpdate::Reply {
                 command_id,
@@ -692,7 +669,6 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq)]
     enum Sent {
-        Connect(u64, Option<String>),
         Query(u64, String, Value),
         Subscribe(u64, EventCursor, Value),
     }
@@ -704,12 +680,6 @@ mod tests {
     }
 
     impl RebuildClient for FakeClient {
-        fn connect(&self, scope: Option<String>) -> Result<u64, CommandSendError> {
-            let id = next_id(&self.next);
-            self.sent.borrow_mut().push_back(Sent::Connect(id, scope));
-            Ok(id)
-        }
-
         fn query(&self, op: &str, args: Value) -> Result<u64, CommandSendError> {
             let id = next_id(&self.next);
             self.sent
@@ -940,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_lost_resnapshot_reconnects_before_hello_restarts_the_barrier() {
+    fn transport_lost_waits_for_worker_hello_before_restarting_the_barrier() {
         let client = FakeClient::default();
         let mut model = WorkbenchModel::new(PresentationDocument::empty("doc"));
         model.apply_client_update(ClientUpdate::Hello(hello()));
@@ -958,13 +928,9 @@ mod tests {
             },
         );
         assert_eq!(model.connection, ConnectionState::Stale);
-        assert!(matches!(
-            client.sent.borrow_mut().pop_front(),
-            Some(Sent::Connect(_, Some(ref scope))) if scope == "scope"
-        ));
         assert!(
             client.sent.borrow().is_empty(),
-            "stale transport was queried"
+            "presentation coordinator attempted transport recovery"
         );
 
         apply(

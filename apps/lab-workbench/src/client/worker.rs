@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
@@ -36,15 +36,70 @@ const IDLE_POLL: Duration = Duration::from_millis(2);
 const READ_TURN_BYTES: usize = 8 * 1024;
 const COMMANDS_PER_TURN: usize = 8;
 const BOOTSTRAP_EVENTS: usize = 64;
+const CONNECT_ATTEMPT_CLAIM: usize = 1;
+const DISCONNECT_PENDING: usize = 2;
+const ORDINARY_SUBMISSION_CLAIM: usize = 4;
+
+#[derive(Clone)]
+struct WorkerControl {
+    stop: Arc<AtomicBool>,
+    connection: Arc<AtomicUsize>,
+}
+
+impl WorkerControl {
+    fn new() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(false)),
+            connection: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+/// Bounded classification retained only for the current automatic episode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContinuityFault {
+    EndOfStream,
+    Read,
+    Write,
+    PartialFrameTimeout,
+    RequestTimeout,
+    Protocol,
+    OrderedUpdateOverflow,
+}
+
+/// The worker is the sole owner of the current retained-scope connection episode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReattachMode {
+    None,
+    ManualRetained {
+        deadline: Instant,
+    },
+    AutomaticFault {
+        deadline: Instant,
+        cause: ContinuityFault,
+    },
+}
+
+impl ReattachMode {
+    fn deadline(self) -> Option<Instant> {
+        match self {
+            Self::None => None,
+            Self::ManualRetained { deadline } | Self::AutomaticFault { deadline, .. } => {
+                Some(deadline)
+            }
+        }
+    }
+
+    fn is_automatic(self) -> bool {
+        matches!(self, Self::AutomaticFault { .. })
+    }
+}
 
 /// Renderer-neutral notification invoked only after an update enters the bounded queue.
 pub(crate) type WakeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
-fn connect_timeout_for_attempt(
-    now: Instant,
-    reattach_deadline: Option<Instant>,
-) -> Option<Duration> {
-    match reattach_deadline {
+fn connect_timeout_for_attempt(now: Instant, mode: ReattachMode) -> Option<Duration> {
+    match mode.deadline() {
         None => Some(CONNECT_DEADLINE),
         Some(deadline) => deadline
             .checked_duration_since(now)
@@ -57,7 +112,7 @@ fn connect_timeout_for_attempt(
 pub(crate) struct ClientHandle {
     command_tx: SyncSender<ClientCommand>,
     update_rx: Receiver<ClientUpdate>,
-    stop: Arc<AtomicBool>,
+    control: WorkerControl,
     #[cfg(test)]
     update_overflow_observed: Arc<AtomicBool>,
     next_command: AtomicU64,
@@ -95,8 +150,8 @@ impl ClientHandle {
         }
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
         let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
+        let control = WorkerControl::new();
+        let worker_control = control.clone();
         #[cfg(test)]
         let update_overflow_observed = Arc::new(AtomicBool::new(false));
         #[cfg(test)]
@@ -109,7 +164,7 @@ impl ClientHandle {
                     journal_path,
                     command_rx,
                     update_tx,
-                    worker_stop,
+                    worker_control,
                     wake,
                     #[cfg(test)]
                     worker_update_overflow,
@@ -119,7 +174,7 @@ impl ClientHandle {
         Ok(Self {
             command_tx,
             update_rx,
-            stop,
+            control,
             #[cfg(test)]
             update_overflow_observed,
             next_command: AtomicU64::new(1),
@@ -143,59 +198,112 @@ impl ClientHandle {
         }
     }
 
+    fn command_admission_open(&self) -> bool {
+        !self.control.stop.load(Ordering::Acquire)
+            && self.control.connection.load(Ordering::Acquire) & DISCONNECT_PENDING == 0
+    }
+
+    fn submit_ordinary(
+        &self,
+        make_command: impl FnOnce(u64) -> ClientCommand,
+    ) -> Result<u64, CommandSendError> {
+        self.claim_ordinary_submission()?;
+        let result = self.command_id().and_then(|command_id| {
+            self.submit(make_command(command_id))?;
+            Ok(command_id)
+        });
+        self.release_ordinary_submission();
+        result
+    }
+
+    fn claim_ordinary_submission(&self) -> Result<(), CommandSendError> {
+        loop {
+            if !self.command_admission_open() {
+                return Err(if self.control.stop.load(Ordering::Acquire) {
+                    CommandSendError::WorkerStopped
+                } else {
+                    CommandSendError::Busy
+                });
+            }
+            let state = self.control.connection.load(Ordering::Acquire);
+            if state & DISCONNECT_PENDING != 0 {
+                return Err(CommandSendError::Busy);
+            }
+            if state & ORDINARY_SUBMISSION_CLAIM != 0 {
+                return Err(CommandSendError::Busy);
+            }
+            if self
+                .control
+                .connection
+                .compare_exchange(
+                    state,
+                    state | ORDINARY_SUBMISSION_CLAIM,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    fn release_ordinary_submission(&self) {
+        self.control
+            .connection
+            .fetch_and(!ORDINARY_SUBMISSION_CLAIM, Ordering::AcqRel);
+    }
+
     pub(crate) fn connect(&self, scope: Option<String>) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::Connect { command_id, scope })?;
-        Ok(command_id)
+        self.submit_ordinary(|command_id| ClientCommand::Connect { command_id, scope })
     }
 
     pub(crate) fn disconnect(&self) -> Result<(), CommandSendError> {
-        self.submit(ClientCommand::Disconnect)?;
+        if self.control.stop.load(Ordering::Acquire) {
+            return Err(CommandSendError::WorkerStopped);
+        }
+        // This coalescing bit is the acceptance boundary. Disconnect never
+        // competes with ordinary commands for bounded mailbox capacity.
+        self.control
+            .connection
+            .fetch_or(DISCONNECT_PENDING, Ordering::AcqRel);
         Ok(())
     }
 
     pub(crate) fn query(&self, op: &str, args: Value) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::Query {
+        self.submit_ordinary(|command_id| ClientCommand::Query {
             command_id,
             op: op.to_owned(),
             args,
-        })?;
-        Ok(command_id)
+        })
     }
 
     pub(crate) fn mutation(&self, op: &str, args: Value) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::Mutation {
+        self.submit_ordinary(|command_id| ClientCommand::Mutation {
             command_id,
             op: op.to_owned(),
             args,
-        })?;
-        Ok(command_id)
+        })
     }
 
     pub(crate) fn retry_mutation(
         &self,
         identity: MutationIdentity,
     ) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::RetryMutation {
+        self.submit_ordinary(|command_id| ClientCommand::RetryMutation {
             command_id,
             identity,
-        })?;
-        Ok(command_id)
+        })
     }
 
     pub(crate) fn operation_status(
         &self,
         identity: MutationIdentity,
     ) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::OperationStatus {
+        self.submit_ordinary(|command_id| ClientCommand::OperationStatus {
             command_id,
             identity,
-        })?;
-        Ok(command_id)
+        })
     }
 
     pub(crate) fn subscribe(
@@ -203,28 +311,22 @@ impl ClientHandle {
         after: EventCursor,
         filter: Value,
     ) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::Subscribe {
+        self.submit_ordinary(|command_id| ClientCommand::Subscribe {
             command_id,
             after,
             filter,
-        })?;
-        Ok(command_id)
+        })
     }
 
     pub(crate) fn unsubscribe(&self) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::Unsubscribe { command_id })?;
-        Ok(command_id)
+        self.submit_ordinary(|command_id| ClientCommand::Unsubscribe { command_id })
     }
 
     pub(crate) fn bootstrap_reference(&self, reference: &str) -> Result<u64, CommandSendError> {
-        let command_id = self.command_id()?;
-        self.submit(ClientCommand::BootstrapReference {
+        self.submit_ordinary(|command_id| ClientCommand::BootstrapReference {
             command_id,
             reference: reference.to_owned(),
-        })?;
-        Ok(command_id)
+        })
     }
 
     pub(crate) fn recv_timeout(
@@ -244,7 +346,7 @@ impl ClientHandle {
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), &'static str> {
-        self.stop.store(true, Ordering::Release);
+        self.control.stop.store(true, Ordering::Release);
         let _ = self.command_tx.try_send(ClientCommand::ShutdownWorker);
         let deadline = Instant::now() + WORKER_SHUTDOWN_DEADLINE;
         let Some(join) = self.join.take() else {
@@ -262,7 +364,7 @@ impl ClientHandle {
 
 impl Drop for ClientHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.control.stop.store(true, Ordering::Release);
         let _ = self.command_tx.try_send(ClientCommand::ShutdownWorker);
     }
 }
@@ -308,7 +410,7 @@ struct Worker {
     command_rx: Receiver<ClientCommand>,
     update_tx: SyncSender<ClientUpdate>,
     wake: Option<WakeCallback>,
-    stop: Arc<AtomicBool>,
+    control: WorkerControl,
     #[cfg(test)]
     update_overflow_observed: Arc<AtomicBool>,
     state: ConnectionState,
@@ -319,7 +421,7 @@ struct Worker {
     next_msg: u64,
     hello: Option<HelloState>,
     desired_scope: Option<String>,
-    reattach_until: Option<Instant>,
+    reattach: ReattachMode,
     retry_at: Option<Instant>,
     subscription_token: Option<String>,
     event_cursor: Option<EventCursor>,
@@ -331,6 +433,7 @@ struct Worker {
     deferred_update: Option<ClientUpdate>,
     update_overflow: bool,
     bootstrap: Option<Bootstrap>,
+    disconnect_cleanup_active: bool,
 }
 
 impl Worker {
@@ -339,7 +442,7 @@ impl Worker {
         journal_path: Option<PathBuf>,
         command_rx: Receiver<ClientCommand>,
         update_tx: SyncSender<ClientUpdate>,
-        stop: Arc<AtomicBool>,
+        control: WorkerControl,
         wake: Option<WakeCallback>,
         #[cfg(test)] update_overflow_observed: Arc<AtomicBool>,
     ) -> Self {
@@ -350,7 +453,7 @@ impl Worker {
             command_rx,
             update_tx,
             wake,
-            stop,
+            control,
             #[cfg(test)]
             update_overflow_observed,
             state: ConnectionState::Disconnected,
@@ -361,7 +464,7 @@ impl Worker {
             next_msg: 1,
             hello: None,
             desired_scope: None,
-            reattach_until: None,
+            reattach: ReattachMode::None,
             retry_at: None,
             subscription_token: None,
             event_cursor: None,
@@ -373,6 +476,7 @@ impl Worker {
             deferred_update: None,
             update_overflow: false,
             bootstrap: None,
+            disconnect_cleanup_active: false,
         }
     }
 
@@ -382,24 +486,48 @@ impl Worker {
         if let Some(reason) = self.startup_journal_error.take() {
             self.emit(ClientUpdate::RecoveryJournalProblem { reason });
         }
-        while !self.stop.load(Ordering::Acquire) {
+        while !self.control.stop.load(Ordering::Acquire) {
             self.flush_deferred_update();
+            if self.disconnect_fenced() {
+                let _ = self.service_disconnect_and_commands();
+                if self.control.stop.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(IDLE_POLL);
+                continue;
+            }
             if self.update_overflow {
-                self.close_connection("ordered update queue saturated", false);
-                self.state = ConnectionState::Stale;
                 self.update_overflow = false;
+                self.fail_transport_with_reporting(
+                    "ordered update queue saturated",
+                    ContinuityFault::OrderedUpdateOverflow,
+                    false,
+                );
+            }
+            let _ = self.service_commands();
+            if self.control.stop.load(Ordering::Acquire) {
+                break;
+            }
+            if self.disconnect_fenced() {
+                thread::sleep(IDLE_POLL);
+                continue;
             }
             if self.expire_reattach_if_due(Instant::now()) {
                 continue;
             }
-            self.retry_reattach();
-            self.service_commands();
+            self.retry_reattach(Instant::now());
+            if self.disconnect_fenced() {
+                thread::sleep(IDLE_POLL);
+                continue;
+            }
             self.service_write();
             self.service_read();
             self.check_deadlines();
             thread::sleep(IDLE_POLL);
         }
         self.state = ConnectionState::Stopping;
+        self.retry_at = None;
+        self.reattach = ReattachMode::None;
         self.emit(ClientUpdate::State(ConnectionState::Stopping));
         self.close_connection("worker stopping", false);
         self.state = ConnectionState::Stopped;
@@ -424,7 +552,7 @@ impl Worker {
                 self.update_overflow = true;
             }
             Err(TrySendError::Disconnected(_)) => {
-                self.stop.store(true, Ordering::Release);
+                self.control.stop.store(true, Ordering::Release);
             }
         }
     }
@@ -436,7 +564,9 @@ impl Worker {
         match self.update_tx.try_send(update) {
             Ok(()) => self.wake(),
             Err(TrySendError::Full(update)) => self.deferred_update = Some(update),
-            Err(TrySendError::Disconnected(_)) => self.stop.store(true, Ordering::Release),
+            Err(TrySendError::Disconnected(_)) => {
+                self.control.stop.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -451,40 +581,47 @@ impl Worker {
         self.emit(ClientUpdate::State(state));
     }
 
-    fn service_commands(&mut self) {
+    fn service_commands(&mut self) -> bool {
         for _ in 0..COMMANDS_PER_TURN {
             match self.command_rx.try_recv() {
                 Ok(ClientCommand::ShutdownWorker) => {
-                    self.stop.store(true, Ordering::Release);
-                    return;
+                    self.control.stop.store(true, Ordering::Release);
+                    return true;
                 }
                 Ok(command) => self.handle_command(command),
-                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Empty) => return true,
                 Err(TryRecvError::Disconnected) => {
-                    self.stop.store(true, Ordering::Release);
-                    return;
+                    self.control.stop.store(true, Ordering::Release);
+                    return true;
                 }
             }
         }
+        false
     }
 
     fn handle_command(&mut self, command: ClientCommand) {
         match command {
             ClientCommand::Connect { command_id, scope } => {
-                if self.stream.is_some() || self.retry_at.is_some() {
+                if self.disconnect_fenced() {
+                    self.reject(command_id, "disconnect_pending");
+                    return;
+                }
+                if self.stream.is_some()
+                    || self.retry_at.is_some()
+                    || self.reattach != ReattachMode::None
+                {
                     self.reject(command_id, "already_connected_or_connecting");
                     return;
                 }
                 self.desired_scope = scope;
-                self.reattach_until = self
-                    .desired_scope
-                    .as_ref()
-                    .map(|_| Instant::now() + REATTACH_DEADLINE);
+                self.reattach = if self.desired_scope.is_some() {
+                    ReattachMode::ManualRetained {
+                        deadline: Instant::now() + REATTACH_DEADLINE,
+                    }
+                } else {
+                    ReattachMode::None
+                };
                 self.open_connection(command_id);
-            }
-            ClientCommand::Disconnect => {
-                self.close_connection("client disconnect", false);
-                self.transition(ConnectionState::Disconnected);
             }
             ClientCommand::Query {
                 command_id,
@@ -534,33 +671,51 @@ impl Worker {
     }
 
     fn open_connection(&mut self, command_id: u64) {
-        self.transition(if self.desired_scope.is_some() {
-            ConnectionState::Reattaching
-        } else {
-            ConnectionState::Connecting
-        });
+        if self.disconnect_fenced() {
+            if command_id != 0 {
+                self.reject(command_id, "disconnect_pending");
+            }
+            return;
+        }
         let now = Instant::now();
-        let attempt_timeout = if self.desired_scope.is_some() {
-            connect_timeout_for_attempt(now, self.reattach_until)
-        } else {
-            connect_timeout_for_attempt(now, None)
-        };
+        let attempt_timeout = connect_timeout_for_attempt(now, self.reattach);
         let Some(attempt_timeout) = attempt_timeout else {
             self.retry_at = None;
-            self.reattach_until = None;
+            self.reattach = ReattachMode::None;
             self.emit(ClientUpdate::TransportFailure {
                 reason: "reattach deadline exceeded".into(),
             });
             self.transition(ConnectionState::Disconnected);
             return;
         };
-        match TcpStream::connect_timeout(&self.address, attempt_timeout) {
+        if !self.claim_connect_attempt() {
+            if command_id != 0 {
+                self.reject(command_id, "disconnect_pending");
+            }
+            return;
+        }
+        self.transition(if self.desired_scope.is_some() {
+            ConnectionState::Reattaching
+        } else {
+            ConnectionState::Connecting
+        });
+        let result = TcpStream::connect_timeout(&self.address, attempt_timeout);
+        self.finish_connect_attempt(command_id, result);
+    }
+
+    fn finish_connect_attempt(&mut self, command_id: u64, result: io::Result<TcpStream>) {
+        self.release_connect_attempt();
+        if self.disconnect_fenced() {
+            drop(result);
+            return;
+        }
+        match result {
             Ok(stream) => {
                 if let Err(error) = stream.set_nonblocking(true) {
-                    self.emit(ClientUpdate::TransportFailure {
-                        reason: format!("could not configure nonblocking socket: {error}"),
-                    });
-                    self.transition(ConnectionState::Disconnected);
+                    self.fail_transport(
+                        &format!("could not configure nonblocking socket: {error}"),
+                        ContinuityFault::Protocol,
+                    );
                     return;
                 }
                 let _ = stream.set_nodelay(true);
@@ -578,10 +733,10 @@ impl Worker {
                 );
             }
             Err(error) => {
-                if self.should_retry_reattach() {
-                    self.retry_at = Some(Instant::now() + RETRY_DELAY);
+                if self.should_retry_reattach(Instant::now()) {
+                    self.schedule_retry(Instant::now());
                 } else {
-                    self.reattach_until = None;
+                    self.reattach = ReattachMode::None;
                     self.emit(ClientUpdate::TransportFailure {
                         reason: format!("connect failed: {error}"),
                     });
@@ -591,17 +746,32 @@ impl Worker {
         }
     }
 
-    fn should_retry_reattach(&self) -> bool {
-        self.desired_scope.is_some()
+    fn should_retry_reattach(&self, now: Instant) -> bool {
+        !self.disconnect_fenced()
+            && self.desired_scope.is_some()
             && self
-                .reattach_until
-                .is_some_and(|deadline| Instant::now() < deadline)
+                .reattach
+                .deadline()
+                .is_some_and(|deadline| now < deadline)
     }
 
-    fn retry_reattach(&mut self) {
+    fn schedule_retry(&mut self, now: Instant) {
+        if self
+            .reattach
+            .deadline()
+            .is_some_and(|deadline| now < deadline)
+        {
+            self.retry_at = Some(now + RETRY_DELAY);
+        }
+    }
+
+    fn retry_reattach(&mut self, now: Instant) {
+        if self.disconnect_fenced() {
+            return;
+        }
         if self.stream.is_none()
-            && self.retry_at.is_some_and(|retry| Instant::now() >= retry)
-            && self.should_retry_reattach()
+            && self.retry_at.is_some_and(|retry| now >= retry)
+            && self.should_retry_reattach(now)
         {
             self.retry_at = None;
             self.open_connection(0);
@@ -609,14 +779,88 @@ impl Worker {
     }
 
     fn expire_reattach_if_due(&mut self, now: Instant) -> bool {
-        if self.reattach_until.is_none_or(|deadline| now < deadline) {
+        if self.disconnect_fenced() {
+            return false;
+        }
+        if self
+            .reattach
+            .deadline()
+            .is_none_or(|deadline| now < deadline)
+        {
             return false;
         }
         self.retry_at = None;
-        self.reattach_until = None;
+        self.reattach = ReattachMode::None;
         self.close_connection("reattach deadline exceeded", true);
         self.transition(ConnectionState::Disconnected);
         true
+    }
+
+    fn disconnect_fenced(&self) -> bool {
+        self.control.connection.load(Ordering::Acquire) & DISCONNECT_PENDING != 0
+    }
+
+    fn service_disconnect_and_commands(&mut self) -> bool {
+        if self.disconnect_fenced() && !self.disconnect_cleanup_active {
+            self.retry_at = None;
+            self.reattach = ReattachMode::None;
+            self.desired_scope = None;
+            self.update_overflow = false;
+            self.close_connection("client disconnect", false);
+            self.disconnect_cleanup_active = true;
+        }
+
+        let mailbox_drained = self.drain_commands_for_disconnect();
+        let submission_in_flight =
+            self.control.connection.load(Ordering::Acquire) & ORDINARY_SUBMISSION_CLAIM != 0;
+        if self.disconnect_cleanup_active && mailbox_drained && !submission_in_flight {
+            self.transition(ConnectionState::Disconnected);
+            self.complete_disconnect_fence();
+            self.disconnect_cleanup_active = false;
+        }
+        self.disconnect_fenced()
+    }
+
+    fn drain_commands_for_disconnect(&mut self) -> bool {
+        for _ in 0..COMMANDS_PER_TURN {
+            match self.command_rx.try_recv() {
+                Ok(ClientCommand::ShutdownWorker) => {
+                    self.control.stop.store(true, Ordering::Release);
+                    return true;
+                }
+                Ok(command) => self.reject(command.command_id(), "disconnect_pending"),
+                Err(TryRecvError::Empty) => return true,
+                Err(TryRecvError::Disconnected) => {
+                    self.control.stop.store(true, Ordering::Release);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn complete_disconnect_fence(&self) {
+        self.control
+            .connection
+            .fetch_and(!DISCONNECT_PENDING, Ordering::AcqRel);
+    }
+
+    fn claim_connect_attempt(&self) -> bool {
+        self.control
+            .connection
+            .compare_exchange(
+                0,
+                CONNECT_ATTEMPT_CLAIM,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn release_connect_attempt(&self) {
+        self.control
+            .connection
+            .fetch_and(!CONNECT_ATTEMPT_CLAIM, Ordering::AcqRel);
     }
 
     fn queue_query(&mut self, command_id: u64, op: String, args: Value, purpose: Purpose) -> bool {
@@ -877,7 +1121,7 @@ impl Worker {
         }
         let Some(next) = self.next_msg.checked_add(1) else {
             self.reject(command_id, "msg_id_exhausted");
-            self.close_connection("msg_id exhausted", true);
+            self.fail_transport("msg_id exhausted", ContinuityFault::Protocol);
             return false;
         };
         let msg_id = self.next_msg.to_string();
@@ -945,11 +1189,14 @@ impl Worker {
                         );
                     }
                 } else if outgoing.frame.timed_out(now, BLOCKED_WRITE_DEADLINE) {
-                    self.fail_transport("blocked output deadline exceeded");
+                    self.fail_transport("blocked output deadline exceeded", ContinuityFault::Write);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => self.fail_transport(&format!("socket write failed: {error}")),
+            Err(error) => self.fail_transport(
+                &format!("socket write failed: {error}"),
+                ContinuityFault::Write,
+            ),
         }
     }
 
@@ -959,7 +1206,9 @@ impl Worker {
         };
         let mut bytes = [0u8; READ_TURN_BYTES];
         match stream.read(&mut bytes) {
-            Ok(0) => self.fail_transport("server closed the connection"),
+            Ok(0) => {
+                self.fail_transport("server closed the connection", ContinuityFault::EndOfStream)
+            }
             Ok(count) => match self.decoder.push(&bytes[..count], Instant::now()) {
                 Ok(values) => {
                     for value in values {
@@ -969,11 +1218,17 @@ impl Worker {
                         self.handle_incoming(value);
                     }
                 }
-                Err(error) => self.fail_transport(&format!("invalid server frame: {error}")),
+                Err(error) => self.fail_transport(
+                    &format!("invalid server frame: {error}"),
+                    ContinuityFault::Protocol,
+                ),
             },
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => self.fail_transport(&format!("socket read failed: {error}")),
+            Err(error) => self.fail_transport(
+                &format!("socket read failed: {error}"),
+                ContinuityFault::Read,
+            ),
         }
     }
 
@@ -984,7 +1239,10 @@ impl Worker {
             .check_deadline(now, PARTIAL_FRAME_DEADLINE)
             .is_err()
         {
-            self.fail_transport("partial input frame deadline exceeded");
+            self.fail_transport(
+                "partial input frame deadline exceeded",
+                ContinuityFault::PartialFrameTimeout,
+            );
             return;
         }
         if self
@@ -992,7 +1250,10 @@ impl Worker {
             .values()
             .any(|pending| pending.deadline.is_some_and(|deadline| now >= deadline))
         {
-            self.fail_transport("request/reply deadline exceeded");
+            self.fail_transport(
+                "request/reply deadline exceeded",
+                ContinuityFault::RequestTimeout,
+            );
         }
     }
 
@@ -1014,12 +1275,18 @@ impl Worker {
                         });
                         return;
                     }
-                    self.fail_transport("server response omitted msg_id");
+                    self.fail_transport(
+                        "server response omitted msg_id",
+                        ContinuityFault::Protocol,
+                    );
                     return;
                 };
                 let msg_id = msg_id.to_owned();
                 if !self.pending.contains_key(&msg_id) {
-                    self.fail_transport("server used an unknown or terminal msg_id");
+                    self.fail_transport(
+                        "server used an unknown or terminal msg_id",
+                        ContinuityFault::Protocol,
+                    );
                     return;
                 }
                 match value.get("type").and_then(Value::as_str) {
@@ -1029,19 +1296,25 @@ impl Worker {
                     _ => unreachable!(),
                 }
             }
-            _ => self.fail_transport("server emitted an unknown envelope type"),
+            _ => self.fail_transport(
+                "server emitted an unknown envelope type",
+                ContinuityFault::Protocol,
+            ),
         }
     }
 
     fn handle_event(&mut self, value: Value) {
         let Some(cursor) = parse_event_cursor(&value) else {
-            self.fail_transport("event cursor was malformed");
+            self.fail_transport("event cursor was malformed", ContinuityFault::Protocol);
             return;
         };
         if let Some(previous) = self.event_cursor.as_ref()
             && (previous.boot_id != cursor.boot_id || cursor.seq <= previous.seq)
         {
-            self.fail_transport("event cursor was not strictly ordered");
+            self.fail_transport(
+                "event cursor was not strictly ordered",
+                ContinuityFault::Protocol,
+            );
             return;
         }
         self.event_cursor = Some(cursor.clone());
@@ -1072,13 +1345,19 @@ impl Worker {
 
     fn handle_subscription_progress(&mut self, value: Value) {
         let Some(cursor) = parse_event_cursor(&value) else {
-            self.fail_transport("subscription progress cursor was malformed");
+            self.fail_transport(
+                "subscription progress cursor was malformed",
+                ContinuityFault::Protocol,
+            );
             return;
         };
         if let Some(previous) = self.event_cursor.as_ref()
             && (previous.boot_id != cursor.boot_id || cursor.seq <= previous.seq)
         {
-            self.fail_transport("subscription progress cursor was not strictly ordered");
+            self.fail_transport(
+                "subscription progress cursor was not strictly ordered",
+                ContinuityFault::Protocol,
+            );
             return;
         }
         self.event_cursor = Some(cursor);
@@ -1095,14 +1374,20 @@ impl Worker {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                 else {
-                    self.fail_transport("subscribe result omitted its token");
+                    self.fail_transport(
+                        "subscribe result omitted its token",
+                        ContinuityFault::Protocol,
+                    );
                     return;
                 };
                 self.subscription_token = Some(token);
                 self.emit_reply(&pending, ReplyKind::Result, value.clone(), None);
                 if pending.purpose == Purpose::BootstrapSubscribe {
                     let Some(bootstrap) = self.bootstrap.as_ref() else {
-                        self.fail_transport("reference bootstrap state was lost");
+                        self.fail_transport(
+                            "reference bootstrap state was lost",
+                            ContinuityFault::Protocol,
+                        );
                         return;
                     };
                     self.queue_query(
@@ -1128,7 +1413,7 @@ impl Worker {
             return;
         }
         let Some(hello) = parse_hello(&value) else {
-            self.fail_transport("hello result was malformed");
+            self.fail_transport("hello result was malformed", ContinuityFault::Protocol);
             return;
         };
         let quarantine_reason = self.recovery.iter().find_map(|record| {
@@ -1142,7 +1427,7 @@ impl Worker {
         });
         self.desired_scope = Some(hello.scope.clone());
         self.retry_at = None;
-        self.reattach_until = None;
+        self.reattach = ReattachMode::None;
         if let Some(reason) = quarantine_reason
             && !self.classify_active_recovery(reason)
         {
@@ -1200,16 +1485,18 @@ impl Worker {
             .unwrap_or("unknown");
         if pending.purpose == Purpose::Hello
             && code == "scope_in_use"
-            && self.should_retry_reattach()
+            && self.should_retry_reattach(Instant::now())
         {
             self.reset_transport_only();
-            self.retry_at = Some(Instant::now() + RETRY_DELAY);
+            self.schedule_retry(Instant::now());
             self.transition(ConnectionState::Reattaching);
             return;
         }
         if pending.purpose == Purpose::Hello {
-            self.reattach_until = None;
-            if matches!(code, "instance_changed" | "scope_unknown") {
+            let scope_invalidated = matches!(code, "instance_changed" | "scope_unknown");
+            if scope_invalidated {
+                self.retry_at = None;
+                self.reattach = ReattachMode::None;
                 let reason = if code == "instance_changed" {
                     RecoveryQuarantineReason::InstanceChanged
                 } else {
@@ -1226,8 +1513,17 @@ impl Worker {
                 self.desired_scope = None;
             }
             self.emit_reply(&pending, ReplyKind::PublicError, value, None);
-            self.reset_transport_only();
-            self.transition(ConnectionState::Disconnected);
+            if scope_invalidated {
+                self.reset_transport_only();
+                self.transition(ConnectionState::Disconnected);
+            } else if self.reattach.is_automatic() {
+                self.fail_transport("hello request failed", ContinuityFault::Protocol);
+            } else {
+                self.retry_at = None;
+                self.reattach = ReattachMode::None;
+                self.reset_transport_only();
+                self.transition(ConnectionState::Disconnected);
+            }
             return;
         }
         if code == "event_gap"
@@ -1271,7 +1567,10 @@ impl Worker {
                 let (identity, recovery) = {
                     let pending = self.pending.get_mut(&msg_id).expect("checked pending");
                     let Some(record) = pending.mutation.as_mut() else {
-                        self.fail_transport("operation response had no mutation identity");
+                        self.fail_transport(
+                            "operation response had no mutation identity",
+                            ContinuityFault::Protocol,
+                        );
                         return;
                     };
                     record.admission = KnownAdmission::Accepted;
@@ -1279,14 +1578,20 @@ impl Worker {
                     (record.identity.clone(), record.clone())
                 };
                 if !self.try_upsert_recovery(recovery.clone()) {
-                    self.fail_transport("recovery capacity invariant violated");
+                    self.fail_transport(
+                        "recovery capacity invariant violated",
+                        ContinuityFault::Protocol,
+                    );
                     return;
                 }
                 if let Some(hello) = self.hello.as_mut()
                     && identity.seq == hello.next_seq
                 {
                     let Some(next) = hello.next_seq.checked_add(1) else {
-                        self.fail_transport("mutation sequence exhausted");
+                        self.fail_transport(
+                            "mutation sequence exhausted",
+                            ContinuityFault::Protocol,
+                        );
                         return;
                     };
                     hello.next_seq = next;
@@ -1313,14 +1618,20 @@ impl Worker {
                         KnownAdmission::Failed
                     };
                     if !self.try_upsert_recovery(record.clone()) {
-                        self.fail_transport("recovery capacity invariant violated");
+                        self.fail_transport(
+                            "recovery capacity invariant violated",
+                            ContinuityFault::Protocol,
+                        );
                         return;
                     }
                     if let Some(hello) = self.hello.as_mut()
                         && record.identity.seq == hello.next_seq
                     {
                         let Some(next) = hello.next_seq.checked_add(1) else {
-                            self.fail_transport("mutation sequence exhausted");
+                            self.fail_transport(
+                                "mutation sequence exhausted",
+                                ContinuityFault::Protocol,
+                            );
                             return;
                         };
                         hello.next_seq = next;
@@ -1338,17 +1649,26 @@ impl Worker {
                     recovery,
                 );
             }
-            _ => self.fail_transport("operation response had an unknown state"),
+            _ => self.fail_transport(
+                "operation response had an unknown state",
+                ContinuityFault::Protocol,
+            ),
         }
     }
 
     fn finish_reference_bootstrap(&mut self, pending: PendingExchange, value: Value) {
         let Some(bootstrap) = self.bootstrap.take() else {
-            self.fail_transport("reference bootstrap state was lost");
+            self.fail_transport(
+                "reference bootstrap state was lost",
+                ContinuityFault::Protocol,
+            );
             return;
         };
         let Some(snapshot) = value.get("result").cloned() else {
-            self.fail_transport("reference bootstrap query omitted result");
+            self.fail_transport(
+                "reference bootstrap query omitted result",
+                ContinuityFault::Protocol,
+            );
             return;
         };
         let Some(revision) = snapshot
@@ -1356,7 +1676,10 @@ impl Worker {
             .and_then(Value::as_str)
             .and_then(parse_decimal)
         else {
-            self.fail_transport("reference bootstrap snapshot omitted revision");
+            self.fail_transport(
+                "reference bootstrap snapshot omitted revision",
+                ContinuityFault::Protocol,
+            );
             return;
         };
         let subsequent_events = bootstrap
@@ -1380,7 +1703,10 @@ impl Worker {
     fn handle_operation_status_result(&mut self, pending: PendingExchange, value: Value) {
         let state = value.pointer("/result/state").and_then(Value::as_str);
         let Some(identity) = pending.status_identity.clone() else {
-            self.fail_transport("operation_status correlation identity was lost");
+            self.fail_transport(
+                "operation_status correlation identity was lost",
+                ContinuityFault::Protocol,
+            );
             return;
         };
         let mut updated = self
@@ -1406,7 +1732,10 @@ impl Worker {
                     && identity.seq >= hello.next_seq
                 {
                     let Some(next) = identity.seq.checked_add(1) else {
-                        self.fail_transport("mutation sequence exhausted");
+                        self.fail_transport(
+                            "mutation sequence exhausted",
+                            ContinuityFault::Protocol,
+                        );
                         return;
                     };
                     hello.next_seq = next;
@@ -1418,7 +1747,10 @@ impl Worker {
             && matches!(state, Some("accepted" | "completed" | "failed"))
             && !self.try_upsert_recovery(record)
         {
-            self.fail_transport("recovery capacity invariant violated");
+            self.fail_transport(
+                "recovery capacity invariant violated",
+                ContinuityFault::Protocol,
+            );
             return;
         }
         self.emit_reply(&pending, ReplyKind::Result, value, None);
@@ -1448,9 +1780,48 @@ impl Worker {
         });
     }
 
-    fn fail_transport(&mut self, reason: &str) {
-        self.close_connection(reason, true);
-        self.transition(ConnectionState::Disconnected);
+    fn fail_transport(&mut self, reason: &str, cause: ContinuityFault) {
+        self.fail_transport_with_reporting(reason, cause, true);
+    }
+
+    fn fail_transport_with_reporting(
+        &mut self,
+        reason: &str,
+        cause: ContinuityFault,
+        report_failure: bool,
+    ) {
+        self.fail_transport_at(reason, cause, report_failure, Instant::now());
+    }
+
+    fn fail_transport_at(
+        &mut self,
+        reason: &str,
+        cause: ContinuityFault,
+        report_failure: bool,
+        now: Instant,
+    ) {
+        if self.disconnect_fenced() {
+            return;
+        }
+        let start_automatic = self.state == ConnectionState::Ready
+            && self.hello.is_some()
+            && self.desired_scope.is_some();
+        if start_automatic && !self.reattach.is_automatic() {
+            self.reattach = ReattachMode::AutomaticFault {
+                deadline: now + REATTACH_DEADLINE,
+                cause,
+            };
+        }
+        let continue_automatic = self.reattach.is_automatic();
+        self.close_connection(reason, report_failure);
+        if continue_automatic {
+            self.schedule_retry(now);
+            self.transition(ConnectionState::Reattaching);
+        } else {
+            self.retry_at = None;
+            self.reattach = ReattachMode::None;
+            self.transition(ConnectionState::Disconnected);
+        }
     }
 
     fn close_connection(&mut self, reason: &str, report_failure: bool) {
@@ -1783,6 +2154,21 @@ mod tests {
         }
     }
 
+    fn accept_nonblocking(listener: &TcpListener) -> TcpStream {
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    thread::yield_now();
+                }
+                Err(error) => panic!("listener did not accept before deadline: {error}"),
+            }
+        }
+    }
+
     fn recovery_record(seq: u64, admission: KnownAdmission) -> RecoveryRecord {
         RecoveryRecord {
             boot_id: "boot".into(),
@@ -1824,7 +2210,7 @@ mod tests {
             None,
             command_rx,
             update_tx,
-            Arc::new(AtomicBool::new(false)),
+            WorkerControl::new(),
             None,
             Arc::new(AtomicBool::new(false)),
         );
@@ -1839,11 +2225,50 @@ mod tests {
             Some(path),
             command_rx,
             update_tx,
-            Arc::new(AtomicBool::new(false)),
+            WorkerControl::new(),
             None,
             Arc::new(AtomicBool::new(false)),
         );
         (worker, update_rx)
+    }
+
+    fn attached_unit_worker() -> (Worker, Receiver<ClientUpdate>) {
+        let (mut worker, updates) = unit_worker();
+        worker.state = ConnectionState::Ready;
+        worker.hello = Some(hello_state(1));
+        worker.desired_scope = Some("scope".into());
+        (worker, updates)
+    }
+
+    fn detached_client_worker(address: SocketAddr) -> (ClientHandle, Worker) {
+        detached_client_worker_with_journal(address, None)
+    }
+
+    fn detached_client_worker_with_journal(
+        address: SocketAddr,
+        journal_path: Option<PathBuf>,
+    ) -> (ClientHandle, Worker) {
+        let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
+        let control = WorkerControl::new();
+        let worker = Worker::new(
+            address,
+            journal_path,
+            command_rx,
+            update_tx,
+            control.clone(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let client = ClientHandle {
+            command_tx,
+            update_rx,
+            control,
+            update_overflow_observed: Arc::new(AtomicBool::new(false)),
+            next_command: AtomicU64::new(1),
+            join: None,
+        };
+        (client, worker)
     }
 
     fn pending_hello(command_id: u64) -> PendingExchange {
@@ -2117,7 +2542,7 @@ mod tests {
             None,
             command_rx,
             update_tx,
-            Arc::new(AtomicBool::new(false)),
+            WorkerControl::new(),
             None,
             Arc::new(AtomicBool::new(false)),
         );
@@ -2289,7 +2714,7 @@ mod tests {
             None,
             command_rx,
             update_tx,
-            Arc::new(AtomicBool::new(false)),
+            WorkerControl::new(),
             Some(Arc::new(move || {
                 observed.fetch_add(1, TestOrdering::Release);
             })),
@@ -2593,7 +3018,7 @@ mod tests {
             Some(path.clone()),
             command_rx,
             update_tx,
-            Arc::new(AtomicBool::new(false)),
+            WorkerControl::new(),
             None,
             Arc::new(AtomicBool::new(false)),
         );
@@ -2875,7 +3300,7 @@ mod tests {
     }
 
     #[test]
-    fn hello_owns_runtime_advertised_scope_and_resets_msg_id_on_reconnect() {
+    fn unexpected_eof_automatically_reattaches_the_runtime_advertised_scope() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (seen_tx, seen_rx) = mpsc::channel();
@@ -2896,20 +3321,490 @@ mod tests {
         });
         let client = ClientHandle::spawn(address).unwrap();
         client.connect(None).unwrap();
-        let hello = wait_for(&client, |u| matches!(u, ClientUpdate::Hello(_)));
-        let ClientUpdate::Hello(hello) = hello else {
-            unreachable!()
-        };
-        assert_eq!(hello.scope, "boot:1");
+        wait_for(&client, |u| matches!(u, ClientUpdate::Hello(_)));
         wait_for(&client, |u| {
             matches!(u, ClientUpdate::TransportFailure { .. })
         });
-        client.connect(Some(hello.scope)).unwrap();
+        wait_for(&client, |u| {
+            matches!(u, ClientUpdate::State(ConnectionState::Reattaching))
+        });
         wait_for(&client, |u| matches!(u, ClientUpdate::Hello(_)));
         assert_eq!(seen_rx.recv().unwrap(), (json!("1"), Value::Null));
         assert_eq!(seen_rx.recv().unwrap(), (json!("1"), json!("boot:1")));
         client.shutdown().unwrap();
         peer.join().unwrap();
+    }
+
+    #[test]
+    fn explicit_disconnect_from_ready_opens_no_socket_beyond_the_fault_window() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (result_tx, result_rx) = mpsc::channel();
+        let peer = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let mut first = BufReader::new(stream);
+            let hello = read_request(&mut first);
+            write_value(first.get_mut(), &hello_reply(&hello["msg_id"], "scope", 1));
+            let mut eof = String::new();
+            assert_eq!(first.read_line(&mut eof).unwrap(), 0);
+
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + REATTACH_DEADLINE + Duration::from_millis(100);
+            let mut reopened = false;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((_stream, _)) => {
+                        reopened = true;
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("listener failed while proving disconnect: {error}"),
+                }
+            }
+            result_tx.send(reopened).unwrap();
+        });
+
+        let client = ClientHandle::spawn(address).unwrap();
+        client.connect(None).unwrap();
+        wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+        client.disconnect().unwrap();
+        wait_for(&client, |update| {
+            matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
+        });
+        assert!(
+            !result_rx
+                .recv_timeout(REATTACH_DEADLINE + Duration::from_secs(1))
+                .unwrap()
+        );
+        client.shutdown().unwrap();
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn disconnect_fence_bypasses_turn_limit_for_automatic_and_manual_episodes() {
+        for automatic in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let (client, mut worker) = detached_client_worker(listener.local_addr().unwrap());
+            let now = Instant::now();
+            worker.state = ConnectionState::Reattaching;
+            worker.hello = Some(hello_state(1));
+            worker.desired_scope = Some("scope".into());
+            worker.reattach = if automatic {
+                ReattachMode::AutomaticFault {
+                    deadline: now + REATTACH_DEADLINE,
+                    cause: ContinuityFault::EndOfStream,
+                }
+            } else {
+                ReattachMode::ManualRetained {
+                    deadline: now + REATTACH_DEADLINE,
+                }
+            };
+            worker.retry_at = Some(now);
+
+            client.connect(Some("old-queued-scope".into())).unwrap();
+            for index in 1..COMMANDS_PER_TURN {
+                client
+                    .query("reference", json!({"reference":index.to_string()}))
+                    .unwrap();
+            }
+            client.disconnect().unwrap();
+            assert!(worker.disconnect_fenced());
+            assert_eq!(client.connect(None), Err(CommandSendError::Busy));
+
+            assert!(worker.service_disconnect_and_commands());
+            worker.retry_reattach(now);
+            assert_eq!(worker.reattach, ReattachMode::None);
+            assert_eq!(worker.retry_at, None);
+            assert_eq!(worker.state, ConnectionState::Reattaching);
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ));
+
+            assert!(!worker.service_disconnect_and_commands());
+            worker.retry_reattach(now + RETRY_DELAY);
+            assert_eq!(worker.state, ConnectionState::Disconnected);
+            assert!(!worker.disconnect_fenced());
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ));
+        }
+    }
+
+    #[test]
+    fn disconnect_fence_at_mailbox_capacity_preserves_evidence_and_later_connects_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (client, mut worker) = detached_client_worker(listener.local_addr().unwrap());
+        let now = Instant::now();
+        let accepted = recovery_record(1, KnownAdmission::Accepted);
+        let ambiguous = recovery_record(2, KnownAdmission::Ambiguous);
+        worker.state = ConnectionState::Reattaching;
+        worker.hello = Some(hello_state(3));
+        worker.desired_scope = Some("scope".into());
+        worker.recovery = vec![accepted.clone(), ambiguous.clone()];
+        worker.reattach = ReattachMode::AutomaticFault {
+            deadline: now + REATTACH_DEADLINE,
+            cause: ContinuityFault::Read,
+        };
+        worker.retry_at = Some(now);
+
+        for index in 0..(COMMAND_QUEUE - 1) {
+            client
+                .query("reference", json!({"reference":index.to_string()}))
+                .unwrap();
+        }
+        client.disconnect().unwrap();
+
+        for turn in 0..(COMMAND_QUEUE / COMMANDS_PER_TURN) {
+            let _ = worker.service_disconnect_and_commands();
+            worker.retry_reattach(now + Duration::from_millis(turn as u64));
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ));
+        }
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        assert_eq!(worker.reattach, ReattachMode::None);
+        assert_eq!(worker.retry_at, None);
+        assert_eq!(worker.recovery, vec![accepted, ambiguous]);
+        assert!(worker.pending.is_empty());
+        assert!(worker.outgoing.is_empty());
+        assert!(!worker.disconnect_fenced());
+        assert!(!client.update_rx.try_iter().any(|update| matches!(
+            update,
+            ClientUpdate::Reply { ref op, .. }
+                if matches!(op.as_str(), "operation_status" | "reference_retune")
+        )));
+
+        client.connect(None).unwrap();
+        worker.service_commands();
+        assert_eq!(worker.state, ConnectionState::AwaitingHello);
+        assert_eq!(worker.outgoing.len(), 1);
+        assert_eq!(worker.pending.len(), 1);
+        let opened = accept_nonblocking(&listener);
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        drop(opened);
+    }
+
+    #[test]
+    fn full_mailbox_disconnect_is_out_of_band_for_both_episode_modes_and_coalesces() {
+        for automatic in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let (client, mut worker) = detached_client_worker(listener.local_addr().unwrap());
+            let now = Instant::now();
+            let accepted = recovery_record(1, KnownAdmission::Accepted);
+            let ambiguous = recovery_record(2, KnownAdmission::Ambiguous);
+            worker.state = ConnectionState::Reattaching;
+            worker.hello = Some(hello_state(3));
+            worker.desired_scope = Some("scope".into());
+            worker.recovery = vec![accepted.clone(), ambiguous.clone()];
+            worker.reattach = if automatic {
+                ReattachMode::AutomaticFault {
+                    deadline: now + REATTACH_DEADLINE,
+                    cause: ContinuityFault::Read,
+                }
+            } else {
+                ReattachMode::ManualRetained {
+                    deadline: now + REATTACH_DEADLINE,
+                }
+            };
+            worker.retry_at = Some(now);
+
+            for index in 0..COMMAND_QUEUE {
+                client
+                    .query("reference", json!({"reference":index.to_string()}))
+                    .unwrap();
+            }
+            assert_eq!(client.disconnect(), Ok(()));
+            assert_eq!(client.disconnect(), Ok(()));
+            assert_eq!(client.disconnect(), Ok(()));
+            assert_eq!(
+                worker.control.connection.load(Ordering::Acquire),
+                DISCONNECT_PENDING
+            );
+
+            for turn in 0..=(COMMAND_QUEUE / COMMANDS_PER_TURN) {
+                let pending = worker.service_disconnect_and_commands();
+                worker.retry_reattach(now + Duration::from_millis(turn as u64));
+                assert_eq!(pending, turn < COMMAND_QUEUE / COMMANDS_PER_TURN);
+                assert!(matches!(
+                    listener.accept(),
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock
+                ));
+            }
+
+            assert_eq!(worker.state, ConnectionState::Disconnected);
+            assert_eq!(worker.reattach, ReattachMode::None);
+            assert_eq!(worker.retry_at, None);
+            assert_eq!(worker.desired_scope, None);
+            assert_eq!(worker.recovery, vec![accepted, ambiguous]);
+            assert!(worker.pending.is_empty());
+            assert!(worker.outgoing.is_empty());
+            assert!(!worker.disconnect_fenced());
+            assert_eq!(
+                client
+                    .update_rx
+                    .try_iter()
+                    .filter(|update| matches!(
+                        update,
+                        ClientUpdate::State(ConnectionState::Disconnected)
+                    ))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn ready_full_mailbox_disconnect_cancels_mixed_commands_without_journal_mutation() {
+        let path = journal_path("disconnect-ready-full-mailbox");
+        let accepted = recovery_record(1, KnownAdmission::Accepted);
+        let ambiguous = recovery_record(2, KnownAdmission::Ambiguous);
+        let evidence = vec![accepted.clone(), ambiguous.clone()];
+        save_test_journal(&path, &evidence);
+        let journal_before = fs::read(&path).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (client, mut worker) =
+            detached_client_worker_with_journal(listener.local_addr().unwrap(), Some(path.clone()));
+        worker.state = ConnectionState::Ready;
+        worker.hello = Some(hello_state(3));
+        worker.desired_scope = Some("scope".into());
+        worker.sequence_blocked = false;
+
+        client.query("reference", json!({"reference":"1"})).unwrap();
+        client
+            .mutation(
+                "reference_retune",
+                json!({"reference":"1","expected_revision":"1","target":2.0,"rate":1.0}),
+            )
+            .unwrap();
+        client.operation_status(accepted.identity.clone()).unwrap();
+        client.retry_mutation(accepted.identity.clone()).unwrap();
+        client
+            .subscribe(
+                EventCursor {
+                    boot_id: "boot".into(),
+                    seq: 0,
+                },
+                json!({}),
+            )
+            .unwrap();
+        client.unsubscribe().unwrap();
+        client.bootstrap_reference("1").unwrap();
+        for index in 7..COMMAND_QUEUE {
+            client
+                .query("reference", json!({"reference":index.to_string()}))
+                .unwrap();
+        }
+
+        assert_eq!(client.disconnect(), Ok(()));
+        for turn in 0..=(COMMAND_QUEUE / COMMANDS_PER_TURN) {
+            assert_eq!(
+                worker.service_disconnect_and_commands(),
+                turn < COMMAND_QUEUE / COMMANDS_PER_TURN
+            );
+        }
+
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        assert!(!worker.disconnect_fenced());
+        assert_eq!(worker.recovery, evidence);
+        assert_eq!(fs::read(&path).unwrap(), journal_before);
+        assert!(!worker.journal_failed);
+        assert!(worker.pending.is_empty());
+        assert!(worker.outgoing.is_empty());
+        assert!(worker.bootstrap.is_none());
+        assert!(worker.subscription_token.is_none());
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        assert!(!client.update_rx.try_iter().any(|update| match update {
+            ClientUpdate::RecoveryJournalProblem { .. } => true,
+            ClientUpdate::Reply { op, .. } => {
+                matches!(op.as_str(), "operation_status" | "reference_retune")
+            }
+            _ => false,
+        }));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn post_fence_public_admission_is_closed_and_cannot_extend_disconnect_drain() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (client, mut worker) = detached_client_worker(listener.local_addr().unwrap());
+        let identity = recovery_record(1, KnownAdmission::Accepted).identity;
+        let cursor = EventCursor {
+            boot_id: "boot".into(),
+            seq: 0,
+        };
+        let next_command = client.next_command.load(Ordering::Acquire);
+
+        assert_eq!(client.disconnect(), Ok(()));
+        assert_eq!(client.connect(None), Err(CommandSendError::Busy));
+        assert_eq!(
+            client.query("reference", json!({})),
+            Err(CommandSendError::Busy)
+        );
+        assert_eq!(
+            client.mutation("reference_retune", json!({})),
+            Err(CommandSendError::Busy)
+        );
+        assert_eq!(
+            client.retry_mutation(identity.clone()),
+            Err(CommandSendError::Busy)
+        );
+        assert_eq!(
+            client.operation_status(identity),
+            Err(CommandSendError::Busy)
+        );
+        assert_eq!(
+            client.subscribe(cursor, json!({})),
+            Err(CommandSendError::Busy)
+        );
+        assert_eq!(client.unsubscribe(), Err(CommandSendError::Busy));
+        assert_eq!(client.bootstrap_reference("1"), Err(CommandSendError::Busy));
+        for _ in 0..(COMMAND_QUEUE * 2) {
+            assert_eq!(
+                client.query("reference", json!({})),
+                Err(CommandSendError::Busy)
+            );
+        }
+        assert_eq!(client.next_command.load(Ordering::Acquire), next_command);
+
+        assert!(!worker.service_disconnect_and_commands());
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        assert!(!worker.disconnect_fenced());
+
+        client.connect(None).unwrap();
+        let _ = worker.service_commands();
+        assert_eq!(worker.state, ConnectionState::AwaitingHello);
+        let (opened, _) = listener.accept().unwrap();
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        drop(opened);
+    }
+
+    #[test]
+    fn racing_pre_fence_mutation_is_cancelled_without_wire_or_journal_semantics() {
+        let path = journal_path("disconnect-racing-mutation");
+        let record = recovery_record(1, KnownAdmission::Accepted);
+        save_test_journal(&path, std::slice::from_ref(&record));
+        let journal_before = fs::read(&path).unwrap();
+        let (client, mut worker) =
+            detached_client_worker_with_journal("127.0.0.1:1".parse().unwrap(), Some(path.clone()));
+        worker.state = ConnectionState::Ready;
+        worker.hello = Some(hello_state(2));
+        worker.desired_scope = Some("scope".into());
+        worker.sequence_blocked = false;
+
+        assert!(client.command_admission_open());
+        client.claim_ordinary_submission().unwrap();
+        assert_eq!(client.disconnect(), Ok(()));
+        assert!(worker.service_disconnect_and_commands());
+        assert!(worker.disconnect_fenced());
+        client
+            .command_tx
+            .try_send(ClientCommand::Mutation {
+                command_id: 99,
+                op: "reference_retune".into(),
+                args: json!({"reference":"1","expected_revision":"1","target":2.0,"rate":1.0}),
+            })
+            .unwrap();
+        client.release_ordinary_submission();
+
+        assert!(!worker.service_disconnect_and_commands());
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        assert_eq!(worker.recovery, vec![record]);
+        assert_eq!(fs::read(&path).unwrap(), journal_before);
+        assert!(worker.pending.is_empty());
+        assert!(worker.outgoing.is_empty());
+        assert!(!worker.journal_failed);
+        assert!(!client.update_rx.try_iter().any(|update| match update {
+            ClientUpdate::RecoveryJournalProblem { .. } => true,
+            ClientUpdate::Reply { op, .. } => op == "reference_retune",
+            _ => false,
+        }));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn rejected_disconnect_has_no_reconnect_policy_side_effect() {
+        let (client, worker) = detached_client_worker("127.0.0.1:1".parse().unwrap());
+        let now = Instant::now();
+        let mut worker = worker;
+        let mode = ReattachMode::AutomaticFault {
+            deadline: now + REATTACH_DEADLINE,
+            cause: ContinuityFault::Read,
+        };
+        worker.state = ConnectionState::Reattaching;
+        worker.desired_scope = Some("scope".into());
+        worker.reattach = mode;
+        worker.retry_at = Some(now);
+        client.control.stop.store(true, Ordering::Release);
+
+        assert_eq!(client.disconnect(), Err(CommandSendError::WorkerStopped));
+        assert!(!worker.disconnect_fenced());
+        assert_eq!(worker.reattach, mode);
+        assert_eq!(worker.retry_at, Some(now));
+        assert_eq!(worker.desired_scope.as_deref(), Some("scope"));
+        assert_eq!(worker.state, ConnectionState::Reattaching);
+    }
+
+    #[test]
+    fn connect_claim_and_disconnect_fence_have_deterministic_linearization() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (client, mut worker) = detached_client_worker(listener.local_addr().unwrap());
+        assert!(worker.claim_connect_attempt());
+        let result = TcpStream::connect_timeout(&listener.local_addr().unwrap(), CONNECT_DEADLINE);
+        let (peer, _) = listener.accept().unwrap();
+
+        assert_eq!(client.disconnect(), Ok(()));
+        assert_eq!(
+            worker.control.connection.load(Ordering::Acquire),
+            CONNECT_ATTEMPT_CLAIM | DISCONNECT_PENDING
+        );
+        worker.finish_connect_attempt(0, result);
+        assert!(worker.stream.is_none());
+        assert!(worker.disconnect_fenced());
+        assert!(!worker.service_disconnect_and_commands());
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        drop(peer);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (client, mut worker) = detached_client_worker(listener.local_addr().unwrap());
+        worker.state = ConnectionState::Reattaching;
+        worker.desired_scope = Some("scope".into());
+        worker.reattach = ReattachMode::AutomaticFault {
+            deadline: Instant::now() + REATTACH_DEADLINE,
+            cause: ContinuityFault::Read,
+        };
+        worker.retry_at = Some(Instant::now());
+
+        assert_eq!(client.disconnect(), Ok(()));
+        assert!(!worker.claim_connect_attempt());
+        worker.open_connection(0);
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        assert!(!worker.service_disconnect_and_commands());
+        assert_eq!(worker.state, ConnectionState::Disconnected);
     }
 
     #[test]
@@ -2952,23 +3847,293 @@ mod tests {
     fn reattach_connect_timeout_is_capped_by_one_absolute_deadline() {
         let start = Instant::now();
         let deadline = start + REATTACH_DEADLINE;
+        let automatic = ReattachMode::AutomaticFault {
+            deadline,
+            cause: ContinuityFault::EndOfStream,
+        };
         assert_eq!(
-            connect_timeout_for_attempt(start, Some(deadline)),
+            connect_timeout_for_attempt(start, automatic),
             Some(CONNECT_DEADLINE)
         );
         assert_eq!(
-            connect_timeout_for_attempt(start + Duration::from_millis(2_500), Some(deadline)),
+            connect_timeout_for_attempt(start + Duration::from_millis(2_500), automatic),
             Some(Duration::from_millis(500))
         );
-        assert_eq!(connect_timeout_for_attempt(deadline, Some(deadline)), None);
+        assert_eq!(connect_timeout_for_attempt(deadline, automatic), None);
         assert_eq!(
-            connect_timeout_for_attempt(deadline + Duration::from_millis(1), Some(deadline)),
+            connect_timeout_for_attempt(deadline + Duration::from_millis(1), automatic),
             None
         );
         assert_eq!(
-            connect_timeout_for_attempt(start, None),
+            connect_timeout_for_attempt(start, ReattachMode::None),
             Some(CONNECT_DEADLINE)
         );
+    }
+
+    #[test]
+    fn typed_faults_start_one_episode_with_exact_deadline_and_retry_spacing() {
+        let causes = [
+            ContinuityFault::EndOfStream,
+            ContinuityFault::Read,
+            ContinuityFault::Write,
+            ContinuityFault::PartialFrameTimeout,
+            ContinuityFault::RequestTimeout,
+            ContinuityFault::Protocol,
+            ContinuityFault::OrderedUpdateOverflow,
+        ];
+        let start = Instant::now();
+        for cause in causes {
+            let (mut worker, _updates) = attached_unit_worker();
+            worker.fail_transport_at("fault", cause, true, start);
+
+            assert_eq!(
+                worker.reattach,
+                ReattachMode::AutomaticFault {
+                    deadline: start + REATTACH_DEADLINE,
+                    cause,
+                }
+            );
+            assert_eq!(worker.retry_at, Some(start + RETRY_DELAY));
+            assert_eq!(worker.state, ConnectionState::Reattaching);
+            assert!(worker.stream.is_none());
+            assert!(worker.pending.is_empty());
+            assert!(worker.outgoing.is_empty());
+        }
+    }
+
+    #[test]
+    fn automatic_faults_and_hello_failures_never_restart_the_absolute_deadline() {
+        let start = Instant::now();
+        let deadline = start + REATTACH_DEADLINE;
+        let (mut worker, _updates) = attached_unit_worker();
+        worker.fail_transport_at("eof", ContinuityFault::EndOfStream, true, start);
+        worker.state = ConnectionState::AwaitingHello;
+        worker.fail_transport_at(
+            "read",
+            ContinuityFault::Read,
+            true,
+            start + Duration::from_secs(1),
+        );
+        assert_eq!(worker.reattach.deadline(), Some(deadline));
+
+        worker.state = ConnectionState::AwaitingHello;
+        worker.pending.insert("1".into(), pending_hello(1));
+        worker.handle_error(
+            "1".into(),
+            json!({"v":1,"msg_id":"1","type":"error","code":"temporarily_unavailable"}),
+        );
+        assert_eq!(worker.reattach.deadline(), Some(deadline));
+        assert!(worker.retry_at.is_some());
+    }
+
+    #[test]
+    fn explicit_disconnect_cancels_manual_or_automatic_episode_and_preserves_evidence() {
+        for mode in [
+            ReattachMode::ManualRetained {
+                deadline: Instant::now() + REATTACH_DEADLINE,
+            },
+            ReattachMode::AutomaticFault {
+                deadline: Instant::now() + REATTACH_DEADLINE,
+                cause: ContinuityFault::EndOfStream,
+            },
+        ] {
+            let former_deadline = mode.deadline().unwrap();
+            let (client, mut worker) = detached_client_worker("127.0.0.1:1".parse().unwrap());
+            let updates = &client.update_rx;
+            worker.state = ConnectionState::Ready;
+            worker.hello = Some(hello_state(1));
+            worker.desired_scope = Some("scope".into());
+            let record = recovery_record(1, KnownAdmission::Accepted);
+            worker.recovery = vec![record.clone()];
+            worker.reattach = mode;
+            worker.retry_at = Some(Instant::now());
+
+            client.disconnect().unwrap();
+            assert!(!worker.service_disconnect_and_commands());
+            worker.retry_reattach(former_deadline + Duration::from_secs(1));
+
+            assert_eq!(worker.reattach, ReattachMode::None);
+            assert_eq!(worker.retry_at, None);
+            assert_eq!(worker.desired_scope, None);
+            assert_eq!(worker.state, ConnectionState::Disconnected);
+            assert!(worker.stream.is_none());
+            assert!(worker.pending.is_empty());
+            assert!(worker.outgoing.is_empty());
+            assert_eq!(worker.recovery, vec![record]);
+            assert!(!worker.expire_reattach_if_due(former_deadline + Duration::from_secs(1)));
+            assert!(!updates.try_iter().any(|update| matches!(
+                update,
+                ClientUpdate::Reply { ref op, .. }
+                    if matches!(op.as_str(), "runtime_shutdown" | "recording_stop" | "controller_pause" | "operation_status")
+            )));
+        }
+    }
+
+    #[test]
+    fn initial_scope_null_failure_has_no_automatic_episode() {
+        let now = Instant::now();
+        let (mut worker, _updates) = unit_worker();
+        worker.state = ConnectionState::Connecting;
+        worker.desired_scope = None;
+
+        worker.fail_transport_at("absent", ContinuityFault::Read, true, now);
+
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        assert_eq!(worker.reattach, ReattachMode::None);
+        assert_eq!(worker.retry_at, None);
+    }
+
+    #[test]
+    fn expiry_is_terminal_but_a_later_manual_connect_episode_is_independent() {
+        let start = Instant::now();
+        let deadline = start + REATTACH_DEADLINE;
+        let (mut worker, _updates) = attached_unit_worker();
+        worker.fail_transport_at("eof", ContinuityFault::EndOfStream, true, start);
+
+        assert!(worker.expire_reattach_if_due(deadline));
+        assert_eq!(worker.state, ConnectionState::Disconnected);
+        assert_eq!(worker.reattach, ReattachMode::None);
+        assert_eq!(worker.retry_at, None);
+
+        worker.desired_scope = Some("scope".into());
+        worker.reattach = ReattachMode::ManualRetained {
+            deadline: deadline + REATTACH_DEADLINE,
+        };
+        assert!(worker.should_retry_reattach(deadline + RETRY_DELAY));
+    }
+
+    #[test]
+    fn successful_reattach_ends_episode_and_a_later_fault_gets_one_new_window() {
+        let first = Instant::now();
+        let (mut worker, updates) = attached_unit_worker();
+        worker.fail_transport_at("eof", ContinuityFault::EndOfStream, true, first);
+        worker.handle_hello_result(hello_reply(&json!("1"), "scope", 1));
+
+        assert_eq!(worker.state, ConnectionState::Ready);
+        assert_eq!(worker.reattach, ReattachMode::None);
+        assert_eq!(worker.retry_at, None);
+        let mut model = WorkbenchModel::new(PresentationDocument::empty("reattach"));
+        for update in updates.try_iter() {
+            model.apply_client_update(update);
+        }
+        assert_eq!(model.connection, ConnectionState::Ready);
+        assert_eq!(
+            model.observations.freshness,
+            crate::model::Freshness::Rebuilding
+        );
+
+        let second = first + Duration::from_secs(10);
+        worker.fail_transport_at("read", ContinuityFault::Read, true, second);
+        assert_eq!(worker.reattach.deadline(), Some(second + REATTACH_DEADLINE));
+    }
+
+    #[test]
+    fn transport_loss_clears_queries_status_and_retry_without_replay() {
+        for purpose in [
+            Purpose::Query,
+            Purpose::OperationStatus,
+            Purpose::RetryMutation,
+        ] {
+            let (mut worker, _updates) = attached_unit_worker();
+            let record = recovery_record(1, KnownAdmission::Accepted);
+            worker.recovery = vec![record.clone()];
+            worker.pending.insert(
+                "1".into(),
+                PendingExchange {
+                    command_id: 1,
+                    msg_id: "1".into(),
+                    op: match purpose {
+                        Purpose::OperationStatus => "operation_status".into(),
+                        _ => "reference_retune".into(),
+                    },
+                    purpose,
+                    mutation: (purpose == Purpose::RetryMutation).then_some(record.clone()),
+                    status_identity: (purpose == Purpose::OperationStatus)
+                        .then_some(record.identity.clone()),
+                    transmitted: true,
+                    deadline: Some(Instant::now() + REQUEST_DEADLINE),
+                },
+            );
+            worker.outgoing.push_back(Outgoing {
+                msg_id: "1".into(),
+                frame: PendingWrite::new(b"request\n".to_vec()),
+            });
+
+            worker.fail_transport_at("lost", ContinuityFault::EndOfStream, true, Instant::now());
+            worker.handle_hello_result(hello_reply(&json!("1"), "scope", 2));
+
+            assert!(worker.pending.is_empty());
+            assert!(worker.outgoing.is_empty());
+            assert_eq!(worker.recovery, vec![record]);
+        }
+    }
+
+    #[test]
+    fn scope_in_use_reuses_the_current_episode_and_invalidation_ends_it() {
+        for code in ["instance_changed", "scope_unknown"] {
+            let start = Instant::now();
+            let deadline = start + REATTACH_DEADLINE;
+            let (mut worker, _updates) = attached_unit_worker();
+            worker.recovery = vec![recovery_record(1, KnownAdmission::Ambiguous)];
+            worker.fail_transport_at("eof", ContinuityFault::EndOfStream, true, start);
+            worker.state = ConnectionState::AwaitingHello;
+            worker.pending.insert("1".into(), pending_hello(1));
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":"scope_in_use"}),
+            );
+            assert_eq!(worker.reattach.deadline(), Some(deadline));
+
+            worker.state = ConnectionState::AwaitingHello;
+            worker.pending.insert("2".into(), pending_hello(2));
+            worker.handle_error(
+                "2".into(),
+                json!({"v":1,"msg_id":"2","type":"error","code":code}),
+            );
+            assert_eq!(worker.reattach, ReattachMode::None);
+            assert_eq!(worker.retry_at, None);
+            assert_eq!(worker.state, ConnectionState::Disconnected);
+            assert!(worker.recovery.is_empty());
+            assert_eq!(worker.quarantined_recovery.len(), 1);
+        }
+    }
+
+    #[test]
+    fn worker_shutdown_cancellation_precedes_due_retry() {
+        let now = Instant::now();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (update_tx, updates) = mpsc::sync_channel(UPDATE_QUEUE);
+        let mut worker = Worker::new(
+            listener.local_addr().unwrap(),
+            None,
+            command_rx,
+            update_tx,
+            WorkerControl::new(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+        worker.state = ConnectionState::Reattaching;
+        worker.hello = Some(hello_state(1));
+        worker.desired_scope = Some("scope".into());
+        worker.reattach = ReattachMode::AutomaticFault {
+            deadline: now + REATTACH_DEADLINE,
+            cause: ContinuityFault::Read,
+        };
+        worker.retry_at = Some(now);
+        command_tx.send(ClientCommand::ShutdownWorker).unwrap();
+
+        worker.run();
+
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        assert!(!updates.try_iter().any(|update| matches!(
+            update,
+            ClientUpdate::Reply { ref op, .. } if op == "runtime_shutdown"
+        )));
     }
 
     #[test]
