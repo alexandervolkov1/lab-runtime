@@ -46,7 +46,7 @@ stop its Recorder, or roll back an admitted operation.
 
 The full Application API is broader than the Workbench GUI. Workbench deliberately
 exposes a typed safe operator subset rather than a raw button for every API operation.
-See the [Application API reference](docs/application-api.md) for the complete surface.
+See the [Application API reference](docs/api/README.md) for the complete surface.
 
 ## Build and run
 
@@ -109,7 +109,7 @@ selection, and a small API-client example.
 
 - [Getting started with Runtime and Workbench](docs/getting-started.md)
 - [Runtime architecture and concepts](docs/architecture.md)
-- [Application API reference](docs/application-api.md)
+- [Application API reference](docs/api/README.md)
 - [Recorder and SQLite archive](docs/recorder-sqlite.md)
 - [Safety and failure behavior](docs/safety-and-failures.md)
 - [Extending the Runtime](docs/extending-runtime.md)

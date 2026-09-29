@@ -242,7 +242,7 @@ $client.Dispose()
 `hello` returns the process boot identity, a server-issued scope, the next mutation
 sequence, the operations and capabilities available in this composition, event
 cursors, and exact limits. Closing this socket does not shut down Runtime. See the
-[Application API reference](application-api.md) before adding subscriptions or
+[Application API reference](api/README.md) before adding subscriptions or
 mutations; clients must not blindly retry mutations.
 
 ## Diagnostics
@@ -262,7 +262,7 @@ are not experiment history. See
 ## Next steps
 
 - [Runtime architecture and concepts](architecture.md)
-- [Application API reference](application-api.md)
+- [Application API reference](api/README.md)
 - [Recorder and SQLite](recorder-sqlite.md)
 - [Safety and failure behavior](safety-and-failures.md)
 - [Extending the Runtime](extending-runtime.md)

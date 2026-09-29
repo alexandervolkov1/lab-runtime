@@ -1,170 +1,209 @@
-# Architecture and concepts
+# System architecture
 
-## System boundary
+Applicable to Application protocol v1 and the current repository/v0.1 product.
+
+`lab-runtime` separates authoritative experiment ownership from operator
+presentation:
 
 ```text
-physical instruments ── protocol adapters ──┐
-virtual instruments ────────────────────────┤
-native managed components ─────────────────┤
-                                            v
-                                      Core Runtime
-                                      authoritative state
-                                            |
-                  ┌─────────────────────────┼──────────────────────┐
-                  v                         v                      v
-          Host/Service orchestration    Recorder/SQLite       Application
-          scheduling and adapters      durable history       semantic API
-                                                                  |
-                                                                  v
-                                                          external clients
+physical and virtual instruments
+             |
+          lab-core
+             |
+   HostCore / ServiceHost
+             |
+        Application
+             |
+transport-neutral Application JSON
+        /             \
+ TCP/NDJSON       loopback WebSocket/JSON
+        \             /
+             clients
+                |
+        lab-workbench.exe
 ```
-
-The governing rule is:
 
 ```text
 Runtime owns experiment semantics.
-Client owns presentation semantics.
+Workbench owns presentation semantics.
+
+Workbench lifetime != Runtime lifetime.
+GUI lifetime != experiment lifetime.
+future automation lifetime != experiment lifetime.
 ```
 
-The repository therefore contains no workspace, plot, panel, or other presentation
-model. Those belong to clients outside `lab-runtime`.
+Closing, crashing, or disconnecting a client does not shut down Runtime, stop the
+Recorder, pause a controller, or roll back work already admitted by Runtime.
 
-## Ownership
+## Product processes
 
-| Layer | Responsibility | Does not own |
+### lab-runtime.exe
+
+Runtime is the sole authoritative mutable experiment owner. It owns:
+
+- instruments, resources, current measurements, and bounded recent history;
+- References, controllers, output authority, and safe transitions;
+- declarative configuration and resource generations;
+- Recorder lifecycle and durable scientific/audit facts;
+- Application sessions, scopes, mutation sequencing, deduplication, and retained
+  operation outcomes;
+- event ordering and the authoritative projections served to clients.
+
+Runtime contains no presentation ownership. It does not own windows, panels, plots,
+layout, or GUI selection state.
+
+### lab-workbench.exe
+
+Workbench is a separate native Application client. Its private Rust client owns one
+socket, framing, hello/session state, request correlation, subscription state, and its
+bounded exact recovery journal. `WorkbenchModel` holds observational projections and
+`PresentationDocument` holds client-owned presentation state.
+
+Workbench owns GUI selection, layout/presentation, live plot display buffers, operator
+drafts, and confirmation workflows. These do not become Runtime experiment authority.
+Workbench sends typed control intent through the Application API and waits for
+authoritative operation/projection evidence.
+
+Native Workbench uses TCP/NDJSON today. Other clients may use either supported
+transport.
+
+Workbench connection recovery preserves process ownership. An explicit Disconnect
+does not reconnect automatically. An unexpected continuity loss may start one
+bounded retained-scope reattach episode, but transport recovery never automatically
+replays a mutation, `operation_status`, or Exact Retry. A successful socket/hello is
+not by itself Fresh; Workbench must complete its authoritative rebuild barrier.
+
+## Authority table
+
+| Concern | Runtime | Workbench |
 |---|---|---|
-| `lab_core::Runtime` | Instruments, committed signals and recent history, References, controllers, `OutputAuthority`, resource executors, component state, semantic Recorder fact outbox | OS serial ports, SQLite, sockets, presentation |
-| `HostCore` | Composes one Runtime with schedules, adapters, Recorder admission, event projection, and configuration catalogs | A second copy of experiment state |
-| `ServiceHost` | Process startup, loopback listener, deployment lifecycle, reconnect, and finite shutdown progression | Controller or measurement semantics |
-| `Application` | Sessions, deduplication, operation correlation, frozen pages, subscriptions, and public projections | Experiment authority |
-| `RecorderWorker` | Bounded fact ingress and exclusive SQLite worker ownership | Runtime decisions or output authority |
-| diagnostic logger | Best-effort troubleshooting records | Scientific history or control decisions |
+| experiment state | authoritative | observational |
+| devices and resources | authoritative owner | current/stale projection |
+| controller state and output authority | authoritative | projection plus typed control intent |
+| Recorder | lifecycle and durable-fact authority | status projection plus start/stop intent |
+| operation outcomes | authoritative retained state | exact retained/displayed evidence |
+| presentation and layout | none | authoritative client-owned state |
+| live plot display buffers | none | bounded presentation-only data |
+| recovery journal | no ownership of the Workbench file | exact bounded client evidence |
+| sessions and mutation deduplication | authoritative process-local store | consumes scope/next sequence |
+| GUI lifecycle | none | local process lifecycle only |
 
-Queries clone bounded committed projections. Commands and Application mutations
-advance state through the serialized owner. A query never performs hidden polling.
+Workbench and other clients never fabricate ACK, readback, physical effect, terminal
+mutation outcome, or recovery authority. A completed operation is not automatically
+proof of current physical state; the relevant Runtime observation remains
+authoritative.
 
-## Instruments, parameters, and signals
+## Runtime layers
 
-A **resource** is a bounded transport endpoint, such as one configured COM port. An
-**instrument** is a semantic device or model. Its descriptor contains stable
-parameter identities, value types, units, access modes, roles, and write effects.
+| Layer | Responsibility | Explicit non-ownership |
+|---|---|---|
+| `lab_core::Runtime` | instruments, committed signals/history, References, controllers, `OutputAuthority`, resource/component state, semantic Recorder-fact outbox | sockets, SQLite, OS serial ownership, presentation |
+| `HostCore` | composes one Runtime with schedules, adapters, Recorder admission, events, and configuration catalogs | no second experiment state |
+| `ServiceHost` | startup, loopback listeners, deployment lifecycle, reconnect, and finite shutdown | no controller/measurement semantics |
+| `Application` | public projections, sessions, deduplication, operations, pages, subscriptions | no experiment authority |
+| `SessionStore` | scopes, next sequence, normalized mutation identity, retained outcomes | no transport or domain execution |
+| `RecorderWorker` | bounded ingress and exclusive SQLite worker ownership | no Runtime decisions or output authority |
+| diagnostic logger | bounded best-effort troubleshooting | no scientific history or control authority |
 
-A readable measurement parameter may expose a **signal** identified by the pair:
+Queries clone bounded committed projections. Mutations advance state only through the
+serialized Runtime owner. A query does not perform hidden device polling.
 
-```json
-{"instrument":"41","parameter":"1"}
-```
+## One Application semantic model
 
-IDs are stable semantic identities; list positions and display names are not IDs.
-Each current measurement contains:
-
-- a value and engineering unit when quality is `good`;
-- `quality` (`good` or `unavailable`) and a failure reason;
-- `observed_at_ns`, the Runtime monotonic publication/attempt time;
-- `source_at_ns`, the original observation/model time used for freshness;
-- a Runtime-owned generation.
-
-Before the first attempt, the public status is `not_observed`, with no value or
-timestamp. An `Unavailable` attempt is explicit and cannot carry an old successful
-value. A cached `Good` value can still be too old for control: quality and freshness
-are separate facts. Generation replacement fences late completions from an old
-resource or model instance.
-
-Periodic scheduling uses monotonic deadlines. A delayed slot receives one
-actual-time opportunity rather than replaying missed historical deadlines. This is
-bounded scheduling, not a hard-real-time guarantee.
-
-## Acquisition and native progress
-
-The physical Metakon path is:
+There is one production `Application`, one `SessionStore`, one operation registry,
+and one DTO/Application JSON semantic model. Session, deduplication, event, operation
+outcome, and history semantics are shared. TCP and WebSocket are bounded adapters
+around that transport-neutral Application JSON:
 
 ```text
-Host scheduler
-  -> Runtime QueueMetakonRead
-  -> typed Metakon READ
-  -> bounded ResourceExecutor
-  -> serial worker
-  -> strict frame/CRC decode
-  -> Runtime measurement commit
-  -> current/recent history, events, controller input, Recorder fact
+TCP bytes -> NDJSON framing -----\
+                                  -> Application -> Runtime owner
+WebSocket text -> JSON body -----/
 ```
 
-One Host service turn checks Recorder receipts, safety and transport progress,
-shutdown/configuration fences, virtual models, physical-read admission, References,
-controllers, and managed components in a fixed safety-first order. Non-authoritative
-component or client work cannot make required native progress wait indefinitely.
+Once a valid transport message reaches the common Application JSON codec, transport
+selection does not change DTOs, operation names, scope identity, request sequencing,
+deduplication, event/history semantics, operation outcomes, or semantic public-error
+mappings. Transport mechanics remain distinct: TCP owns NDJSON framing, while HTTP
+Upgrade, WebSocket Origin/subprotocol checks, binary/control messages, WebSocket UTF-8
+validation, and protocol-close behavior occur before Application dispatch and may
+fail without an Application error envelope.
 
-## Control and physical output
+The canonical API reference starts at [Application API](api/README.md).
 
-Controllers calculate proposals but cannot write transports. The trusted path is:
+## Transports
+
+### TCP/NDJSON
+
+TCP listens on IPv4 loopback. Each complete frame is one UTF-8 JSON object followed
+by LF; CRLF input is accepted. Framing is bounded before semantic processing.
+
+### WebSocket/JSON
+
+The optional WebSocket listener is also loopback-only and shares the Runtime's global
+client capacity. Its public endpoint contract is:
+
+- path: `/application/v1`;
+- required subprotocol: `lab-runtime.application.v1`;
+- exact configured Origin allowlist;
+- text JSON messages only.
+
+The JSON body is the same Application message used inside an NDJSON frame. See
+[Errors and limits](api/errors-and-limits.md) for canonical bounds.
+
+## Measurements and scheduling
+
+A resource is a bounded transport endpoint. An instrument is a semantic device or
+model. A signal is identified by instrument and parameter IDs. Current observations
+distinguish value, unit, quality, Runtime observation time, source time, and
+generation.
+
+Before the first attempt, state is `not_observed`. An unavailable attempt does not
+carry an old successful value. A good cached value may still be too old for control:
+quality and freshness are separate facts. Generation changes fence late work from an
+old resource/model instance.
+
+Scheduling uses monotonic deadlines. Delayed work receives a current opportunity; it
+does not replay missed historical intervals. This is bounded scheduling, not a
+hard-real-time guarantee.
+
+## Control and output safety
 
 ```text
 fresh measurement + Reference
   -> native controller
   -> OutputProposal
-  -> Runtime-owned OutputAuthority
-  -> bounded ResourceExecutor reservation
+  -> Runtime OutputAuthority
+  -> bounded resource reservation
   -> final lease/epoch/generation check
-  -> typed transport WRITE
-  -> strict ACK
-  -> separate register readback
+  -> typed transport write
+  -> ACK
+  -> separate readback
 ```
 
-An `OutputProposal` is intent, not permission. Authority is tied to one authority
-instance, owner, revocation epoch, finite lease, binding generation, mapping
-revision, and proposal deadline. See [Safety and failure behavior](safety-and-failures.md).
-
-## Managed components
-
-A managed component is bounded Runtime-invoked computation:
-
-```text
-Runtime -> Invocation -> native worker -> ComponentResult -> Runtime validation
-```
-
-The current implementations are trusted compile-time Rust registrations. A
-component has bounded `PlainData` configuration/state and validated inputs/results.
-It has no Runtime, serial, Recorder, client, or `OutputAuthority` handle. A dead
-worker becomes explicit dead capacity; it is not respawned in an unbounded loop.
-
-## Application and sessions
-
-The Application API is semantic and transport-independent in design; the current
-adapter is local TCP with NDJSON serialization. One connection first obtains or
-reattaches a process-local scope with `hello`. Queries return bounded committed
-snapshots. Mutations have accepted/terminal operation states and process-local
-deduplication by `(scope, seq)`.
-
-The event ring and connection queues are bounded. Event loss is reported as a gap
-that requires a current snapshot/resynchronization; delivery is not guaranteed.
-Client lifetime is deliberately independent of experiment lifetime.
+Intent, authorization, send start, ACK, readback, and physical effect are distinct.
+Reconnect and fresh input do not automatically rearm control. See
+[Safety and failure behavior](safety-and-failures.md).
 
 ## Recorder and time
 
-The Runtime emits semantic facts. `RecorderWorker` charges bounded ingress credit,
-and one storage thread owns SQLite transactions. Admission is not a durability
-claim; the committed prefix advances only after the storage receipt reaches the
-owner. See [Recorder and SQLite](recorder-sqlite.md).
+Runtime emits semantic facts and owns Recorder lifecycle. Recorder admission is not
+durable commit; the authoritative committed prefix advances only after the storage
+receipt returns to the owner. See [Recorder and SQLite](recorder-sqlite.md).
 
-Monotonic time is used for scheduling, ordering, freshness, PID `dt`, leases, and
-deadlines. Wall-clock time is used for human-readable archive context and export.
-Wall-clock changes do not alter control behavior. Clock-anchor records relate the
-two domains without making wall time authoritative.
+Monotonic time governs scheduling, freshness, controller `dt`, leases, and
+deadlines. Wall-clock time is human/archive context and does not drive control.
 
 ## Boundedness and shutdown
 
-All long-lived queues, histories, sessions, workers, projections, and cursors have
-explicit limits. On exhaustion the subsystem rejects, evicts according to its
-documented policy, reports a gap, or fails closed; it does not switch to an
-unbounded fallback.
+Every long-lived queue, session, projection, cursor, history, and worker has a fixed
+capacity and lifecycle. Exhaustion rejects, evicts by documented policy, reports a
+gap, disconnects a faulty client, or fails closed; it does not switch to an unbounded
+fallback.
 
-Shutdown is a bounded progression, not an instantaneous state:
+Runtime shutdown is a bounded progression through authority revocation, safety,
+transport retirement, Recorder sealing/flushing, and worker cleanup. A shutdown
+request is not proof that every resource is already closed or physically safe.
 
-```text
-request -> revoke/control safety -> transport retirement -> Recorder seal/flush
-        -> worker/client cleanup -> truthful terminal result
-```
-
-`shutdown requested` does not mean every resource is already closed. An unfinished
-or physically ambiguous resource remains visible in the terminal result; software
-shutdown does not manufacture proof of physical safety.
+Future external clients or automation must use the same language-neutral Application
+semantics. Their lifetime remains independent of experiment lifetime.
