@@ -1,10 +1,10 @@
-# Current work — M14.6B2B1 Exact Retry core / evidence lifecycle
+# Current work — M14.6B2B2 Exact Retry GUI
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.6B2B1 Exact Retry core / evidence lifecycle
+Current phase: M14.6B2B2 Exact Retry GUI
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -28,11 +28,11 @@ M14.5 operator controls + properties/config: ACCEPTED
 M14.6A recovery/fault audit: ACCEPTED
 M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
 M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: AUTHORIZED
-M14.6B2B2 Exact Retry GUI: NOT AUTHORIZED
+M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
+M14.6B2B2 Exact Retry GUI: AUTHORIZED
 M14.6B3 explicit-disconnect versus bounded fault reattach: NOT AUTHORIZED
 M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
-STATUS: M14_6B2B1_AUTHORIZED
+STATUS: M14_6B2B2_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -165,8 +165,8 @@ M14.5 operator controls + properties/config: ACCEPTED
 M14.6A recovery/fault audit: ACCEPTED
 M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
 M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: AUTHORIZED
-M14.6B2B2 Exact Retry GUI: NOT AUTHORIZED
+M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
+M14.6B2B2 Exact Retry GUI: AUTHORIZED
 M14.6B3 explicit-disconnect versus bounded fault reattach: NOT AUTHORIZED
 M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
 ```
@@ -198,5 +198,6 @@ real Runtime acceptance, and native GUI smoke are accepted in
 one-shot `operation_status` are accepted at
 `1a5c69965fa2ad3907c0314cb61cc3e29798e5ea`. M14.6B2A quarantine projection
 and restart classification are accepted at implementation commit
-`f945d910cfeabbe8552634c53d95016e79a6eafa`. M14.6B2B1 is authorized;
-M14.6B2B2–B4 remain unauthorized.
+`f945d910cfeabbe8552634c53d95016e79a6eafa`. The accepted M14.6B2B1 implementation
+commit is `21e4a6f623e39c102109703b22a5266a17f5e0e0`. M14.6B2B2 is authorized;
+M14.6B3–B4 remain unauthorized.

@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M14.6B2B1 Exact Retry core / evidence lifecycle
+Current phase: M14.6B2B2 Exact Retry GUI
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -30,11 +30,11 @@ M14.5 operator controls + properties/config: ACCEPTED
 M14.6A recovery/fault audit: ACCEPTED
 M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
 M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: AUTHORIZED
-M14.6B2B2 Exact Retry GUI: NOT AUTHORIZED
+M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
+M14.6B2B2 Exact Retry GUI: AUTHORIZED
 M14.6B3 explicit-disconnect versus bounded fault reattach: NOT AUTHORIZED
 M14.6B4 real-process recovery/fault acceptance: NOT AUTHORIZED
-STATUS: M14_6B2B1_AUTHORIZED
+STATUS: M14_6B2B2_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -182,8 +182,10 @@ accepted in `M14_5_OPERATOR_CONTROLS.md` at implementation commit
 `4e18801930939404a8e856521b86c55c20d71dc9`. Only the renderer-neutral recovery
 status UI and one-shot `operation_status` slice M14.6B1 is accepted. M14.6B2A
 quarantine projection/restart classification is accepted at implementation commit
-`f945d910cfeabbe8552634c53d95016e79a6eafa`. Only M14.6B2B1 Exact Retry core and
-evidence lifecycle is authorized; Exact Retry GUI, automatic fault reattach,
+`f945d910cfeabbe8552634c53d95016e79a6eafa`. The M14.6B2B1 Exact Retry core and
+evidence lifecycle are accepted at implementation commit
+`21e4a6f623e39c102109703b22a5266a17f5e0e0`. M14.6B2B2 Exact Retry GUI is
+authorized; automatic fault reattach,
 consolidated process acceptance, practical integration, and final polished release
 documentation remain gated.
 
