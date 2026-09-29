@@ -261,6 +261,7 @@ are not experiment history. See
 
 ## Next steps
 
+- [Workbench user guide](workbench.md)
 - [Runtime architecture and concepts](architecture.md)
 - [Application API reference](api/README.md)
 - [Recorder and SQLite](recorder-sqlite.md)

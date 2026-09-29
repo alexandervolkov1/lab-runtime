@@ -108,6 +108,7 @@ selection, and a small API-client example.
 ## Documentation
 
 - [Getting started with Runtime and Workbench](docs/getting-started.md)
+- [Workbench user guide](docs/workbench.md)
 - [Runtime architecture and concepts](docs/architecture.md)
 - [Application API reference](docs/api/README.md)
 - [Recorder and SQLite archive](docs/recorder-sqlite.md)
