@@ -1,16 +1,16 @@
-# Current work — M16.1 declarative simple-device architecture/API audit
+# Current work — M16.1 accepted; M16.2 not authorized
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.1 declarative simple-device architecture/API audit
+Current phase: M16.1 accepted; M16.2 not authorized
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1 AUTHORIZED
+Practical integration architecture: M16.1 ACCEPTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -43,9 +43,10 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.1 declarative simple-device architecture/API audit:
+ACCEPTED
 M16.2–M16.7: NOT AUTHORIZED
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -83,7 +84,8 @@ Application API reference implementation commit is
 `48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
-consolidated acceptance. Only M16.1 is authorized.
+consolidated acceptance. M16.1 is accepted; no
+implementation slice is authorized.
 
 ## Completed preparation step
 
@@ -201,12 +203,13 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.1 declarative simple-device architecture/API audit:
+ACCEPTED
 M16.2–M16.7: NOT AUTHORIZED
 
-Current phase: M16.1 declarative simple-device architecture/API audit
+Current phase: M16.1 accepted; M16.2 not authorized
 
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -251,12 +254,12 @@ without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized unt
 consolidated acceptance so final API tutorials, recovery/automation documentation,
 and documentation acceptance describe the post-M16 product once.
 
-## Authorized M16.1 scope
+## M16.1 accepted audit
 
-M16.1 is a read-only, source-derived declarative-device architecture, Application
-API, and bounds audit. It may create only its audit report and make the minimal active
-coordination updates separately authorized by review. It must not change production
-Rust, tests, Cargo/dependencies, configuration schemas, public Application behavior,
+M16.1 is a completed read-only, source-derived declarative-device architecture,
+Application API, and bounds audit. Its accepted report is
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. It changes no production Rust,
+tests, Cargo/dependencies, configuration schemas, public Application behavior,
 Recorder/SQLite schemas, Workbench behavior, examples, or public documentation.
 External review is required before any implementation.
 
@@ -266,7 +269,7 @@ it as bounded declarative configuration, provision it through the language-neutr
 Application boundary, and obtain ordinary Runtime Instrument, Signal, and Actuator
 entities without a device-specific Rust driver.
 
-The audit must freeze:
+The audit freezes:
 
 - the exact v1 bounded protocol feature subset and explicit non-goals;
 - separate definition and deployment-instance schema direction;
@@ -308,13 +311,12 @@ internals. Runtime/API mutations may change active state without silently rewrit
 the original deployment source. No scripting implementation or Runtime-owned
 automation language is authorized.
 
-Candidate v1 protocol features to audit—not pre-frozen implementation details—are
-serial/COM first; finite request/response; fixed-length or delimiter termination;
-bounded address/channel, templates, prefix/suffix, and extractors; signed/unsigned
-integer, justified IEEE floating-point, and bounded ASCII numeric fields; endian;
-finite scale/offset; selected fixed checksum/CRC algorithms; periodic reads; typed
-writes; explicit ACK; optional independent readback; and finite queue, frame, parser,
-poll, and timeout bounds.
+The candidate freezes serial/COM first; exact fixed-length binary request/response up
+to 64 bytes; bounded address/channel, literals, matches, and one scalar extractor;
+signed/unsigned 8/16/32-bit integers and IEEE binary32; endian; finite scale/offset;
+sum8, xor8, and CRC16/Modbus; periodic reads; typed writes; strict ACK; optional
+independent readback; and finite queue, frame, parser, poll, and timeout bounds.
+Delimiter framing and ASCII numeric parsing are deferred from v1.
 
 V1 excludes arbitrary code, scripts, callbacks, loops, general expressions, dynamic
 evaluation, unbounded parser state or allocation, generic protocol state machines,
@@ -341,14 +343,17 @@ with stale completion, queue saturation, revision conflict, failed apply preserv
 the active deployment, and client/Workbench death with Runtime continuing.
 
 Current `stage_configuration` handles Runtime-known deployment candidates and does
-not accept arbitrary client-supplied definitions. M16.1 must audit the smallest
-bounded additive candidate lifecycle that can eventually support submit, complete
-Runtime validation, stage, explicit safe apply, and ordinary rediscovery. Upload must
-not activate a candidate. The exact operation names, wire DTOs, schema format, and
-limits are not chosen by this coordination transition.
+not accept arbitrary client-supplied definitions. M16.1 freezes one additive
+`stage_simple_device_candidate` mutation for one complete bounded candidate, followed
+by existing `apply_configuration`. Staging does not activate. Exact DTO, ownership,
+8 KiB candidate/6 KiB definition bounds, shared-codec lexical/depth compatibility,
+SessionStore retained-payload credit, one-slot/30-second lifecycle, process-local
+restart semantics, and single-owner provisional output preparation are in the audit
+report.
 
-Only M16.1 is authorized. M16.2 read-only vertical slice, M16.3 writable actuator,
-M16.4 provisioning implementation, M16.5 generic integration acceptance, M16.6 fault/
+M16.1 is accepted. M16.2 read-only vertical slice,
+M16.3 writable actuator, M16.4 provisioning implementation, M16.5 generic integration
+acceptance, M16.6 fault/
 bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance, and
 M16 consolidated review all remain unauthorized. M13.2 remains blocked on Steel
 dependency safety.

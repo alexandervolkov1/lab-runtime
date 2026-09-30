@@ -39,10 +39,11 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit: AUTHORIZED
+M16.1 declarative simple-device architecture/API audit:
+ACCEPTED
 M16.2–M16.7: NOT AUTHORIZED
-Current phase: M16.1 declarative simple-device architecture/API audit
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_AUTHORIZED
+Current phase: M16.1 accepted; M16.2 not authorized
+STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -80,7 +81,8 @@ Application API reference implementation commit is
 `48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
-consolidated acceptance. Only the read-only M16.1 audit is authorized.
+consolidated acceptance. The read-only M16.1 audit is accepted in
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; no implementation is authorized.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -288,9 +290,10 @@ or select a Runtime-owned automation language.
   ACK, and READBACK without device-specific Runtime/Application/Workbench code.
 - **M16 consolidated external review:** required before M15.5–M15.8 resume.
 
-M16.2–M16.7 and consolidated acceptance are not authorized. Operation names, wire DTO
-shape, declarative schema format, and exact limits are not frozen by this roadmap;
-M16.1 must derive them from current source and accepted authority boundaries.
+M16.2–M16.7 and consolidated acceptance are not authorized. The M16.1 review
+candidate freezes the proposed operation, DTO/schema direction, exact bounds, and
+implementation slicing in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`;
+external acceptance is still required.
 
 ### V1 direction and authority
 
