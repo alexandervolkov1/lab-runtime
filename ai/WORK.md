@@ -1,16 +1,16 @@
-# Current work — M16.3 writable simple-device actuator + ACK/readback
+# Current work — M16.4 Application simple-device provisioning
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
+Current phase: M16.4 Application simple-device provisioning
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.2 ACCEPTED; M16.3 READY FOR EXTERNAL RE-REVIEW
+Practical integration architecture: M16.1–M16.3 ACCEPTED; M16.4 AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -48,10 +48,11 @@ ACCEPTED
 M16.2 read-only simple-device vertical slice:
 ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
-FOCUSED REMEDIATION COMPLETE
-READY FOR EXTERNAL RE-REVIEW
-M16.4–M16.7: NOT AUTHORIZED
-STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
+ACCEPTED
+M16.4 Application simple-device provisioning:
+AUTHORIZED
+M16.5–M16.7: NOT AUTHORIZED
+STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -90,8 +91,10 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. M16.1 is accepted. The accepted M16.2 read-only simple-device
-implementation commit is `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is
-implemented and ready for external review; M16.4–M16.7 remain unauthorized.
+implementation commit is `aac377470d7142005ad5e0d098fddf6c16734db8`. The accepted
+M16.3 writable simple-device implementation commit is
+`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is authorized; M16.5–M16.7
+remain unauthorized.
 
 ## Completed preparation step
 
@@ -214,13 +217,14 @@ ACCEPTED
 M16.2 read-only simple-device vertical slice:
 ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
-FOCUSED REMEDIATION COMPLETE
-READY FOR EXTERNAL RE-REVIEW
-M16.4–M16.7: NOT AUTHORIZED
+ACCEPTED
+M16.4 Application simple-device provisioning:
+AUTHORIZED
+M16.5–M16.7: NOT AUTHORIZED
 
-Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
+Current phase: M16.4 Application simple-device provisioning
 
-STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
+STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -363,9 +367,9 @@ restart semantics, and single-owner provisional output preparation are in the au
 report.
 
 M16.1 is accepted. M16.2 is accepted at
-`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is implemented
-and ready for external review.
-M16.4 provisioning implementation, M16.5 generic integration acceptance, M16.6
+`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is accepted at
+`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
+M16.4 provisioning implementation is authorized. M16.5 generic integration acceptance, M16.6
 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance,
 and M16 consolidated review remain unauthorized. M13.2 remains blocked on Steel
 dependency safety.
@@ -457,11 +461,10 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2 is accepted. M16.3 focused remediation is complete and ready for external
-re-review below;
-M16.4–M16.7 remain unauthorized.
+M16.2 and M16.3 are accepted. M16.4 is authorized below; M16.5–M16.7 remain
+unauthorized.
 
-## M16.3 remediated review candidate
+## M16.3 accepted implementation
 
 M16.3 extends only the accepted persistent/file-backed SimpleDevice deployment path:
 
@@ -549,9 +552,9 @@ readback plan identities, safe profile identity, optional controller/reference
 binding, and persistent-startup source. Definition blobs are not duplicated per output
 fact, and no second provenance store is authorized.
 
-### Required M16.3 evidence
+### Accepted M16.3 evidence
 
-External implementation review must prove:
+External implementation review accepted evidence that:
 
 1. The writable schema remains strict, closed, and bounded, with at most one actuator.
 2. Actuator role/access/write-effect/value type exactly match the frozen float domain.
@@ -580,19 +583,174 @@ External implementation review must prove:
 21. Output/controller/safety Recorder facts remain generic after protocol settlement.
 22. M16.2 read-only behavior remains unchanged.
 23. Metakon behavior and its 38-byte codec bound remain unchanged.
-24. No provisioning, Workbench special path, raw public operation, scripting, or
-    M16.4+ work is introduced.
+24. The accepted M16.3 commit introduced no provisioning, Workbench special path,
+    raw public operation, scripting, or later-slice work.
 25. No new dependency is introduced.
 
-### Explicit M16.3 non-goals
+### M16.3 implementation boundary
 
-M16.3 does not authorize `stage_simple_device_candidate`, the provisioning capability,
-Application definition upload, process-local overlays, incremental provisioning apply,
-SessionStore candidate credit, Application-owned provisional quarantine, new resource
-or COM provisioning, delimiter/ASCII/binary64/BCD/packed-bit grammars, general
-expressions/callbacks/state machines, a special Workbench UI, public raw I/O, scripting
-or external-language integration, or any M16.4–M16.7 work. External review is required
-before any later slice may be authorized.
+The accepted M16.3 commit does not contain `stage_simple_device_candidate`, Application
+definition upload, process-local overlays, incremental provisioning apply, SessionStore
+candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD/
+packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
+UI, public raw I/O, scripting, or external-language integration. M16.4 now authorizes
+only the bounded provisioning surface below; M16.5–M16.7 remain unauthorized.
+
+## M16.4 authorized Application provisioning slice
+
+M16.4 adds the accepted M16.1 provisioning surface without redesigning the accepted
+M16.2/M16.3 protocol compiler or physical execution paths:
+
+```text
+stage_simple_device_candidate
+    -> strict complete candidate validation
+    -> retained typed mutation / dedup
+    -> one staged candidate slot
+    -> existing apply_configuration
+    -> immediate Accepted
+    -> Runtime-owned incremental preparation
+    -> process-local active overlay
+    -> atomic publication or terminal failure
+    -> post-send quarantine when physical output outcome is ambiguous
+```
+
+### Public surface and candidate
+
+Exactly one new mutation, `stage_simple_device_candidate`, and one discovery capability,
+`simple_device_provisioning`, are authorized. Existing `apply_configuration`,
+`configuration_status`, `operation_status`, and `reconnect_resource` retain their
+roles. Application envelope v1 remains unchanged. The registry is expected to become
+43 operations: 22 queries and 21 mutations, with 26 capabilities. The capability is
+discovery only and grants no authority.
+
+The mutation carries decimal `expected_revision` and one complete strict candidate:
+
+```text
+candidate
+    schema_version = 1
+    definition = one existing strict SimpleDevice definition
+    instances = complete instance objects
+```
+
+The root has exactly those three fields. A read-only definition admits 1..=4 instances;
+an output-capable definition admits exactly one. Read-only instances contain neither
+safe profile nor controller. An output-capable instance contains exactly one safe
+profile and zero or one controller using the frozen M16.1 schemas. Persistent and API
+forms compile through the same typed definition/compiler representation.
+
+Frozen limits are: candidate bytes <= 8,192; canonical definition bytes <= 6,144;
+candidate lexical values <= 900; whole mutation envelope values <= 909; candidate
+depth <= 8; whole message depth <= 10; canonical compact maximal request <= 8,496
+bytes; and shared raw Application body <= 16,383 bytes. Chunking, multipart upload,
+server-side builders, paths, and artifact references are not authorized.
+
+### Staging, dedup, and retained-memory credit
+
+Staging validates, normalizes, compiles, hashes, cross-references, classifies, and
+retains the complete normalized typed candidate without activating it. Runtime owns
+one staged slot with a 30-second monotonic lifetime. Occupied capacity rejects a
+second candidate; expiry releases ownership. Client disconnect neither activates nor
+cancels the candidate.
+
+The existing SessionStore request identity and normalized typed mutation equality are
+authoritative. Exact retry returns retained state/outcome without staging twice;
+different payload under one identity is `request_conflict`; an old unknown retained
+identity is `outcome_unknown`. Raw JSON spelling is not dedup identity.
+
+Provisioning receives one process-wide 524,288-byte retained-payload credit. Each
+record is charged exactly `align_up(canonical_normalized_candidate_bytes, 64) + 8,192`
+bytes, at most 16,384 bytes, so at most 32 maximum charges fit. Credit is reserved
+before mutation retention, sequence advance, or staged ownership. Capacity failure
+creates no retained or staged state. Pre-admission unwind, scope removal, terminal
+record removal/expiry/eviction, and Runtime shutdown release exact credit. Existing
+SessionStore cardinality bounds remain independently authoritative.
+
+### Incremental apply and ownership
+
+Activation uses only the existing `apply_configuration` as a separate mutation and
+request identity. Application owns admission, SessionStore correlation, and outcome
+delivery. ServiceHost/Runtime owns one process-wide pending apply, one prepared
+topology, physical/safety progress, commit, failure, and quarantine. Accepted becomes
+deliverable immediately; later serialized owner turns perform preparation under one
+absolute 15-second deadline. Application handling never blocks for physical
+preparation. Disconnect does not cancel admitted work, and Exact Retry cannot start a
+second apply.
+
+A read-only apply does not enter global configuration quiesce while preparing;
+unrelated acquisition/control continues. Candidate entities remain non-discoverable
+until atomic commit. Failure preserves the old active topology.
+
+For an output-capable apply, unrelated work may progress before the global safety
+boundary. The Runtime then pauses affected Running/Warming controllers, revokes
+affected leases, establishes the existing active-output safe barrier, and enters the
+single existing `configuration_quiesced` state. While quiesced, no new ordinary
+acquisition/controller production occurs; safety, admitted transport, Recorder,
+Application/network, query/status, and already-produced event delivery continue.
+Every terminal commit/failure/quarantine transition clears quiesce. Scheduling resumes
+from current monotonic time without catch-up, and controllers never auto-rearm.
+
+Prepared instruments, signals, actuators, controllers, safe profiles, schedules, and
+provenance are Runtime-owned and non-discoverable. Successful commit publishes the
+whole topology atomically. Prepared output authority is never Application authority.
+
+### Failure, ambiguity, and reconciliation
+
+If preparation fails before `send_started`, the candidate is consumed, prepared state
+is dropped, the apply becomes terminal Failed, no candidate entity is published, and
+a later attempt requires a new stage and apply.
+
+After `send_started`, missing required safe evidence retains one bounded process-wide,
+Runtime-owned, non-discoverable provisional-output quarantine. It retains candidate
+and resource identity, OutputAuthority, DispatchId/output intent, binding generation,
+mapping revision, send/ACK/readback evidence, and fail-closed resend/fault latches. It
+does not expire with time, resend, become an Instrument/Actuator, or publish authority;
+it blocks another output preparation on its resource. Explicit current-resource
+`reconnect_resource` is the accepted reconciliation lifecycle. No blind safe resend or
+automatic mutation replay is authorized.
+
+`configuration_status` may expose bounded semantic candidate/resource identity,
+configuration revision, binding/mapping generation, preparation/evidence phase, and
+`safe_resend_blocked`. It must not expose raw bytes, transport handles, client-supplied
+COM settings, or OutputAuthority internals.
+
+### Resource, overlay, provenance, and errors
+
+Candidates reference only preconfigured resources. Read-only candidates may use
+`windows_com_read_only` or `windows_com`; output candidates require `windows_com`.
+Missing resources, SimpleDevice/native or SimpleDevice/Metakon mixing, and output on a
+read-only resource reject under the frozen failure contract. M16.4 does not create or
+configure COM resources.
+
+Successful provisioning creates a Runtime-owned process-local active overlay. It
+survives client/Workbench loss, does not survive Runtime restart, and never rewrites
+`runtime.toml`, definition files, or hidden deployment artifacts. No persist/export
+operation is authorized. While an API overlay is active, file `stage_configuration`
+and `reload_configuration` reject before occupying or changing the stage slot.
+Supported `property_configure` operations clone and preserve the current active overlay.
+
+Recorder uses the existing provenance store and distinguishes process-local
+Application candidate source from persistent startup deployment while retaining
+canonical/raw definition, instance, resource/binding/mapping/configuration revision,
+safety, and controller identities. Complete definition content is not copied into
+each measurement/output fact.
+
+Only the existing public taxonomy is used: malformed or structurally over-bound input
+maps to `invalid_args`/`invalid_request`; semantic invalidity to
+`invalid_configuration`/`invalid_configuration`; missing resource to
+`unknown_resource`/`not_found`; stale revision to
+`revision_conflict`/`revision_conflict`; occupied stage/apply/quarantine capacity to
+`busy`/`capacity_exhausted`; identity conflicts to `request_conflict`; and unknown old
+outcomes to `outcome_unknown`, with the frozen retryable/resync flags. No new public
+error category is authorized.
+
+### M16.4 explicit non-goals
+
+M16.4 does not authorize chunks, multipart or builder APIs, generic manifest or path
+uploads, new resources/COM settings, overlay persistence/export, runtime.toml rewrite,
+raw byte/serial operations, a new controller or authority/quarantine owner, new
+protocol grammars, expressions/callbacks/state machines, special Workbench UI,
+scripting or external-language integration. M16.5–M16.7 remain unauthorized and each
+requires a later explicit coordination gate and external review.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in
