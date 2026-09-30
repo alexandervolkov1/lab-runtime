@@ -1,16 +1,16 @@
-# Current work — M16.2 focused remediation external re-review
+# Current work — M16.3 writable simple-device actuator + ACK/readback
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.2 focused remediation external re-review
+Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1 ACCEPTED; M16.2 READY FOR EXTERNAL RE-REVIEW
+Practical integration architecture: M16.1–M16.2 ACCEPTED; M16.3 AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -46,9 +46,11 @@ NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
 M16.2 read-only simple-device vertical slice:
-FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
-M16.3–M16.7: NOT AUTHORIZED
-STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
+ACCEPTED
+M16.3 writable simple-device actuator + ACK/readback vertical slice:
+AUTHORIZED
+M16.4–M16.7: NOT AUTHORIZED
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -86,8 +88,9 @@ Application API reference implementation commit is
 `48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
-consolidated acceptance. M16.1 is accepted; M16.2 focused remediation is complete
-and ready for external re-review; no later M16 slice is authorized.
+consolidated acceptance. M16.1 is accepted. The accepted M16.2 read-only simple-device
+implementation commit is `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is
+authorized; M16.4–M16.7 remain unauthorized.
 
 ## Completed preparation step
 
@@ -208,12 +211,14 @@ NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
 M16.2 read-only simple-device vertical slice:
-FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
-M16.3–M16.7: NOT AUTHORIZED
+ACCEPTED
+M16.3 writable simple-device actuator + ACK/readback vertical slice:
+AUTHORIZED
+M16.4–M16.7: NOT AUTHORIZED
 
-Current phase: M16.2 focused remediation external re-review
+Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
 
-STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -355,15 +360,18 @@ SessionStore retained-payload credit, one-slot/30-second lifecycle, process-loca
 restart semantics, and single-owner provisional output preparation are in the audit
 report.
 
-M16.1 is accepted. M16.2 focused remediation is complete and ready for external re-review. M16.3 writable
-actuator, M16.4 provisioning implementation, M16.5 generic integration acceptance,
-M16.6 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device
-acceptance, and M16 consolidated review remain unauthorized. M13.2 remains blocked
-on Steel dependency safety.
+M16.1 is accepted. M16.2 is accepted at
+`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is authorized.
+M16.4 provisioning implementation, M16.5 generic integration acceptance, M16.6
+fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance,
+and M16 consolidated review remain unauthorized. M13.2 remains blocked on Steel
+dependency safety.
 
-## M16.2 implemented review candidate
+## M16.2 accepted implementation
 
-The M16.2 review candidate implements only this persistent, file-backed read-only
+The accepted M16.2 implementation at
+`aac377470d7142005ad5e0d098fddf6c16734db8` implements only this persistent,
+file-backed read-only
 vertical slice:
 
 ```text
@@ -446,7 +454,140 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2 requires external review before M16.3. M16.3–M16.7 remain unauthorized.
+M16.2 is accepted. M16.3 is authorized below; M16.4–M16.7 remain unauthorized.
+
+## M16.3 authorized implementation slice
+
+M16.3 extends only the accepted persistent/file-backed SimpleDevice deployment path:
+
+```text
+persistent simple_device definition
+    -> at most one actuator parameter
+    -> existing deployment safe profile
+    -> optional existing native controller
+    -> existing OutputAuthority
+    -> compiled bounded WRITE
+    -> final send fence
+    -> existing ResourceExecutor
+    -> strict semantic ACK
+    -> optional independent exact-raw readback
+    -> ordinary output/safety/controller/Recorder evidence
+```
+
+It does not authorize Application upload or provisioning. The accepted M16.1 audit
+and M16.2 read-only implementation remain authoritative and must not be redesigned.
+
+### Actuator and protocol boundary
+
+A definition may contain at most one actuator. That parameter must be `actuator`,
+`read_write` or `write_only`, `output_affecting`, and engineering `float`. Existing
+measurement/diagnostic parameters remain read-only, `write_effect = none`, and
+integer or float. Raw representation may use any accepted M16 scalar encoding through
+the one parameter-level `raw + scale + offset` transform. No integer
+OutputAuthority/OutputProposal, second output owner, device-specific Application
+operation, or public raw-byte operation is authorized.
+
+M16.3 activates exactly one `value_field` in each WRITE request. The request may also
+contain the accepted literal, instance-field, and final optional checksum segments.
+It remains bounded to eight segments, 1..=64 bytes, and the accepted nonliteral-insert
+limit. Encoding computes `raw = (engineering - offset) / scale`; the result must be
+finite, exactly representable by the selected raw type, integral for integer raw
+encodings, and finite/representable for f32. Clipping, saturation, and silent rounding
+are forbidden. Prepared bytes carry no authority.
+
+Immediately before the first possible output byte, the Runtime-owned path must recheck
+current OutputAuthority state, authority epoch/lease, proposal deadline, DispatchId and
+output intent, resource binding generation, mapping revision, and transaction deadline.
+First positive transport write admission establishes `send_started`. The serial worker
+does not own authority, and declarative configuration never grants it.
+
+ACK uses an exact-length response with zero scalar extracts, at least one semantic
+literal or instance match, and an optional checksum. Checksum-only ACK is invalid.
+Shared-resource ACK evidence must distinguish the target instance. Malformed length,
+literal, instance, or checksum fails closed. ACK means protocol acknowledgement only,
+not readback or physical effect.
+
+An actuator may have one optional independent readback transaction after WRITE/ACK.
+The prepared exact raw scalar retained for comparison is at most four bytes. Integer
+raw readback requires exact raw numeric equality. f32 readback rejects nonfinite
+values, normalizes both signed zeros to positive zero, and otherwise requires exact
+binary32 identity. Engineering equality or a tolerance never establishes
+`ReadbackVerified`.
+
+### Existing safety, controller, resource, and evidence ownership
+
+Persistent writable SimpleDevice composition uses existing deployment-level
+`[[safe_profiles]]` and optional native `[[controllers]]`; it does not duplicate these
+inside the instrument. An active actuator requires an eligible safe profile. A native
+controller targets the ordinary ActuatorId and uses the existing Reference, lifecycle,
+lease, OutputAuthority, and OutputProposal path. Normal and safe writes use the same
+compiled physical WRITE/ACK/readback mechanism, distinguished by existing authority
+and output-intent evidence. Reconnect, rebind, ambiguity, configuration transition, or
+fault recovery never automatically rearms controller or authority.
+
+Failure before `send_started` is definitely pre-send. Failure after `send_started`
+without required terminal evidence is physically ambiguous, fails closed, and is
+never blindly or automatically resent. M16.3 must reuse existing Runtime-owned
+OutputAuthority/transport ambiguity evidence rather than introduce a second state
+machine.
+
+Output-capable SimpleDevice instances may bind only `windows_com`; binding to
+`windows_com_read_only` is rejected before activation. Multiple SimpleDevice instances
+may share one eligible resource only under accepted strict request/ACK/readback
+correlation. SimpleDevice plus Metakon/native sharing remains invalid and deferred.
+M16.2 read-only behavior and the Metakon 38-byte codec bound remain unchanged.
+
+Recorder provenance must extend the existing bounded store with the exact canonical
+and raw definition identities, definition ID/version, instrument/parameter identities,
+resource and binding/mapping/configuration revisions, scalar transform, WRITE/ACK/
+readback plan identities, safe profile identity, optional controller/reference
+binding, and persistent-startup source. Definition blobs are not duplicated per output
+fact, and no second provenance store is authorized.
+
+### Required M16.3 evidence
+
+External implementation review must prove:
+
+1. The writable schema remains strict, closed, and bounded, with at most one actuator.
+2. Actuator role/access/write-effect/value type exactly match the frozen float domain.
+3. `windows_com_read_only` fails output-capable composition before activation.
+4. An eligible safe profile is required for active persistent actuator composition.
+5. Optional controller targeting uses ordinary ActuatorId/OutputAuthority paths.
+6. Nonfinite, nonrepresentable, fractional-integer, and overflowing inverse transforms
+   fail without clipping or rounding.
+7. Exact WRITE bytes are deterministic, but prepared bytes do not grant authority.
+8. The final send fence rechecks authority, epoch/lease/deadlines, binding generation,
+   and mapping revision before byte zero.
+9. Pre-send failure and post-send ambiguity remain distinguishable.
+10. Ambiguous output is never blindly or automatically retried.
+11. Strict ACK requires semantic evidence; checksum alone is insufficient.
+12. Another shared-resource instance cannot satisfy the target ACK.
+13. Optional readback is an independent physical transaction.
+14. Retained expected raw scalar evidence is at most four bytes.
+15. Integer raw readback requires exact raw equality.
+16. f32 readback requires finite exact binary32 identity after signed-zero
+    normalization.
+17. Engineering equality alone cannot satisfy exact readback.
+18. Normal and safe outputs share the compiled protocol path.
+19. Stale binding/mapping completions cannot settle current authority.
+20. Failed ACK/readback cannot fabricate OutputApplied, ReadbackVerified, or safe
+    evidence.
+21. Output/controller/safety Recorder facts remain generic after protocol settlement.
+22. M16.2 read-only behavior remains unchanged.
+23. Metakon behavior and its 38-byte codec bound remain unchanged.
+24. No provisioning, Workbench special path, raw public operation, scripting, or
+    M16.4+ work is introduced.
+25. No new dependency is introduced.
+
+### Explicit M16.3 non-goals
+
+M16.3 does not authorize `stage_simple_device_candidate`, the provisioning capability,
+Application definition upload, process-local overlays, incremental provisioning apply,
+SessionStore candidate credit, Application-owned provisional quarantine, new resource
+or COM provisioning, delimiter/ASCII/binary64/BCD/packed-bit grammars, general
+expressions/callbacks/state machines, a special Workbench UI, public raw I/O, scripting
+or external-language integration, or any M16.4–M16.7 work. External review is required
+before any later slice may be authorized.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in

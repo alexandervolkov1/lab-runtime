@@ -42,10 +42,12 @@ NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
 M16.2 read-only simple-device vertical slice:
-FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
-M16.3–M16.7: NOT AUTHORIZED
-Current phase: M16.2 focused remediation external re-review
-STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
+ACCEPTED
+M16.3 writable simple-device actuator + ACK/readback vertical slice:
+AUTHORIZED
+M16.4–M16.7: NOT AUTHORIZED
+Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -84,8 +86,10 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. The read-only M16.1 audit is accepted in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 focused remediation is
-complete and ready for external re-review; M16.3–M16.7 are unauthorized.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. The accepted M16.2
+read-only simple-device implementation commit is
+`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is authorized; M16.4–M16.7
+remain unauthorized.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -207,7 +211,7 @@ operational API or special Workbench/Recorder/history/controller branches. Ardui
 the first intended real-device use case after M16, not M16's architecture. The future
 Clojure client is external, knows the Application API and semantic laboratory
 identities, and does not know the Arduino wire protocol. This sequencing does not
-authorize scripting implementation, M16.3+, or M15.5–M15.8 now.
+authorize scripting implementation, M16.4+, or M15.5–M15.8 now.
 
 ## Final release gate
 
