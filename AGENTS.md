@@ -84,9 +84,11 @@ M16.3 writable simple-device actuator + ACK/readback vertical slice:
 ACCEPTED
 M16.4 Application simple-device provisioning:
 ACCEPTED
-M16.5–M16.7: NOT AUTHORIZED
-Current phase: M16.4 Application simple-device provisioning
-STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_ACCEPTED
+M16.5 generic system integration acceptance:
+AUTHORIZED
+M16.6–M16.7: NOT AUTHORIZED
+Current phase: M16.5 generic system integration acceptance
+STATUS: M16_5_GENERIC_INTEGRATION_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -136,11 +138,12 @@ simple-device architecture/API audit is accepted in
 read-only simple-device implementation commit is
 `aac377470d7142005ad5e0d098fddf6c16734db8`. The accepted M16.3 writable
 simple-device implementation commit is `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
-M16.4 Application provisioning is accepted after external re-review of the original
+The accepted M16.4 Application provisioning implementation commit is
+`92847a046c4ef2e4e69d24ea51fc56e28e42af38`. External re-review accepted the original
 implementation plus the pending-apply property fence, existing `operation_failed`
 mapping for internal owner failures, and phase-aware absolute apply deadline with
-quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5–M16.7
-remain unauthorized.
+quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
+system integration acceptance is authorized; M16.6–M16.7 remain unauthorized.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
