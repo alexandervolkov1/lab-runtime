@@ -998,41 +998,82 @@ impl Runtime {
                 binding,
                 at,
             } => {
-                let current = self
-                    .simple_device_instruments
-                    .get(&instrument)
-                    .ok_or(Error::UnknownInstrument(instrument))?;
-                if !current.writes.is_empty() {
-                    return Err(Error::InvalidConfiguration(
-                        "writable simple-device rebind is not supported",
-                    ));
+                if self.controllers.values().any(|controller| {
+                    matches!(
+                        controller.state,
+                        ControllerState::Warming | ControllerState::Running
+                    ) && controller.config.output.instrument() == instrument
+                }) {
+                    return Err(OutputError::Busy.into());
                 }
-                self.check_transport_time(at)?;
+                let (current_binding, write_count, output_descriptors) = {
+                    let current = self
+                        .simple_device_instruments
+                        .get(&instrument)
+                        .ok_or(Error::UnknownInstrument(instrument))?;
+                    (
+                        current.binding,
+                        current.writes.len(),
+                        current
+                            .descriptor
+                            .parameters
+                            .iter()
+                            .filter(|parameter| parameter.role == crate::ParameterRole::Actuator)
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )
+                };
+                if write_count == 0 {
+                    self.check_transport_time(at)?;
+                } else {
+                    self.check_output_time(at)?;
+                }
                 if binding.binding_generation == 0
                     || binding.mapping_revision == 0
                     || !self.resources.contains_key(&binding.resource)
                 {
                     return Err(Error::InvalidConfiguration("invalid replacement binding"));
                 }
-                let instance = self
-                    .simple_device_instruments
-                    .get_mut(&instrument)
-                    .expect("validated simple-device instrument");
                 if binding.binding_generation
-                    != instance
-                        .binding
+                    != current_binding
                         .binding_generation
                         .checked_add(1)
                         .unwrap_or(0)
                     || binding.mapping_revision
-                        != instance
-                            .binding
-                            .mapping_revision
-                            .checked_add(1)
-                            .unwrap_or(0)
+                        != current_binding.mapping_revision.checked_add(1).unwrap_or(0)
                 {
                     return Err(Error::InvalidConfiguration("stale simple-device rebind"));
                 }
+                match (
+                    write_count,
+                    binding.output_queue_ttl,
+                    binding.output_timeout,
+                ) {
+                    (0, None, None) | (1, Some(_), Some(_)) => {}
+                    _ => {
+                        return Err(Error::InvalidConfiguration(
+                            "simple-device output binding is inconsistent",
+                        ));
+                    }
+                }
+                let replacements = output_descriptors
+                    .iter()
+                    .map(|parameter| {
+                        let actuator = ActuatorId::new(instrument, parameter.id);
+                        Ok((
+                            actuator,
+                            OutputAuthority::new(
+                                actuator,
+                                parameter.value_spec.clone(),
+                                parameter.unit,
+                            )?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                let instance = self
+                    .simple_device_instruments
+                    .get_mut(&instrument)
+                    .expect("validated simple-device instrument");
                 instance.binding = binding;
                 let descriptors: Vec<_> = instance
                     .descriptor
@@ -1058,6 +1099,11 @@ impl Runtime {
                         binding.mapping_revision,
                     );
                 }
+                self.pending_output_writes
+                    .retain(|(resource, _), _| *resource != binding.resource);
+                self.pending_output_readbacks
+                    .retain(|_, pending| pending.intent.actuator.instrument() != instrument);
+                self.outputs.extend(replacements);
                 Ok(CommandResult::Registered(instrument))
             }
             Command::ReconfigureMetakon {
@@ -1280,11 +1326,13 @@ impl Runtime {
             Query::Controller(id) => self
                 .controllers
                 .get(&id)
+                .filter(|controller| !self.controller_uses_prepared_topology(controller))
                 .map(|controller| QueryResult::Controller(controller.snapshot()))
                 .ok_or(ControllerError::UnknownController.into()),
             Query::ControllerConfig(id) => self
                 .controllers
                 .get(&id)
+                .filter(|controller| !self.controller_uses_prepared_topology(controller))
                 .map(|controller| QueryResult::ControllerConfig(controller.config))
                 .ok_or(ControllerError::UnknownController.into()),
             Query::Reference(id) => self

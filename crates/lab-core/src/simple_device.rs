@@ -1377,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn writable_simple_device_rebind_is_rejected_without_touching_authority_or_transport() {
+    fn writable_simple_device_rebind_retires_old_authority_without_transport_bytes() {
         let instrument = InstrumentId::new(9);
         let actuator = crate::output::ActuatorId::new(instrument, ParameterId::new(2));
         let writes = Rc::new(RefCell::new(Vec::new()));
@@ -1433,40 +1433,10 @@ mod tests {
             })
             .unwrap();
         let binding_before = runtime.simple_device_binding(instrument).unwrap();
-        let QueryResult::Output(safe_before) = runtime.query(Query::Output(actuator)).unwrap()
-        else {
-            panic!("safe output missing");
-        };
-        let replacement = SimpleDeviceBinding {
-            binding_generation: 2,
-            mapping_revision: 2,
-            ..binding_before
-        };
-        runtime.take_recording_facts();
-        assert!(matches!(
-            runtime.command(Command::RebindSimpleDevice {
-                instrument,
-                binding: replacement,
-                at: Duration::from_millis(1),
-            }),
-            Err(Error::InvalidConfiguration(
-                "writable simple-device rebind is not supported"
-            ))
-        ));
-        assert_eq!(
-            runtime.simple_device_binding(instrument),
-            Some(binding_before)
-        );
-        assert_eq!(
-            runtime.query(Query::Output(actuator)).unwrap(),
-            QueryResult::Output(safe_before)
-        );
-        assert!(runtime.take_recording_facts().is_empty());
-
         let CommandResult::Output(OutputResult::Lease(lease)) = runtime
             .command(Command::Output {
                 actuator,
-                at: Duration::from_millis(2),
+                at: Duration::from_millis(1),
                 command: OutputCommand::Acquire {
                     owner: OutputOwner::Manual(1),
                     lifetime: Duration::from_millis(500),
@@ -1479,7 +1449,7 @@ mod tests {
         runtime
             .command(Command::Output {
                 actuator,
-                at: Duration::from_millis(2),
+                at: Duration::from_millis(1),
                 command: OutputCommand::Propose(OutputProposal {
                     lease,
                     value: Value::Float(25.0),
@@ -1488,29 +1458,40 @@ mod tests {
                 }),
             })
             .unwrap();
-        let QueryResult::Output(active_before) = runtime.query(Query::Output(actuator)).unwrap()
-        else {
-            panic!("active output missing");
+        let replacement = SimpleDeviceBinding {
+            binding_generation: 2,
+            mapping_revision: 2,
+            ..binding_before
         };
         runtime.take_recording_facts();
+        runtime
+            .command(Command::RebindSimpleDevice {
+                instrument,
+                binding: replacement,
+                at: Duration::from_millis(2),
+            })
+            .unwrap();
+        assert_eq!(runtime.simple_device_binding(instrument), Some(replacement));
+        let QueryResult::Output(rebound) = runtime.query(Query::Output(actuator)).unwrap() else {
+            panic!("rebound output missing");
+        };
+        assert_eq!(rebound.state, crate::output::OutputState::Unverified);
+        assert!(rebound.lease.is_none());
+        assert!(!rebound.safe_confirmed);
         assert!(
             runtime
-                .command(Command::RebindSimpleDevice {
-                    instrument,
-                    binding: replacement,
+                .command(Command::Output {
+                    actuator,
                     at: Duration::from_millis(3),
+                    command: OutputCommand::Propose(OutputProposal {
+                        lease,
+                        value: Value::Float(25.0),
+                        unit: Unit::PERCENT,
+                        ttl: Duration::from_millis(100),
+                    }),
                 })
                 .is_err()
         );
-        assert_eq!(
-            runtime.simple_device_binding(instrument),
-            Some(binding_before)
-        );
-        assert_eq!(
-            runtime.query(Query::Output(actuator)).unwrap(),
-            QueryResult::Output(active_before)
-        );
-        assert!(runtime.take_recording_facts().is_empty());
         assert!(writes.borrow().is_empty());
     }
 

@@ -6,8 +6,9 @@
 use super::*;
 
 impl ServiceHost {
-    /// Explicitly retire and reopen one configured read-only COM resource.
-    /// Port enumeration never calls this operation and no write retry is implied.
+    /// Explicitly retire and reopen one configured COM resource.
+    /// Port enumeration never calls this operation, writable authorities are
+    /// re-established safe without controller rearm, and no write retry is implied.
     pub fn reconnect_resource(
         &mut self,
         resource_id: u64,
@@ -58,24 +59,10 @@ impl ServiceHost {
                 factory,
             );
         }
-        let instrument = active
-            .effective()
-            .dto
-            .instruments
-            .iter()
-            .find_map(|instrument| match instrument {
-                crate::configuration::InstrumentDto::Metakon {
-                    id,
-                    resource_id: bound,
-                    ..
-                } if *bound == resource_id => Some(*id),
-                _ => None,
-            })
-            .ok_or(LifecycleOperationError::InvalidCandidate)?;
         self.reconnect_diagnostic = None;
         let current = self
             .host
-            .configured_binding_generation(instrument)
+            .configured_resource_generation(ResourceId::new(resource_id))
             .ok_or(LifecycleOperationError::Conflict)?;
         if current != expected_binding_generation {
             return Err(LifecycleOperationError::Conflict);
@@ -409,6 +396,16 @@ impl ServiceHost {
             .iter()
             .filter_map(|instrument| match instrument {
                 crate::configuration::InstrumentDto::Metakon {
+                    resource_id: bound,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } if *bound == resource_id => Some(
+                    queue_timeout_ms
+                        .saturating_add(transaction_timeout_ms.saturating_mul(2))
+                        .saturating_add(500),
+                ),
+                crate::configuration::InstrumentDto::SimpleDevice {
                     resource_id: bound,
                     queue_timeout_ms,
                     transaction_timeout_ms,

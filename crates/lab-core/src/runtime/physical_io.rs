@@ -262,9 +262,20 @@ impl Runtime {
     }
 
     pub(super) fn descriptor(&self, id: InstrumentId) -> Result<&InstrumentDescriptor, Error> {
-        if self.prepared_simple_devices.contains(&id) {
+        if self.instrument_is_prepared(id) {
             return Err(Error::UnknownInstrument(id));
         }
+        self.activation_descriptor(id)
+    }
+
+    pub(super) fn instrument_is_prepared(&self, id: InstrumentId) -> bool {
+        self.prepared_simple_devices.contains(&id)
+    }
+
+    pub(super) fn activation_descriptor(
+        &self,
+        id: InstrumentId,
+    ) -> Result<&InstrumentDescriptor, Error> {
         self.instruments
             .get(&id)
             .map(|instrument| &instrument.descriptor)

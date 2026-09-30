@@ -52,9 +52,9 @@ ACCEPTED
 M16.4 Application simple-device provisioning:
 ACCEPTED
 M16.5 generic system integration acceptance:
-AUTHORIZED
+ACCEPTED
 M16.6–M16.7: NOT AUTHORIZED
-STATUS: M16_5_GENERIC_INTEGRATION_AUTHORIZED
+STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -100,8 +100,8 @@ M16.3 writable simple-device implementation commit is
 implementation plus the pending-apply property fence,
 existing `operation_failed` mapping for internal owner failures, and phase-aware
 absolute apply deadline with quarantine based on actual
-`send_started && !safe_confirmed` evidence. M16.5 generic system integration
-acceptance is authorized; M16.6–M16.7 remain unauthorized.
+`send_started && !safe_confirmed` evidence. M16.5 generic integration acceptance is
+externally accepted; M16.6–M16.7 remain unauthorized.
 
 ## Completed preparation step
 
@@ -228,12 +228,12 @@ ACCEPTED
 M16.4 Application simple-device provisioning:
 ACCEPTED
 M16.5 generic system integration acceptance:
-AUTHORIZED
+ACCEPTED
 M16.6–M16.7: NOT AUTHORIZED
 
 Current phase: M16.5 generic system integration acceptance
 
-STATUS: M16_5_GENERIC_INTEGRATION_AUTHORIZED
+STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -378,7 +378,7 @@ report.
 M16.1 is accepted. M16.2 is accepted at
 `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
-M16.4 provisioning is accepted. M16.5 generic integration acceptance is authorized.
+M16.4 provisioning and M16.5 generic integration acceptance are externally accepted.
 M16.6 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device
 acceptance, and M16 consolidated review remain unauthorized. M13.2 remains blocked on
 Steel dependency safety.
@@ -470,8 +470,7 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2, M16.3, and M16.4 are accepted. M16.5 is authorized; M16.6–M16.7 remain
-unauthorized.
+M16.2–M16.5 are accepted; M16.6–M16.7 remain unauthorized.
 
 ## M16.3 accepted implementation
 
@@ -603,7 +602,7 @@ definition upload, process-local overlays, incremental provisioning apply, Sessi
 candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD/
 packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
 UI, public raw I/O, scripting, or external-language integration. The M16.4 candidate
-implements only the bounded provisioning surface below. M16.5 is authorized;
+implements only the bounded provisioning surface below. M16.5 is externally accepted;
 M16.6–M16.7 remain unauthorized.
 
 ## M16.4 implemented Application provisioning slice
@@ -762,10 +761,10 @@ protocol grammars, expressions/callbacks/state machines, special Workbench UI,
 scripting or external-language integration. M16.6–M16.7 remain unauthorized and each
 requires a later explicit coordination gate and external review.
 
-## M16.5 authorized generic integration acceptance
+## M16.5 accepted generic integration
 
-M16.5 is primarily an integration/acceptance milestone. It must prove that an
-API-provisioned SimpleDevice automatically participates in the ordinary generic
+M16.5 is an externally accepted integration/acceptance milestone. Its evidence proves
+that an API-provisioned SimpleDevice participates in the ordinary generic
 Workbench discovery/rebuild/model and live-plot paths, current measurements,
 Application events, bounded recent history, Recorder and durable history, native
 controller input/output, and resource reconnect. Generic Workbench, plotting,
@@ -789,6 +788,14 @@ the existing safe-recovery semantics, with no automatic controller restart or re
 Expected work is acceptance coverage around the existing Application, Workbench
 rebuild/model, Recorder/history, controllers, and resource-reconnect owners. Production
 changes are permitted only for concrete defects exposed by red acceptance tests.
+The implemented candidate adds end-to-end API-provisioned read-only and writable
+acceptance, ordinary Workbench rebuild/live-trace evidence, and resource-scoped shared
+SimpleDevice reconnect coverage. Red oracles required two generic-seam corrections:
+configured-resource reconnect now binds every SimpleDevice on the resource, and native
+controller validation can use non-discoverable prepared descriptors during atomic
+activation. Writable reconnect replaces authority, re-establishes safe evidence, and
+does not rearm a paused controller. No new operation, capability, DTO, transport kind,
+authority, or consumer-specific SimpleDevice presentation/history path is introduced.
 M16.5 does not authorize a SimpleDevice-specific Workbench panel/editor, plot,
 Recorder, or controller path; a new Application operation, public DTO/error/category,
 transport/resource type, authority path, or raw serial/output API; configuration

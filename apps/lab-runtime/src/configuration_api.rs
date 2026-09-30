@@ -7,9 +7,8 @@
 use crate::{
     application::common::{id_field, lifecycle_domain_error},
     configuration::{
-        InstrumentDto, InstrumentPropertyConstraints, InstrumentPropertyMetadata,
-        InstrumentPropertySource, InstrumentPropertyValue, ManagedComponentDto, PropertyValue,
-        ResourceKindDto,
+        InstrumentPropertyConstraints, InstrumentPropertyMetadata, InstrumentPropertySource,
+        InstrumentPropertyValue, ManagedComponentDto, PropertyValue, ResourceKindDto,
     },
     protocol,
     service::ServiceHost,
@@ -266,14 +265,12 @@ pub(crate) fn resource_json(
         .quarantined_simple_resource_generation(resource_key)
         .is_some()
         || lifecycle
-        .active()
-        .effective()
-        .dto
-        .instruments
-        .iter()
-        .any(|instrument| {
-            matches!(instrument, InstrumentDto::Metakon { resource_id: bound, .. } if *bound == resource_id)
-        });
+            .active()
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .any(|instrument| instrument.bound_resource_id() == Some(resource_id));
     Ok(
         json!({"resource":resource_id.to_string(),"name":resource.key,"kind":kind,
         "identity_class":"physical","physical":true,"virtual":false,"state":state,

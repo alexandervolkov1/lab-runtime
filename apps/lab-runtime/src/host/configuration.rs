@@ -448,7 +448,9 @@ impl HostCore {
         self.reconnect_quiesced_resources.contains(&resource)
     }
 
-    /// Queue only the trusted compatibility probes bound to one replacement.
+    /// Queue trusted native compatibility probes bound to one replacement.
+    /// SimpleDevice plans are already validated and reacquire only through their
+    /// ordinary schedules after the resource fence is durably committed.
     pub fn begin_configured_probes_for_resource(
         &mut self,
         resource: ResourceId,
@@ -487,7 +489,12 @@ impl HostCore {
             })?;
             probe.queued = true;
         }
-        if !found {
+        let simple = self.simple_device_provenance.keys().any(|instrument| {
+            self.runtime
+                .simple_device_binding(*instrument)
+                .is_some_and(|binding| binding.resource == resource)
+        });
+        if !found && !simple {
             return Err(Error::InvalidConfiguration(
                 "configured resource has no compatibility probe",
             ));
@@ -495,9 +502,10 @@ impl HostCore {
         Ok(())
     }
 
-    /// Replace one read-only adapter at an explicit closed boundary and advance
-    /// every dependent physical binding generation. No port enumeration or
-    /// automatic selection occurs here.
+    /// Replace one adapter at an explicit closed boundary and advance every
+    /// dependent physical binding generation. Writable authorities are replaced
+    /// by Core and rebound to their existing safe profiles; no controller rearm
+    /// or port enumeration occurs here.
     pub fn rebind_configured_transport(
         &mut self,
         resource: ResourceId,
@@ -507,7 +515,7 @@ impl HostCore {
         if !self.resources.contains(&resource) {
             return Err(Error::InvalidConfiguration("configured resource missing"));
         }
-        let instruments: Vec<_> = self
+        let metakon: BTreeMap<_, _> = self
             .plan
             .metakon_reads
             .iter()
@@ -518,12 +526,27 @@ impl HostCore {
                     .map(|binding| (read.instrument, binding))
             })
             .collect();
-        if instruments.is_empty() {
+        let simple: BTreeMap<_, _> = self
+            .simple_device_provenance
+            .keys()
+            .filter_map(|instrument| {
+                self.runtime
+                    .simple_device_binding(*instrument)
+                    .filter(|binding| binding.resource == resource)
+                    .map(|binding| (*instrument, binding))
+            })
+            .collect();
+        if metakon.is_empty() && simple.is_empty() {
             return Err(Error::InvalidConfiguration(
                 "configured resource has no instrument",
             ));
         }
-        let replacements: Vec<_> = instruments
+        if !metakon.is_empty() && !simple.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "configured resource mixes protocol owners",
+            ));
+        }
+        let metakon_replacements: Vec<_> = metakon
             .iter()
             .map(|(instrument, binding)| {
                 Ok((
@@ -542,9 +565,46 @@ impl HostCore {
                 ))
             })
             .collect::<Result<Vec<_>, Error>>()?;
+        let simple_replacements: Vec<_> = simple
+            .iter()
+            .map(|(instrument, binding)| {
+                Ok((
+                    *instrument,
+                    SimpleDeviceBinding {
+                        binding_generation: binding
+                            .binding_generation
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("binding generation exhausted"))?,
+                        mapping_revision: binding
+                            .mapping_revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
+                        ..*binding
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         self.runtime.replace_transport(resource, adapter)?;
-        for (instrument, binding) in replacements {
+        for (instrument, binding) in metakon_replacements {
             self.runtime.command(Command::RebindMetakon {
+                instrument,
+                binding,
+                at,
+            })?;
+            for (actuator, profile) in self
+                .active_safety_profiles
+                .iter()
+                .filter(|(actuator, _)| actuator.instrument() == instrument)
+            {
+                self.runtime.command(Command::Output {
+                    actuator: *actuator,
+                    at,
+                    command: OutputCommand::BindProfile(profile.clone()),
+                })?;
+            }
+        }
+        for (instrument, binding) in simple_replacements {
+            self.runtime.command(Command::RebindSimpleDevice {
                 instrument,
                 binding,
                 at,
@@ -764,6 +824,11 @@ impl HostCore {
         self.runtime
             .metakon_binding(InstrumentId::new(instrument))
             .map(|binding| binding.binding_generation)
+            .or_else(|| {
+                self.runtime
+                    .simple_device_binding(InstrumentId::new(instrument))
+                    .map(|binding| binding.binding_generation)
+            })
     }
 
     /// Highest active binding generation using one stable logical resource.
@@ -950,7 +1015,12 @@ impl HostCore {
                 ));
             }
         }
-        if !found {
+        let simple = self.simple_device_provenance.keys().any(|instrument| {
+            self.runtime
+                .simple_device_binding(*instrument)
+                .is_some_and(|binding| binding.resource == resource)
+        });
+        if !found && !simple {
             return Err(Error::InvalidConfiguration(
                 "configured resource has no compatibility probe",
             ));
@@ -978,6 +1048,13 @@ impl HostCore {
                 .metakon_binding(read.instrument)
                 .is_some_and(|binding| binding.resource == resource)
             {
+                read.slot.next_due = at
+                    .checked_add(read.slot.period)
+                    .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+            }
+        }
+        for read in &mut self.plan.simple_device_reads {
+            if read.resource == resource {
                 read.slot.next_due = at
                     .checked_add(read.slot.period)
                     .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;

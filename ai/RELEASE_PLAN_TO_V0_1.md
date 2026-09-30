@@ -48,10 +48,10 @@ ACCEPTED
 M16.4 Application simple-device provisioning:
 ACCEPTED
 M16.5 generic system integration acceptance:
-AUTHORIZED
+ACCEPTED
 M16.6–M16.7: NOT AUTHORIZED
 Current phase: M16.5 generic system integration acceptance
-STATUS: M16_5_GENERIC_INTEGRATION_AUTHORIZED
+STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -99,7 +99,7 @@ The accepted M16.4 Application provisioning implementation commit is
 implementation plus the pending-apply property fence, existing `operation_failed`
 mapping for internal owner failures, and phase-aware absolute apply deadline with
 quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
-system integration acceptance is authorized; M16.6–M16.7 remain unauthorized.
+integration acceptance is externally accepted; M16.6–M16.7 remain unauthorized.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only

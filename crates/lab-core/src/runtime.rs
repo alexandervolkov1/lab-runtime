@@ -351,7 +351,7 @@ pub enum Command {
         /// Nondecreasing monotonic Runtime time of replacement.
         at: Duration,
     },
-    /// Replace one read-only simple-device binding and fence old completions.
+    /// Replace one simple-device binding and fence old completions and authority.
     RebindSimpleDevice {
         /// Existing logical instrument.
         instrument: InstrumentId,

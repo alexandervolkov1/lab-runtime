@@ -54,9 +54,9 @@ ACCEPTED
 M16.4 Application simple-device provisioning:
 ACCEPTED
 M16.5 generic system integration acceptance:
-AUTHORIZED
+ACCEPTED
 M16.6–M16.7: NOT AUTHORIZED
-STATUS: M16_5_GENERIC_INTEGRATION_AUTHORIZED
+STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -104,7 +104,7 @@ The accepted M16.4 Application provisioning implementation commit is
 implementation plus the pending-apply property fence, existing `operation_failed`
 mapping for internal owner failures, and phase-aware absolute apply deadline with
 quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
-system integration acceptance is authorized; M16.6–M16.7 remain unauthorized.
+integration acceptance is externally accepted; M16.6–M16.7 remain unauthorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -232,9 +232,9 @@ M14.6B4 consolidated recovery/fault acceptance is accepted at implementation com
 M16.1 is accepted in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is
 accepted at `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is accepted at
-`92847a046c4ef2e4e69d24ea51fc56e28e42af38`. M16.5 is authorized; M16.6–M16.7,
-remaining final M15 documentation, and every later implementation phase remain gated
-and unauthorized.
+`92847a046c4ef2e4e69d24ea51fc56e28e42af38`. M16.5 generic integration acceptance is
+externally accepted; M16.6–M16.7, remaining final M15 documentation, and every later
+implementation phase remain gated and unauthorized.
 
 ## Later practical validation
 

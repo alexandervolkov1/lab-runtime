@@ -124,7 +124,7 @@ impl Runtime {
 
     fn validate_controller_config(&self, config: NativeControllerConfig) -> Result<(), Error> {
         let input = self
-            .descriptor(config.input.instrument())?
+            .activation_descriptor(config.input.instrument())?
             .parameter(config.input.parameter())
             .filter(|parameter| {
                 parameter.signal == Some(config.input)
@@ -144,7 +144,7 @@ impl Runtime {
         }
 
         let output = self
-            .descriptor(config.output.instrument())?
+            .activation_descriptor(config.output.instrument())?
             .parameter(config.output.parameter())
             .filter(|parameter| parameter.role == ParameterRole::Actuator)
             .ok_or(ControllerError::InvalidConfiguration)?;
@@ -176,6 +176,11 @@ impl Runtime {
         }
 
         Ok(())
+    }
+
+    pub(super) fn controller_uses_prepared_topology(&self, controller: &NativeController) -> bool {
+        self.instrument_is_prepared(controller.config.input.instrument())
+            || self.instrument_is_prepared(controller.config.output.instrument())
     }
 
     pub(super) fn start_or_resume_controller(

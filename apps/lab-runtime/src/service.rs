@@ -1233,6 +1233,7 @@ mod reconnect_preparation_tests {
         wire::{decode_frame, encode_frame},
     };
     use lab_core::{
+        ParameterId, Query, QueryResult, SampleQuality, SignalId,
         metakon::crc,
         transport::{RecoveryStatus, TransportIoError, TransportShutdown},
     };
@@ -1380,11 +1381,30 @@ history_capacity=8
         channel_type: u8,
     }
 
+    struct SimpleProbeDevice {
+        readable: VecDeque<u8>,
+    }
+
     impl SerialDevice for ProbeDevice {
         fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
             let mut response = vec![1, 0, 0, 0, 0x41, self.channel_type];
             response.push(crc(&response));
             self.readable.extend(response);
+            Ok(bytes.len())
+        }
+
+        fn read_once(&mut self, maximum: usize) -> Result<Vec<u8>, SerialError> {
+            let count = maximum.min(self.readable.len());
+            Ok(self.readable.drain(..count).collect())
+        }
+    }
+
+    impl SerialDevice for SimpleProbeDevice {
+        fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+            let address = *bytes.get(1).ok_or(SerialError::Other)?;
+            let raw = u16::from(address).saturating_mul(100);
+            self.readable
+                .extend([0x10, address, (raw >> 8) as u8, raw as u8]);
             Ok(bytes.len())
         }
 
@@ -1557,6 +1577,13 @@ read_timeout_ms=1
 write_timeout_ms=1
 open_timeout_ms=100
 recovery_timeout_ms=100
+[[references]]
+id=10
+key="setpoint"
+kind="fixed"
+value=25.0
+unit_id="degC"
+unit_symbol="C"
 "#;
 
     #[derive(Default)]
@@ -1570,11 +1597,52 @@ recovery_timeout_ms=100
 
     struct ProvisioningTransport(Arc<Mutex<ProvisioningWire>>);
 
+    struct ProvisioningDevice(Arc<Mutex<ProvisioningWire>>);
+
+    impl SerialDevice for ProvisioningDevice {
+        fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+            let mut wire = self.0.lock().unwrap();
+            wire.writes.push(bytes.to_vec());
+            match bytes.first().copied() {
+                Some(0x10) => {
+                    let address = *bytes.get(1).ok_or(SerialError::Other)?;
+                    let raw = u16::from(address).saturating_mul(100);
+                    wire.readable
+                        .extend([0x10, address, (raw >> 8) as u8, raw as u8]);
+                }
+                Some(0x20) => {
+                    wire.raw
+                        .copy_from_slice(bytes.get(3..5).ok_or(SerialError::Other)?);
+                    let status = u8::from(wire.bad_ack);
+                    wire.readable.extend([0x20, bytes[1], status]);
+                }
+                Some(0x21) => {
+                    let raw = wire.raw;
+                    wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                }
+                _ => return Err(SerialError::Other),
+            }
+            Ok(bytes.len())
+        }
+
+        fn read_once(&mut self, maximum: usize) -> Result<Vec<u8>, SerialError> {
+            let mut wire = self.0.lock().unwrap();
+            let count = maximum.min(wire.readable.len());
+            Ok(wire.readable.drain(..count).collect())
+        }
+    }
+
     impl ByteTransport for ProvisioningTransport {
         fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
             let mut wire = self.0.lock().unwrap();
             wire.writes.push(bytes.to_vec());
             match bytes.first().copied() {
+                Some(0x10) => {
+                    let address = *bytes.get(1).ok_or(TransportIoError::Other)?;
+                    let raw = u16::from(address).saturating_mul(100);
+                    wire.readable
+                        .extend([0x10, address, (raw >> 8) as u8, raw as u8]);
+                }
                 Some(0x20) => {
                     wire.raw
                         .copy_from_slice(bytes.get(3..5).ok_or(TransportIoError::Other)?);
@@ -1695,6 +1763,41 @@ recovery_timeout_ms=100
                     "required_evidence":"readback"}
             }]
         })
+    }
+
+    fn application_control_candidate() -> serde_json::Value {
+        let mut candidate = application_output_candidate();
+        candidate["definition"]["definition_id"] = serde_json::json!("api-controlled-heater-v1");
+        let measurement =
+            serde_json::from_slice::<serde_json::Value>(SIMPLE_DEFINITION).unwrap()["parameters"]
+                [0]
+            .clone();
+        candidate["definition"]["parameters"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, measurement);
+        candidate["instances"][0]["controller"] = serde_json::json!({
+            "id":20,
+            "key":"api-pid",
+            "input_instrument_id":2001,
+            "input_parameter_id":1,
+            "output_instrument_id":2001,
+            "output_parameter_id":2,
+            "reference_id":10,
+            "period_ms":100,
+            "ema_time_constant_ms":100,
+            "ema_warmup_samples":1,
+            "kp":1.0,
+            "ki":0.0,
+            "kd":0.0,
+            "output_min":0.0,
+            "output_max":100.0,
+            "max_input_age_ms":500,
+            "max_tick_gap_ms":500,
+            "lease_lifetime_ms":2000,
+            "proposal_ttl_ms":200
+        });
+        candidate
     }
 
     fn stage_and_begin_api_output(service: &mut ServiceHost) -> u64 {
@@ -1915,6 +2018,486 @@ recovery_timeout_ms=100
                 .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn api_provisioned_signals_use_generic_application_history_recorder_and_shared_reconnect() {
+        let (mut service, _) = service_for_api_output(false);
+        let database = temporary_database();
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::Required, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+        service
+            .host
+            .start_recording("M16.5 generic integration", service.clock.now())
+            .unwrap();
+        let recording_deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while service.host.recording_status().unwrap().state != RecordingState::Recording {
+            service.host.service(&service.clock).unwrap();
+            assert!(std::time::Instant::now() < recording_deadline);
+            std::thread::yield_now();
+        }
+
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let cursor = service.owner().event_log().latest_cursor();
+        let boot_id = service.boot_id().to_owned();
+        let subscribed = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"subscribe","op":"subscribe",
+                "args":{"after":{"boot_id":boot_id,"seq":cursor.to_string()},
+                    "filter":{"kinds":["signal"],"targets":[]}}}),
+            ),
+        );
+        assert!(subscribed[0]["result"]["subscription"].is_string());
+
+        let mut candidate = application_read_only_candidate(1001, 1);
+        candidate["instances"][0]["poll_period_ms"] = serde_json::json!(100);
+        candidate["instances"][0]["queue_timeout_ms"] = serde_json::json!(500);
+        candidate["instances"][0]["transaction_timeout_ms"] = serde_json::json!(500);
+        let mut second = candidate["instances"][0].clone();
+        second["instrument_id"] = serde_json::json!(1002);
+        second["key"] = serde_json::json!("api-simple-1002");
+        second["display_name"] = serde_json::json!("API Simple 1002");
+        second["address"] = serde_json::json!(2);
+        candidate["instances"].as_array_mut().unwrap().push(second);
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1","candidate":candidate}})),
+        );
+        assert_eq!(staged[1]["state"], "completed");
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0]["state"], "accepted");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let terminal = application.poll_configuration(&mut service);
+            if !terminal.is_empty() {
+                assert_eq!(terminal.len(), 1);
+                assert_eq!(terminal[0].1["state"], "completed", "{terminal:#?}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        let signals = [
+            SignalId::new(InstrumentId::new(1001), ParameterId::new(1)),
+            SignalId::new(InstrumentId::new(1002), ParameterId::new(1)),
+        ];
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if signals.iter().all(|signal| {
+                matches!(
+                    service.owner().query(Query::GetLatestSignal(*signal)),
+                    Ok(QueryResult::Latest(Some(sample))) if sample.quality() == SampleQuality::Good
+                )
+            }) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        let discovery = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"discover","op":"discover","args":{}})),
+        );
+        let records = discovery[0]["result"]["records"].as_array().unwrap();
+        for instrument in ["1001", "1002"] {
+            assert!(
+                records
+                    .iter()
+                    .any(|row| { row["kind"] == "instrument" && row["id"] == instrument })
+            );
+            let described = application.handle(
+                &mut service,
+                1,
+                request(
+                    serde_json::json!({"v":1,"msg_id":format!("describe-{instrument}"),
+                    "op":"describe","args":{"instrument":instrument}}),
+                ),
+            );
+            assert_eq!(described[0]["result"]["id"], instrument);
+        }
+        let current = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"current","op":"measurements_current",
+                "args":{}}),
+            ),
+        );
+        let current = current[0]["result"]["records"].as_array().unwrap();
+        for (instrument, value) in [("1001", 10.0), ("1002", 20.0)] {
+            assert!(current.iter().any(|row| row["signal"]
+                == serde_json::json!({"instrument":instrument,"parameter":"1"})
+                && row["quality"] == "good"
+                && row["value"] == value));
+            let latest = application.handle(
+                &mut service,
+                1,
+                request(
+                    serde_json::json!({"v":1,"msg_id":format!("latest-{instrument}"),
+                    "op":"latest","args":{"signal":{"instrument":instrument,"parameter":"1"}}}),
+                ),
+            );
+            assert_eq!(latest[0]["result"]["value"], value);
+            let window = application.handle(
+                &mut service,
+                1,
+                request(
+                    serde_json::json!({"v":1,"msg_id":format!("window-{instrument}"),
+                    "op":"measurement_window","args":{"signal":{"instrument":instrument,
+                        "parameter":"1"},"max_records":8}}),
+                ),
+            );
+            assert_eq!(window[0]["result"]["source"], "runtime_recent");
+            assert_eq!(window[0]["result"]["rows"][0]["value"], value);
+        }
+        let mut events = Vec::new();
+        for _ in 0..8 {
+            let batch = application.pump_events(&service, 1);
+            if batch.is_empty() {
+                break;
+            }
+            events.extend(batch);
+        }
+        for instrument in ["1001", "1002"] {
+            assert!(events.iter().any(|event| event["kind"] == "signal"
+                && event["target"]
+                    == serde_json::json!({"instrument":instrument,"parameter":"1"})
+                && event["data"]["quality"] == "good"));
+        }
+
+        let reconnect = service
+            .reconnect_resource_with_factory(7, 1, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(SimpleProbeDevice {
+                        readable: VecDeque::new(),
+                    }))
+                })
+            })
+            .unwrap();
+        assert_eq!(reconnect.binding_generation, 2);
+        let resource = configuration_api::resource_json(&service, 7).unwrap();
+        assert_eq!(resource["binding_generation"], "2");
+        assert_eq!(resource["transport_generation"], "2");
+        assert_eq!(resource["instruments"], serde_json::json!(["1001", "1002"]));
+        for instrument in [1001, 1002] {
+            let QueryResult::Latest(Some(sample)) = service
+                .owner()
+                .query(Query::GetLatestSignal(SignalId::new(
+                    InstrumentId::new(instrument),
+                    ParameterId::new(1),
+                )))
+                .unwrap()
+            else {
+                panic!("rebound signal missing");
+            };
+            assert_eq!(sample.quality(), SampleQuality::Unavailable);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if signals.iter().all(|signal| {
+                matches!(
+                    service.owner().query(Query::GetLatestSignal(*signal)),
+                    Ok(QueryResult::Latest(Some(sample))) if sample.quality() == SampleQuality::Good
+                )
+            }) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let latest: Vec<_> = signals
+                    .iter()
+                    .map(|signal| service.owner().query(Query::GetLatestSignal(*signal)))
+                    .collect();
+                panic!(
+                    "shared reconnect did not reacquire: latest={latest:#?} resource={:#?} transport={:#?}",
+                    configuration_api::resource_json(&service, 7),
+                    service.owner().query(Query::Transport(ResourceId::new(7)))
+                );
+            }
+            std::thread::yield_now();
+        }
+
+        service.request_shutdown().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = service.shutdown_step().unwrap() {
+                assert!(status.recorder_flushed);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(service);
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        for value in [10.0, 20.0] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM measurements WHERE quality='good' AND float_value=?1",
+                    [value],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(count >= 1, "missing durable ordinary measurement {value}");
+        }
+        drop(connection);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(database.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn api_provisioned_controller_uses_ordinary_authority_and_stays_paused_after_reconnect() {
+        let (mut service, wire) = service_for_api_output(false);
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1","candidate":application_control_candidate()}})),
+        );
+        assert_eq!(staged[1]["state"], "completed");
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0]["state"], "accepted");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let terminal = application.poll_configuration(&mut service);
+            if !terminal.is_empty() {
+                assert_eq!(terminal[0].1["state"], "completed", "{terminal:#?}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let controller = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"controller","op":"controller",
+                "args":{"controller":"20"}}),
+            ),
+        );
+        assert_eq!(controller[0]["result"]["state"], "ready");
+        assert_eq!(
+            controller[0]["result"]["bindings"]["input"],
+            serde_json::json!({"instrument":"2001","parameter":"1"})
+        );
+        assert_eq!(
+            controller[0]["result"]["bindings"]["output"],
+            serde_json::json!({"instrument":"2001","parameter":"2"})
+        );
+
+        let input = SignalId::new(InstrumentId::new(2001), ParameterId::new(1));
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if matches!(
+                service.owner().query(Query::GetLatestSignal(input)),
+                Ok(QueryResult::Latest(Some(sample))) if sample.quality() == SampleQuality::Good
+            ) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let before_start = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"before-start","op":"output",
+                "args":{"actuator":{"instrument":"2001","parameter":"2"}}}),
+            ),
+        );
+        assert_eq!(
+            before_start[0]["result"]["state"], "disarmed",
+            "{before_start:#?}"
+        );
+        assert_eq!(before_start[0]["result"]["safe_confirmed"], true);
+        let started = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"start","op":"controller_start",
+                "request_id":{"scope":scope,"seq":"3"},"args":{"controller":"20"}}),
+            ),
+        );
+        assert_eq!(started[1]["state"], "completed");
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let controller = application.handle(
+                &mut service,
+                1,
+                request(
+                    serde_json::json!({"v":1,"msg_id":"running","op":"controller",
+                    "args":{"controller":"20"}}),
+                ),
+            );
+            if controller[0]["result"]["state"] == "running"
+                && wire
+                    .lock()
+                    .unwrap()
+                    .writes
+                    .iter()
+                    .any(|bytes| bytes.first() == Some(&0x20) && bytes.get(3..5) != Some(&[0, 0]))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "controller did not dispatch: controller={controller:#?} writes={:#?}",
+                wire.lock().unwrap().writes
+            );
+            std::thread::yield_now();
+        }
+        let output = loop {
+            service.host.service(&service.clock).unwrap();
+            let output = application.handle(
+                &mut service,
+                1,
+                request(serde_json::json!({"v":1,"msg_id":"output","op":"output",
+                    "args":{"actuator":{"instrument":"2001","parameter":"2"}}})),
+            );
+            if output[0]["result"]["outcome"] == "readback_verified" {
+                break output;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(output[0]["result"]["outcome"], "readback_verified");
+        assert_eq!(output[0]["result"]["owner"]["kind"], "automatic");
+        assert_eq!(output[0]["result"]["owner"]["id"], "20");
+
+        let paused = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"pause","op":"controller_pause",
+                "request_id":{"scope":scope,"seq":"4"},"args":{"controller":"20"}}),
+            ),
+        );
+        assert_eq!(paused[1]["result"]["state"], "paused");
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if service.host.configured_physical_outputs_safe().unwrap() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let replacement_wire = Arc::new(Mutex::new(ProvisioningWire::default()));
+        let device_wire = replacement_wire.clone();
+        let reconnect = service
+            .reconnect_resource_with_factory(7, 1, move |settings, _| {
+                let device_wire = device_wire.clone();
+                ComTransport::with_device_factory(settings, move || {
+                    Ok(Box::new(ProvisioningDevice(device_wire.clone())))
+                })
+            })
+            .unwrap();
+        assert_eq!(reconnect.binding_generation, 2);
+        let after = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"after","op":"controller",
+                "args":{"controller":"20"}})),
+        );
+        assert_eq!(after[0]["result"]["state"], "paused");
+        let output = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"rebound-output","op":"output",
+                "args":{"actuator":{"instrument":"2001","parameter":"2"}}}),
+            ),
+        );
+        assert!(output[0]["result"]["owner"].is_null());
+        assert_eq!(output[0]["result"]["safe_confirmed"], true);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if matches!(
+                service.owner().query(Query::GetLatestSignal(input)),
+                Ok(QueryResult::Latest(Some(sample))) if sample.quality() == SampleQuality::Good
+            ) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let fresh = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"fresh","op":"controller",
+                "args":{"controller":"20"}})),
+        );
+        assert_eq!(fresh[0]["result"]["state"], "paused");
+        let output = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"fresh-output","op":"output",
+                "args":{"actuator":{"instrument":"2001","parameter":"2"}}}),
+            ),
+        );
+        assert!(output[0]["result"]["owner"].is_null());
     }
 
     #[test]
@@ -2325,7 +2908,7 @@ recovery_timeout_ms=100
     }
 
     #[test]
-    fn simple_only_resource_projects_generically_but_reconnect_is_not_yet_supported() {
+    fn simple_only_resource_projects_and_reconnects_through_the_generic_resource_api() {
         let (mut service, shutdown_calls) = service_with_simple_transport();
         let mut application = Application::new(service.boot_id()).unwrap();
         let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
@@ -2335,7 +2918,7 @@ recovery_timeout_ms=100
             request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
                 "args":{"scope":null}})),
         );
-        let scope = hello[0]["result"]["scope"].clone();
+        assert!(hello[0]["result"]["scope"].is_string());
         let current = application.handle(
             &mut service,
             1,
@@ -2350,29 +2933,57 @@ recovery_timeout_ms=100
         assert_eq!(resource["transport_generation"], "1");
         assert_eq!(resource["instruments"], serde_json::json!(["1001"]));
         assert_eq!(resource["configuration_revision"], "1");
-        assert_eq!(resource["capabilities"]["reconnect"], false);
+        assert_eq!(resource["capabilities"]["reconnect"], true);
         assert_eq!(resource["capabilities"]["configuration"], true);
 
-        let rejected = application.handle(
-            &mut service,
-            1,
-            request(serde_json::json!({"v":1,"msg_id":"reconnect",
-                "op":"reconnect_resource","request_id":{"scope":scope,"seq":"1"},
-                "args":{"resource":"7","expected_binding_generation":"1"}})),
+        let result = service
+            .reconnect_resource_with_factory(7, 1, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(SimpleProbeDevice {
+                        readable: VecDeque::new(),
+                    }))
+                })
+            })
+            .unwrap();
+        assert_eq!(result.binding_generation, 2);
+        assert!(shutdown_calls.load(Ordering::Acquire) > 0);
+        assert_eq!(
+            service.reconnect_diagnostic().unwrap().stage,
+            ReconnectStage::Complete
         );
-        assert!(
-            rejected
-                .iter()
-                .any(|reply| reply["code"] == "invalid_configuration")
-        );
-        assert_eq!(shutdown_calls.load(Ordering::Acquire), 0);
-        assert!(service.reconnect_diagnostic().is_none());
         assert_eq!(
             service
                 .owner()
                 .configured_resource_generation(ResourceId::new(7)),
-            Some(1)
+            Some(2)
         );
+        let signal = SignalId::new(InstrumentId::new(1001), ParameterId::new(1));
+        let QueryResult::Latest(Some(sample)) = service
+            .owner()
+            .query(Query::GetLatestSignal(signal))
+            .unwrap()
+        else {
+            panic!("reconnected simple signal missing");
+        };
+        assert_eq!(sample.quality(), SampleQuality::Unavailable);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let sample = loop {
+            service.host.service(&service.clock).unwrap();
+            let QueryResult::Latest(Some(sample)) = service
+                .owner()
+                .query(Query::GetLatestSignal(signal))
+                .unwrap()
+            else {
+                panic!("reconnected simple signal missing");
+            };
+            if sample.quality() == SampleQuality::Good {
+                break sample;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(sample.value(), Some(&lab_core::Value::Float(10.0)));
     }
 
     fn assert_required_healthy_and_no_outputs(service: &ServiceHost) {
