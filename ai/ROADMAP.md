@@ -44,10 +44,11 @@ ACCEPTED
 M16.2 read-only simple-device vertical slice:
 ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
-AUTHORIZED
+FOCUSED REMEDIATION COMPLETE
+READY FOR EXTERNAL RE-REVIEW
 M16.4–M16.7: NOT AUTHORIZED
 Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
-STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -88,7 +89,8 @@ without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized unt
 consolidated acceptance. The read-only M16.1 audit is accepted in
 `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. The accepted M16.2
 read-only simple-device implementation commit is
-`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is authorized; M16.4–M16.7
+`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 focused remediation is complete
+and ready for external re-review; M16.4–M16.7
 remain unauthorized.
 
 The accepted headless Runtime core is implemented and technically hardened for a
@@ -286,7 +288,7 @@ or select a Runtime-owned automation language.
 - **M16.1:** accepted read-only, source-derived declarative-device
   architecture/API/bounds audit.
 - **M16.2:** accepted bounded serial request/response READ to a typed ordinary Signal.
-- **M16.3:** authorized ordinary OutputAuthority to declarative WRITE, ACK, and
+- **M16.3:** implemented ordinary OutputAuthority to declarative WRITE, ACK, and
   optional separate readback.
 - **M16.4:** bounded Application configuration-candidate provisioning: validate,
   stage, explicit safe apply, then ordinary rediscovery.
@@ -297,8 +299,9 @@ or select a Runtime-owned automation language.
   ACK, and READBACK without device-specific Runtime/Application/Workbench code.
 - **M16 consolidated external review:** required before M15.5–M15.8 resume.
 
-M16.2 is accepted at `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is
-authorized; M16.4–M16.7 and consolidated acceptance are not authorized. The accepted
+M16.2 is accepted at `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 focused
+remediation is complete and ready for external re-review; M16.4–M16.7 and consolidated
+acceptance are not authorized. The accepted
 M16.1 audit freezes the operation, DTO/schema direction, exact bounds, and
 implementation slicing in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`.
 

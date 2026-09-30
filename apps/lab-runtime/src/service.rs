@@ -882,6 +882,11 @@ impl ServiceHost {
                         queue_timeout_ms,
                         transaction_timeout_ms,
                         ..
+                    }
+                    | crate::configuration::InstrumentDto::SimpleDevice {
+                        queue_timeout_ms,
+                        transaction_timeout_ms,
+                        ..
                     } => Some(
                         queue_timeout_ms
                             .saturating_add(transaction_timeout_ms.saturating_mul(2))

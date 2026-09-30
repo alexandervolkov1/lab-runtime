@@ -395,7 +395,7 @@ pub struct ParameterDescriptor {
     pub role: ParameterRole,
     /// Consequences of writing this parameter, checked independently of its type.
     pub write_effect: WriteEffect,
-    /// Identity of the associated measurement stream, when one exists.
+    /// Identity of the associated observation stream, when one exists.
     pub signal: Option<SignalId>,
 }
 
@@ -429,17 +429,19 @@ impl ParameterDescriptor {
                 "inconsistent role/access/write effect",
             ));
         }
-        if let Some(signal) = self.signal
-            && (signal.parameter() != self.id
-                || !matches!(
-                    self.role,
-                    ParameterRole::Measurement | ParameterRole::Diagnostic
-                )
-                || self.access == AccessMode::WriteOnly)
-        {
-            return Err(Error::InvalidConfiguration(
-                "invalid measurement signal binding",
-            ));
+        if let Some(signal) = self.signal {
+            let readable_observation = matches!(
+                self.role,
+                ParameterRole::Measurement | ParameterRole::Diagnostic
+            ) && self.access != AccessMode::WriteOnly;
+            let readable_actuator = self.role == ParameterRole::Actuator
+                && self.access == AccessMode::ReadWrite
+                && self.write_effect == WriteEffect::OutputAffecting;
+            if signal.parameter() != self.id || (!readable_observation && !readable_actuator) {
+                return Err(Error::InvalidConfiguration(
+                    "invalid measurement signal binding",
+                ));
+            }
         }
         Ok(())
     }

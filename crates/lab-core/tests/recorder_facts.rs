@@ -177,6 +177,15 @@ fn one_pid_tick_keeps_requested_sent_and_readback_as_separate_ordered_facts() {
             .iter()
             .all(|fact| fact.1 == output_facts[1].1)
     );
+    assert!(facts.iter().all(|fact| match fact {
+        RecordingFact::Output {
+            resource,
+            binding_generation,
+            mapping_revision,
+            ..
+        } => resource.is_none() && binding_generation.is_none() && mapping_revision.is_none(),
+        _ => true,
+    }));
     assert!(
         facts
             .windows(2)

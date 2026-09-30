@@ -268,6 +268,7 @@ impl HostCore {
                     EvidenceLevel::Acknowledgement=>"ack",EvidenceLevel::Readback=>"readback"},
             }));
         }
+        let native_composition_index = entries.len();
         push(
             &mut entries,
             "native_composition",
@@ -357,7 +358,7 @@ impl HostCore {
                     Some(simple.raw_sha256),
                 )
             } else {
-                (1, 1, None)
+                (1, native_composition_index, None)
             };
             let parameters: Vec<_> = instrument
                 .parameters
@@ -401,6 +402,13 @@ impl HostCore {
                         "canonical_sha256":hex_sha256(simple.canonical_sha256),
                         "raw_sha256":hex_sha256(simple.raw_sha256),
                         "configuration_revision":self.configuration_revision.to_string(),
+                        "writable_protocol":simple.actuator_parameter.map(|parameter| serde_json::json!({
+                            "actuator_parameter":parameter.to_string(),
+                            "compiled_plan_identity":"canonical_definition_plus_instance_mapping_v1",
+                            "definition_sha256":hex_sha256(simple.canonical_sha256),
+                            "address":simple.address,
+                            "channel":simple.channel,
+                        })),
                     }
                 })
                 .to_string()
@@ -437,7 +445,7 @@ impl HostCore {
                 unit_key: None,
                 generation: Some(1),
                 binding: Some(controller["output"].to_string()),
-                definition_entry_index: 1,
+                definition_entry_index: native_composition_index,
                 source_content_sha256: None,
             });
         }
@@ -455,7 +463,7 @@ impl HostCore {
                 descriptor: reference.to_string(),
                 generation: Some(1),
                 binding: None,
-                definition_entry_index: 1,
+                definition_entry_index: native_composition_index,
                 source_content_sha256: None,
             });
         }
@@ -480,7 +488,7 @@ impl HostCore {
                 descriptor: output.to_string(),
                 generation: Some(1),
                 binding: None,
-                definition_entry_index: 1,
+                definition_entry_index: native_composition_index,
                 source_content_sha256: None,
             });
         }

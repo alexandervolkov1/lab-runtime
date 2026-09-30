@@ -143,7 +143,7 @@ pub enum RecordingFact {
         unit: Option<Unit>,
         /// Rust authority epoch, not a client-provided permit.
         authority_epoch: Option<u64>,
-        /// Physical resource when this actuator has a Metakon binding.
+        /// Physical resource when this actuator has a configured physical binding.
         resource: Option<ResourceId>,
         /// Instrument binding generation, independent of transport generation.
         binding_generation: Option<u64>,

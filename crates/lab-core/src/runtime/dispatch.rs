@@ -100,6 +100,18 @@ impl Runtime {
                     }
                 }
                 let issued = command.clone();
+                if let OutputCommand::BindProfile(profile) = &issued
+                    && profile.required_evidence == crate::output::EvidenceLevel::Readback
+                    && self
+                        .simple_device_instruments
+                        .get(&actuator.instrument())
+                        .and_then(|instrument| instrument.writes.get(&actuator.parameter()))
+                        .is_some_and(|plan| plan.readback.is_none())
+                {
+                    return Err(Error::InvalidConfiguration(
+                        "simple output profile requires a readback plan",
+                    ));
+                }
                 let proposed_attempt = match &issued {
                     OutputCommand::Propose(_) => Some(self.allocate_output_attempt()?),
                     OutputCommand::RequestSafe
@@ -652,7 +664,26 @@ impl Runtime {
                     return Err(TransportError::UnknownResource.into());
                 }
                 let instrument = SimpleDeviceInstrument::new(config)?;
+                let mut authorities = Vec::new();
+                for parameter in &instrument.descriptor.parameters {
+                    if parameter.role == crate::ParameterRole::Actuator {
+                        let actuator = ActuatorId::new(id, parameter.id);
+                        authorities.push((
+                            actuator,
+                            OutputAuthority::new(
+                                actuator,
+                                parameter.value_spec.clone(),
+                                parameter.unit,
+                            )?,
+                        ));
+                    }
+                }
                 self.simple_device_instruments.insert(id, instrument);
+                let actuators: Vec<_> = authorities.iter().map(|(actuator, _)| *actuator).collect();
+                self.outputs.extend(authorities);
+                for actuator in actuators {
+                    self.sync_recording_output_context(actuator);
+                }
                 Ok(CommandResult::Registered(id))
             }
             Command::QueueMetakonRead {
@@ -898,6 +929,15 @@ impl Runtime {
                 binding,
                 at,
             } => {
+                let current = self
+                    .simple_device_instruments
+                    .get(&instrument)
+                    .ok_or(Error::UnknownInstrument(instrument))?;
+                if !current.writes.is_empty() {
+                    return Err(Error::InvalidConfiguration(
+                        "writable simple-device rebind is not supported",
+                    ));
+                }
                 self.check_transport_time(at)?;
                 if binding.binding_generation == 0
                     || binding.mapping_revision == 0
@@ -908,7 +948,7 @@ impl Runtime {
                 let instance = self
                     .simple_device_instruments
                     .get_mut(&instrument)
-                    .ok_or(Error::UnknownInstrument(instrument))?;
+                    .expect("validated simple-device instrument");
                 if binding.binding_generation
                     != instance
                         .binding

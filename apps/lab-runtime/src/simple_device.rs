@@ -1,4 +1,4 @@
-//! Strict schema and compiler for persistent read-only simple-device definitions.
+//! Strict schema and compiler for persistent simple-device definitions.
 //!
 //! Untrusted JSON and deployment instance fields terminate here. The compiler
 //! emits only bounded concrete requests, fixed comparisons, scalar metadata, and
@@ -9,9 +9,9 @@ use lab_core::{
     AccessMode, InstrumentId, ParameterDescriptor, ParameterId, ParameterRole, SignalId, Unit,
     ValueSpec, WriteEffect,
     simple_device::{
-        MAX_SIMPLE_CHECKSUM_INPUT_BYTES, SimpleChecksum, SimpleParameterConfig, SimpleReadPlan,
-        SimpleResponseChecksum, SimpleResponseMatch, SimpleResponseMatchKind, SimpleResponsePlan,
-        SimpleScalarEncoding,
+        MAX_SIMPLE_CHECKSUM_INPUT_BYTES, SimpleAckPlan, SimpleChecksum, SimpleParameterConfig,
+        SimpleReadPlan, SimpleResponseChecksum, SimpleResponseMatch, SimpleResponseMatchKind,
+        SimpleResponsePlan, SimpleScalarEncoding, SimpleWritePlan, SimpleWriteSegment,
     },
     transport::MAX_TRANSACTION_BYTES,
 };
@@ -65,8 +65,10 @@ struct CompiledParameterTemplate {
     unit: Unit,
     value_spec: ValueSpec,
     encoding: EncodingDto,
-    request: RequestDto,
-    response: ResponseDto,
+    access: AccessMode,
+    write_effect: WriteEffect,
+    read: Option<ReadDto>,
+    write: Option<WriteDto>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,7 +85,7 @@ pub(crate) struct CompiledResponseCorrelation {
 
 type CompiledResponse = (SimpleResponsePlan, Vec<(usize, Vec<u8>)>);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct DefinitionDto {
     format_version: u16,
@@ -92,7 +94,7 @@ struct DefinitionDto {
     parameters: Vec<ParameterDto>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ParameterDto {
     parameter_id: u64,
@@ -107,7 +109,10 @@ struct ParameterDto {
     engineering_max: serde_json::Value,
     write_effect: WriteEffectDto,
     encoding: EncodingDto,
-    read: ReadDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    read: Option<ReadDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    write: Option<WriteDto>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -115,12 +120,15 @@ struct ParameterDto {
 enum RoleDto {
     Measurement,
     Diagnostic,
+    Actuator,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum AccessDto {
     ReadOnly,
+    ReadWrite,
+    WriteOnly,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -134,9 +142,10 @@ enum ValueTypeDto {
 #[serde(rename_all = "snake_case")]
 enum WriteEffectDto {
     None,
+    OutputAffecting,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct EncodingDto {
     raw: RawEncodingDto,
@@ -180,11 +189,20 @@ impl From<RawEncodingDto> for SimpleScalarEncoding {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ReadDto {
     request: RequestDto,
     response: ResponseDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct WriteDto {
+    request: RequestDto,
+    ack: ResponseDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    readback: Option<ReadDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -203,6 +221,7 @@ enum RequestSegmentDto {
         field: InstanceFieldDto,
         encoding: InstanceEncodingDto,
     },
+    ValueField,
     Checksum {
         algorithm: ChecksumDto,
     },
@@ -246,7 +265,8 @@ impl From<ChecksumDto> for SimpleChecksum {
 struct ResponseDto {
     exact_length: usize,
     matches: Vec<ResponseMatchDto>,
-    extract: ScalarExtractDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extract: Option<ScalarExtractDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checksum: Option<ResponseChecksumDto>,
 }
@@ -265,7 +285,7 @@ enum ResponseMatchDto {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ScalarExtractDto {
     ScalarExtract { offset: usize },
@@ -368,6 +388,7 @@ fn validate_definition(dto: &DefinitionDto) -> Result<(), SimpleDefinitionError>
     }
     let mut ids = BTreeSet::new();
     let mut keys = BTreeSet::new();
+    let mut actuators = 0usize;
     for parameter in &dto.parameters {
         if parameter.parameter_id == 0
             || !ids.insert(parameter.parameter_id)
@@ -383,16 +404,50 @@ fn validate_definition(dto: &DefinitionDto) -> Result<(), SimpleDefinitionError>
             .map_err(|error| SimpleDefinitionError::new(error.to_string()))?;
         Unit::new(&parameter.unit_id, &parameter.unit_symbol)
             .map_err(|error| SimpleDefinitionError::new(error.to_string()))?;
-        if parameter.access != AccessDto::ReadOnly || parameter.write_effect != WriteEffectDto::None
-        {
+        let observation = matches!(parameter.role, RoleDto::Measurement | RoleDto::Diagnostic)
+            && parameter.access == AccessDto::ReadOnly
+            && parameter.write_effect == WriteEffectDto::None
+            && parameter.read.is_some()
+            && parameter.write.is_none();
+        let actuator = parameter.role == RoleDto::Actuator
+            && matches!(
+                parameter.access,
+                AccessDto::ReadWrite | AccessDto::WriteOnly
+            )
+            && parameter.write_effect == WriteEffectDto::OutputAffecting
+            && parameter.value_type == ValueTypeDto::Float
+            && parameter.write.is_some()
+            && (parameter.access == AccessDto::WriteOnly || parameter.read.is_some());
+        if !observation && !actuator {
             return Err(SimpleDefinitionError::new(
-                "M16.2 parameters must be read_only/none",
+                "invalid simple parameter semantics",
             ));
+        }
+        if actuator {
+            actuators += 1;
+            if actuators > 1 {
+                return Err(SimpleDefinitionError::new(
+                    "at most one actuator is allowed",
+                ));
+            }
         }
         validate_range(parameter)?;
         validate_encoding(&parameter.encoding)?;
-        validate_request_shape(&parameter.read.request)?;
-        validate_response_shape(&parameter.read.response, parameter.encoding.raw.into())?;
+        if let Some(read) = &parameter.read {
+            validate_request_shape(&read.request, false, parameter.encoding.raw.into())?;
+            validate_response_shape(&read.response, parameter.encoding.raw.into(), true)?;
+        }
+        if let Some(write) = &parameter.write {
+            validate_request_shape(&write.request, true, parameter.encoding.raw.into())?;
+            validate_response_shape(&write.ack, parameter.encoding.raw.into(), false)?;
+            if write.ack.matches.is_empty() {
+                return Err(SimpleDefinitionError::new("ACK requires semantic match"));
+            }
+            if let Some(readback) = &write.readback {
+                validate_request_shape(&readback.request, false, parameter.encoding.raw.into())?;
+                validate_response_shape(&readback.response, parameter.encoding.raw.into(), true)?;
+            }
+        }
     }
     Ok(())
 }
@@ -451,7 +506,11 @@ fn is_negative_zero(value: f64) -> bool {
     value == 0.0 && value.is_sign_negative()
 }
 
-fn validate_request_shape(request: &RequestDto) -> Result<(), SimpleDefinitionError> {
+fn validate_request_shape(
+    request: &RequestDto,
+    require_value: bool,
+    encoding: SimpleScalarEncoding,
+) -> Result<(), SimpleDefinitionError> {
     if request.segments.is_empty() || request.segments.len() > MAX_REQUEST_SEGMENTS {
         return Err(SimpleDefinitionError::new(
             "request segment count must be 1..=8",
@@ -460,12 +519,18 @@ fn validate_request_shape(request: &RequestDto) -> Result<(), SimpleDefinitionEr
     let mut checksum_seen = false;
     let mut inserts = 0usize;
     let mut encoded_length = 0usize;
+    let mut value_fields = 0usize;
     for (index, segment) in request.segments.iter().enumerate() {
         let width = match segment {
             RequestSegmentDto::Literal { hex } => decode_hex(hex, MAX_REQUEST_LITERAL_BYTES)?.len(),
             RequestSegmentDto::InstanceField { encoding, .. } => {
                 inserts += 1;
                 instance_width(*encoding)
+            }
+            RequestSegmentDto::ValueField => {
+                inserts += 1;
+                value_fields += 1;
+                encoding.width()
             }
             RequestSegmentDto::Checksum { algorithm } => {
                 if checksum_seen || index + 1 != request.segments.len() {
@@ -486,6 +551,13 @@ fn validate_request_shape(request: &RequestDto) -> Result<(), SimpleDefinitionEr
             .checked_add(width)
             .ok_or_else(|| SimpleDefinitionError::new("request length overflow"))?;
     }
+    if value_fields != usize::from(require_value) {
+        return Err(SimpleDefinitionError::new(if require_value {
+            "WRITE request requires exactly one value_field"
+        } else {
+            "READ request cannot contain value_field"
+        }));
+    }
     if inserts > MAX_NONLITERAL_INSERTS {
         return Err(SimpleDefinitionError::new("too many request field inserts"));
     }
@@ -500,6 +572,7 @@ fn validate_request_shape(request: &RequestDto) -> Result<(), SimpleDefinitionEr
 fn validate_response_shape(
     response: &ResponseDto,
     encoding: SimpleScalarEncoding,
+    require_extract: bool,
 ) -> Result<(), SimpleDefinitionError> {
     if !(1..=MAX_TRANSACTION_BYTES).contains(&response.exact_length)
         || response.matches.len() > MAX_RESPONSE_MATCHES
@@ -508,15 +581,24 @@ fn validate_response_shape(
             "invalid response length or match count",
         ));
     }
-    let ScalarExtractDto::ScalarExtract {
-        offset: extract_start,
-    } = response.extract;
-    let extract_end = extract_start
-        .checked_add(encoding.width())
-        .ok_or_else(|| SimpleDefinitionError::new("response offset overflow"))?;
-    if extract_end > response.exact_length {
-        return Err(SimpleDefinitionError::new("scalar extract out of bounds"));
+    if response.extract.is_some() != require_extract {
+        return Err(SimpleDefinitionError::new(
+            "invalid response extract cardinality",
+        ));
     }
+    let extract_range = response
+        .extract
+        .map(|extract| {
+            let ScalarExtractDto::ScalarExtract { offset } = extract;
+            let end = offset
+                .checked_add(encoding.width())
+                .ok_or_else(|| SimpleDefinitionError::new("response offset overflow"))?;
+            if end > response.exact_length {
+                return Err(SimpleDefinitionError::new("scalar extract out of bounds"));
+            }
+            Ok((offset, end))
+        })
+        .transpose()?;
     let mut match_ranges = Vec::with_capacity(response.matches.len());
     let mut match_evidence: Vec<Option<(u8, bool)>> = vec![None; response.exact_length];
     for comparison in &response.matches {
@@ -548,7 +630,9 @@ fn validate_response_shape(
             }
             match_evidence[offset + index] = Some((byte, is_literal));
         }
-        if ranges_overlap(offset, offset + width, extract_start, extract_end) {
+        if extract_range
+            .is_some_and(|(start, end)| ranges_overlap(offset, offset + width, start, end))
+        {
             return Err(SimpleDefinitionError::new(
                 "extract overlaps response match",
             ));
@@ -566,7 +650,8 @@ fn validate_response_shape(
             ));
         }
         let checksum_end = offset + width;
-        if ranges_overlap(extract_start, extract_end, offset, checksum_end)
+        if extract_range
+            .is_some_and(|(start, end)| ranges_overlap(start, end, offset, checksum_end))
             || match_ranges
                 .iter()
                 .any(|(start, end)| ranges_overlap(*start, *end, offset, checksum_end))
@@ -604,13 +689,23 @@ fn compile_parameter_template(
         role: match parameter.role {
             RoleDto::Measurement => ParameterRole::Measurement,
             RoleDto::Diagnostic => ParameterRole::Diagnostic,
+            RoleDto::Actuator => ParameterRole::Actuator,
+        },
+        access: match parameter.access {
+            AccessDto::ReadOnly => AccessMode::ReadOnly,
+            AccessDto::ReadWrite => AccessMode::ReadWrite,
+            AccessDto::WriteOnly => AccessMode::WriteOnly,
+        },
+        write_effect: match parameter.write_effect {
+            WriteEffectDto::None => WriteEffect::None,
+            WriteEffectDto::OutputAffecting => WriteEffect::OutputAffecting,
         },
         unit: Unit::new(&parameter.unit_id, &parameter.unit_symbol)
             .map_err(|error| SimpleDefinitionError::new(error.to_string()))?,
         value_spec,
-        encoding: parameter.encoding.clone(),
-        request: parameter.read.request.clone(),
-        response: parameter.read.response.clone(),
+        encoding: parameter.encoding,
+        read: parameter.read.clone(),
+        write: parameter.write.clone(),
     })
 }
 
@@ -623,36 +718,83 @@ pub(crate) fn compile_simple_instance(
     let mut parameters = Vec::with_capacity(definition.parameters.len());
     let mut correlations = Vec::with_capacity(definition.parameters.len());
     for template in &definition.parameters {
-        let request = compile_request(&template.request, address, channel)?;
-        let (response, instance_matches) = compile_response(
-            &template.response,
-            template.encoding.raw.into(),
-            template.encoding.scale,
-            template.encoding.offset,
-            address,
-            channel,
-        )?;
+        let mut parameter_correlations = Vec::new();
+        let read = template
+            .read
+            .as_ref()
+            .map(|read| {
+                let request = compile_request(&read.request, address, channel, None)?;
+                let (response, instance_matches) = compile_response(
+                    &read.response,
+                    template.encoding.raw.into(),
+                    template.encoding.scale,
+                    template.encoding.offset,
+                    address,
+                    channel,
+                )?;
+                parameter_correlations.push(instance_matches);
+                Ok(SimpleReadPlan { request, response })
+            })
+            .transpose()?;
+        let write = template
+            .write
+            .as_ref()
+            .map(|write| {
+                let request = compile_write_request(&write.request, address, channel)?;
+                let (ack, ack_matches) = compile_ack(&write.ack, address, channel)?;
+                parameter_correlations.push(ack_matches);
+                let readback = write
+                    .readback
+                    .as_ref()
+                    .map(|readback| {
+                        let request = compile_request(&readback.request, address, channel, None)?;
+                        let (response, instance_matches) = compile_response(
+                            &readback.response,
+                            template.encoding.raw.into(),
+                            template.encoding.scale,
+                            template.encoding.offset,
+                            address,
+                            channel,
+                        )?;
+                        parameter_correlations.push(instance_matches);
+                        Ok(SimpleReadPlan { request, response })
+                    })
+                    .transpose()?;
+                Ok(SimpleWritePlan {
+                    request,
+                    ack,
+                    readback,
+                    encoding: template.encoding.raw.into(),
+                    scale: template.encoding.scale,
+                    engineering_offset: template.encoding.offset,
+                })
+            })
+            .transpose()?;
         let descriptor = ParameterDescriptor {
             id: template.id,
             name: template.name.clone(),
             value_spec: template.value_spec.clone(),
             unit: template.unit,
-            access: AccessMode::ReadOnly,
+            access: template.access,
             role: template.role,
-            write_effect: WriteEffect::None,
-            signal: Some(SignalId::new(instrument, template.id)),
+            write_effect: template.write_effect,
+            signal: (template.access != AccessMode::WriteOnly)
+                .then_some(SignalId::new(instrument, template.id)),
         };
         descriptor
             .validate_definition()
             .map_err(|error| SimpleDefinitionError::new(error.to_string()))?;
         parameters.push(SimpleParameterConfig {
             descriptor,
-            read: SimpleReadPlan { request, response },
+            read,
+            write,
         });
-        correlations.push(CompiledResponseCorrelation {
-            parameter: template.id,
-            instance_matches,
-        });
+        correlations.extend(parameter_correlations.into_iter().map(|instance_matches| {
+            CompiledResponseCorrelation {
+                parameter: template.id,
+                instance_matches,
+            }
+        }));
     }
     Ok(CompiledSimpleInstance {
         parameters,
@@ -664,6 +806,7 @@ fn compile_request(
     request: &RequestDto,
     address: u16,
     channel: u16,
+    value: Option<&[u8]>,
 ) -> Result<Vec<u8>, SimpleDefinitionError> {
     let mut bytes = Vec::with_capacity(MAX_TRANSACTION_BYTES);
     for segment in &request.segments {
@@ -674,6 +817,9 @@ fn compile_request(
             RequestSegmentDto::InstanceField { field, encoding } => {
                 bytes.extend(encode_instance(*field, *encoding, address, channel)?);
             }
+            RequestSegmentDto::ValueField => bytes.extend_from_slice(
+                value.ok_or_else(|| SimpleDefinitionError::new("unexpected value_field"))?,
+            ),
             RequestSegmentDto::Checksum { algorithm } => {
                 if bytes.len() > MAX_SIMPLE_CHECKSUM_INPUT_BYTES {
                     return Err(SimpleDefinitionError::new(
@@ -696,6 +842,46 @@ fn compile_request(
     Ok(bytes)
 }
 
+fn compile_write_request(
+    request: &RequestDto,
+    address: u16,
+    channel: u16,
+) -> Result<Vec<SimpleWriteSegment>, SimpleDefinitionError> {
+    let mut segments = Vec::with_capacity(request.segments.len());
+    for segment in &request.segments {
+        segments.push(match segment {
+            RequestSegmentDto::Literal { hex } => {
+                SimpleWriteSegment::Literal(decode_hex(hex, MAX_REQUEST_LITERAL_BYTES)?)
+            }
+            RequestSegmentDto::InstanceField { field, encoding } => {
+                SimpleWriteSegment::Literal(encode_instance(*field, *encoding, address, channel)?)
+            }
+            RequestSegmentDto::ValueField => SimpleWriteSegment::Value,
+            RequestSegmentDto::Checksum { algorithm } => {
+                SimpleWriteSegment::Checksum((*algorithm).into())
+            }
+        });
+    }
+    Ok(segments)
+}
+
+fn compile_ack(
+    response: &ResponseDto,
+    address: u16,
+    channel: u16,
+) -> Result<CompiledAck, SimpleDefinitionError> {
+    let (matches, instance_matches, checksum) =
+        compile_response_evidence(response, address, channel)?;
+    Ok((
+        SimpleAckPlan {
+            exact_length: response.exact_length,
+            matches,
+            checksum,
+        },
+        instance_matches,
+    ))
+}
+
 fn compile_response(
     response: &ResponseDto,
     encoding: SimpleScalarEncoding,
@@ -704,6 +890,49 @@ fn compile_response(
     address: u16,
     channel: u16,
 ) -> Result<CompiledResponse, SimpleDefinitionError> {
+    let (matches, instance_matches, checksum) =
+        compile_response_evidence(response, address, channel)?;
+    let mut occupied: Vec<Option<(u8, SimpleResponseMatchKind)>> =
+        vec![None; response.exact_length];
+    for comparison in &matches {
+        for (index, expected_byte) in comparison.expected.iter().copied().enumerate() {
+            occupied[comparison.offset + index] = Some((expected_byte, comparison.kind));
+        }
+    }
+    let Some(ScalarExtractDto::ScalarExtract {
+        offset: extract_offset,
+    }) = response.extract
+    else {
+        return Err(SimpleDefinitionError::new("scalar response lacks extract"));
+    };
+    let extract_end = extract_offset + encoding.width();
+    if occupied[extract_offset..extract_end]
+        .iter()
+        .any(Option::is_some)
+    {
+        return Err(SimpleDefinitionError::new(
+            "extract overlaps response match",
+        ));
+    }
+    Ok((
+        SimpleResponsePlan {
+            exact_length: response.exact_length,
+            matches,
+            extract_offset,
+            encoding,
+            scale,
+            engineering_offset,
+            checksum,
+        },
+        instance_matches,
+    ))
+}
+
+fn compile_response_evidence(
+    response: &ResponseDto,
+    address: u16,
+    channel: u16,
+) -> Result<CompiledEvidence, SimpleDefinitionError> {
     let mut matches = Vec::with_capacity(response.matches.len());
     let mut instance_matches = Vec::new();
     let mut occupied: Vec<Option<(u8, SimpleResponseMatchKind)>> =
@@ -748,18 +977,6 @@ fn compile_response(
             expected,
         });
     }
-    let ScalarExtractDto::ScalarExtract {
-        offset: extract_offset,
-    } = response.extract;
-    let extract_end = extract_offset + encoding.width();
-    if occupied[extract_offset..extract_end]
-        .iter()
-        .any(Option::is_some)
-    {
-        return Err(SimpleDefinitionError::new(
-            "extract overlaps response match",
-        ));
-    }
     let checksum = response.checksum.map(|checksum| match checksum {
         ResponseChecksumDto::Checksum { offset, algorithm } => SimpleResponseChecksum {
             offset,
@@ -773,27 +990,21 @@ fn compile_response(
             ));
         }
         let end = checksum.offset + checksum.algorithm.width();
-        if occupied[checksum.offset..end].iter().any(Option::is_some)
-            || ranges_overlap(extract_offset, extract_end, checksum.offset, end)
-        {
+        if occupied[checksum.offset..end].iter().any(Option::is_some) {
             return Err(SimpleDefinitionError::new(
                 "checksum overlaps response field",
             ));
         }
     }
-    Ok((
-        SimpleResponsePlan {
-            exact_length: response.exact_length,
-            matches,
-            extract_offset,
-            encoding,
-            scale,
-            engineering_offset,
-            checksum,
-        },
-        instance_matches,
-    ))
+    Ok((matches, instance_matches, checksum))
 }
+
+type CompiledEvidence = (
+    Vec<SimpleResponseMatch>,
+    Vec<(usize, Vec<u8>)>,
+    Option<SimpleResponseChecksum>,
+);
+type CompiledAck = (SimpleAckPlan, Vec<(usize, Vec<u8>)>);
 
 fn encode_instance(
     field: InstanceFieldDto,
@@ -880,15 +1091,84 @@ mod tests {
             ArtifactReader, ConfigurationError, MAX_PROPERTY_OVERLAYS, PropertyValue,
             parse_runtime_toml,
         },
-        host::HostCore,
-        recorder::SqliteStore,
+        host::{Clock, HostCore},
+        recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, SqliteStore},
     };
-    use lab_core::transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError};
+    use lab_core::{
+        Command, Query, QueryResult,
+        control::{ControllerId, ControllerState},
+        output::{ActuatorId, DispatchOutcome, OutputState},
+        simple_device::SimpleChecksum,
+        transport::{ByteTransport, RecoveryStatus, ResourceId, TransportIoError},
+    };
     use serde_json::{Value, json};
-    use std::{collections::BTreeMap, path::Path};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, VecDeque},
+        path::{Path, PathBuf},
+        rc::Rc,
+        time::{Duration, Instant},
+    };
 
     fn definition() -> Vec<u8> {
         br#"{"format_version":1,"definition_id":"furnace-v1","definition_version":1,"parameters":[{"parameter_id":1,"key":"temperature","display_name":"Temperature","role":"measurement","access":"read_only","unit_id":"degC","unit_symbol":"C","value_type":"float","engineering_min":-50.0,"engineering_max":500.0,"write_effect":"none","encoding":{"raw":"i16_be","scale":0.1,"offset":0.0},"read":{"request":{"segments":[{"type":"literal","hex":"10"},{"type":"instance_field","field":"address","encoding":"u8"},{"type":"instance_field","field":"channel","encoding":"u8"},{"type":"checksum","algorithm":"crc16_modbus"}]},"response":{"exact_length":7,"matches":[{"type":"literal_match","offset":0,"hex":"10"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"},{"type":"instance_match","offset":2,"field":"channel","encoding":"u8"}],"extract":{"type":"scalar_extract","offset":3},"checksum":{"type":"checksum","offset":5,"algorithm":"crc16_modbus"}}}}]}"#.to_vec()
+    }
+
+    fn writable_definition() -> Vec<u8> {
+        br#"{"format_version":1,"definition_id":"furnace-output-v1","definition_version":1,"parameters":[{"parameter_id":2,"key":"heater","display_name":"Heater","role":"actuator","access":"read_write","unit_id":"percent","unit_symbol":"%","value_type":"float","engineering_min":0.0,"engineering_max":100.0,"write_effect":"output_affecting","encoding":{"raw":"u16_be","scale":0.1,"offset":0.0},"read":{"request":{"segments":[{"type":"literal","hex":"22"},{"type":"instance_field","field":"address","encoding":"u8"}]},"response":{"exact_length":4,"matches":[{"type":"literal_match","offset":0,"hex":"22"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"}],"extract":{"type":"scalar_extract","offset":2}}},"write":{"request":{"segments":[{"type":"literal","hex":"20"},{"type":"instance_field","field":"address","encoding":"u8"},{"type":"instance_field","field":"channel","encoding":"u8"},{"type":"value_field"},{"type":"checksum","algorithm":"crc16_modbus"}]},"ack":{"exact_length":5,"matches":[{"type":"literal_match","offset":0,"hex":"20"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"},{"type":"literal_match","offset":2,"hex":"00"}],"checksum":{"type":"checksum","offset":3,"algorithm":"crc16_modbus"}},"readback":{"request":{"segments":[{"type":"literal","hex":"21"},{"type":"instance_field","field":"address","encoding":"u8"},{"type":"instance_field","field":"channel","encoding":"u8"}]},"response":{"exact_length":5,"matches":[{"type":"literal_match","offset":0,"hex":"21"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"}],"extract":{"type":"scalar_extract","offset":3}}}}}]}"#.to_vec()
+    }
+
+    fn controlled_writable_definition() -> Vec<u8> {
+        let mut combined: Value = serde_json::from_slice(&definition()).unwrap();
+        let writable: Value = serde_json::from_slice(&writable_definition()).unwrap();
+        combined["definition_id"] = json!("controlled-furnace-v1");
+        combined["parameters"]
+            .as_array_mut()
+            .unwrap()
+            .push(writable["parameters"][0].clone());
+        serde_json::to_vec(&combined).unwrap()
+    }
+
+    #[test]
+    fn writable_schema_compiles_exact_write_ack_and_readback() {
+        let definition = parse_simple_definition(&writable_definition()).unwrap();
+        let instance = compile_simple_instance(&definition, InstrumentId::new(1001), 1, 2).unwrap();
+        let parameter = &instance.parameters[0];
+        assert_eq!(parameter.descriptor.role, ParameterRole::Actuator);
+        assert_eq!(parameter.descriptor.access, AccessMode::ReadWrite);
+        let write = parameter.write.as_ref().unwrap();
+        let (request, raw) = write.encode(25.0).unwrap();
+        assert_eq!(raw, [0x00, 0xfa]);
+        assert_eq!(&request[..5], &[0x20, 1, 2, 0, 0xfa]);
+        assert_eq!(request.len(), 7);
+        assert_eq!(write.ack.exact_length, 5);
+        assert!(write.readback.is_some());
+    }
+
+    #[test]
+    fn writable_schema_rejects_invalid_actuator_and_ack_shapes() {
+        let base: Value = serde_json::from_slice(&writable_definition()).unwrap();
+        let mut second = base.clone();
+        second["parameters"]
+            .as_array_mut()
+            .unwrap()
+            .push(base["parameters"][0].clone());
+        second["parameters"][1]["parameter_id"] = json!(3);
+        second["parameters"][1]["key"] = json!("heater2");
+        assert!(parse_simple_definition(&serde_json::to_vec(&second).unwrap()).is_err());
+
+        for (field, value) in [
+            ("value_type", json!("integer")),
+            ("access", json!("read_only")),
+            ("write_effect", json!("none")),
+        ] {
+            let mut invalid = base.clone();
+            invalid["parameters"][0][field] = value;
+            assert!(parse_simple_definition(&serde_json::to_vec(&invalid).unwrap()).is_err());
+        }
+        let mut checksum_only = base;
+        checksum_only["parameters"][0]["write"]["ack"]["matches"] = json!([]);
+        assert!(parse_simple_definition(&serde_json::to_vec(&checksum_only).unwrap()).is_err());
     }
 
     fn hash_hex(hash: [u8; 32]) -> String {
@@ -899,7 +1179,7 @@ mod tests {
     fn strict_definition_compiles_exact_instance_bytes_and_canonical_hash() {
         let definition = parse_simple_definition(&definition()).unwrap();
         let compiled = compile_simple_instance(&definition, InstrumentId::new(1001), 1, 2).unwrap();
-        let request = &compiled.parameters[0].read.request;
+        let request = &compiled.parameters[0].read.as_ref().unwrap().request;
         assert_eq!(&request[..3], &[0x10, 1, 2]);
         assert_eq!(request.len(), 5);
         assert!(definition.canonical.len() <= MAX_SIMPLE_CANONICAL_BYTES);
@@ -1226,8 +1506,19 @@ history_capacity=1024
         });
         let definition = parse_simple_definition(&encoded(&value)).unwrap();
         let instance = compile_simple_instance(&definition, InstrumentId::new(1), 0, 0).unwrap();
-        assert_eq!(instance.parameters[0].read.request.len(), 64);
-        assert_eq!(instance.parameters[0].read.response.exact_length, 64);
+        assert_eq!(
+            instance.parameters[0].read.as_ref().unwrap().request.len(),
+            64
+        );
+        assert_eq!(
+            instance.parameters[0]
+                .read
+                .as_ref()
+                .unwrap()
+                .response
+                .exact_length,
+            64
+        );
 
         value["parameters"][0]["read"]["request"]["segments"]
             .as_array_mut()
@@ -1391,6 +1682,565 @@ history_capacity=1024
         assert!(!effects.controller_rewarm);
         assert!(!effects.safe_barrier);
         assert!(!effects.restart_required);
+    }
+
+    struct WritableReader;
+
+    impl ArtifactReader for WritableReader {
+        fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+            Ok(writable_definition())
+        }
+    }
+
+    fn writable_toml(resource_kind: &str, include_safe: bool) -> Vec<u8> {
+        let safe = if include_safe {
+            r#"
+[[safe_profiles]]
+instrument_id=1001
+parameter_id=2
+min=0.0
+max=100.0
+safe_value=0.0
+max_lease_ms=2000
+max_proposal_ttl_ms=200
+required_evidence="readback"
+"#
+        } else {
+            ""
+        };
+        format!(
+            r#"schema_version=1
+[runtime]
+key="simple-output"
+display_name="Simple output"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[resources]]
+id=7
+key="bus"
+kind="{resource_kind}"
+port="COM3"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=50
+write_timeout_ms=50
+open_timeout_ms=500
+recovery_timeout_ms=500
+[[instruments]]
+kind="simple_device"
+id=1001
+key="furnace-1"
+display_name="Furnace 1"
+definition="definitions/furnace-output.json"
+resource_id=7
+address=1
+channel=2
+poll_period_ms=250
+queue_timeout_ms=250
+transaction_timeout_ms=500
+history_capacity=1024
+{safe}"#,
+        )
+        .into_bytes()
+    }
+
+    #[derive(Default)]
+    struct WritableWire {
+        readable: VecDeque<u8>,
+        writes: Vec<Vec<u8>>,
+        raw: [u8; 2],
+        bad_next_nonzero_ack: bool,
+    }
+
+    struct WritableTransport(Rc<RefCell<WritableWire>>);
+
+    impl ByteTransport for WritableTransport {
+        fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+            let mut wire = self.0.borrow_mut();
+            wire.writes.push(bytes.to_vec());
+            let response = match bytes.first().copied() {
+                Some(0x10) => {
+                    let address = *bytes.get(1).ok_or(TransportIoError::Other)?;
+                    let channel = *bytes.get(2).ok_or(TransportIoError::Other)?;
+                    let mut response = vec![0x10, address, channel, 0, 250];
+                    let prefix = response.clone();
+                    SimpleChecksum::Crc16Modbus.append(&prefix, &mut response);
+                    response
+                }
+                Some(0x20) => {
+                    wire.raw
+                        .copy_from_slice(bytes.get(3..5).ok_or(TransportIoError::Other)?);
+                    let bad_ack = wire.bad_next_nonzero_ack && wire.raw != [0, 0];
+                    wire.bad_next_nonzero_ack &= !bad_ack;
+                    let mut response = vec![0x20, 1, u8::from(bad_ack)];
+                    let prefix = response.clone();
+                    SimpleChecksum::Crc16Modbus.append(&prefix, &mut response);
+                    response
+                }
+                Some(0x21) => vec![0x21, 1, 2, wire.raw[0], wire.raw[1]],
+                Some(0x22) => vec![0x22, 1, wire.raw[0], wire.raw[1]],
+                _ => return Err(TransportIoError::Other),
+            };
+            wire.readable.extend(response);
+            Ok(bytes.len())
+        }
+
+        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+            let mut wire = self.0.borrow_mut();
+            let count = bytes.len().min(wire.readable.len());
+            for byte in &mut bytes[..count] {
+                *byte = wire.readable.pop_front().expect("bounded readable length");
+            }
+            Ok(count)
+        }
+
+        fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+            Ok(RecoveryStatus::Complete)
+        }
+    }
+
+    struct TestClock(Duration);
+
+    impl Clock for TestClock {
+        fn now(&self) -> Duration {
+            self.0
+        }
+    }
+
+    struct ControlledReader;
+
+    impl ArtifactReader for ControlledReader {
+        fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+            Ok(controlled_writable_definition())
+        }
+    }
+
+    fn controlled_writable_toml() -> Vec<u8> {
+        br#"schema_version=1
+[runtime]
+key="controlled-output"
+display_name="Controlled output"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[resources]]
+id=7
+key="bus"
+kind="windows_com"
+port="COM3"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=50
+write_timeout_ms=50
+open_timeout_ms=500
+recovery_timeout_ms=500
+[[instruments]]
+kind="simple_device"
+id=1001
+key="furnace-1"
+display_name="Furnace 1"
+definition="definitions/controlled-furnace.json"
+resource_id=7
+address=1
+channel=2
+poll_period_ms=100
+queue_timeout_ms=250
+transaction_timeout_ms=500
+history_capacity=1024
+[[references]]
+id=10
+key="setpoint"
+kind="fixed"
+value=40.0
+unit_id="degC"
+unit_symbol="C"
+[[safe_profiles]]
+instrument_id=1001
+parameter_id=2
+min=0.0
+max=100.0
+safe_value=0.0
+max_lease_ms=2000
+max_proposal_ttl_ms=200
+required_evidence="readback"
+[[controllers]]
+id=20
+key="pid"
+input_instrument_id=1001
+input_parameter_id=1
+output_instrument_id=1001
+output_parameter_id=2
+reference_id=10
+period_ms=100
+ema_time_constant_ms=100
+ema_warmup_samples=1
+kp=1.0
+ki=0.0
+kd=0.0
+output_min=0.0
+output_max=100.0
+max_input_age_ms=500
+max_tick_gap_ms=500
+lease_lifetime_ms=2000
+proposal_ttl_ms=200
+"#
+        .to_vec()
+    }
+
+    fn temporary_database() -> PathBuf {
+        let mut entropy = [0u8; 8];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix = entropy
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        std::env::temp_dir().join(format!("m16-simple-output-{suffix}.sqlite"))
+    }
+
+    fn advance(host: &mut HostCore, clock: &mut TestClock, milliseconds: u64) {
+        for _ in 0..milliseconds / 10 {
+            clock.0 += Duration::from_millis(10);
+            host.service(clock).unwrap();
+            while host.recording_status().is_some_and(|status| {
+                status.state == RecordingState::Recording && status.outstanding_groups >= 3
+            }) {
+                host.service(clock).unwrap();
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
+    fn persistent_writable_host_uses_compiled_safe_write_ack_and_readback() {
+        let mut reader = WritableReader;
+        let deployment = parse_runtime_toml(
+            &writable_toml("windows_com", true),
+            Path::new("C:/bench"),
+            &mut reader,
+        )
+        .unwrap();
+        let wire = Rc::new(RefCell::new(WritableWire::default()));
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(WritableTransport(wire.clone())),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        assert!(host.configured_probes_ready().unwrap());
+        host.request_configured_physical_safe(Duration::ZERO)
+            .unwrap();
+        for millisecond in 0..100 {
+            host.service(&TestClock(Duration::from_millis(millisecond)))
+                .unwrap();
+            if host.configured_physical_outputs_safe().unwrap() {
+                break;
+            }
+        }
+        assert!(host.configured_physical_outputs_safe().unwrap());
+        let writes = &wire.borrow().writes;
+        let write = writes
+            .iter()
+            .find(|bytes| bytes.first() == Some(&0x20))
+            .unwrap();
+        assert_eq!(&write[..5], &[0x20, 1, 2, 0, 0]);
+        assert!(writes.iter().any(|bytes| bytes == &[0x21, 1, 2]));
+    }
+
+    #[test]
+    fn persistent_writable_controller_and_recorder_use_generic_authority_and_binding() {
+        let mut reader = ControlledReader;
+        let deployment = parse_runtime_toml(
+            &controlled_writable_toml(),
+            Path::new("C:/bench"),
+            &mut reader,
+        )
+        .unwrap();
+        let wire = Rc::new(RefCell::new(WritableWire::default()));
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(WritableTransport(wire.clone())),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        let database = temporary_database();
+        let worker = RecorderWorker::open(&database, RecorderLimits::default()).unwrap();
+        host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut clock = TestClock(Duration::ZERO);
+        while !host.recording_activation_committed().unwrap() {
+            assert!(Instant::now() < deadline, "activation did not commit");
+            host.service(&clock).unwrap();
+            std::thread::yield_now();
+        }
+        host.start_recording("simple writable acceptance", clock.0)
+            .unwrap();
+        while host.recording_status().unwrap().state != RecordingState::Recording {
+            assert!(Instant::now() < deadline, "Recorder did not start");
+            host.service(&clock).unwrap();
+            std::thread::yield_now();
+        }
+
+        assert!(host.configured_probes_ready().unwrap());
+        host.request_configured_physical_safe(clock.0).unwrap();
+        advance(&mut host, &mut clock, 100);
+        assert!(host.configured_physical_outputs_safe().unwrap());
+        host.prepare_configured_physical_controllers().unwrap();
+        let QueryResult::Controller(ready) = host
+            .query(Query::Controller(ControllerId::new(20)))
+            .unwrap()
+        else {
+            panic!("controller missing");
+        };
+        assert_eq!(ready.state, ControllerState::Ready);
+
+        advance(&mut host, &mut clock, 300);
+        host.command(Command::StartController {
+            controller: ControllerId::new(20),
+            at: clock.0,
+        })
+        .unwrap();
+        let actuator = ActuatorId::new(InstrumentId::new(1001), ParameterId::new(2));
+        let expected_nonzero = {
+            let mut request = vec![0x20, 1, 2, 0, 150];
+            let prefix = request.clone();
+            SimpleChecksum::Crc16Modbus.append(&prefix, &mut request);
+            request
+        };
+        while !wire
+            .borrow()
+            .writes
+            .iter()
+            .any(|write| write == &expected_nonzero)
+        {
+            assert!(Instant::now() < deadline, "controller WRITE did not occur");
+            advance(&mut host, &mut clock, 10);
+        }
+        let applied = loop {
+            let QueryResult::Output(applied) = host.query(Query::Output(actuator)).unwrap() else {
+                panic!("output missing");
+            };
+            if applied.outcome == Some(DispatchOutcome::ReadbackVerified) {
+                break applied;
+            }
+            assert!(Instant::now() < deadline, "readback did not settle output");
+            advance(&mut host, &mut clock, 10);
+        };
+        assert_eq!(applied.outcome, Some(DispatchOutcome::ReadbackVerified));
+        assert!(
+            applied.lease.is_some(),
+            "physical evidence must retain the lease"
+        );
+        let QueryResult::Controller(running) = host
+            .query(Query::Controller(ControllerId::new(20)))
+            .unwrap()
+        else {
+            panic!("controller missing");
+        };
+        assert_eq!(running.state, ControllerState::Running);
+
+        wire.borrow_mut().bad_next_nonzero_ack = true;
+        let nonzero_before_fault = wire
+            .borrow()
+            .writes
+            .iter()
+            .filter(|write| write.first() == Some(&0x20) && write.get(3..5) != Some(&[0, 0]))
+            .count();
+        loop {
+            advance(&mut host, &mut clock, 10);
+            let QueryResult::Controller(controller) = host
+                .query(Query::Controller(ControllerId::new(20)))
+                .unwrap()
+            else {
+                unreachable!();
+            };
+            if controller.state == ControllerState::Failed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "bad ACK did not fail controller");
+        }
+        let nonzero_after_fault = wire
+            .borrow()
+            .writes
+            .iter()
+            .filter(|write| write.first() == Some(&0x20) && write.get(3..5) != Some(&[0, 0]))
+            .count();
+        assert_eq!(nonzero_after_fault, nonzero_before_fault + 1);
+        advance(&mut host, &mut clock, 500);
+        assert_eq!(
+            wire.borrow()
+                .writes
+                .iter()
+                .filter(|write| write.first() == Some(&0x20) && write.get(3..5) != Some(&[0, 0]))
+                .count(),
+            nonzero_after_fault,
+            "ambiguous nonzero WRITE must not be resent"
+        );
+        let QueryResult::Controller(failed) = host
+            .query(Query::Controller(ControllerId::new(20)))
+            .unwrap()
+        else {
+            unreachable!();
+        };
+        assert_eq!(failed.state, ControllerState::Failed);
+        let QueryResult::Output(faulted) = host.query(Query::Output(actuator)).unwrap() else {
+            unreachable!();
+        };
+        assert!(matches!(
+            faulted.state,
+            OutputState::SafePending | OutputState::FaultLatched | OutputState::Disarmed
+        ));
+
+        while host.recording_status().unwrap().outstanding_groups != 0 {
+            assert!(Instant::now() < deadline, "Recorder facts did not drain");
+            host.service(&clock).unwrap();
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            host.recording_status().unwrap().state,
+            RecordingState::Recording,
+            "Recorder failed before stop: {:?}",
+            host.recording_status().unwrap()
+        );
+        host.stop_recording_at(clock.0).unwrap();
+        while host.recording_status().unwrap().state != RecordingState::Idle {
+            assert!(Instant::now() < deadline, "Recorder did not stop");
+            host.service(&clock).unwrap();
+            std::thread::yield_now();
+        }
+        host.finish_recorder().unwrap();
+        while host.recording_status().unwrap().state != RecordingState::Closed {
+            assert!(Instant::now() < deadline, "Recorder did not close");
+            host.service(&clock).unwrap();
+            std::thread::yield_now();
+        }
+        drop(host);
+
+        let db = rusqlite::Connection::open(&database).unwrap();
+        let instrument_id = 1001u64.to_be_bytes();
+        let parameter_id = 2u64.to_be_bytes();
+        for stage in [
+            "requested",
+            "authorized",
+            "send_started",
+            "acknowledged",
+            "readback_verified",
+            "safe_requested",
+            "safe_send_started",
+            "safe_acknowledged",
+            "safe_readback_verified",
+        ] {
+            let count: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM output_events
+                     WHERE instrument_id=?1 AND parameter_id=?2 AND stage=?3
+                       AND resource_id=?4 AND generation=?5 AND revision=?6",
+                    rusqlite::params![
+                        instrument_id.as_slice(),
+                        parameter_id.as_slice(),
+                        stage,
+                        7u64.to_be_bytes().as_slice(),
+                        1u64.to_be_bytes().as_slice(),
+                        1u64.to_be_bytes().as_slice(),
+                    ],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(count >= 1, "missing durable physical context for {stage}");
+        }
+
+        let canonical: Vec<u8> = db
+            .query_row(
+                "SELECT content FROM provenance_content
+                 WHERE kind='simple_device_definition_canonical'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let canonical_hash: [u8; 32] = Sha256::digest(&canonical).into();
+        let raw_hash: [u8; 32] = Sha256::digest(controlled_writable_definition()).into();
+        let native_hash: Vec<u8> = db
+            .query_row(
+                "SELECT content_hash FROM provenance_content WHERE kind='native_composition'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (instrument_definition, instrument_source, binding): (Vec<u8>, Vec<u8>, String) = db
+            .query_row(
+                "SELECT definition_hash,source_hash,instance_binding FROM object_snapshots
+                 WHERE object_kind='instrument' AND object_id=?1",
+                [instrument_id.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(instrument_definition, canonical_hash);
+        assert_eq!(instrument_source, raw_hash);
+        let binding: Value = serde_json::from_str(&binding).unwrap();
+        assert_eq!(binding["r"], "7");
+        assert_eq!(binding["b"], "1");
+        assert_eq!(binding["m"], "1");
+
+        let mut actuator_object_id = Vec::from(instrument_id);
+        actuator_object_id.extend_from_slice(&parameter_id);
+        let (actuator_definition, actuator_descriptor): (Vec<u8>, String) = db
+            .query_row(
+                "SELECT definition_hash,descriptor FROM object_snapshots
+                 WHERE object_kind='actuator' AND object_id=?1",
+                [actuator_object_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(actuator_definition, native_hash);
+        let actuator_descriptor: Value = serde_json::from_str(&actuator_descriptor).unwrap();
+        assert_eq!(actuator_descriptor["safe_value"], 0.0);
+        assert_eq!(actuator_descriptor["required_evidence"], "readback");
+        for (kind, id) in [("controller", 20u64), ("reference", 10u64)] {
+            let definition: Vec<u8> = db
+                .query_row(
+                    "SELECT definition_hash FROM object_snapshots
+                     WHERE object_kind=?1 AND object_id=?2",
+                    rusqlite::params![kind, id.to_be_bytes().as_slice()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(definition, native_hash, "wrong {kind} definition identity");
+        }
+        drop(db);
+        std::fs::remove_file(&database).unwrap();
+        let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+    }
+
+    #[test]
+    fn writable_persistent_com_requires_existing_safe_profile() {
+        let mut reader = WritableReader;
+        parse_runtime_toml(
+            &writable_toml("windows_com", true),
+            Path::new("C:/bench"),
+            &mut reader,
+        )
+        .unwrap();
+        for invalid in [
+            writable_toml("windows_com_read_only", true),
+            writable_toml("windows_com", false),
+        ] {
+            let mut reader = WritableReader;
+            assert!(parse_runtime_toml(&invalid, Path::new("C:/bench"), &mut reader).is_err());
+        }
     }
 
     #[test]

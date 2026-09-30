@@ -150,6 +150,66 @@ fn units_and_descriptor_semantics_are_explicit() {
 }
 
 #[test]
+fn only_the_ordinary_read_write_actuator_shape_may_own_a_signal() {
+    let signal = SignalId::new(InstrumentId::new(7), ParameterId::new(2));
+    let readable_actuator = ParameterDescriptor {
+        id: ParameterId::new(2),
+        name: "heater".into(),
+        value_spec: ValueSpec::Float {
+            min: 0.0,
+            max: 100.0,
+        },
+        unit: Unit::PERCENT,
+        access: AccessMode::ReadWrite,
+        role: ParameterRole::Actuator,
+        write_effect: WriteEffect::OutputAffecting,
+        signal: Some(signal),
+    };
+    readable_actuator.validate_definition().unwrap();
+
+    for (access, role, effect) in [
+        (
+            AccessMode::ReadOnly,
+            ParameterRole::Actuator,
+            WriteEffect::None,
+        ),
+        (
+            AccessMode::WriteOnly,
+            ParameterRole::Actuator,
+            WriteEffect::OutputAffecting,
+        ),
+        (
+            AccessMode::ReadWrite,
+            ParameterRole::Configuration,
+            WriteEffect::ConfigurationOnly,
+        ),
+        (
+            AccessMode::ReadWrite,
+            ParameterRole::Action,
+            WriteEffect::OutputAffecting,
+        ),
+    ] {
+        let mut invalid = readable_actuator.clone();
+        invalid.access = access;
+        invalid.role = role;
+        invalid.write_effect = effect;
+        assert!(invalid.validate_definition().is_err());
+    }
+
+    let mut wrong_identity = readable_actuator.clone();
+    wrong_identity.signal = Some(SignalId::new(InstrumentId::new(7), ParameterId::new(3)));
+    assert!(wrong_identity.validate_definition().is_err());
+
+    for role in [ParameterRole::Measurement, ParameterRole::Diagnostic] {
+        let mut observation = readable_actuator.clone();
+        observation.role = role;
+        observation.access = AccessMode::ReadOnly;
+        observation.write_effect = WriteEffect::None;
+        observation.validate_definition().unwrap();
+    }
+}
+
+#[test]
 fn errors_are_typed_and_displayable() {
     fn accepts_error(_: &dyn std::error::Error) {}
     let error = Error::WrongType {

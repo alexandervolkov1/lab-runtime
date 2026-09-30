@@ -20,8 +20,9 @@
 //! A controller produces an [`OutputProposal`]. Runtime submits it to its private
 //! `OutputAuthority`, freezes a transport intent, and lets [`ResourceExecutor`] ask
 //! for the final authority/binding-generation check at the first possible output
-//! byte. [`crate::metakon`] encodes the WRITE and validates the strict ACK; Runtime
-//! then queues a distinct register readback before settling the dispatch.
+//! byte. The registered trusted physical adapter encodes the WRITE and validates
+//! the strict ACK; Runtime then queues any required distinct readback before
+//! settling the dispatch.
 //!
 //! `requested != authorized != send_started != ACK != readback != physical_effect`.
 //! Once a write has started, an ambiguous result is never treated as proof that no
@@ -69,7 +70,8 @@ use crate::reference::{
     RuntimeReference,
 };
 use crate::simple_device::{
-    SimpleDeviceBinding, SimpleDeviceInstrument, SimpleDeviceInstrumentConfig, SimpleResponsePlan,
+    SimpleAckPlan, SimpleDeviceBinding, SimpleDeviceInstrument, SimpleDeviceInstrumentConfig,
+    SimpleReadPlan, SimpleResponsePlan,
 };
 use crate::transport::{
     AuthorizationStep, ByteTransport, ExecutorSnapshot, MAX_QUEUED_TRANSACTIONS, ResourceExecutor,
@@ -551,7 +553,7 @@ pub struct Runtime {
     resources: BTreeMap<ResourceId, ResourceExecutor>,
     pending_reads: BTreeMap<(ResourceId, TransactionId), PendingRead>,
     pending_simple_reads: BTreeMap<(ResourceId, TransactionId), PendingSimpleRead>,
-    pending_output_writes: BTreeMap<(ResourceId, TransactionId), Duration>,
+    pending_output_writes: BTreeMap<(ResourceId, TransactionId), PendingOutputWrite>,
     pending_output_readbacks: BTreeMap<(ResourceId, TransactionId), PendingOutputReadback>,
     unsettled_outputs: BTreeMap<ResourceId, (OutputIntent, crate::output::DispatchId)>,
     output_time: Duration,
@@ -587,12 +589,39 @@ struct PendingSimpleRead {
     failure_published: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+struct PendingOutputWrite {
+    timeout: Duration,
+    protocol: PendingOutputProtocol,
+}
+
+#[derive(Clone)]
+enum PendingOutputProtocol {
+    Metakon,
+    Simple {
+        ack: SimpleAckPlan,
+        readback: Option<SimpleReadPlan>,
+        expected_raw: Vec<u8>,
+    },
+}
+
+#[derive(Clone)]
 struct PendingOutputReadback {
     intent: OutputIntent,
     dispatch: crate::output::DispatchId,
-    expected: ExpectedRead,
-    scale: f64,
+    protocol: PendingReadbackProtocol,
+}
+
+#[derive(Clone)]
+enum PendingReadbackProtocol {
+    Metakon {
+        expected: ExpectedRead,
+        scale: f64,
+    },
+    Simple {
+        plan: SimpleReadPlan,
+        expected_raw: Vec<u8>,
+    },
 }
 
 struct ManagedInstance {

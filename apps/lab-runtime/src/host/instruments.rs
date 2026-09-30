@@ -198,6 +198,13 @@ pub(super) fn register_configured_instruments(
                 let instrument = InstrumentId::new(*id);
                 let compiled = compile_simple_instance(definition, instrument, *address, *channel)
                     .map_err(|_| Error::InvalidConfiguration("invalid frozen simple definition"))?;
+                let output_capable = compiled.parameters.iter().any(|parameter| {
+                    parameter.descriptor.role == lab_core::ParameterRole::Actuator
+                });
+                let actuator_parameter = compiled.parameters.iter().find_map(|parameter| {
+                    (parameter.descriptor.role == lab_core::ParameterRole::Actuator)
+                        .then_some(parameter.descriptor.id.get())
+                });
                 let resource = ResourceId::new(*resource_id);
                 runtime.command(Command::RegisterSimpleDevice(
                     SimpleDeviceInstrumentConfig {
@@ -208,6 +215,10 @@ pub(super) fn register_configured_instruments(
                             resource,
                             binding_generation: 1,
                             mapping_revision: 1,
+                            output_queue_ttl: output_capable
+                                .then_some(Duration::from_millis(*queue_timeout_ms)),
+                            output_timeout: output_capable
+                                .then_some(Duration::from_millis(*transaction_timeout_ms)),
                         },
                         history_capacity: *history_capacity,
                     },
@@ -222,6 +233,7 @@ pub(super) fn register_configured_instruments(
                         raw_sha256,
                         address: *address,
                         channel: *channel,
+                        actuator_parameter,
                     },
                 );
                 physical_instruments.insert(instrument);
@@ -230,14 +242,16 @@ pub(super) fn register_configured_instruments(
                     _ => unreachable!(),
                 };
                 for parameter in descriptor.parameters {
-                    simple_device_reads.push(SimpleDeviceReadSchedule {
-                        instrument,
-                        parameter: parameter.id,
-                        resource,
-                        slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
-                        queue_ttl: Duration::from_millis(*queue_timeout_ms),
-                        timeout: Duration::from_millis(*transaction_timeout_ms),
-                    });
+                    if parameter.signal.is_some() {
+                        simple_device_reads.push(SimpleDeviceReadSchedule {
+                            instrument,
+                            parameter: parameter.id,
+                            resource,
+                            slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
+                            queue_ttl: Duration::from_millis(*queue_timeout_ms),
+                            timeout: Duration::from_millis(*transaction_timeout_ms),
+                        });
+                    }
                 }
             }
         }

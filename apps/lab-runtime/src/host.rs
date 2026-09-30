@@ -263,6 +263,7 @@ struct SimpleDeviceProvenance {
     raw_sha256: [u8; 32],
     address: u16,
     channel: u16,
+    actuator_parameter: Option<u64>,
 }
 
 struct ConfiguredProbe {
@@ -495,7 +496,11 @@ impl HostCore {
                 at: Duration::ZERO,
                 command: OutputCommand::BindProfile(profile.clone()),
             })?;
-            if runtime.metakon_binding(actuator.instrument()).is_none() {
+            if runtime.metakon_binding(actuator.instrument()).is_none()
+                && runtime
+                    .simple_device_binding(actuator.instrument())
+                    .is_none()
+            {
                 runtime.command(Command::Output {
                     actuator,
                     at: Duration::ZERO,
@@ -596,6 +601,9 @@ impl HostCore {
             if runtime
                 .metakon_binding(InstrumentId::new(controller.output_instrument_id))
                 .is_none()
+                && runtime
+                    .simple_device_binding(InstrumentId::new(controller.output_instrument_id))
+                    .is_none()
             {
                 runtime.command(Command::PrepareController(id))?;
             }

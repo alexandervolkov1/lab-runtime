@@ -81,10 +81,11 @@ ACCEPTED
 M16.2 read-only simple-device vertical slice:
 ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
-AUTHORIZED
+FOCUSED REMEDIATION COMPLETE
+READY FOR EXTERNAL RE-REVIEW
 M16.4–M16.7: NOT AUTHORIZED
 Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
-STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -132,7 +133,8 @@ unauthorized until M16 consolidated acceptance. The read-only M16.1 declarative
 simple-device architecture/API audit is accepted in
 `ai/M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. The accepted M16.2
 read-only simple-device implementation commit is
-`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is authorized; M16.4–M16.7
+`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 focused remediation is complete
+and ready for external re-review; M16.4–M16.7
 remain unauthorized.
 
 Functionally complete means the accepted Runtime functionality is implemented and no

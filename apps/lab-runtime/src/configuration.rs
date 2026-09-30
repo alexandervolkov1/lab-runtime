@@ -25,7 +25,7 @@ use crate::{
     websocket,
 };
 use lab_core::{
-    AccessMode, InstrumentId, ParameterRole, SignalId, Unit, ValueSpec, WriteEffect,
+    AccessMode, InstrumentId, ParameterRole, SignalId, Unit, Value, ValueSpec, WriteEffect,
     instrument::KnownOperation,
     managed::{ComponentId, ComponentImplementationId, PlainData, PlainValue},
 };
@@ -1082,9 +1082,12 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
                         && safe.parameter_id == lab_core::HEATER_POWER.get()
             )
         }) || dto.instruments.iter().any(|instrument| {
-            matches!(instrument, InstrumentDto::Metakon { id, .. } if *id == safe.instrument_id)
+            matches!(instrument, InstrumentDto::Metakon { id, .. } | InstrumentDto::SimpleDevice { id, .. } if *id == safe.instrument_id)
         });
-        if !eligible_native_output || safe.min < 0.0 || safe.max > 100.0 {
+        let simple_output = dto.instruments.iter().any(|instrument| {
+            matches!(instrument, InstrumentDto::SimpleDevice { id, .. } if *id == safe.instrument_id)
+        });
+        if !eligible_native_output || (!simple_output && (safe.min < 0.0 || safe.max > 100.0)) {
             return Err(ConfigurationError::invalid(
                 "safe profile targets an ineligible output",
             ));
@@ -1127,7 +1130,7 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
         }) {
             Some(Unit::CELSIUS.id())
         } else if dto.instruments.iter().any(|instrument| {
-            matches!(instrument, InstrumentDto::Metakon { id, .. } if *id == controller.input_instrument_id)
+            matches!(instrument, InstrumentDto::Metakon { id, .. } | InstrumentDto::SimpleDevice { id, .. } if *id == controller.input_instrument_id)
         }) {
             // Frozen definition validation below resolves physical parameter units.
             None
@@ -1285,6 +1288,102 @@ fn validate_frozen_simple_definitions(
         let instance =
             compile_simple_instance(compiled, InstrumentId::new(*id), *address, *channel)
                 .map_err(|error| ConfigurationError::artifact_text(&error.to_string()))?;
+        let actuator = instance
+            .parameters
+            .iter()
+            .find(|parameter| parameter.descriptor.role == ParameterRole::Actuator);
+        if dto
+            .safe_profiles
+            .iter()
+            .any(|safe| safe.instrument_id == *id)
+            && actuator.is_none()
+        {
+            return Err(ConfigurationError::invalid(
+                "simple-device safe profile does not target an actuator",
+            ));
+        }
+        if let Some(actuator) = actuator {
+            let resource = dto
+                .resources
+                .iter()
+                .find(|resource| resource.id == *resource_id)
+                .expect("resource cross-reference validated before artifacts");
+            if resource.kind != ResourceKindDto::WindowsCom {
+                return Err(ConfigurationError::invalid(
+                    "writable simple device requires windows_com resource",
+                ));
+            }
+            let safe = dto
+                .safe_profiles
+                .iter()
+                .find(|safe| {
+                    safe.instrument_id == *id && safe.parameter_id == actuator.descriptor.id.get()
+                })
+                .ok_or_else(|| {
+                    ConfigurationError::invalid("writable simple device lacks safe profile")
+                })?;
+            for value in [safe.min, safe.max, safe.safe_value] {
+                actuator
+                    .descriptor
+                    .value_spec
+                    .validate(&Value::Float(value))
+                    .map_err(|_| {
+                        ConfigurationError::invalid(
+                            "simple-device safe profile exceeds actuator range",
+                        )
+                    })?;
+            }
+            let write = actuator
+                .write
+                .as_ref()
+                .expect("compiled actuator has write plan");
+            if write.encode(safe.safe_value).is_none() {
+                return Err(ConfigurationError::invalid(
+                    "simple-device safe value is not exactly encodable",
+                ));
+            }
+            if safe.required_evidence == EvidenceDto::Readback && write.readback.is_none() {
+                return Err(ConfigurationError::invalid(
+                    "simple-device readback evidence lacks readback plan",
+                ));
+            }
+        }
+        for controller in &dto.controllers {
+            if controller.input_instrument_id == *id {
+                let input = instance
+                    .parameters
+                    .iter()
+                    .find(|parameter| {
+                        parameter.descriptor.id.get() == controller.input_parameter_id
+                    })
+                    .ok_or_else(|| {
+                        ConfigurationError::invalid("unknown simple-device controller input")
+                    })?;
+                let reference = dto
+                    .references
+                    .iter()
+                    .find(|reference| reference.id == controller.reference_id)
+                    .expect("Reference cross-reference validated before artifacts");
+                if input.descriptor.role != ParameterRole::Measurement
+                    || input.descriptor.signal.is_none()
+                    || input.descriptor.unit.id() != reference.unit_id
+                {
+                    return Err(ConfigurationError::invalid(
+                        "simple-device controller input metadata mismatch",
+                    ));
+                }
+            }
+            if controller.output_instrument_id == *id
+                && instance.parameters.iter().all(|parameter| {
+                    parameter.descriptor.id.get() != controller.output_parameter_id
+                        || parameter.descriptor.role != ParameterRole::Actuator
+                })
+            {
+                return Err(ConfigurationError::invalid(
+                    "controller output is not the simple-device actuator",
+                ));
+            }
+        }
         instances.push((*resource_id, *id, instance));
     }
     for left in 0..instances.len() {

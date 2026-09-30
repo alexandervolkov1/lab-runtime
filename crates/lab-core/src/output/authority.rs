@@ -675,6 +675,37 @@ impl OutputAuthority {
         }
     }
 
+    /// Complete a protocol-specific exact raw readback comparison.
+    ///
+    /// `reported` is retained only as human-facing engineering evidence; `matched`
+    /// is produced by the trusted adapter's exact raw-domain comparison.
+    pub(crate) fn complete_transport_readback_exact(
+        &mut self,
+        id: DispatchId,
+        reported: f64,
+        matched: bool,
+        at: Duration,
+    ) -> Result<bool, Error> {
+        let dispatch = self
+            .snapshot
+            .in_flight
+            .ok_or(OutputError::UnknownDispatch)?;
+        if dispatch.id != id || !reported.is_finite() {
+            return Err(OutputError::UnknownDispatch.into());
+        }
+        self.snapshot.reported_readback = Some(OutputObservation {
+            value: reported,
+            at,
+        });
+        if matched {
+            self.complete(id, DispatchOutcome::ReadbackVerified, at)?;
+        } else {
+            self.snapshot.readback_failure = Some(OutputReadbackFailure::Mismatch);
+            self.complete(id, DispatchOutcome::Failed, at)?;
+        }
+        Ok(matched)
+    }
+
     /// Settle a bounded readback failure without forgetting the preceding ACK.
     pub(crate) fn fail_transport_readback(
         &mut self,

@@ -2,7 +2,7 @@
 //!
 //! READ decode commits observations only through the parent `Runtime`. WRITE progression
 //! remains `OutputProposal -> OutputAuthority -> ResourceExecutor -> final authority and
-//! generation recheck -> Metakon WRITE -> ACK -> separate readback`. Requested,
+//! generation recheck -> trusted compiled WRITE -> ACK -> separate readback`. Requested,
 //! authorized, send-started, ACK, readback and physical effect are distinct; ambiguous
 //! started writes are not blindly retried.
 
@@ -56,18 +56,29 @@ impl Runtime {
             None,
         );
         self.require_recording_open(at)?;
-        let binding = self
-            .metakon_instruments
-            .get(&actuator.instrument())
-            .ok_or(OutputError::UnknownActuator)?
-            .binding;
+        let (queue_ttl, timeout) = if let Some(instrument) =
+            self.metakon_instruments.get(&actuator.instrument())
+        {
+            (
+                instrument.binding.output_queue_ttl,
+                instrument.binding.output_timeout,
+            )
+        } else if let Some(instrument) = self.simple_device_instruments.get(&actuator.instrument())
+        {
+            (
+                instrument.binding.output_queue_ttl,
+                instrument.binding.output_timeout,
+            )
+        } else {
+            return Err(OutputError::UnknownActuator.into());
+        };
         self.queue_metakon_output(
             actuator,
             at,
-            binding.output_queue_ttl.ok_or(Error::InvalidConfiguration(
+            queue_ttl.ok_or(Error::InvalidConfiguration(
                 "physical output timing missing",
             ))?,
-            binding.output_timeout.ok_or(Error::InvalidConfiguration(
+            timeout.ok_or(Error::InvalidConfiguration(
                 "physical output timing missing",
             ))?,
         )?;
@@ -411,21 +422,30 @@ impl Runtime {
             .outputs
             .iter()
             .filter(|(actuator, authority)| {
-                self.metakon_instruments
+                (self
+                    .metakon_instruments
                     .contains_key(&actuator.instrument())
+                    || self
+                        .simple_device_instruments
+                        .contains_key(&actuator.instrument()))
                     && authority.snapshot().state == crate::output::OutputState::SafePending
                     && authority.snapshot().in_flight.is_none()
             })
             .filter_map(|(actuator, _)| {
-                self.metakon_instruments
-                    .get(&actuator.instrument())
-                    .and_then(|instrument| {
-                        Some((
-                            *actuator,
-                            instrument.binding.output_queue_ttl?,
-                            instrument.binding.output_timeout?,
-                        ))
-                    })
+                if let Some(instrument) = self.metakon_instruments.get(&actuator.instrument()) {
+                    Some((
+                        *actuator,
+                        instrument.binding.output_queue_ttl?,
+                        instrument.binding.output_timeout?,
+                    ))
+                } else {
+                    let instrument = self.simple_device_instruments.get(&actuator.instrument())?;
+                    Some((
+                        *actuator,
+                        instrument.binding.output_queue_ttl?,
+                        instrument.binding.output_timeout?,
+                    ))
+                }
             })
             .collect();
         for (actuator, queue_ttl, timeout) in physical_safe {
@@ -473,17 +493,23 @@ impl Runtime {
         let deadline = at
             .checked_add(queue_ttl)
             .ok_or(TransportError::InvalidTransaction)?;
-        let instrument = self
-            .metakon_instruments
-            .get(&actuator.instrument())
-            .ok_or(OutputError::UnknownActuator)?;
-        let scale = instrument
-            .definition
-            .parameter_definition(actuator.parameter())
-            .filter(|definition| definition.operation == KnownOperation::Output)
-            .ok_or(OutputError::UnknownActuator)?
-            .scale;
-        let binding = instrument.binding;
+        let metakon = self.metakon_instruments.get(&actuator.instrument());
+        let simple = self.simple_device_instruments.get(&actuator.instrument());
+        let (resource, binding_generation, mapping_revision) = if let Some(instrument) = metakon {
+            (
+                instrument.binding.resource,
+                instrument.binding.binding_generation,
+                instrument.binding.mapping_revision,
+            )
+        } else if let Some(instrument) = simple {
+            (
+                instrument.binding.resource,
+                instrument.binding.binding_generation,
+                instrument.binding.mapping_revision,
+            )
+        } else {
+            return Err(OutputError::UnknownActuator.into());
+        };
         let intent = self
             .outputs
             .get_mut(&actuator)
@@ -492,41 +518,95 @@ impl Runtime {
                 at,
                 deadline,
                 self.output_attempts.get(&actuator).copied(),
-                binding.binding_generation,
-                binding.mapping_revision,
+                binding_generation,
+                mapping_revision,
             )?;
-        let raw = match encode_scaled_i8(&Value::Float(intent.value), scale) {
-            Ok(raw) => raw,
-            Err(error) => {
+        let prepared = if let Some(instrument) = metakon {
+            let scale = match instrument
+                .definition
+                .parameter_definition(actuator.parameter())
+                .filter(|definition| definition.operation == KnownOperation::Output)
+                .map(|definition| definition.scale)
+            {
+                Some(scale) => scale,
+                None => {
+                    self.outputs
+                        .get_mut(&actuator)
+                        .expect("authority reserved the intent")
+                        .abort_transport(intent);
+                    return Err(OutputError::UnknownActuator.into());
+                }
+            };
+            let raw = match encode_scaled_i8(&Value::Float(intent.value), scale) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    self.outputs
+                        .get_mut(&actuator)
+                        .expect("authority reserved the intent")
+                        .abort_transport(intent);
+                    return Err(error.into());
+                }
+            };
+            let address = Address::new(instrument.binding.device, instrument.binding.channel, 6);
+            let request = match encode_write(address, MetakonValue::I8(raw)) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.outputs
+                        .get_mut(&actuator)
+                        .expect("authority reserved the intent")
+                        .abort_transport(intent);
+                    return Err(error.into());
+                }
+            };
+            (
+                request.as_bytes().to_vec(),
+                5,
+                PendingOutputProtocol::Metakon,
+            )
+        } else {
+            let instrument = simple.expect("one physical adapter checked above");
+            let Some(plan) = instrument.writes.get(&actuator.parameter()) else {
                 self.outputs
                     .get_mut(&actuator)
                     .expect("authority reserved the intent")
                     .abort_transport(intent);
-                return Err(error.into());
-            }
-        };
-        let address = Address::new(binding.device, binding.channel, 6);
-        let request = match encode_write(address, MetakonValue::I8(raw)) {
-            Ok(request) => request,
-            Err(error) => {
+                return Err(OutputError::UnknownActuator.into());
+            };
+            let Some((request, expected_raw)) = plan.encode(intent.value) else {
                 self.outputs
                     .get_mut(&actuator)
                     .expect("authority reserved the intent")
                     .abort_transport(intent);
-                return Err(error.into());
-            }
+                return Err(Error::InvalidConfiguration(
+                    "simple output cannot be encoded",
+                ));
+            };
+            (
+                request,
+                plan.ack.exact_length,
+                PendingOutputProtocol::Simple {
+                    ack: plan.ack.clone(),
+                    readback: plan.readback.clone(),
+                    expected_raw,
+                },
+            )
         };
         let enqueue = self
             .resources
-            .get_mut(&binding.resource)
+            .get_mut(&resource)
             .ok_or(TransportError::UnknownResource)
             .and_then(|executor| {
-                executor.enqueue_output(request.as_bytes(), 5, at, deadline, timeout, intent)
+                executor.enqueue_output(&prepared.0, prepared.1, at, deadline, timeout, intent)
             });
         match enqueue {
             Ok(transaction) => {
-                self.pending_output_writes
-                    .insert((binding.resource, transaction), timeout);
+                self.pending_output_writes.insert(
+                    (resource, transaction),
+                    PendingOutputWrite {
+                        timeout,
+                        protocol: prepared.2,
+                    },
+                );
                 Ok(transaction)
             }
             Err(error) => {
@@ -549,6 +629,9 @@ impl Runtime {
             .filter(|actuator| {
                 self.metakon_instruments
                     .contains_key(&actuator.instrument())
+                    || self
+                        .simple_device_instruments
+                        .contains_key(&actuator.instrument())
             })
             .copied()
             .collect();
@@ -566,17 +649,37 @@ impl Runtime {
                 .remove(&resource)
                 .ok_or(TransportError::UnknownResource)?;
             let instruments = &self.metakon_instruments;
+            let simple_instruments = &self.simple_device_instruments;
             let outputs = &mut self.outputs;
             let recording_facts = &mut self.recording_facts;
             let event = executor.poll_authorized(at, &mut |intent, step| {
                 if !intent.safe && !required_open {
                     return Err(());
                 }
-                let instrument = instruments.get(&intent.actuator.instrument()).ok_or(())?;
-                let binding = instrument.binding;
-                if binding.resource != resource
-                    || binding.binding_generation != intent.binding_generation
-                    || binding.mapping_revision != intent.mapping_revision
+                let current_binding = instruments
+                    .get(&intent.actuator.instrument())
+                    .map(|instrument| {
+                        (
+                            instrument.binding.resource,
+                            instrument.binding.binding_generation,
+                            instrument.binding.mapping_revision,
+                        )
+                    })
+                    .or_else(|| {
+                        simple_instruments
+                            .get(&intent.actuator.instrument())
+                            .map(|instrument| {
+                                (
+                                    instrument.binding.resource,
+                                    instrument.binding.binding_generation,
+                                    instrument.binding.mapping_revision,
+                                )
+                            })
+                    })
+                    .ok_or(())?;
+                if current_binding.0 != resource
+                    || current_binding.1 != intent.binding_generation
+                    || current_binding.2 != intent.mapping_revision
                 {
                     return Err(());
                 }
@@ -783,7 +886,7 @@ impl Runtime {
                 record,
                 response,
             } => {
-                let readback_timeout = self.pending_output_writes.remove(&(resource, record.id));
+                let pending_write = self.pending_output_writes.remove(&(resource, record.id));
                 let Some(dispatch) = dispatch else {
                     if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
                         authority.abort_transport(intent);
@@ -793,22 +896,53 @@ impl Runtime {
                 let current_binding = self
                     .metakon_instruments
                     .get(&intent.actuator.instrument())
-                    .map(|instrument| instrument.binding);
+                    .map(|instrument| {
+                        (
+                            instrument.binding.resource,
+                            instrument.binding.binding_generation,
+                            instrument.binding.mapping_revision,
+                            Some((instrument.binding.device, instrument.binding.channel)),
+                        )
+                    })
+                    .or_else(|| {
+                        self.simple_device_instruments
+                            .get(&intent.actuator.instrument())
+                            .map(|instrument| {
+                                (
+                                    instrument.binding.resource,
+                                    instrument.binding.binding_generation,
+                                    instrument.binding.mapping_revision,
+                                    None,
+                                )
+                            })
+                    });
                 if record.outcome == TransactionOutcome::Completed
                     && current_binding.is_some_and(|binding| {
-                        binding.resource == resource
-                            && binding.binding_generation == intent.binding_generation
-                            && binding.mapping_revision == intent.mapping_revision
+                        binding.0 == resource
+                            && binding.1 == intent.binding_generation
+                            && binding.2 == intent.mapping_revision
                     })
                 {
                     let binding = current_binding.expect("checked above");
-                    let address = Address::new(binding.device, binding.channel, 6);
-                    if response
-                        .as_deref()
-                        .is_some_and(|bytes| decode_ack(bytes, address).is_ok())
-                    {
+                    let ack_valid = pending_write.as_ref().is_some_and(|pending| {
+                        response
+                            .as_deref()
+                            .is_some_and(|bytes| match &pending.protocol {
+                                PendingOutputProtocol::Metakon => {
+                                    binding.3.is_some_and(|(device, channel)| {
+                                        decode_ack(bytes, Address::new(device, channel, 6)).is_ok()
+                                    })
+                                }
+                                PendingOutputProtocol::Simple { ack, .. } => ack.accepts(bytes),
+                            })
+                    });
+                    if ack_valid {
+                        let requires_readback = self
+                            .outputs
+                            .get(&intent.actuator)
+                            .ok_or(OutputError::UnknownActuator)?
+                            .requires_readback()?;
                         if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
-                            let requires_readback = authority.requires_readback()?;
                             if requires_readback {
                                 authority.acknowledge_transport(dispatch, at)?;
                             } else {
@@ -831,32 +965,22 @@ impl Runtime {
                                 Some(dispatch),
                             );
                             if requires_readback {
-                                let timeout =
-                                    readback_timeout.ok_or(Error::InvalidConfiguration(
+                                let pending_write =
+                                    pending_write.ok_or(Error::InvalidConfiguration(
                                         "physical output readback timeout missing",
                                     ))?;
-                                let expected =
-                                    ExpectedRead::new(address, MetakonType::I8, true, true);
-                                let request = encode_read(address)?;
-                                let deadline = at
-                                    .checked_add(timeout)
-                                    .ok_or(TransportError::InvalidTransaction)?;
-                                let transaction = self
-                                    .resources
-                                    .get_mut(&resource)
-                                    .expect("executor reinserted before event handling")
-                                    .enqueue_read(
-                                        request.as_bytes(),
-                                        expected.frame_len(),
-                                        at,
-                                        deadline,
-                                        timeout,
-                                        false,
-                                        intent.binding_generation,
-                                        intent.mapping_revision,
-                                    );
-                                match transaction {
-                                    Ok(transaction) => {
+                                let (request, expected_length, protocol) = match pending_write
+                                    .protocol
+                                {
+                                    PendingOutputProtocol::Metakon => {
+                                        let (device, channel) =
+                                            binding.3.ok_or(Error::InvalidConfiguration(
+                                                "Metakon output binding missing",
+                                            ))?;
+                                        let address = Address::new(device, channel, 6);
+                                        let expected =
+                                            ExpectedRead::new(address, MetakonType::I8, true, true);
+                                        let request = encode_read(address)?;
                                         let scale = self
                                             .metakon_instruments
                                             .get(&intent.actuator.instrument())
@@ -867,13 +991,53 @@ impl Runtime {
                                             })
                                             .map(|definition| definition.scale)
                                             .ok_or(OutputError::UnknownActuator)?;
+                                        (
+                                            request.as_bytes().to_vec(),
+                                            expected.frame_len(),
+                                            PendingReadbackProtocol::Metakon { expected, scale },
+                                        )
+                                    }
+                                    PendingOutputProtocol::Simple {
+                                        readback,
+                                        expected_raw,
+                                        ..
+                                    } => {
+                                        let plan = readback.ok_or(Error::InvalidConfiguration(
+                                            "simple output requires missing readback plan",
+                                        ))?;
+                                        (
+                                            plan.request.clone(),
+                                            plan.response.exact_length,
+                                            PendingReadbackProtocol::Simple { plan, expected_raw },
+                                        )
+                                    }
+                                };
+                                let timeout = pending_write.timeout;
+                                let deadline = at
+                                    .checked_add(timeout)
+                                    .ok_or(TransportError::InvalidTransaction)?;
+                                let transaction = self
+                                    .resources
+                                    .get_mut(&resource)
+                                    .expect("executor reinserted before event handling")
+                                    .enqueue_read(
+                                        &request,
+                                        expected_length,
+                                        at,
+                                        deadline,
+                                        timeout,
+                                        false,
+                                        intent.binding_generation,
+                                        intent.mapping_revision,
+                                    );
+                                match transaction {
+                                    Ok(transaction) => {
                                         self.pending_output_readbacks.insert(
                                             (resource, transaction),
                                             PendingOutputReadback {
                                                 intent,
                                                 dispatch,
-                                                expected,
-                                                scale,
+                                                protocol,
                                             },
                                         );
                                     }
@@ -881,12 +1045,17 @@ impl Runtime {
                                         let pending = PendingOutputReadback {
                                             intent,
                                             dispatch,
-                                            expected,
-                                            scale: 1.0,
+                                            protocol,
                                         };
                                         self.fail_output_readback(resource, pending, at)?;
                                     }
                                 }
+                            } else if !intent.safe {
+                                self.settle_controller_after_physical_readback(
+                                    intent.actuator,
+                                    true,
+                                    at,
+                                )?;
                             }
                         }
                     } else if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
@@ -953,45 +1122,85 @@ impl Runtime {
         response: Option<Vec<u8>>,
         at: Duration,
     ) -> Result<(), Error> {
-        let current_binding = self
+        let current = self
             .metakon_instruments
             .get(&pending.intent.actuator.instrument())
-            .map(|instrument| instrument.binding);
-        let current = current_binding.is_some_and(|binding| {
-            binding.resource == resource
-                && binding.binding_generation == pending.intent.binding_generation
-                && binding.mapping_revision == pending.intent.mapping_revision
-        });
+            .map(|instrument| {
+                (
+                    instrument.binding.resource,
+                    instrument.binding.binding_generation,
+                    instrument.binding.mapping_revision,
+                )
+            })
+            .or_else(|| {
+                self.simple_device_instruments
+                    .get(&pending.intent.actuator.instrument())
+                    .map(|instrument| {
+                        (
+                            instrument.binding.resource,
+                            instrument.binding.binding_generation,
+                            instrument.binding.mapping_revision,
+                        )
+                    })
+            })
+            .is_some_and(|binding| {
+                binding.0 == resource
+                    && binding.1 == pending.intent.binding_generation
+                    && binding.2 == pending.intent.mapping_revision
+            });
         if !current {
             return Ok(());
         }
         if record.outcome != TransactionOutcome::Completed {
             return self.fail_output_readback(resource, pending, at);
         }
-        let decoded = response
-            .as_deref()
-            .ok_or(crate::metakon::CodecError::WrongLength)
-            .and_then(|bytes| decode_read(bytes, pending.expected));
-        let MetakonValue::I8(raw) = (match decoded {
-            Ok(value) => value,
-            Err(_) => {
-                self.fail_output_readback(resource, pending, at)?;
-                self.resources
-                    .get_mut(&resource)
-                    .expect("executor reinserted before event handling")
-                    .protocol_failure()?;
-                return Ok(());
+        let bytes = response.as_deref();
+        let decoded = match (&pending.protocol, bytes) {
+            (PendingReadbackProtocol::Metakon { expected, scale }, Some(bytes)) => {
+                match decode_read(bytes, *expected) {
+                    Ok(MetakonValue::I8(raw)) => Some((f64::from(raw) * scale, true)),
+                    _ => None,
+                }
             }
-        }) else {
+            (PendingReadbackProtocol::Simple { plan, expected_raw }, Some(bytes)) => {
+                let descriptor = self
+                    .simple_device_instruments
+                    .get(&pending.intent.actuator.instrument())
+                    .and_then(|instrument| {
+                        instrument
+                            .descriptor
+                            .parameter(pending.intent.actuator.parameter())
+                    });
+                descriptor.and_then(|descriptor| {
+                    plan.response
+                        .verify_readback(bytes, descriptor, expected_raw)
+                })
+            }
+            _ => None,
+        };
+        let Some((reported, exact_match)) = decoded else {
             self.fail_output_readback(resource, pending, at)?;
+            self.resources
+                .get_mut(&resource)
+                .expect("executor reinserted before event handling")
+                .protocol_failure()?;
             return Ok(());
         };
-        let reported = f64::from(raw) * pending.scale;
-        let matched = self
+        let authority = self
             .outputs
             .get_mut(&pending.intent.actuator)
-            .ok_or(OutputError::UnknownActuator)?
-            .complete_transport_readback(pending.dispatch, reported, at)?;
+            .ok_or(OutputError::UnknownActuator)?;
+        let matched = match pending.protocol {
+            PendingReadbackProtocol::Metakon { .. } => {
+                authority.complete_transport_readback(pending.dispatch, reported, at)?
+            }
+            PendingReadbackProtocol::Simple { .. } => authority.complete_transport_readback_exact(
+                pending.dispatch,
+                reported,
+                exact_match,
+                at,
+            )?,
+        };
         self.recording_facts.output_transport_value(
             pending.intent,
             resource,

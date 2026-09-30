@@ -10,7 +10,7 @@ Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.2 ACCEPTED; M16.3 AUTHORIZED
+Practical integration architecture: M16.1–M16.2 ACCEPTED; M16.3 READY FOR EXTERNAL RE-REVIEW
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -48,9 +48,10 @@ ACCEPTED
 M16.2 read-only simple-device vertical slice:
 ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
-AUTHORIZED
+FOCUSED REMEDIATION COMPLETE
+READY FOR EXTERNAL RE-REVIEW
 M16.4–M16.7: NOT AUTHORIZED
-STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -90,7 +91,7 @@ implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paus
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. M16.1 is accepted. The accepted M16.2 read-only simple-device
 implementation commit is `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is
-authorized; M16.4–M16.7 remain unauthorized.
+implemented and ready for external review; M16.4–M16.7 remain unauthorized.
 
 ## Completed preparation step
 
@@ -213,12 +214,13 @@ ACCEPTED
 M16.2 read-only simple-device vertical slice:
 ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
-AUTHORIZED
+FOCUSED REMEDIATION COMPLETE
+READY FOR EXTERNAL RE-REVIEW
 M16.4–M16.7: NOT AUTHORIZED
 
 Current phase: M16.3 writable simple-device actuator + ACK/readback vertical slice
 
-STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_3_WRITABLE_SIMPLE_DEVICE_REMEDIATION_READY_FOR_EXTERNAL_REVIEW
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -361,7 +363,8 @@ restart semantics, and single-owner provisional output preparation are in the au
 report.
 
 M16.1 is accepted. M16.2 is accepted at
-`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is authorized.
+`aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is implemented
+and ready for external review.
 M16.4 provisioning implementation, M16.5 generic integration acceptance, M16.6
 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance,
 and M16 consolidated review remain unauthorized. M13.2 remains blocked on Steel
@@ -454,9 +457,11 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2 is accepted. M16.3 is authorized below; M16.4–M16.7 remain unauthorized.
+M16.2 is accepted. M16.3 focused remediation is complete and ready for external
+re-review below;
+M16.4–M16.7 remain unauthorized.
 
-## M16.3 authorized implementation slice
+## M16.3 remediated review candidate
 
 M16.3 extends only the accepted persistent/file-backed SimpleDevice deployment path:
 

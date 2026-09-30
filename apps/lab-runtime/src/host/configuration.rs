@@ -419,6 +419,10 @@ impl HostCore {
                 .runtime
                 .metakon_binding(actuator.instrument())
                 .is_none()
+                && self
+                    .runtime
+                    .simple_device_binding(actuator.instrument())
+                    .is_none()
             {
                 continue;
             }
@@ -444,6 +448,10 @@ impl HostCore {
                 .runtime
                 .metakon_binding(actuator.instrument())
                 .is_none()
+                && self
+                    .runtime
+                    .simple_device_binding(actuator.instrument())
+                    .is_none()
             {
                 continue;
             }
@@ -480,6 +488,10 @@ impl HostCore {
                 .runtime
                 .metakon_binding(config.output.instrument())
                 .is_some()
+                || self
+                    .runtime
+                    .simple_device_binding(config.output.instrument())
+                    .is_some()
             {
                 self.runtime
                     .command(Command::PrepareController(*controller))?;

@@ -159,6 +159,9 @@ impl Runtime {
                 .contains_key(&config.output.instrument())
                 && !self
                     .metakon_instruments
+                    .contains_key(&config.output.instrument())
+                && !self
+                    .simple_device_instruments
                     .contains_key(&config.output.instrument()))
         {
             return Err(ControllerError::InvalidConfiguration.into());
@@ -283,7 +286,10 @@ impl Runtime {
                     unit,
                     ttl,
                 };
-                let physical = self.metakon_instruments.contains_key(&output.instrument());
+                let physical = self.metakon_instruments.contains_key(&output.instrument())
+                    || self
+                        .simple_device_instruments
+                        .contains_key(&output.instrument());
                 let delivery = if physical {
                     self.deliver_physical(output, proposal, at)
                 } else {
@@ -633,21 +639,42 @@ impl Runtime {
             .ok_or(ControllerError::InvalidConfiguration)
     }
 
-    // Freeze the current accepted binding and authority identity at Core fact
-    // capture. A later rebind or revoke cannot rewrite an earlier output row.
+    // Freeze the current accepted physical binding and authority identity at
+    // Core fact capture. A later rebind or revoke cannot rewrite an earlier
+    // output row.
     pub(super) fn sync_recording_output_context(&mut self, actuator: ActuatorId) {
         let Some(authority) = self.outputs.get(&actuator) else {
             return;
         };
-        let binding = self.metakon_instruments.get(&actuator.instrument());
+        let binding = self
+            .metakon_instruments
+            .get(&actuator.instrument())
+            .map(|instrument| {
+                (
+                    instrument.binding.resource,
+                    instrument.binding.binding_generation,
+                    instrument.binding.mapping_revision,
+                )
+            })
+            .or_else(|| {
+                self.simple_device_instruments
+                    .get(&actuator.instrument())
+                    .map(|instrument| {
+                        (
+                            instrument.binding.resource,
+                            instrument.binding.binding_generation,
+                            instrument.binding.mapping_revision,
+                        )
+                    })
+            });
         self.recording_facts.output_context(
             actuator,
             crate::recording::OutputContext {
                 unit: self.output_unit(actuator).ok(),
                 authority_epoch: Some(authority.snapshot().epoch),
-                resource: binding.map(|instrument| instrument.binding.resource),
-                binding_generation: binding.map(|instrument| instrument.binding.binding_generation),
-                mapping_revision: binding.map(|instrument| instrument.binding.mapping_revision),
+                resource: binding.map(|binding| binding.0),
+                binding_generation: binding.map(|binding| binding.1),
+                mapping_revision: binding.map(|binding| binding.2),
             },
         );
     }
