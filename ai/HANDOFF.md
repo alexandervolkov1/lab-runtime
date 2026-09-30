@@ -11,7 +11,7 @@ Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.3 ACCEPTED; M16.4 AUTHORIZED
+Practical integration architecture: M16.1–M16.4 ACCEPTED
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
@@ -52,9 +52,9 @@ ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
 ACCEPTED
 M16.4 Application simple-device provisioning:
-AUTHORIZED
+ACCEPTED
 M16.5–M16.7: NOT AUTHORIZED
-STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_AUTHORIZED
+STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -97,7 +97,11 @@ acceptance is not claimed. The read-only M16.1 audit is accepted in
 read-only simple-device implementation commit is
 `aac377470d7142005ad5e0d098fddf6c16734db8`. The accepted M16.3 writable
 simple-device implementation commit is `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
-M16.4 Application provisioning is authorized; M16.5–M16.7 remain unauthorized.
+M16.4 Application provisioning is accepted after external re-review of the original
+implementation plus the pending-apply property fence, existing `operation_failed`
+mapping for internal owner failures, and phase-aware absolute apply deadline with
+quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5–M16.7
+remain unauthorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -109,7 +113,7 @@ production-certification claim.
 - Runtime remains the sole authoritative mutable experiment owner.
 - Host/Service orchestrate bounded external work; Application is a semantic
   projection; Recorder and diagnostics are not experiment owners.
-- Public Application behavior remains 42 operations, 25 capabilities and the
+- Public Application behavior now has 43 operations, 26 capabilities and the
   accepted 12-category error taxonomy.
 - Output ambiguity fails closed without blind retry. ACK, readback and physical
   effect remain distinct. Reconnect or fresh input does not rearm; recovery uses the
@@ -148,7 +152,7 @@ The compact developer-preview reference is now public under `docs/` and covers:
 6. preview-sufficient getting-started/build/run instructions;
 
 The README is the landing page. Public claims were checked against the accepted
-source/tests: 42 operations, 25 capabilities, 12 public error categories, protocol
+source/tests: 43 operations, 26 capabilities, 12 public error categories, protocol
 and bounds, schema v1, logging bounds, and controller lifecycle.
 
 ## Current local artifact
@@ -224,9 +228,9 @@ M14.6B4 consolidated recovery/fault acceptance is accepted at implementation com
 `801a4b559d82a903e9232cc08f5e7d27d714b1d5`; M14 consolidated acceptance is granted.
 M16.1 is accepted in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is
 accepted at `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is accepted at
-`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is authorized in `WORK.md`;
-M16.5–M16.7, remaining final M15 documentation, and every later
-implementation phase remain gated and unauthorized.
+`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is accepted; M16.5–M16.7,
+remaining final M15 documentation, and every later implementation phase remain gated
+and unauthorized.
 
 ## Later practical validation
 

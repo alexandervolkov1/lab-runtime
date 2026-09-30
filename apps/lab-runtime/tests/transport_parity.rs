@@ -283,7 +283,7 @@ fn representative_application_semantics_match_across_tcp_and_websocket() {
 
     let tcp_hello = successful_hello(&mut tcp, "tcp-hello", None);
     let ws_hello = successful_hello(&mut websocket, "ws-hello", None);
-    assert_eq!(OPERATIONS.len(), 42);
+    assert_eq!(OPERATIONS.len(), 43);
     assert_eq!(
         tcp_hello["result"]["operations"],
         ws_hello["result"]["operations"]

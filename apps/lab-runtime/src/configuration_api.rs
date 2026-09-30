@@ -14,6 +14,7 @@ use crate::{
     protocol,
     service::ServiceHost,
     sessions::{Mutation, PropertyMutationValue},
+    simple_device::{SimpleCandidateError, parse_simple_candidate},
 };
 use lab_core::{
     Error, Query, QueryResult,
@@ -37,17 +38,26 @@ pub(crate) fn status_json(service: &ServiceHost) -> Value {
     };
     let active = lifecycle.active();
     let staged = lifecycle.staged().map(|candidate| {
-        json!({"candidate_id":candidate.id().to_string(),
+        let mut value = json!({"candidate_id":candidate.id().to_string(),
             "base_revision":candidate.base_revision().to_string(),
             "expires_at_ns":candidate.expires_at().as_nanos().to_string(),
-            "effects":candidate.diff().effects().iter().map(|effect|effect.as_str()).collect::<Vec<_>>()})
+            "effects":candidate.diff().effects().iter().map(|effect|effect.as_str()).collect::<Vec<_>>()});
+        if let Some(metadata) = lifecycle.staged_simple_metadata() {
+            value["definition"] = json!({"id":metadata.definition_id,
+                "version":metadata.definition_version.to_string(),
+                "normalized_sha256":hex(&metadata.normalized_sha256)});
+            value["instances"] = json!(metadata.instruments.iter().map(u64::to_string).collect::<Vec<_>>());
+            value["source"] = json!("process_local_application_candidate");
+        }
+        value
     });
     json!({"configured":true,"available":true,
         "revision":lifecycle.revision().to_string(),
         "source":{"kind":"deployment_file","identity":hex(&active.toml_hash()),
             "automatically_persisted":false},
         "staged_candidate":staged,
-        "runtime_overrides":active.property_overlay_count()})
+        "runtime_overrides":active.property_overlay_count(),
+        "simple_device_provisioning":service.simple_configuration_status()})
 }
 
 /// Deterministic bounded descriptors for all known deployment properties.
@@ -246,11 +256,16 @@ pub(crate) fn resource_json(
         ResourceKindDto::WindowsComReadOnly => "serial_read_only",
         ResourceKindDto::WindowsCom => "serial",
     };
+    let resource_key = ResourceId::new(resource_id);
     let binding_generation = service
         .owner()
-        .configured_resource_generation(ResourceId::new(resource_id))
-        .ok_or("unknown_resource")?;
-    let reconnect = lifecycle
+        .configured_resource_generation(resource_key)
+        .or_else(|| service.quarantined_simple_resource_generation(resource_key))
+        .unwrap_or(snapshot.generation);
+    let reconnect = service
+        .quarantined_simple_resource_generation(resource_key)
+        .is_some()
+        || lifecycle
         .active()
         .effective()
         .dto
@@ -282,6 +297,17 @@ pub(crate) fn decode_mutation(operation: &str, args: &Value) -> Result<Mutation,
     Ok(match operation {
         "reload_configuration" => Mutation::ReloadConfiguration,
         "stage_configuration" => Mutation::StageConfiguration,
+        "stage_simple_device_candidate" => {
+            let candidate = parse_simple_candidate(args.get("candidate").ok_or("invalid_args")?)
+                .map_err(|error| match error {
+                    SimpleCandidateError::Structural(_) => "invalid_args",
+                    SimpleCandidateError::Semantic(_) => "invalid_configuration",
+                })?;
+            Mutation::StageSimpleDeviceCandidate {
+                expected_revision: id_field(args, "expected_revision")?,
+                candidate,
+            }
+        }
         "apply_configuration" => Mutation::ApplyConfiguration {
             candidate_id: id_field(args, "candidate_id")?,
             expected_revision: id_field(args, "expected_revision")?,
@@ -348,6 +374,26 @@ pub(crate) fn dispatch_mutation(
                     "base_revision":staged.base_revision().to_string(),
                     "expires_at_ns":staged.expires_at().as_nanos().to_string(),
                     "effects":effects})
+            })
+            .map_err(lifecycle_domain_error),
+        Mutation::StageSimpleDeviceCandidate {
+            expected_revision,
+            candidate,
+        } => service
+            .stage_simple_device_candidate(&candidate, expected_revision)
+            .map(|result| {
+                json!({
+                    "candidate_id":result.staged.id().to_string(),
+                    "base_revision":result.staged.base_revision().to_string(),
+                    "expires_at_ns":result.staged.expires_at().as_nanos().to_string(),
+                    "effects":result.staged.diff().effects().iter().map(|effect|effect.as_str()).collect::<Vec<_>>(),
+                    "definition":{
+                        "id":result.definition_id,
+                        "version":result.definition_version.to_string(),
+                        "normalized_sha256":hex(&result.normalized_sha256)
+                    },
+                    "instances":result.instruments.iter().map(u64::to_string).collect::<Vec<_>>()
+                })
             })
             .map_err(lifecycle_domain_error),
         Mutation::ApplyConfiguration {

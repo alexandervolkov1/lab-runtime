@@ -645,46 +645,115 @@ impl Runtime {
                 }
                 Ok(CommandResult::Registered(id))
             }
-            Command::RegisterSimpleDevice(config) => {
-                let id = config.id;
-                if self.contains_instrument(id) {
-                    return Err(Error::DuplicateInstrument(id));
-                }
-                if self.instrument_count() >= MAX_INSTRUMENTS {
-                    return Err(Error::InvalidConfiguration("instrument limit reached (64)"));
-                }
-                if self.simple_device_instruments.len()
-                    >= crate::simple_device::MAX_SIMPLE_INSTRUMENTS
+            Command::RegisterSimpleDevice(config) => self.register_simple_device(config, false),
+            Command::RegisterPreparedSimpleDevice(config) => {
+                self.register_simple_device(config, true)
+            }
+            Command::PublishPreparedSimpleDevices { instruments } => {
+                if instruments.is_empty()
+                    || instruments.len() > 4
+                    || instruments
+                        .iter()
+                        .any(|instrument| !self.prepared_simple_devices.contains(instrument))
                 {
                     return Err(Error::InvalidConfiguration(
-                        "simple-device instrument limit reached (32)",
+                        "invalid prepared simple-device publication",
                     ));
                 }
-                if !self.resources.contains_key(&config.binding.resource) {
-                    return Err(TransportError::UnknownResource.into());
+                for instrument in &instruments {
+                    self.prepared_simple_devices.remove(instrument);
                 }
-                let instrument = SimpleDeviceInstrument::new(config)?;
-                let mut authorities = Vec::new();
-                for parameter in &instrument.descriptor.parameters {
-                    if parameter.role == crate::ParameterRole::Actuator {
-                        let actuator = ActuatorId::new(id, parameter.id);
-                        authorities.push((
-                            actuator,
-                            OutputAuthority::new(
-                                actuator,
-                                parameter.value_spec.clone(),
-                                parameter.unit,
-                            )?,
+                Ok(CommandResult::Registered(instruments[0]))
+            }
+            Command::DiscardPreparedSimpleDevices { instruments } => {
+                if instruments.is_empty() || instruments.len() > 4 {
+                    return Err(Error::InvalidConfiguration(
+                        "invalid prepared simple-device discard",
+                    ));
+                }
+                let prepared: BTreeSet<_> = instruments.iter().copied().collect();
+                for instrument in &instruments {
+                    if !self.prepared_simple_devices.contains(instrument) {
+                        return Err(Error::InvalidConfiguration(
+                            "prepared simple-device instrument missing",
+                        ));
+                    }
+                    if self
+                        .pending_simple_reads
+                        .values()
+                        .any(|pending| pending.instrument == *instrument)
+                    {
+                        return Err(Error::InvalidConfiguration(
+                            "prepared simple-device has pending physical work",
                         ));
                     }
                 }
-                self.simple_device_instruments.insert(id, instrument);
-                let actuators: Vec<_> = authorities.iter().map(|(actuator, _)| *actuator).collect();
-                self.outputs.extend(authorities);
-                for actuator in actuators {
-                    self.sync_recording_output_context(actuator);
+                let pending_outputs: Vec<_> = self
+                    .pending_output_writes
+                    .iter()
+                    .filter_map(|(&(resource, transaction), pending)| {
+                        prepared
+                            .contains(&pending.actuator.instrument())
+                            .then_some((resource, transaction, pending.clone()))
+                    })
+                    .collect();
+                for (resource, transaction, pending) in pending_outputs {
+                    let executor = self
+                        .resources
+                        .get_mut(&resource)
+                        .ok_or(TransportError::UnknownResource)?;
+                    let intent = executor.cancel_queued_output(transaction);
+                    if intent.is_none() && executor.output_may_have_started(transaction) {
+                        return Err(Error::InvalidConfiguration(
+                            "prepared simple-device has started physical work",
+                        ));
+                    }
+                    self.outputs
+                        .get_mut(&pending.actuator)
+                        .ok_or(OutputError::UnknownActuator)?
+                        .abort_transport(intent.unwrap_or(pending.intent));
+                    self.pending_output_writes.remove(&(resource, transaction));
                 }
-                Ok(CommandResult::Registered(id))
+                let prepared_controllers: Vec<_> = self
+                    .controllers
+                    .iter()
+                    .filter_map(|(id, controller)| {
+                        (prepared.contains(&controller.config.input.instrument())
+                            || prepared.contains(&controller.config.output.instrument()))
+                        .then_some(*id)
+                    })
+                    .collect();
+                for controller in prepared_controllers {
+                    let state = self
+                        .controllers
+                        .get(&controller)
+                        .expect("controller selected above")
+                        .state;
+                    if !matches!(
+                        state,
+                        crate::control::ControllerState::Created
+                            | crate::control::ControllerState::Ready
+                    ) {
+                        return Err(Error::InvalidConfiguration(
+                            "prepared simple-device controller became active",
+                        ));
+                    }
+                    self.controllers.remove(&controller);
+                }
+                for instrument in instruments {
+                    self.prepared_simple_devices.remove(&instrument);
+                    if let Some(device) = self.simple_device_instruments.remove(&instrument) {
+                        for parameter in device.descriptor.parameters {
+                            if parameter.role == crate::ParameterRole::Actuator {
+                                let actuator = ActuatorId::new(instrument, parameter.id);
+                                self.outputs.remove(&actuator);
+                                self.output_attempts.remove(&actuator);
+                                self.output_dispatch_attempts.remove(&actuator);
+                            }
+                        }
+                    }
+                }
+                Ok(CommandResult::PreparedComponentsDiscarded)
             }
             Command::QueueMetakonRead {
                 instrument,
@@ -1146,6 +1215,49 @@ impl Runtime {
         }
     }
 
+    fn register_simple_device(
+        &mut self,
+        config: SimpleDeviceInstrumentConfig,
+        prepared: bool,
+    ) -> Result<CommandResult, Error> {
+        let id = config.id;
+        if self.contains_instrument(id) {
+            return Err(Error::DuplicateInstrument(id));
+        }
+        if self.instrument_count() >= MAX_INSTRUMENTS {
+            return Err(Error::InvalidConfiguration("instrument limit reached (64)"));
+        }
+        if self.simple_device_instruments.len() >= crate::simple_device::MAX_SIMPLE_INSTRUMENTS {
+            return Err(Error::InvalidConfiguration(
+                "simple-device instrument limit reached (32)",
+            ));
+        }
+        if !self.resources.contains_key(&config.binding.resource) {
+            return Err(TransportError::UnknownResource.into());
+        }
+        let instrument = SimpleDeviceInstrument::new(config)?;
+        let mut authorities = Vec::new();
+        for parameter in &instrument.descriptor.parameters {
+            if parameter.role == crate::ParameterRole::Actuator {
+                let actuator = ActuatorId::new(id, parameter.id);
+                authorities.push((
+                    actuator,
+                    OutputAuthority::new(actuator, parameter.value_spec.clone(), parameter.unit)?,
+                ));
+            }
+        }
+        self.simple_device_instruments.insert(id, instrument);
+        if prepared {
+            self.prepared_simple_devices.insert(id);
+        }
+        let actuators: Vec<_> = authorities.iter().map(|(actuator, _)| *actuator).collect();
+        self.outputs.extend(authorities);
+        for actuator in actuators {
+            self.sync_recording_output_context(actuator);
+        }
+        Ok(CommandResult::Registered(id))
+    }
+
     /// Reads owned snapshots only. Never refreshes, reads a clock or advances simulation.
     pub fn query(&self, query: Query) -> Result<QueryResult, Error> {
         match query {
@@ -1157,6 +1269,7 @@ impl Runtime {
             Query::Output(id) => self
                 .outputs
                 .get(&id)
+                .filter(|_| !self.prepared_simple_devices.contains(&id.instrument()))
                 .map(|authority| QueryResult::Output(authority.snapshot()))
                 .ok_or(OutputError::UnknownActuator.into()),
             Query::Transport(id) => self
@@ -1191,8 +1304,9 @@ impl Runtime {
                     )
                     .chain(
                         self.simple_device_instruments
-                            .values()
-                            .map(|instrument| instrument.descriptor.clone()),
+                            .iter()
+                            .filter(|(id, _)| !self.prepared_simple_devices.contains(id))
+                            .map(|(_, instrument)| instrument.descriptor.clone()),
                     )
                     .chain(
                         self.thermal_plants
@@ -1212,6 +1326,9 @@ impl Runtime {
                 Ok(QueryResult::Descriptor(self.descriptor(id)?.clone()))
             }
             Query::GetInstrumentState(id) => {
+                if self.prepared_simple_devices.contains(&id) {
+                    return Err(Error::UnknownInstrument(id));
+                }
                 if let Some(instrument) = self.instruments.get(&id) {
                     Ok(QueryResult::State(InstrumentState {
                         instrument: id,

@@ -28,6 +28,7 @@ pub(super) fn decode(operation: &str, args: &Value) -> Result<Mutation, &'static
         }
         "reload_configuration"
         | "stage_configuration"
+        | "stage_simple_device_candidate"
         | "apply_configuration"
         | "property_configure"
         | "reconnect_resource" => configuration_api::decode_mutation(operation, args),
@@ -54,6 +55,7 @@ pub(super) fn dispatch(
         | Mutation::ResetFailed { .. } => controllers::dispatch(service, mutation, request_id),
         Mutation::ReloadConfiguration
         | Mutation::StageConfiguration
+        | Mutation::StageSimpleDeviceCandidate { .. }
         | Mutation::ApplyConfiguration { .. }
         | Mutation::ConfigureProperty { .. }
         | Mutation::ReconnectResource { .. } => {
@@ -163,6 +165,16 @@ pub(super) fn recorded_intent(mutation: &Mutation) -> Option<(&'static str, Stri
         ),
         Mutation::ReloadConfiguration => ("reload_configuration", json!({})),
         Mutation::StageConfiguration => ("stage_configuration", json!({})),
+        Mutation::StageSimpleDeviceCandidate {
+            expected_revision,
+            candidate,
+        } => (
+            "stage_simple_device_candidate",
+            json!({"expected_revision":expected_revision.to_string(),
+                "definition_id":candidate.definition.definition_id,
+                "definition_version":candidate.definition.definition_version.to_string(),
+                "instances":candidate.instances.iter().map(|instance|instance.instrument_id.to_string()).collect::<Vec<_>>() }),
+        ),
         Mutation::ApplyConfiguration {
             candidate_id,
             expected_revision,

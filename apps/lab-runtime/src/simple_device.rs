@@ -23,6 +23,12 @@ pub(crate) const MAX_SIMPLE_DEFINITION_BYTES: usize = 8_192;
 pub(crate) const MAX_SIMPLE_CANONICAL_BYTES: usize = 6_144;
 pub(crate) const MAX_SIMPLE_DEFINITIONS: usize = 16;
 pub(crate) const MAX_SIMPLE_INSTANCES: usize = 32;
+/// Maximum compact bytes retained for one complete Application candidate.
+pub(crate) const MAX_SIMPLE_CANDIDATE_BYTES: usize = 8_192;
+/// Maximum lexical JSON values/object members in one complete candidate.
+pub(crate) const MAX_SIMPLE_CANDIDATE_VALUES: usize = 900;
+/// Maximum JSON container depth inside one complete candidate.
+pub(crate) const MAX_SIMPLE_CANDIDATE_DEPTH: usize = 8;
 const MAX_PARAMETERS: usize = 16;
 const MAX_REQUEST_SEGMENTS: usize = 8;
 const MAX_REQUEST_LITERAL_BYTES: usize = 32;
@@ -55,6 +61,102 @@ pub(crate) struct CompiledSimpleDefinition {
     pub(crate) canonical: Arc<[u8]>,
     pub(crate) canonical_sha256: [u8; 32],
     parameters: Vec<CompiledParameterTemplate>,
+}
+
+/// One fully typed and normalized Application provisioning candidate.
+///
+/// Equality is semantic: float zeroes and definition range spellings are
+/// normalized before this value can enter the SessionStore.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimpleDeviceCandidate {
+    pub(crate) schema_version: u16,
+    pub(crate) definition: CompiledSimpleDefinition,
+    pub(crate) instances: Vec<SimpleCandidateInstance>,
+    pub(crate) canonical: Arc<[u8]>,
+}
+
+impl SimpleDeviceCandidate {
+    pub(crate) fn output_capable(&self) -> bool {
+        self.instances.iter().any(|instance| {
+            instance
+                .compiled
+                .parameters
+                .iter()
+                .any(|parameter| parameter.write.is_some())
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SimpleCandidateInstance {
+    pub(crate) instrument_id: u64,
+    pub(crate) key: String,
+    pub(crate) display_name: String,
+    pub(crate) resource_id: u64,
+    pub(crate) address: u16,
+    pub(crate) channel: u16,
+    pub(crate) poll_period_ms: u64,
+    pub(crate) queue_timeout_ms: u64,
+    pub(crate) transaction_timeout_ms: u64,
+    pub(crate) history_capacity: usize,
+    pub(crate) safe_profile: Option<SimpleCandidateSafeProfile>,
+    pub(crate) controller: Option<SimpleCandidateController>,
+    pub(crate) compiled: CompiledSimpleInstance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SimpleCandidateSafeProfile {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) safe_value: f64,
+    pub(crate) max_lease_ms: u64,
+    pub(crate) max_proposal_ttl_ms: u64,
+    pub(crate) required_evidence: SimpleCandidateEvidence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SimpleCandidateEvidence {
+    Ack,
+    Readback,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SimpleCandidateController {
+    pub(crate) id: u64,
+    pub(crate) key: String,
+    pub(crate) input_instrument_id: u64,
+    pub(crate) input_parameter_id: u64,
+    pub(crate) output_instrument_id: u64,
+    pub(crate) output_parameter_id: u64,
+    pub(crate) reference_id: u64,
+    pub(crate) period_ms: u64,
+    pub(crate) ema_time_constant_ms: u64,
+    pub(crate) ema_warmup_samples: usize,
+    pub(crate) kp: f64,
+    pub(crate) ki: f64,
+    pub(crate) kd: f64,
+    pub(crate) output_min: f64,
+    pub(crate) output_max: f64,
+    pub(crate) max_input_age_ms: u64,
+    pub(crate) max_tick_gap_ms: u64,
+    pub(crate) lease_lifetime_ms: u64,
+    pub(crate) proposal_ttl_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SimpleCandidateError {
+    Structural(String),
+    Semantic(String),
+}
+
+impl SimpleCandidateError {
+    fn structural(message: impl AsRef<str>) -> Self {
+        Self::Structural(message.as_ref().chars().take(256).collect())
+    }
+
+    fn semantic(message: impl AsRef<str>) -> Self {
+        Self::Semantic(message.as_ref().chars().take(256).collect())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +194,75 @@ struct DefinitionDto {
     definition_id: String,
     definition_version: u32,
     parameters: Vec<ParameterDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CandidateDto {
+    schema_version: u16,
+    definition: DefinitionDto,
+    instances: Vec<CandidateInstanceDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CandidateInstanceDto {
+    instrument_id: u64,
+    key: String,
+    display_name: String,
+    resource_id: u64,
+    address: u16,
+    channel: u16,
+    poll_period_ms: u64,
+    queue_timeout_ms: u64,
+    transaction_timeout_ms: u64,
+    history_capacity: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    safe_profile: Option<CandidateSafeProfileDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    controller: Option<CandidateControllerDto>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CandidateSafeProfileDto {
+    min: f64,
+    max: f64,
+    safe_value: f64,
+    max_lease_ms: u64,
+    max_proposal_ttl_ms: u64,
+    required_evidence: CandidateEvidenceDto,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CandidateEvidenceDto {
+    Ack,
+    Readback,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct CandidateControllerDto {
+    id: u64,
+    key: String,
+    input_instrument_id: u64,
+    input_parameter_id: u64,
+    output_instrument_id: u64,
+    output_parameter_id: u64,
+    reference_id: u64,
+    period_ms: u64,
+    ema_time_constant_ms: u64,
+    ema_warmup_samples: usize,
+    kp: f64,
+    ki: f64,
+    kd: f64,
+    output_min: f64,
+    output_max: f64,
+    max_input_age_ms: u64,
+    max_tick_gap_ms: u64,
+    lease_lifetime_ms: u64,
+    proposal_ttl_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -310,8 +481,14 @@ pub(crate) fn parse_simple_definition(
     }
     let text = std::str::from_utf8(bytes)
         .map_err(|_| SimpleDefinitionError::new("simple definition must be UTF-8"))?;
-    let mut dto: DefinitionDto = serde_json::from_str(text)
+    let dto: DefinitionDto = serde_json::from_str(text)
         .map_err(|error| SimpleDefinitionError::new(format!("invalid simple JSON: {error}")))?;
+    compile_definition_dto(dto)
+}
+
+fn compile_definition_dto(
+    mut dto: DefinitionDto,
+) -> Result<CompiledSimpleDefinition, SimpleDefinitionError> {
     validate_definition(&dto)?;
     normalize_validated_ranges(&mut dto)?;
     let canonical = serde_json::to_vec(&dto)
@@ -334,6 +511,330 @@ pub(crate) fn parse_simple_definition(
         canonical: Arc::from(canonical),
         parameters,
     })
+}
+
+/// Parse, normalize and compile one complete bounded Application candidate.
+pub(crate) fn parse_simple_candidate(
+    value: &serde_json::Value,
+) -> Result<SimpleDeviceCandidate, SimpleCandidateError> {
+    let encoded = serde_json::to_vec(value)
+        .map_err(|_| SimpleCandidateError::structural("candidate serialization failed"))?;
+    if encoded.len() > MAX_SIMPLE_CANDIDATE_BYTES {
+        return Err(SimpleCandidateError::structural(
+            "simple-device candidate exceeds 8192 bytes",
+        ));
+    }
+    let (values, depth) = json_shape(value);
+    if values > MAX_SIMPLE_CANDIDATE_VALUES {
+        return Err(SimpleCandidateError::structural(
+            "simple-device candidate exceeds 900 lexical values",
+        ));
+    }
+    if depth > MAX_SIMPLE_CANDIDATE_DEPTH {
+        return Err(SimpleCandidateError::structural(
+            "simple-device candidate exceeds depth 8",
+        ));
+    }
+    let mut dto: CandidateDto = serde_json::from_value(value.clone()).map_err(|error| {
+        SimpleCandidateError::structural(format!("invalid simple-device candidate: {error}"))
+    })?;
+    if dto.schema_version != 1 {
+        return Err(SimpleCandidateError::structural(
+            "unsupported candidate schema_version",
+        ));
+    }
+    let definition = compile_definition_dto(dto.definition.clone())
+        .map_err(|error| SimpleCandidateError::semantic(error.to_string()))?;
+    normalize_validated_ranges(&mut dto.definition)
+        .map_err(|error| SimpleCandidateError::semantic(error.to_string()))?;
+    normalize_candidate_numbers(&mut dto);
+
+    let actuator = definition
+        .parameters
+        .iter()
+        .find(|parameter| parameter.role == ParameterRole::Actuator);
+    let output_capable = actuator.is_some();
+    if dto.instances.is_empty()
+        || (!output_capable && dto.instances.len() > 4)
+        || (output_capable && dto.instances.len() != 1)
+    {
+        return Err(SimpleCandidateError::structural(if output_capable {
+            "output candidate requires exactly one instance"
+        } else {
+            "read-only candidate requires 1..=4 instances"
+        }));
+    }
+
+    let mut instrument_ids = BTreeSet::new();
+    let mut instrument_keys = BTreeSet::new();
+    let mut instances = Vec::with_capacity(dto.instances.len());
+    for instance in &dto.instances {
+        validate_candidate_instance(instance, actuator).map_err(SimpleCandidateError::semantic)?;
+        if !instrument_ids.insert(instance.instrument_id) {
+            return Err(SimpleCandidateError::semantic(
+                "duplicate candidate instrument ID",
+            ));
+        }
+        if !instrument_keys.insert(instance.key.clone()) {
+            return Err(SimpleCandidateError::semantic(
+                "duplicate candidate instrument key",
+            ));
+        }
+        let compiled = compile_simple_instance(
+            &definition,
+            InstrumentId::new(instance.instrument_id),
+            instance.address,
+            instance.channel,
+        )
+        .map_err(|error| SimpleCandidateError::semantic(error.to_string()))?;
+        instances.push(SimpleCandidateInstance {
+            instrument_id: instance.instrument_id,
+            key: instance.key.clone(),
+            display_name: instance.display_name.clone(),
+            resource_id: instance.resource_id,
+            address: instance.address,
+            channel: instance.channel,
+            poll_period_ms: instance.poll_period_ms,
+            queue_timeout_ms: instance.queue_timeout_ms,
+            transaction_timeout_ms: instance.transaction_timeout_ms,
+            history_capacity: instance.history_capacity,
+            safe_profile: instance
+                .safe_profile
+                .map(|profile| SimpleCandidateSafeProfile {
+                    min: profile.min,
+                    max: profile.max,
+                    safe_value: profile.safe_value,
+                    max_lease_ms: profile.max_lease_ms,
+                    max_proposal_ttl_ms: profile.max_proposal_ttl_ms,
+                    required_evidence: match profile.required_evidence {
+                        CandidateEvidenceDto::Ack => SimpleCandidateEvidence::Ack,
+                        CandidateEvidenceDto::Readback => SimpleCandidateEvidence::Readback,
+                    },
+                }),
+            controller: instance
+                .controller
+                .as_ref()
+                .map(|controller| SimpleCandidateController {
+                    id: controller.id,
+                    key: controller.key.clone(),
+                    input_instrument_id: controller.input_instrument_id,
+                    input_parameter_id: controller.input_parameter_id,
+                    output_instrument_id: controller.output_instrument_id,
+                    output_parameter_id: controller.output_parameter_id,
+                    reference_id: controller.reference_id,
+                    period_ms: controller.period_ms,
+                    ema_time_constant_ms: controller.ema_time_constant_ms,
+                    ema_warmup_samples: controller.ema_warmup_samples,
+                    kp: controller.kp,
+                    ki: controller.ki,
+                    kd: controller.kd,
+                    output_min: controller.output_min,
+                    output_max: controller.output_max,
+                    max_input_age_ms: controller.max_input_age_ms,
+                    max_tick_gap_ms: controller.max_tick_gap_ms,
+                    lease_lifetime_ms: controller.lease_lifetime_ms,
+                    proposal_ttl_ms: controller.proposal_ttl_ms,
+                }),
+            compiled,
+        });
+    }
+    validate_candidate_correlations(&instances).map_err(SimpleCandidateError::semantic)?;
+    let canonical = serde_json::to_vec(&dto)
+        .map_err(|_| SimpleCandidateError::structural("candidate normalization failed"))?;
+    if canonical.len() > MAX_SIMPLE_CANDIDATE_BYTES {
+        return Err(SimpleCandidateError::structural(
+            "normalized simple-device candidate exceeds 8192 bytes",
+        ));
+    }
+    Ok(SimpleDeviceCandidate {
+        schema_version: dto.schema_version,
+        definition,
+        instances,
+        canonical: Arc::from(canonical),
+    })
+}
+
+fn normalize_candidate_numbers(dto: &mut CandidateDto) {
+    fn zero(value: &mut f64) {
+        if *value == 0.0 {
+            *value = 0.0;
+        }
+    }
+    for instance in &mut dto.instances {
+        if let Some(profile) = &mut instance.safe_profile {
+            for value in [&mut profile.min, &mut profile.max, &mut profile.safe_value] {
+                zero(value);
+            }
+        }
+        if let Some(controller) = &mut instance.controller {
+            for value in [
+                &mut controller.kp,
+                &mut controller.ki,
+                &mut controller.kd,
+                &mut controller.output_min,
+                &mut controller.output_max,
+            ] {
+                zero(value);
+            }
+        }
+    }
+}
+
+fn validate_candidate_instance(
+    instance: &CandidateInstanceDto,
+    actuator: Option<&CompiledParameterTemplate>,
+) -> Result<(), String> {
+    if instance.instrument_id == 0 || instance.resource_id == 0 {
+        return Err("candidate IDs must be nonzero".into());
+    }
+    validate_key(&instance.key).map_err(|error| error.to_string())?;
+    validate_display_name(&instance.display_name).map_err(|error| error.to_string())?;
+    if !(10..=60_000).contains(&instance.poll_period_ms)
+        || !(1..=2_000).contains(&instance.queue_timeout_ms)
+        || !(1..=2_000).contains(&instance.transaction_timeout_ms)
+        || !(1..=1_024).contains(&instance.history_capacity)
+    {
+        return Err("candidate instance timing/history is outside bounds".into());
+    }
+    match actuator {
+        None => {
+            if instance.safe_profile.is_some() || instance.controller.is_some() {
+                return Err("read-only candidate cannot contain safety/controller data".into());
+            }
+        }
+        Some(actuator) => {
+            let profile = instance
+                .safe_profile
+                .ok_or_else(|| "output candidate requires safe_profile".to_owned())?;
+            validate_candidate_safe_profile(profile, actuator)?;
+            if let Some(controller) = &instance.controller {
+                validate_candidate_controller(controller, instance, actuator, profile)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_candidate_safe_profile(
+    profile: CandidateSafeProfileDto,
+    actuator: &CompiledParameterTemplate,
+) -> Result<(), String> {
+    if !profile.min.is_finite()
+        || !profile.max.is_finite()
+        || !profile.safe_value.is_finite()
+        || profile.max <= profile.min
+        || profile.safe_value < profile.min
+        || profile.safe_value > profile.max
+        || !(1..=60_000).contains(&profile.max_lease_ms)
+        || !(1..=60_000).contains(&profile.max_proposal_ttl_ms)
+    {
+        return Err("invalid candidate safe_profile".into());
+    }
+    let ValueSpec::Float { min, max } = actuator.value_spec else {
+        return Err("candidate actuator must use float engineering domain".into());
+    };
+    if profile.min < min || profile.max > max {
+        return Err("safe_profile lies outside actuator domain".into());
+    }
+    if profile.required_evidence == CandidateEvidenceDto::Readback
+        && actuator
+            .write
+            .as_ref()
+            .is_none_or(|write| write.readback.is_none())
+    {
+        return Err("readback evidence requires an independent readback plan".into());
+    }
+    Ok(())
+}
+
+fn validate_candidate_controller(
+    controller: &CandidateControllerDto,
+    instance: &CandidateInstanceDto,
+    actuator: &CompiledParameterTemplate,
+    profile: CandidateSafeProfileDto,
+) -> Result<(), String> {
+    if controller.id == 0 || controller.reference_id == 0 {
+        return Err("controller identities must be nonzero".into());
+    }
+    validate_key(&controller.key).map_err(|error| error.to_string())?;
+    if controller.output_instrument_id != instance.instrument_id
+        || controller.output_parameter_id != actuator.id.get()
+    {
+        return Err("controller output must target the candidate actuator".into());
+    }
+    if !(1..=60_000).contains(&controller.period_ms)
+        || !(1..=60_000).contains(&controller.ema_time_constant_ms)
+        || !(1..=1_024).contains(&controller.ema_warmup_samples)
+        || !(1..=60_000).contains(&controller.max_input_age_ms)
+        || !(1..=60_000).contains(&controller.max_tick_gap_ms)
+        || !(1..=60_000).contains(&controller.lease_lifetime_ms)
+        || !(1..=60_000).contains(&controller.proposal_ttl_ms)
+        || controller.lease_lifetime_ms > profile.max_lease_ms
+        || controller.proposal_ttl_ms > profile.max_proposal_ttl_ms
+        || controller.proposal_ttl_ms > controller.lease_lifetime_ms
+        || ![
+            controller.kp,
+            controller.ki,
+            controller.kd,
+            controller.output_min,
+            controller.output_max,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+        || controller.output_max <= controller.output_min
+        || controller.output_min < profile.min
+        || controller.output_max > profile.max
+    {
+        return Err("invalid candidate controller policy".into());
+    }
+    Ok(())
+}
+
+fn validate_candidate_correlations(instances: &[SimpleCandidateInstance]) -> Result<(), String> {
+    for (index, left) in instances.iter().enumerate() {
+        for right in &instances[index + 1..] {
+            if left.resource_id == right.resource_id
+                && left.compiled.correlations.iter().any(|left_plan| {
+                    right
+                        .compiled
+                        .correlations
+                        .iter()
+                        .any(|right_plan| !correlations_distinguish(left_plan, right_plan))
+                })
+            {
+                return Err("shared resource lacks instance response correlation".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn json_shape(value: &serde_json::Value) -> (usize, usize) {
+    fn visit(value: &serde_json::Value, depth: usize, count: &mut usize, maximum: &mut usize) {
+        match value {
+            serde_json::Value::Object(object) => {
+                *maximum = (*maximum).max(depth);
+                *count += object.len();
+                for value in object.values() {
+                    visit(value, depth + 1, count, maximum);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                *maximum = (*maximum).max(depth);
+                *count += array.len();
+                for value in array {
+                    visit(value, depth + 1, count, maximum);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut count = 1;
+    // Depth is the number of container edges below the standalone candidate
+    // root. Embedding it under the Application root and `args` adds exactly two.
+    let mut depth = 0;
+    visit(value, 0, &mut count, &mut depth);
+    (count, depth)
 }
 
 fn normalize_validated_ranges(dto: &mut DefinitionDto) -> Result<(), SimpleDefinitionError> {
@@ -1127,6 +1628,190 @@ mod tests {
             .unwrap()
             .push(writable["parameters"][0].clone());
         serde_json::to_vec(&combined).unwrap()
+    }
+
+    fn read_only_candidate() -> Value {
+        json!({
+            "schema_version":1,
+            "definition":serde_json::from_slice::<Value>(&definition()).unwrap(),
+            "instances":[{
+                "instrument_id":1001,
+                "key":"furnace-1",
+                "display_name":"Furnace 1",
+                "resource_id":7,
+                "address":1,
+                "channel":2,
+                "poll_period_ms":250,
+                "queue_timeout_ms":250,
+                "transaction_timeout_ms":500,
+                "history_capacity":1024
+            }]
+        })
+    }
+
+    fn output_candidate() -> Value {
+        json!({
+            "schema_version":1,
+            "definition":serde_json::from_slice::<Value>(&writable_definition()).unwrap(),
+            "instances":[{
+                "instrument_id":1001,"key":"furnace-1","display_name":"Furnace 1",
+                "resource_id":7,"address":1,"channel":2,"poll_period_ms":250,
+                "queue_timeout_ms":250,"transaction_timeout_ms":500,"history_capacity":1024,
+                "safe_profile":{"min":0.0,"max":100.0,"safe_value":0.0,
+                    "max_lease_ms":2000,"max_proposal_ttl_ms":200,
+                    "required_evidence":"readback"}
+            }]
+        })
+    }
+
+    #[test]
+    fn application_candidate_is_closed_bounded_and_semantically_normalized() {
+        let candidate = read_only_candidate();
+        let compiled = parse_simple_candidate(&candidate).unwrap();
+        assert_eq!(compiled.schema_version, 1);
+        assert_eq!(compiled.instances.len(), 1);
+        assert!(compiled.canonical.len() <= MAX_SIMPLE_CANDIDATE_BYTES);
+        assert!(json_shape(&candidate).0 <= MAX_SIMPLE_CANDIDATE_VALUES);
+        assert!(json_shape(&candidate).1 <= MAX_SIMPLE_CANDIDATE_DEPTH);
+
+        let mut alternate = candidate.clone();
+        alternate["definition"]["parameters"][0]["engineering_min"] = json!(-50);
+        alternate["definition"]["parameters"][0]["engineering_max"] = json!(500);
+        let alternate = parse_simple_candidate(&alternate).unwrap();
+        assert_eq!(compiled, alternate);
+
+        let mut unknown = candidate.clone();
+        unknown["extra"] = json!(true);
+        assert!(matches!(
+            parse_simple_candidate(&unknown),
+            Err(SimpleCandidateError::Structural(_))
+        ));
+        let mut wrong_schema = candidate;
+        wrong_schema["schema_version"] = json!(2);
+        assert!(matches!(
+            parse_simple_candidate(&wrong_schema),
+            Err(SimpleCandidateError::Structural(_))
+        ));
+    }
+
+    #[test]
+    fn application_candidate_collective_byte_value_and_depth_bounds_are_exact() {
+        let mut exact_bytes = json!({"padding":""});
+        let base = serde_json::to_vec(&exact_bytes).unwrap().len();
+        exact_bytes["padding"] = json!("x".repeat(MAX_SIMPLE_CANDIDATE_BYTES - base));
+        assert_eq!(serde_json::to_vec(&exact_bytes).unwrap().len(), 8_192);
+        assert!(matches!(
+            parse_simple_candidate(&exact_bytes),
+            Err(SimpleCandidateError::Structural(message))
+                if !message.contains("exceeds 8192 bytes")
+        ));
+        exact_bytes["padding"] = json!(format!("{}x", exact_bytes["padding"].as_str().unwrap()));
+        assert!(matches!(
+            parse_simple_candidate(&exact_bytes),
+            Err(SimpleCandidateError::Structural(message))
+                if message.contains("exceeds 8192 bytes")
+        ));
+
+        let exact_values = json!({"values":vec![Value::Null; 898]});
+        assert_eq!(json_shape(&exact_values).0, 900);
+        assert!(matches!(
+            parse_simple_candidate(&exact_values),
+            Err(SimpleCandidateError::Structural(message))
+                if !message.contains("exceeds 900 lexical values")
+        ));
+        let over_values = json!({"values":vec![Value::Null; 899]});
+        assert_eq!(json_shape(&over_values).0, 901);
+        assert!(matches!(
+            parse_simple_candidate(&over_values),
+            Err(SimpleCandidateError::Structural(message))
+                if message.contains("exceeds 900 lexical values")
+        ));
+
+        fn nested(edges: usize) -> Value {
+            (0..edges).fold(Value::Null, |value, _| json!([value]))
+        }
+        let exact_depth = json!({"value":nested(8)});
+        assert_eq!(json_shape(&exact_depth).1, 8);
+        assert!(matches!(
+            parse_simple_candidate(&exact_depth),
+            Err(SimpleCandidateError::Structural(message))
+                if !message.contains("exceeds depth 8")
+        ));
+        let over_depth = json!({"value":nested(9)});
+        assert_eq!(json_shape(&over_depth).1, 9);
+        assert!(matches!(
+            parse_simple_candidate(&over_depth),
+            Err(SimpleCandidateError::Structural(message))
+                if message.contains("exceeds depth 8")
+        ));
+
+        let whole = json!({"v":1,"msg_id":"m","op":"stage_simple_device_candidate",
+            "request_id":{"scope":"s","seq":"1"},
+            "args":{"expected_revision":"1","candidate":exact_values}});
+        assert_eq!(json_shape(&whole).0, 909);
+        let candidate = read_only_candidate();
+        let whole = json!({"v":1,"msg_id":"m","op":"stage_simple_device_candidate",
+            "request_id":{"scope":"s","seq":"1"},
+            "args":{"expected_revision":"1","candidate":candidate}});
+        assert!(json_shape(&whole).0 <= 909);
+        assert!(json_shape(&whole).1 <= 10);
+        assert!(serde_json::to_vec(&whole).unwrap().len() <= 8_496);
+    }
+
+    #[test]
+    fn application_candidate_cardinality_and_conditioned_instance_shape_are_exact() {
+        let mut read_only = read_only_candidate();
+        let first = read_only["instances"][0].clone();
+        for ordinal in 2..=4 {
+            let mut instance = first.clone();
+            instance["instrument_id"] = json!(1000 + ordinal);
+            instance["key"] = json!(format!("furnace-{ordinal}"));
+            instance["address"] = json!(ordinal);
+            read_only["instances"]
+                .as_array_mut()
+                .unwrap()
+                .push(instance);
+        }
+        assert_eq!(
+            parse_simple_candidate(&read_only).unwrap().instances.len(),
+            4
+        );
+        let mut fifth = first;
+        fifth["instrument_id"] = json!(1005);
+        fifth["key"] = json!("furnace-5");
+        fifth["address"] = json!(5);
+        read_only["instances"].as_array_mut().unwrap().push(fifth);
+        assert!(matches!(
+            parse_simple_candidate(&read_only),
+            Err(SimpleCandidateError::Structural(_))
+        ));
+
+        let output = output_candidate();
+        assert_eq!(json_shape(&output).1, 8);
+        assert!(parse_simple_candidate(&output).unwrap().output_capable());
+        let mut second_output = output.clone();
+        let mut second = second_output["instances"][0].clone();
+        second["instrument_id"] = json!(1002);
+        second["key"] = json!("furnace-2");
+        second["address"] = json!(2);
+        second_output["instances"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        assert!(matches!(
+            parse_simple_candidate(&second_output),
+            Err(SimpleCandidateError::Structural(_))
+        ));
+
+        let mut missing_safe = output;
+        missing_safe["instances"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("safe_profile");
+        assert!(matches!(
+            parse_simple_candidate(&missing_safe),
+            Err(SimpleCandidateError::Semantic(_))
+        ));
     }
 
     #[test]

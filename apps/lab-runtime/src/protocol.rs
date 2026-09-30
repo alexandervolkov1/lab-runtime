@@ -37,6 +37,7 @@ enum Availability {
     Always,
     Recorder,
     Configuration,
+    SimpleDeviceProvisioning,
     ResourceReconnect,
     EmulatorPublication,
     VirtualModelLifecycle,
@@ -142,6 +143,12 @@ pub const OPERATIONS: &[OperationSpec] = &[
     operation!("runtime_shutdown", Mutation, []),
     operation!("stage_configuration", Mutation, Configuration, []),
     operation!(
+        "stage_simple_device_candidate",
+        Mutation,
+        SimpleDeviceProvisioning,
+        ["expected_revision", "candidate"]
+    ),
+    operation!(
         "apply_configuration",
         Mutation,
         Configuration,
@@ -203,6 +210,8 @@ pub struct ProtocolFeatures {
     pub recorder: bool,
     /// Declarative deployment lifecycle is configured.
     pub configuration: bool,
+    /// At least one configured COM resource can host a SimpleDevice candidate.
+    pub simple_device_provisioning: bool,
     /// At least one configured physical resource supports explicit reconnect.
     pub resource_reconnect: bool,
     /// At least one explicit virtual signal accepts external publication.
@@ -222,6 +231,7 @@ pub fn operation_supported(spec: &OperationSpec, features: ProtocolFeatures) -> 
         Availability::Always => true,
         Availability::Recorder => features.recorder,
         Availability::Configuration => features.configuration,
+        Availability::SimpleDeviceProvisioning => features.simple_device_provisioning,
         Availability::ResourceReconnect => features.resource_reconnect,
         Availability::EmulatorPublication => features.emulator_publication,
         Availability::VirtualModelLifecycle => features.virtual_model_lifecycle,
@@ -351,6 +361,11 @@ const CAPABILITIES: &[CapabilitySpec] = &[
         operation: "stage_configuration",
     },
     CapabilitySpec {
+        name: "simple_device_provisioning",
+        stability: "stable",
+        operation: "stage_simple_device_candidate",
+    },
+    CapabilitySpec {
         name: "resource_reconnect",
         stability: "stable",
         operation: "reconnect_resource",
@@ -395,6 +410,10 @@ pub fn limits() -> Value {
         "runtime_overrides":crate::configuration::MAX_PROPERTY_OVERLAYS,
         "staged_candidates":1,
         "candidate_retention_seconds":crate::deployment::CANDIDATE_LIFETIME.as_secs()
+        ,"simple_device_candidate_bytes":crate::simple_device::MAX_SIMPLE_CANDIDATE_BYTES
+        ,"simple_device_candidate_values":crate::simple_device::MAX_SIMPLE_CANDIDATE_VALUES
+        ,"simple_device_candidate_depth":crate::simple_device::MAX_SIMPLE_CANDIDATE_DEPTH
+        ,"simple_device_provisioning_retained_bytes":sessions::PROVISIONING_RETAINED_BYTES
     });
     let emulator = json!({"targets":64,"records_per_request":1,
         "metadata_bytes":0,"pending_per_scope":sessions::MAX_PENDING_SCOPE});
@@ -865,6 +884,7 @@ mod tests {
             "controller_reset_failed",
             "runtime_shutdown",
             "stage_configuration",
+            "stage_simple_device_candidate",
             "apply_configuration",
             "reload_configuration",
             "property_configure",
@@ -885,7 +905,7 @@ mod tests {
         };
         assert_eq!(projected(OperationKind::Query), queries);
         assert_eq!(projected(OperationKind::Mutation), mutations);
-        assert_eq!(OPERATIONS.len(), 42);
+        assert_eq!(OPERATIONS.len(), 43);
         let capabilities = [
             "operation_lifecycle",
             "structured_discovery",
@@ -908,6 +928,7 @@ mod tests {
             "configuration_properties",
             "configuration_write",
             "deployment_configuration",
+            "simple_device_provisioning",
             "resource_reconnect",
             "virtual_instruments",
             "emulator_publication",
@@ -920,7 +941,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             capabilities
         );
-        assert_eq!(CAPABILITIES.len(), 25);
+        assert_eq!(CAPABILITIES.len(), 26);
         assert!(CAPABILITIES.iter().all(|capability| {
             matches!(capability.stability, "stable" | "transitional")
                 && operation_spec(capability.operation).is_some()
@@ -978,6 +999,7 @@ mod tests {
                 "controller_reset_failed|Mutation|Always|controller\n",
                 "runtime_shutdown|Mutation|Always|\n",
                 "stage_configuration|Mutation|Configuration|\n",
+                "stage_simple_device_candidate|Mutation|SimpleDeviceProvisioning|expected_revision,candidate\n",
                 "apply_configuration|Mutation|Configuration|candidate_id,expected_revision\n",
                 "reload_configuration|Mutation|Configuration|\n",
                 "property_configure|Mutation|Configuration|target,property,value,expected_revision\n",
@@ -1027,6 +1049,7 @@ mod tests {
                 "configuration_properties|stable|configuration_properties\n",
                 "configuration_write|stable|property_configure\n",
                 "deployment_configuration|stable|stage_configuration\n",
+                "simple_device_provisioning|stable|stage_simple_device_candidate\n",
                 "resource_reconnect|stable|reconnect_resource\n",
                 "virtual_instruments|stable|discover\n",
                 "emulator_publication|stable|emulator_publish\n",

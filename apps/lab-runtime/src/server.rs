@@ -548,6 +548,21 @@ pub fn run(
         if service.owner_mut().service(&clock).is_err() {
             service.request_fatal_shutdown();
         }
+        for (id, value) in app.poll_configuration(&mut service) {
+            let message = encode_outgoing(&value);
+            if outgoing_tx
+                .try_send(Outgoing::Reply {
+                    connection: id,
+                    message,
+                    consumed: false,
+                    hello: false,
+                })
+                .is_err()
+                && delivery.begin_close(id)
+            {
+                app.detach(&service, id);
+            }
+        }
         for (id, value) in app.poll_recording(&mut service) {
             let message = encode_outgoing(&value);
             if outgoing_tx

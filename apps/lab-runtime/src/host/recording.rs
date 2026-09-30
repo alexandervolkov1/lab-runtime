@@ -318,11 +318,7 @@ impl HostCore {
             b"not_present".to_vec(),
         );
         let mut objects = Vec::new();
-        let QueryResult::Instruments(instruments) = self.runtime.query(Query::Discover)? else {
-            return Err(Error::InvalidConfiguration(
-                "activation discovery unavailable",
-            ));
-        };
+        let instruments = self.runtime.activation_instrument_descriptors();
         for instrument in instruments {
             let component = self
                 .components

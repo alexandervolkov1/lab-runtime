@@ -84,7 +84,7 @@ use crate::{
     signal::SignalBuffer, virtual_instrument::VirtualInstrument,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -283,6 +283,18 @@ pub enum Command {
     RegisterMetakon(MetakonInstrumentConfig),
     /// Validate and atomically register one compiled read-only simple-device instance.
     RegisterSimpleDevice(SimpleDeviceInstrumentConfig),
+    /// Register a compiled SimpleDevice behind a non-discoverable preparation fence.
+    RegisterPreparedSimpleDevice(SimpleDeviceInstrumentConfig),
+    /// Atomically publish all named prepared SimpleDevice instruments.
+    PublishPreparedSimpleDevices {
+        /// Complete bounded instrument set, 1..=4.
+        instruments: Vec<InstrumentId>,
+    },
+    /// Drop prepared instruments only before any ambiguous physical output remains.
+    DiscardPreparedSimpleDevices {
+        /// Complete bounded instrument set, 1..=4.
+        instruments: Vec<InstrumentId>,
+    },
     /// Queue one trusted known-profile read; this is a mutation because it schedules I/O.
     QueueMetakonRead {
         /// Registered logical instrument.
@@ -546,6 +558,7 @@ pub struct Runtime {
     instruments: BTreeMap<InstrumentId, VirtualInstrument>,
     metakon_instruments: BTreeMap<InstrumentId, MetakonInstrument>,
     simple_device_instruments: BTreeMap<InstrumentId, SimpleDeviceInstrument>,
+    prepared_simple_devices: BTreeSet<InstrumentId>,
     thermal_plants: BTreeMap<InstrumentId, ThermalPlantInstrument>,
     references: BTreeMap<ReferenceId, RuntimeReference>,
     controllers: BTreeMap<ControllerId, NativeController>,
@@ -591,6 +604,8 @@ struct PendingSimpleRead {
 
 #[derive(Clone)]
 struct PendingOutputWrite {
+    actuator: ActuatorId,
+    intent: OutputIntent,
     timeout: Duration,
     protocol: PendingOutputProtocol,
 }
@@ -933,10 +948,19 @@ impl Runtime {
         adapter: Box<dyn ByteTransport>,
         recovery_timeout: Duration,
     ) -> Result<(), Error> {
+        let replacement_generation = self
+            .resources
+            .get(&id)
+            .ok_or(TransportError::UnknownResource)?
+            .snapshot()
+            .generation
+            .checked_add(1)
+            .ok_or(TransportError::CounterExhausted)?;
         if self.shutdown_transport(id, self.transport_time)? != TransportShutdown::Complete {
             return Err(TransportError::ResourceBusy.into());
         }
-        let replacement = ResourceExecutor::with_recovery_timeout(id, adapter, recovery_timeout)?;
+        let replacement =
+            ResourceExecutor::replacement(id, adapter, recovery_timeout, replacement_generation)?;
         self.resources.insert(id, replacement);
         Ok(())
     }
@@ -957,6 +981,66 @@ impl Runtime {
         self.simple_device_instruments
             .get(&instrument)
             .map(|instance| instance.binding)
+    }
+
+    /// Inspect a non-discoverable prepared output from the serialized host owner.
+    /// This conveys no lease, transport handle, or mutation authority.
+    pub fn prepared_simple_output_snapshot(
+        &self,
+        actuator: ActuatorId,
+    ) -> Option<crate::output::OutputSnapshot> {
+        self.prepared_simple_devices
+            .contains(&actuator.instrument())
+            .then(|| self.outputs.get(&actuator).map(OutputAuthority::snapshot))
+            .flatten()
+    }
+
+    /// Clone one non-discoverable prepared descriptor for trusted activation
+    /// provenance construction. Application queries remain fenced separately.
+    pub fn prepared_simple_descriptor(
+        &self,
+        instrument: InstrumentId,
+    ) -> Option<InstrumentDescriptor> {
+        self.prepared_simple_devices
+            .contains(&instrument)
+            .then(|| {
+                self.simple_device_instruments
+                    .get(&instrument)
+                    .map(|instance| instance.descriptor.clone())
+            })
+            .flatten()
+    }
+
+    /// Clone the complete activation graph, including an owner-held prepared
+    /// topology that is still hidden from ordinary discovery.
+    pub fn activation_instrument_descriptors(&self) -> Vec<InstrumentDescriptor> {
+        let mut descriptors: Vec<_> = self
+            .instruments
+            .values()
+            .map(|instrument| instrument.descriptor.clone())
+            .chain(
+                self.metakon_instruments
+                    .values()
+                    .map(|instrument| instrument.descriptor.clone()),
+            )
+            .chain(
+                self.simple_device_instruments
+                    .values()
+                    .map(|instrument| instrument.descriptor.clone()),
+            )
+            .chain(
+                self.thermal_plants
+                    .values()
+                    .map(|instrument| instrument.descriptor.clone()),
+            )
+            .chain(
+                self.managed
+                    .values()
+                    .map(|component| component.descriptor.clone()),
+            )
+            .collect();
+        descriptors.sort_by_key(|descriptor| descriptor.id);
+        descriptors
     }
 
     /// Inspect unfinished worker count without waiting for interpreter execution.
@@ -986,6 +1070,9 @@ impl Runtime {
     }
 
     fn signal(&self, id: SignalId) -> Result<&SignalBuffer, Error> {
+        if self.prepared_simple_devices.contains(&id.instrument()) {
+            return Err(Error::UnknownSignal(id));
+        }
         self.instruments
             .get(&id.instrument())
             .filter(|_| id.parameter() == TEMPERATURE)

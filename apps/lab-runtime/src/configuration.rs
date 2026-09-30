@@ -19,7 +19,8 @@ use crate::{
     },
     simple_device::{
         CompiledSimpleDefinition, CompiledSimpleInstance, MAX_SIMPLE_DEFINITION_BYTES,
-        MAX_SIMPLE_DEFINITIONS, MAX_SIMPLE_INSTANCES, compile_simple_instance,
+        MAX_SIMPLE_DEFINITIONS, MAX_SIMPLE_INSTANCES, SimpleCandidateController,
+        SimpleCandidateEvidence, SimpleDeviceCandidate, compile_simple_instance,
         correlations_distinguish, parse_simple_definition,
     },
     websocket,
@@ -205,6 +206,7 @@ pub struct FrozenDeployment {
     artifacts: Vec<FrozenArtifact>,
     simple_definitions: Vec<(PathBuf, CompiledSimpleDefinition)>,
     property_overlays: Vec<String>,
+    api_simple_instruments: BTreeSet<u64>,
 }
 
 /// One bounded scalar admitted by the generic live property operation.
@@ -311,6 +313,142 @@ impl FrozenDeployment {
         Ok(next)
     }
 
+    /// Build one fully validated process-local deployment overlay from an
+    /// already normalized Application candidate. No source file is read or
+    /// rewritten; the embedded definition becomes one immutable frozen artifact.
+    pub(crate) fn with_simple_device_candidate(
+        &self,
+        candidate: &SimpleDeviceCandidate,
+    ) -> Result<Self, ConfigurationError> {
+        let mut next = self.clone();
+        let definition_name = format!(
+            "__application__/{}-{}-{}.json",
+            candidate.definition.definition_id,
+            candidate.definition.definition_version,
+            hex_sha256(candidate.definition.canonical_sha256)
+        );
+        let declared = PathBuf::from(definition_name);
+        let resolved = resolve_artifact(&next.base, &declared)?;
+        let existing_definition = next.simple_definitions.iter().find(|(_, definition)| {
+            definition.definition_id == candidate.definition.definition_id
+                && definition.definition_version == candidate.definition.definition_version
+        });
+        let definition_path = if let Some((path, definition)) = existing_definition {
+            if definition.canonical_sha256 != candidate.definition.canonical_sha256 {
+                return Err(ConfigurationError::invalid(
+                    "simple definition ID/version has conflicting normalized content",
+                ));
+            }
+            path.strip_prefix(&next.base)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| path.clone())
+        } else {
+            if next.simple_definitions.len() >= MAX_SIMPLE_DEFINITIONS {
+                return Err(ConfigurationError::invalid(
+                    "simple-device definition limit reached (16)",
+                ));
+            }
+            if next.artifacts.len() >= MAX_DEPLOYMENT_ARTIFACTS
+                || next
+                    .artifacts
+                    .iter()
+                    .map(|artifact| artifact.bytes.len())
+                    .sum::<usize>()
+                    .saturating_add(candidate.definition.canonical.len())
+                    > MAX_DEPLOYMENT_BYTES
+            {
+                return Err(ConfigurationError::TooLarge);
+            }
+            next.artifacts.push(FrozenArtifact {
+                kind: ArtifactKind::SimpleDeviceDefinition,
+                declared_path: resolved.clone(),
+                bytes: candidate.definition.canonical.clone(),
+                sha256: candidate.definition.canonical_sha256,
+            });
+            next.simple_definitions
+                .push((resolved, candidate.definition.clone()));
+            declared
+        };
+
+        for instance in &candidate.instances {
+            next.api_simple_instruments.insert(instance.instrument_id);
+            next.effective
+                .dto
+                .instruments
+                .push(InstrumentDto::SimpleDevice {
+                    id: instance.instrument_id,
+                    key: instance.key.clone(),
+                    display_name: instance.display_name.clone(),
+                    definition: definition_path.clone(),
+                    resource_id: instance.resource_id,
+                    address: instance.address,
+                    channel: instance.channel,
+                    poll_period_ms: instance.poll_period_ms,
+                    queue_timeout_ms: instance.queue_timeout_ms,
+                    transaction_timeout_ms: instance.transaction_timeout_ms,
+                    history_capacity: instance.history_capacity,
+                });
+            if let Some(profile) = instance.safe_profile {
+                let actuator = instance
+                    .compiled
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.descriptor.role == ParameterRole::Actuator)
+                    .ok_or_else(|| ConfigurationError::invalid("safe profile lacks actuator"))?;
+                next.effective.dto.safe_profiles.push(SafeProfileDto {
+                    instrument_id: instance.instrument_id,
+                    parameter_id: actuator.descriptor.id.get(),
+                    min: profile.min,
+                    max: profile.max,
+                    safe_value: profile.safe_value,
+                    max_lease_ms: profile.max_lease_ms,
+                    max_proposal_ttl_ms: profile.max_proposal_ttl_ms,
+                    required_evidence: match profile.required_evidence {
+                        SimpleCandidateEvidence::Ack => EvidenceDto::Ack,
+                        SimpleCandidateEvidence::Readback => EvidenceDto::Readback,
+                    },
+                });
+            }
+            if let Some(controller) = &instance.controller {
+                next.effective
+                    .dto
+                    .controllers
+                    .push(controller_dto(controller));
+            }
+        }
+        next.effective
+            .dto
+            .instruments
+            .sort_by_key(InstrumentDto::id);
+        next.effective.dto.controllers.sort_by_key(|item| item.id);
+        next.effective
+            .dto
+            .safe_profiles
+            .sort_by_key(|item| (item.instrument_id, item.parameter_id));
+        validate_structure(&next.effective.dto)?;
+        validate_frozen_simple_definitions(
+            &next.effective.dto,
+            &next.base,
+            &next.simple_definitions,
+        )?;
+        next.property_overlays.push(
+            serde_json::json!({
+                "source":"process_local_application_candidate",
+                "schema_version":candidate.schema_version,
+                "definition_id":candidate.definition.definition_id,
+                "definition_version":candidate.definition.definition_version,
+                "definition_sha256":hex_sha256(candidate.definition.canonical_sha256),
+                "candidate_sha256":hex_sha256(Sha256::digest(&candidate.canonical).into()),
+                "instances":candidate.instances.iter().map(|instance|instance.instrument_id.to_string()).collect::<Vec<_>>()
+            })
+            .to_string(),
+        );
+        if next.property_overlays.len() > MAX_PROPERTY_OVERLAYS {
+            return Err(ConfigurationError::TooLarge);
+        }
+        Ok(next)
+    }
+
     pub(crate) fn resolved_path(&self, declared: &Path) -> Result<PathBuf, ConfigurationError> {
         resolve_artifact(&self.base, declared)
     }
@@ -383,6 +521,7 @@ impl FrozenDeployment {
                         return None;
                     };
                     let compiled = self.simple_definition(definition)?;
+                    let application_source = self.api_simple_instruments.contains(id);
                     let resolved = self.resolved_path(definition).ok()?;
                     let raw_sha256 = self
                         .artifacts
@@ -391,7 +530,7 @@ impl FrozenDeployment {
                         .map(|artifact| hex_sha256(artifact.sha256))?;
                     let content = serde_json::json!({
                         "grammar_version":1,
-                        "source":"persistent_startup_deployment",
+                        "source":if application_source {"process_local_application_candidate"} else {"persistent_startup_deployment"},
                         "configuration_revision":configuration_revision.to_string(),
                         "instrument_id":id.to_string(),
                         "instrument_key":key,
@@ -603,6 +742,30 @@ impl FrozenDeployment {
     }
 }
 
+fn controller_dto(controller: &SimpleCandidateController) -> ControllerDto {
+    ControllerDto {
+        id: controller.id,
+        key: controller.key.clone(),
+        input_instrument_id: controller.input_instrument_id,
+        input_parameter_id: controller.input_parameter_id,
+        output_instrument_id: controller.output_instrument_id,
+        output_parameter_id: controller.output_parameter_id,
+        reference_id: controller.reference_id,
+        period_ms: controller.period_ms,
+        ema_time_constant_ms: controller.ema_time_constant_ms,
+        ema_warmup_samples: controller.ema_warmup_samples,
+        kp: controller.kp,
+        ki: controller.ki,
+        kd: controller.kd,
+        output_min: controller.output_min,
+        output_max: controller.output_max,
+        max_input_age_ms: controller.max_input_age_ms,
+        max_tick_gap_ms: controller.max_tick_gap_ms,
+        lease_lifetime_ms: controller.lease_lifetime_ms,
+        proposal_ttl_ms: controller.proposal_ttl_ms,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DeploymentChanges {
     pub(crate) restart_required: bool,
@@ -703,6 +866,7 @@ pub fn parse_runtime_toml(
         artifacts,
         simple_definitions,
         property_overlays: Vec::new(),
+        api_simple_instruments: BTreeSet::new(),
     })
 }
 
@@ -1366,6 +1530,7 @@ fn validate_frozen_simple_definitions(
                     .expect("Reference cross-reference validated before artifacts");
                 if input.descriptor.role != ParameterRole::Measurement
                     || input.descriptor.signal.is_none()
+                    || !matches!(input.descriptor.value_spec, ValueSpec::Float { .. })
                     || input.descriptor.unit.id() != reference.unit_id
                 {
                     return Err(ConfigurationError::invalid(

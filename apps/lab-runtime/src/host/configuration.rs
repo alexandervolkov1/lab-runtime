@@ -6,6 +6,401 @@
 use super::*;
 
 impl HostCore {
+    /// Install additive SimpleDevice authority behind Core's non-discoverable
+    /// preparation fence. Existing topology remains the only query-visible graph.
+    pub(crate) fn prepare_simple_device_overlay(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<Option<ActuatorId>, Error> {
+        let old_ids: BTreeSet<_> = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .map(InstrumentDto::id)
+            .collect();
+        let mut registered = Vec::new();
+        let result = (|| {
+            let mut prepared_actuator = None;
+            for instrument in &candidate.effective().dto.instruments {
+                let InstrumentDto::SimpleDevice {
+                    id,
+                    display_name,
+                    definition,
+                    resource_id,
+                    address,
+                    channel,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    history_capacity,
+                    ..
+                } = instrument
+                else {
+                    continue;
+                };
+                if old_ids.contains(id) {
+                    continue;
+                }
+                let definition =
+                    candidate
+                        .simple_definition(definition)
+                        .ok_or(Error::InvalidConfiguration(
+                            "prepared simple definition missing",
+                        ))?;
+                let compiled =
+                    compile_simple_instance(definition, InstrumentId::new(*id), *address, *channel)
+                        .map_err(|_| {
+                            Error::InvalidConfiguration("prepared simple definition invalid")
+                        })?;
+                let actuator = compiled.parameters.iter().find_map(|parameter| {
+                    (parameter.descriptor.role == lab_core::ParameterRole::Actuator).then_some(
+                        ActuatorId::new(InstrumentId::new(*id), parameter.descriptor.id),
+                    )
+                });
+                let binding_generation = self
+                    .configured_resource_generation(ResourceId::new(*resource_id))
+                    .unwrap_or(1);
+                self.runtime.command(Command::RegisterPreparedSimpleDevice(
+                    SimpleDeviceInstrumentConfig {
+                        id: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                        parameters: compiled.parameters,
+                        binding: SimpleDeviceBinding {
+                            resource: ResourceId::new(*resource_id),
+                            binding_generation,
+                            mapping_revision: 1,
+                            output_queue_ttl: actuator
+                                .map(|_| Duration::from_millis(*queue_timeout_ms)),
+                            output_timeout: actuator
+                                .map(|_| Duration::from_millis(*transaction_timeout_ms)),
+                        },
+                        history_capacity: *history_capacity,
+                    },
+                ))?;
+                registered.push(InstrumentId::new(*id));
+                if let Some(actuator) = actuator {
+                    let safe = candidate
+                        .effective()
+                        .dto
+                        .safe_profiles
+                        .iter()
+                        .find(|profile| {
+                            profile.instrument_id == *id
+                                && profile.parameter_id == actuator.parameter().get()
+                        })
+                        .ok_or(Error::InvalidConfiguration(
+                            "prepared output safe profile missing",
+                        ))?;
+                    let profile = SafeProfile {
+                        min: safe.min,
+                        max: safe.max,
+                        safe_value: safe.safe_value,
+                        max_lease: Duration::from_millis(safe.max_lease_ms),
+                        max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                        required_evidence: match safe.required_evidence {
+                            EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                            EvidenceDto::Readback => EvidenceLevel::Readback,
+                        },
+                    };
+                    self.runtime.command(Command::Output {
+                        actuator,
+                        at,
+                        command: OutputCommand::BindProfile(profile),
+                    })?;
+                    self.runtime.command(Command::Output {
+                        actuator,
+                        at,
+                        command: OutputCommand::RequestSafe,
+                    })?;
+                    prepared_actuator = Some(actuator);
+                }
+            }
+            Ok(prepared_actuator)
+        })();
+        if result.is_err() && !registered.is_empty() {
+            let _ = self.runtime.command(Command::DiscardPreparedSimpleDevices {
+                instruments: registered,
+            });
+        }
+        result
+    }
+
+    /// Query only the Runtime-owned provisional authority, never public state.
+    pub(crate) fn prepared_simple_output(
+        &self,
+        actuator: ActuatorId,
+    ) -> Option<lab_core::output::OutputSnapshot> {
+        self.runtime.prepared_simple_output_snapshot(actuator)
+    }
+
+    pub(crate) fn prepared_simple_binding(
+        &self,
+        instrument: InstrumentId,
+    ) -> Option<SimpleDeviceBinding> {
+        self.runtime.simple_device_binding(instrument)
+    }
+
+    pub(crate) fn discard_prepared_simple_overlay(
+        &mut self,
+        instruments: Vec<InstrumentId>,
+    ) -> Result<(), Error> {
+        self.runtime
+            .command(Command::DiscardPreparedSimpleDevices { instruments })?;
+        Ok(())
+    }
+
+    /// Prepare activation metadata while the additive topology remains hidden.
+    pub(crate) fn prepare_simple_device_publication(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        at: Duration,
+        configuration_revision: u64,
+    ) -> Result<(), Error> {
+        let old_ids: BTreeSet<_> = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .map(InstrumentDto::id)
+            .collect();
+        for instrument in &candidate.effective().dto.instruments {
+            let InstrumentDto::SimpleDevice {
+                id,
+                key,
+                definition,
+                resource_id,
+                address,
+                channel,
+                poll_period_ms,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                ..
+            } = instrument
+            else {
+                continue;
+            };
+            if old_ids.contains(id) {
+                continue;
+            }
+            let instrument_id = InstrumentId::new(*id);
+            let raw_definition =
+                candidate
+                    .artifact_bytes(definition)
+                    .ok_or(Error::InvalidConfiguration(
+                        "committed simple source missing",
+                    ))?;
+            let definition =
+                candidate
+                    .simple_definition(definition)
+                    .ok_or(Error::InvalidConfiguration(
+                        "committed simple definition missing",
+                    ))?;
+            let raw_sha256: [u8; 32] = Sha256::digest(raw_definition).into();
+            let descriptor = self
+                .runtime
+                .prepared_simple_descriptor(instrument_id)
+                .ok_or(Error::InvalidConfiguration(
+                    "prepared simple descriptor missing",
+                ))?;
+            let actuator_parameter = descriptor.parameters.iter().find_map(|parameter| {
+                (parameter.role == lab_core::ParameterRole::Actuator).then_some(parameter.id.get())
+            });
+            self.simple_device_provenance.insert(
+                instrument_id,
+                SimpleDeviceProvenance {
+                    instrument_key: key.clone(),
+                    definition_id: definition.definition_id.clone(),
+                    definition_version: definition.definition_version,
+                    canonical_sha256: definition.canonical_sha256,
+                    raw_sha256,
+                    address: *address,
+                    channel: *channel,
+                    actuator_parameter,
+                },
+            );
+            self.physical_instruments.insert(instrument_id);
+            for parameter in descriptor.parameters {
+                if parameter.signal.is_some() {
+                    self.plan
+                        .simple_device_reads
+                        .push(SimpleDeviceReadSchedule {
+                            instrument: instrument_id,
+                            parameter: parameter.id,
+                            resource: ResourceId::new(*resource_id),
+                            slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
+                            queue_ttl: Duration::from_millis(*queue_timeout_ms),
+                            timeout: Duration::from_millis(*transaction_timeout_ms),
+                        });
+                }
+                if parameter.role == lab_core::ParameterRole::Actuator {
+                    let actuator = ActuatorId::new(instrument_id, parameter.id);
+                    let safe = candidate
+                        .effective()
+                        .dto
+                        .safe_profiles
+                        .iter()
+                        .find(|safe| {
+                            safe.instrument_id == *id && safe.parameter_id == parameter.id.get()
+                        })
+                        .expect("validated safe profile");
+                    let profile = SafeProfile {
+                        min: safe.min,
+                        max: safe.max,
+                        safe_value: safe.safe_value,
+                        max_lease: Duration::from_millis(safe.max_lease_ms),
+                        max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                        required_evidence: match safe.required_evidence {
+                            EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                            EvidenceDto::Readback => EvidenceLevel::Readback,
+                        },
+                    };
+                    self.outputs.push(actuator);
+                    self.active_safety_profiles.push((actuator, profile));
+                }
+            }
+        }
+        for controller in candidate
+            .effective()
+            .dto
+            .controllers
+            .iter()
+            .filter(|controller| {
+                !active
+                    .effective()
+                    .dto
+                    .controllers
+                    .iter()
+                    .any(|old| old.id == controller.id)
+            })
+        {
+            let id = ControllerId::new(controller.id);
+            let input = SignalId::new(
+                InstrumentId::new(controller.input_instrument_id),
+                lab_core::ParameterId::new(controller.input_parameter_id),
+            );
+            let reference = ReferenceId::new(controller.reference_id);
+            let unit = match self.runtime.query(Query::Reference(reference))? {
+                QueryResult::Reference(ReferenceSnapshot::Fixed { unit, .. }) => unit,
+                QueryResult::Reference(ReferenceSnapshot::Ramp { state, .. }) => state.unit,
+                _ => return Err(Error::InvalidConfiguration("configured Reference missing")),
+            };
+            self.runtime
+                .command(Command::RegisterController(NativeControllerConfig {
+                    id,
+                    input,
+                    output: ActuatorId::new(
+                        InstrumentId::new(controller.output_instrument_id),
+                        lab_core::ParameterId::new(controller.output_parameter_id),
+                    ),
+                    reference,
+                    ema: EmaConfig {
+                        time_constant: Duration::from_millis(controller.ema_time_constant_ms),
+                        warmup_samples: controller.ema_warmup_samples,
+                        unit,
+                    },
+                    pid: PidConfig {
+                        kp: controller.kp,
+                        ki: controller.ki,
+                        kd: controller.kd,
+                        output_min: controller.output_min,
+                        output_max: controller.output_max,
+                    },
+                    max_input_age: Duration::from_millis(controller.max_input_age_ms),
+                    max_tick_gap: Duration::from_millis(controller.max_tick_gap_ms),
+                    lease_lifetime: Duration::from_millis(controller.lease_lifetime_ms),
+                    proposal_ttl: Duration::from_millis(controller.proposal_ttl_ms),
+                }))?;
+            self.runtime.command(Command::PrepareController(id))?;
+            self.plan.controllers.push((
+                id,
+                input,
+                Periodic::new(Duration::from_millis(controller.period_ms)),
+            ));
+        }
+        self.configuration_revision = configuration_revision;
+        self.deployment_provenance = candidate
+            .provenance_entries(configuration_revision)
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        let _ = at;
+        Ok(())
+    }
+
+    /// Publish an already recorded topology and begin its ordinary schedules.
+    pub(crate) fn publish_simple_device_overlay(
+        &mut self,
+        instruments: Vec<InstrumentId>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.runtime
+            .command(Command::PublishPreparedSimpleDevices { instruments })?;
+        self.observe(at, None)
+    }
+
+    /// Remove all non-published candidate metadata and restore active provenance.
+    pub(crate) fn rollback_simple_device_publication(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        instruments: Vec<InstrumentId>,
+        active_revision: u64,
+    ) {
+        let prepared: BTreeSet<_> = instruments.iter().copied().collect();
+        self.plan
+            .simple_device_reads
+            .retain(|schedule| !prepared.contains(&schedule.instrument));
+        self.plan
+            .controllers
+            .retain(|(_, input, _)| !prepared.contains(&input.instrument()));
+        self.outputs
+            .retain(|actuator| !prepared.contains(&actuator.instrument()));
+        self.active_safety_profiles
+            .retain(|(actuator, _)| !prepared.contains(&actuator.instrument()));
+        self.physical_instruments
+            .retain(|instrument| !prepared.contains(instrument));
+        self.simple_device_provenance
+            .retain(|instrument, _| !prepared.contains(instrument));
+        let _ = self
+            .runtime
+            .command(Command::DiscardPreparedSimpleDevices { instruments });
+        self.configuration_revision = active_revision;
+        self.deployment_provenance = active
+            .provenance_entries(self.configuration_revision)
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        let active_controller_ids: BTreeSet<_> = active
+            .effective()
+            .dto
+            .controllers
+            .iter()
+            .map(|controller| controller.id)
+            .collect();
+        let candidate_controller_ids: BTreeSet<_> = candidate
+            .effective()
+            .dto
+            .controllers
+            .iter()
+            .filter(|controller| !active_controller_ids.contains(&controller.id))
+            .map(|controller| ControllerId::new(controller.id))
+            .collect();
+        self.plan
+            .controllers
+            .retain(|(id, _, _)| !candidate_controller_ids.contains(id));
+    }
+
     /// Queue each configured read-only compatibility probe exactly once.
     pub fn begin_configured_probes(&mut self, at: Duration) -> Result<(), Error> {
         for probe in &mut self.configured_probes {
@@ -343,6 +738,25 @@ impl HostCore {
     ) -> Result<bool, Error> {
         Ok(self.runtime.shutdown_transport(resource, at)?
             == lab_core::transport::TransportShutdown::Complete)
+    }
+
+    /// Install a replacement only after explicit provisional-output
+    /// reconciliation fenced and retired the non-discoverable candidate.
+    pub(crate) fn install_reconciled_simple_transport(
+        &mut self,
+        resource: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.reconnect_quiesced_resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration(
+                "simple-output reconciliation is not quiesced",
+            ));
+        }
+        self.runtime.replace_transport(resource, adapter)?;
+        self.closed_resources.remove(&resource);
+        self.reconnect_quiesced_resources.remove(&resource);
+        self.observe(at, None)
     }
 
     /// Copy the current physical binding generation for diagnostics/tests.

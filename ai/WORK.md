@@ -10,7 +10,7 @@ Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.3 ACCEPTED; M16.4 AUTHORIZED
+Practical integration architecture: M16.1–M16.4 ACCEPTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -50,9 +50,9 @@ ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
 ACCEPTED
 M16.4 Application simple-device provisioning:
-AUTHORIZED
+ACCEPTED
 M16.5–M16.7: NOT AUTHORIZED
-STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_AUTHORIZED
+STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -93,8 +93,11 @@ without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized unt
 consolidated acceptance. M16.1 is accepted. The accepted M16.2 read-only simple-device
 implementation commit is `aac377470d7142005ad5e0d098fddf6c16734db8`. The accepted
 M16.3 writable simple-device implementation commit is
-`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is authorized; M16.5–M16.7
-remain unauthorized.
+`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is accepted after external
+re-review of the original implementation plus the pending-apply property fence,
+existing `operation_failed` mapping for internal owner failures, and phase-aware
+absolute apply deadline with quarantine based on actual
+`send_started && !safe_confirmed` evidence. M16.5–M16.7 remain unauthorized.
 
 ## Completed preparation step
 
@@ -219,12 +222,12 @@ ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
 ACCEPTED
 M16.4 Application simple-device provisioning:
-AUTHORIZED
+ACCEPTED
 M16.5–M16.7: NOT AUTHORIZED
 
 Current phase: M16.4 Application simple-device provisioning
 
-STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_AUTHORIZED
+STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_ACCEPTED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -369,7 +372,7 @@ report.
 M16.1 is accepted. M16.2 is accepted at
 `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
-M16.4 provisioning implementation is authorized. M16.5 generic integration acceptance, M16.6
+M16.4 provisioning is accepted. M16.5 generic integration acceptance, M16.6
 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance,
 and M16 consolidated review remain unauthorized. M13.2 remains blocked on Steel
 dependency safety.
@@ -461,8 +464,7 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2 and M16.3 are accepted. M16.4 is authorized below; M16.5–M16.7 remain
-unauthorized.
+M16.2, M16.3, and M16.4 are accepted. M16.5–M16.7 remain unauthorized.
 
 ## M16.3 accepted implementation
 
@@ -593,10 +595,10 @@ The accepted M16.3 commit does not contain `stage_simple_device_candidate`, Appl
 definition upload, process-local overlays, incremental provisioning apply, SessionStore
 candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD/
 packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
-UI, public raw I/O, scripting, or external-language integration. M16.4 now authorizes
-only the bounded provisioning surface below; M16.5–M16.7 remain unauthorized.
+UI, public raw I/O, scripting, or external-language integration. The M16.4 candidate
+implements only the bounded provisioning surface below; M16.5–M16.7 remain unauthorized.
 
-## M16.4 authorized Application provisioning slice
+## M16.4 implemented Application provisioning slice
 
 M16.4 adds the accepted M16.1 provisioning surface without redesigning the accepted
 M16.2/M16.3 protocol compiler or physical execution paths:

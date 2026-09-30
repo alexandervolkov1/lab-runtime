@@ -139,6 +139,7 @@ pub(crate) const fn domain_code(error: Error) -> &'static str {
         Error::Transport(TransportError::ResourceUnavailable) => "transport_unavailable",
         Error::InvalidConfiguration(_) => "invalid_configuration",
         Error::RecordingUnavailable => "recording_unavailable",
+        Error::OperationFailed => "operation_failed",
         _ => "domain_rejected",
     }
 }
@@ -149,7 +150,13 @@ pub(crate) const fn lifecycle_domain_error(error: LifecycleOperationError) -> Er
         LifecycleOperationError::TransportUnavailable => {
             Error::Transport(TransportError::ResourceUnavailable)
         }
+        LifecycleOperationError::Capacity => Error::Transport(TransportError::ResourceLimit),
+        LifecycleOperationError::UnknownResource => {
+            Error::Transport(TransportError::UnknownResource)
+        }
+        LifecycleOperationError::OutputRejected => Error::Output(OutputError::InvalidState),
         LifecycleOperationError::Conflict => Error::Controller(ControllerError::RevisionConflict),
+        LifecycleOperationError::OwnerFailure => Error::OperationFailed,
         _ => Error::InvalidConfiguration("lifecycle operation failed"),
     }
 }
@@ -185,6 +192,16 @@ mod tests {
         assert_eq!(
             domain_code(lifecycle_domain_error(LifecycleOperationError::Conflict)),
             "revision_conflict"
+        );
+    }
+
+    #[test]
+    fn internal_lifecycle_owner_failure_uses_existing_operation_failed_code() {
+        assert_eq!(
+            domain_code(lifecycle_domain_error(
+                LifecycleOperationError::OwnerFailure
+            )),
+            "operation_failed"
         );
     }
 }

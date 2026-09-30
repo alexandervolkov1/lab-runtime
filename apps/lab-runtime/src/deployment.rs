@@ -8,7 +8,10 @@
 //! candidate; [`crate::deployment::ApplyPort`] delegates the actual live-safe or safe-barrier mutation
 //! to the serialized host/Runtime owner.
 
-use crate::configuration::{DeploymentChanges, FrozenDeployment};
+use crate::{
+    configuration::{DeploymentChanges, FrozenDeployment},
+    simple_device::SimpleDeviceCandidate,
+};
 use std::{collections::BTreeSet, time::Duration};
 
 /// Retention bound for the one staged deployment candidate.
@@ -120,6 +123,22 @@ struct Candidate {
     snapshot: StagedConfiguration,
     loaded: FrozenDeployment,
     expires_at: Duration,
+    simple_device: Option<SimpleStagedMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SimpleStagedMetadata {
+    pub(crate) definition_id: String,
+    pub(crate) definition_version: u32,
+    pub(crate) normalized_sha256: [u8; 32],
+    pub(crate) instruments: Vec<u64>,
+    pub(crate) output_capable: bool,
+}
+
+pub(crate) struct ConsumedSimpleCandidate {
+    pub(crate) snapshot: StagedConfiguration,
+    pub(crate) loaded: FrozenDeployment,
+    pub(crate) metadata: SimpleStagedMetadata,
 }
 
 /// Failure to retain a new staged candidate.
@@ -205,6 +224,7 @@ impl DeploymentLifecycle {
         candidate: FrozenDeployment,
         at: Duration,
     ) -> Result<StagedConfiguration, StageError> {
+        self.expire_staged(at);
         if self.staged.is_some() {
             return Err(StageError::Busy);
         }
@@ -223,8 +243,115 @@ impl DeploymentLifecycle {
             snapshot: snapshot.clone(),
             loaded: candidate,
             expires_at,
+            simple_device: None,
         });
         Ok(snapshot)
+    }
+
+    /// Retain one already validated process-local SimpleDevice overlay in the
+    /// same one-slot lifecycle without classifying additive topology as a file
+    /// deployment restart.
+    pub(crate) fn stage_simple_device(
+        &mut self,
+        loaded: FrozenDeployment,
+        candidate: &SimpleDeviceCandidate,
+        at: Duration,
+    ) -> Result<StagedConfiguration, StageError> {
+        self.expire_staged(at);
+        if self.staged.is_some() {
+            return Err(StageError::Busy);
+        }
+        let id = self.next_candidate;
+        self.next_candidate = id.checked_add(1).ok_or(StageError::CounterExhausted)?;
+        let expires_at = at
+            .checked_add(CANDIDATE_LIFETIME)
+            .ok_or(StageError::DeadlineOverflow)?;
+        let output_capable = candidate.output_capable();
+        let mut effects = BTreeSet::from([DiffEffect::LiveSafe, DiffEffect::OrdinaryLive]);
+        if output_capable {
+            effects.insert(DiffEffect::ControllerRewarm);
+            effects.insert(DiffEffect::OutputSafeBarrier);
+        }
+        let snapshot = StagedConfiguration {
+            id,
+            base_revision: self.revision,
+            diff: ConfigurationDiff { effects },
+            expires_at,
+        };
+        self.staged = Some(Candidate {
+            snapshot: snapshot.clone(),
+            loaded,
+            expires_at,
+            simple_device: Some(SimpleStagedMetadata {
+                definition_id: candidate.definition.definition_id.clone(),
+                definition_version: candidate.definition.definition_version,
+                normalized_sha256: candidate.definition.canonical_sha256,
+                instruments: candidate
+                    .instances
+                    .iter()
+                    .map(|instance| instance.instrument_id)
+                    .collect(),
+                output_capable,
+            }),
+        });
+        Ok(snapshot)
+    }
+
+    pub(crate) fn staged_simple_metadata(&self) -> Option<&SimpleStagedMetadata> {
+        self.staged
+            .as_ref()
+            .and_then(|candidate| candidate.simple_device.as_ref())
+    }
+
+    /// Consume one API candidate when incremental preparation begins.
+    pub(crate) fn consume_simple_device(
+        &mut self,
+        candidate_id: u64,
+        expected_revision: u64,
+        at: Duration,
+    ) -> Result<ConsumedSimpleCandidate, ApplyError> {
+        let candidate = self.staged.as_ref().ok_or(ApplyError::UnknownCandidate)?;
+        if candidate.snapshot.id != candidate_id || candidate.simple_device.is_none() {
+            return Err(ApplyError::UnknownCandidate);
+        }
+        if expected_revision != self.revision || candidate.snapshot.base_revision != self.revision {
+            return Err(ApplyError::Conflict);
+        }
+        if at >= candidate.expires_at {
+            self.staged = None;
+            return Err(ApplyError::Expired);
+        }
+        let candidate = self.staged.take().expect("candidate checked above");
+        Ok(ConsumedSimpleCandidate {
+            snapshot: candidate.snapshot,
+            loaded: candidate.loaded,
+            metadata: candidate.simple_device.expect("simple candidate checked"),
+        })
+    }
+
+    /// Publish a successfully prepared consumed overlay as one new revision.
+    pub(crate) fn commit_consumed_simple_device(
+        &mut self,
+        candidate: FrozenDeployment,
+    ) -> Result<u64, ApplyError> {
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(ApplyError::OwnerFailure)?;
+        self.active = candidate;
+        self.revision = revision;
+        Ok(revision)
+    }
+
+    /// Release an unapplied candidate at its exact monotonic residence bound.
+    pub(crate) fn expire_staged(&mut self, at: Duration) {
+        if self
+            .staged
+            .as_ref()
+            .is_some_and(|candidate| at >= candidate.expires_at)
+        {
+            self.staged = None;
+        }
     }
 
     /// Current retained candidate metadata without exposing its private buffer.

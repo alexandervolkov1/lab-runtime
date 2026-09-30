@@ -1,7 +1,7 @@
 //! Accepted local Application API facade and bounded delivery owner.
 //!
 //! `server` decodes bounded NDJSON with [`crate::wire`]; [`crate::protocol`] supplies
-//! the fixed 42-operation registry, capabilities, limits and public error taxonomy.
+//! the fixed 43-operation registry, capabilities, limits and public error taxonomy.
 //! [`crate::application::Application`] owns sessions, deduplication, connection delivery and asynchronous
 //! operation correlation, then routes semantic work to focused modules:
 //!
@@ -77,6 +77,13 @@ struct PendingShutdown {
     seq: u64,
     msg: String,
 }
+struct PendingSimpleApply {
+    connection: u64,
+    scope: String,
+    seq: u64,
+    msg: String,
+    candidate_id: u64,
+}
 struct PendingRecording {
     connection: u64,
     scope: String,
@@ -130,6 +137,7 @@ pub struct Application {
     subscriptions: BTreeMap<u64, Subscription>,
     next_token: u64,
     pending_shutdown: Option<PendingShutdown>,
+    pending_simple_apply: Option<PendingSimpleApply>,
     pending_recording: Option<PendingRecording>,
     pending_history: BTreeMap<u64, PendingHistory>,
     history_pages: BTreeMap<u64, HistoryCache>,
@@ -146,6 +154,7 @@ impl Application {
             subscriptions: BTreeMap::new(),
             next_token: 1,
             pending_shutdown: None,
+            pending_simple_apply: None,
             pending_recording: None,
             pending_history: BTreeMap::new(),
             history_pages: BTreeMap::new(),
@@ -170,6 +179,58 @@ impl Application {
             self.orphan_history.push(pending.job);
         }
         self.sessions.detach(connection, service.clock().now());
+    }
+
+    /// Correlate one later Runtime-owned provisioning terminal without making
+    /// client connection lifetime own or cancel the accepted apply.
+    pub(crate) fn poll_configuration(&mut self, service: &mut ServiceHost) -> Vec<(u64, Value)> {
+        let Some(completion) = service.poll_simple_device_apply() else {
+            return Vec::new();
+        };
+        let Some(pending) = self.pending_simple_apply.take() else {
+            return Vec::new();
+        };
+        debug_assert_eq!(pending.candidate_id, completion.candidate_id);
+        let outcome = match completion.result {
+            Ok(revision) => {
+                OperationState::Completed(json!({"revision":revision.to_string()}).to_string())
+            }
+            Err(error) => OperationState::Failed(
+                domain_code(crate::application::common::lifecycle_domain_error(error)).into(),
+            ),
+        };
+        let now = service.clock().now();
+        self.sessions
+            .complete(&pending.scope, pending.seq, outcome.clone(), now)
+            .expect("accepted simple-device apply record");
+        let (phase, data) = recorded_terminal(&outcome);
+        service.owner_mut().record_operation(OperationRecord {
+            scope: pending.scope.clone(),
+            request_seq: pending.seq,
+            command: "apply_configuration",
+            phase,
+            data,
+            outcome_basis: "domain_result",
+            at: now,
+        });
+        let _ = service.owner_mut().event_log_mut().operation_terminal(
+            now,
+            &pending.scope,
+            pending.seq,
+            operation_state(outcome.clone()),
+        );
+        if self.clients.get(&pending.connection) == Some(&pending.scope) {
+            let rid = WireRequestId {
+                scope: pending.scope,
+                seq: pending.seq,
+            };
+            vec![(
+                pending.connection,
+                operation_reply(&pending.msg, &rid, outcome),
+            )]
+        } else {
+            Vec::new()
+        }
     }
     /// Expire frozen connection projections at a trusted monotonic owner instant.
     pub fn expire_projections_at(&mut self, now: Duration) {
@@ -476,6 +537,34 @@ impl Application {
                 }
             }
         }
+        if let Mutation::ApplyConfiguration {
+            candidate_id,
+            expected_revision,
+        } = &payload
+            && service.is_staged_simple_device_candidate(*candidate_id)
+        {
+            match service.begin_simple_device_apply(*candidate_id, *expected_revision) {
+                Ok(()) => {
+                    self.pending_simple_apply = Some(PendingSimpleApply {
+                        connection,
+                        scope,
+                        seq: rid.seq,
+                        msg,
+                        candidate_id: *candidate_id,
+                    });
+                    return vec![accepted];
+                }
+                Err(error) => {
+                    let failed = OperationState::Failed(
+                        domain_code(common::lifecycle_domain_error(error)).into(),
+                    );
+                    self.sessions
+                        .complete(&scope, rid.seq, failed.clone(), service.clock().now())
+                        .expect("admitted simple-device apply record");
+                    return vec![accepted, operation_reply(&msg, &rid, failed)];
+                }
+            }
+        }
         let recorded_command = recorded_intent(&payload).map(|(command, _)| command);
         let reconnect_resource = match &payload {
             Mutation::ReconnectResource { resource, .. } => Some(*resource),
@@ -486,6 +575,7 @@ impl Application {
             &payload,
             Mutation::ReloadConfiguration
                 | Mutation::StageConfiguration
+                | Mutation::StageSimpleDeviceCandidate { .. }
                 | Mutation::ApplyConfiguration { .. }
                 | Mutation::ConfigureProperty { .. }
         );

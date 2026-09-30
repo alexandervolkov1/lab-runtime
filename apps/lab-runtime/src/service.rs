@@ -30,7 +30,8 @@ use crate::{
         FlowControlDto, ParityDto, PropertyValue, RecordingPolicyDto, load_runtime_toml,
     },
     deployment::{
-        ApplyError, ApplyPort, ApplyResult, DeploymentLifecycle, StageError, StagedConfiguration,
+        ApplyError, ApplyPort, ApplyResult, ConsumedSimpleCandidate, DeploymentLifecycle,
+        StageError, StagedConfiguration,
     },
     host::{Clock, HostCore, ShutdownStatus, SystemClock},
     managed_executor::ManagedExecutor,
@@ -39,11 +40,13 @@ use crate::{
         ComOpenStatus, ComSettings, ComState, ComTransport, SerialError, SerialFlowControl,
         SerialParity,
     },
+    simple_device::SimpleDeviceCandidate,
     websocket::WebSocketOptions,
 };
 use lab_core::managed::ComponentError;
 use lab_core::{
-    Error as DomainError,
+    Error as DomainError, InstrumentId,
+    output::ActuatorId,
     transport::{ByteTransport, ExecutorState, ResourceId},
 };
 use std::{
@@ -208,6 +211,54 @@ pub struct ServiceHost {
     next_lifecycle_operation: u64,
     reconnect_diagnostic: Option<ReconnectDiagnostic>,
     quarantined_reconnect_candidate: Option<(ResourceId, ComTransport)>,
+    pending_simple_apply: Option<PendingSimpleConfigurationApply>,
+    quarantined_simple_output: Option<QuarantinedSimpleOutput>,
+    api_simple_overlay_active: bool,
+}
+
+const SIMPLE_APPLY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+struct PendingSimpleConfigurationApply {
+    candidate: ConsumedSimpleCandidate,
+    phase: SimpleApplyPhase,
+    deadline: std::time::Duration,
+    actuator: Option<ActuatorId>,
+    recording: Option<PendingSimpleRecording>,
+    quiesced: bool,
+    publication_prepared: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SimpleApplyPhase {
+    Prepare,
+    ReserveRecording,
+    PrepareTopology,
+    EstablishSafe,
+    Commit,
+    ConfirmRecording,
+}
+
+struct PendingSimpleRecording {
+    record: ConfigurationLifecycleRecord,
+    generation: Option<u64>,
+    reopen_required: bool,
+    submitted_at: std::time::Duration,
+}
+
+struct QuarantinedSimpleOutput {
+    candidate_id: u64,
+    resource: ResourceId,
+    actuator: ActuatorId,
+    binding_generation: u64,
+    mapping_revision: u64,
+    acknowledged: bool,
+    readback_verified: bool,
+}
+
+/// One terminal owner outcome polled by Application for session correlation.
+pub(crate) struct SimpleApplyCompletion {
+    pub(crate) candidate_id: u64,
+    pub(crate) result: Result<u64, LifecycleOperationError>,
 }
 
 struct WebSocketEndpoint {
@@ -225,6 +276,10 @@ pub enum LifecycleOperationError {
     InvalidCandidate,
     /// The one staged-candidate slot or revision fence rejected the request.
     Conflict,
+    /// A bounded lifecycle slot or retained owner is already occupied.
+    Capacity,
+    /// Candidate referenced no configured physical resource.
+    UnknownResource,
     /// The requested diff needs a lifecycle not supported by this operation.
     RequiresSafeBarrier,
     /// No managed component exists in the active deployment.
@@ -235,6 +290,23 @@ pub enum LifecycleOperationError {
     RecordingUnavailable,
     /// A bounded transport retire/open/prepare step could not establish a replacement.
     TransportUnavailable,
+    /// Candidate safe evidence failed after entering the output lifecycle.
+    OutputRejected,
+}
+
+/// Completed semantic result of staging one process-local SimpleDevice candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedSimpleDeviceResult {
+    /// Shared deployment candidate metadata.
+    pub staged: StagedConfiguration,
+    /// Stable definition identity.
+    pub definition_id: String,
+    /// Nonzero definition version.
+    pub definition_version: u32,
+    /// Canonical normalized definition identity.
+    pub normalized_sha256: [u8; 32],
+    /// Stable instrument identities that would be published on apply.
+    pub instruments: Vec<u64>,
 }
 
 /// Bounded stages of one explicit configured-resource reconnect.
@@ -681,6 +753,19 @@ impl ServiceHost {
         ProtocolFeatures {
             recorder: self.host.recording_status().is_some(),
             configuration: deployment.is_some(),
+            simple_device_provisioning: deployment.is_some_and(|active| {
+                active.effective().dto.resources.iter().any(|resource| {
+                    matches!(
+                        resource.kind,
+                        crate::configuration::ResourceKindDto::WindowsComReadOnly
+                            | crate::configuration::ResourceKindDto::WindowsCom
+                    ) && !active.effective().dto.instruments.iter().any(|instrument| {
+                        matches!(instrument,
+                            crate::configuration::InstrumentDto::Metakon { resource_id, .. }
+                                if *resource_id == resource.id)
+                    })
+                })
+            }),
             resource_reconnect: deployment
                 .is_some_and(|active| !active.effective().dto.resources.is_empty()),
             emulator_publication: self.host.emulator_target_count() != 0,
@@ -750,6 +835,9 @@ impl ServiceHost {
             next_lifecycle_operation: 1,
             reconnect_diagnostic: None,
             quarantined_reconnect_candidate: None,
+            pending_simple_apply: None,
+            quarantined_simple_output: None,
+            api_simple_overlay_active: false,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
@@ -1000,6 +1088,9 @@ impl ServiceHost {
             next_lifecycle_operation: 1,
             reconnect_diagnostic: None,
             quarantined_reconnect_candidate: None,
+            pending_simple_apply: None,
+            quarantined_simple_output: None,
+            api_simple_overlay_active: false,
         })
     }
 
@@ -1149,7 +1240,7 @@ mod reconnect_preparation_tests {
         collections::{BTreeMap, VecDeque},
         path::Path,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         time::Duration,
@@ -1369,6 +1460,9 @@ history_capacity=8
                 next_lifecycle_operation: 1,
                 reconnect_diagnostic: None,
                 quarantined_reconnect_candidate: None,
+                pending_simple_apply: None,
+                quarantined_simple_output: None,
+                api_simple_overlay_active: false,
             },
             database,
         )
@@ -1412,9 +1506,822 @@ history_capacity=8
                 next_lifecycle_operation: 1,
                 reconnect_diagnostic: None,
                 quarantined_reconnect_candidate: None,
+                pending_simple_apply: None,
+                quarantined_simple_output: None,
+                api_simple_overlay_active: false,
             },
             shutdown_calls,
         )
+    }
+
+    fn application_read_only_candidate(instrument_id: u64, address: u16) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version":1,
+            "definition":serde_json::from_slice::<serde_json::Value>(SIMPLE_DEFINITION).unwrap(),
+            "instances":[{
+                "instrument_id":instrument_id,
+                "key":format!("api-simple-{instrument_id}"),
+                "display_name":format!("API Simple {instrument_id}"),
+                "resource_id":7,
+                "address":address,
+                "channel":0,
+                "poll_period_ms":100,
+                "queue_timeout_ms":50,
+                "transaction_timeout_ms":50,
+                "history_capacity":8
+            }]
+        })
+    }
+
+    const API_OUTPUT_BASE_CONFIG: &[u8] = br#"schema_version=1
+[runtime]
+key="api-output"
+display_name="API output"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[resources]]
+id=7
+key="bus"
+kind="windows_com"
+port="COM3"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=1
+write_timeout_ms=1
+open_timeout_ms=100
+recovery_timeout_ms=100
+"#;
+
+    #[derive(Default)]
+    struct ProvisioningWire {
+        readable: VecDeque<u8>,
+        raw: [u8; 2],
+        writes: Vec<Vec<u8>>,
+        bad_ack: bool,
+        withhold_ack: bool,
+    }
+
+    struct ProvisioningTransport(Arc<Mutex<ProvisioningWire>>);
+
+    impl ByteTransport for ProvisioningTransport {
+        fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+            let mut wire = self.0.lock().unwrap();
+            wire.writes.push(bytes.to_vec());
+            match bytes.first().copied() {
+                Some(0x20) => {
+                    wire.raw
+                        .copy_from_slice(bytes.get(3..5).ok_or(TransportIoError::Other)?);
+                    if !wire.withhold_ack {
+                        let status = u8::from(wire.bad_ack);
+                        wire.readable.extend([0x20, bytes[1], status]);
+                    }
+                }
+                Some(0x21) => {
+                    let raw = wire.raw;
+                    wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                }
+                _ => return Err(TransportIoError::Other),
+            }
+            Ok(bytes.len())
+        }
+
+        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+            let mut wire = self.0.lock().unwrap();
+            let count = bytes.len().min(wire.readable.len());
+            for byte in &mut bytes[..count] {
+                *byte = wire.readable.pop_front().unwrap();
+            }
+            Ok(count)
+        }
+
+        fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+            Ok(RecoveryStatus::Complete)
+        }
+    }
+
+    fn service_for_api_output(bad_ack: bool) -> (ServiceHost, Arc<Mutex<ProvisioningWire>>) {
+        let deployment = parse_runtime_toml(
+            API_OUTPUT_BASE_CONFIG,
+            Path::new("C:\\m16-api-output"),
+            &mut SimpleReader,
+        )
+        .unwrap();
+        let wire = Arc::new(Mutex::new(ProvisioningWire {
+            bad_ack,
+            ..ProvisioningWire::default()
+        }));
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(ProvisioningTransport(wire.clone())),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        let boot_id = "2123456789abcdef0123456789abcdef".to_owned();
+        host.set_boot_id(&boot_id);
+        let clock = SystemClock::new();
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bound = listener.local_addr().unwrap();
+        (
+            ServiceHost {
+                host,
+                clock,
+                listener,
+                bound,
+                websocket: None,
+                boot_id,
+                stopping_since: None,
+                safe_since: None,
+                recorder_flush_since: None,
+                terminal: None,
+                fatal: false,
+                deployment: Some(DeploymentLifecycle::new(deployment)),
+                configuration_path: None,
+                next_lifecycle_operation: 1,
+                reconnect_diagnostic: None,
+                quarantined_reconnect_candidate: None,
+                pending_simple_apply: None,
+                quarantined_simple_output: None,
+                api_simple_overlay_active: false,
+            },
+            wire,
+        )
+    }
+
+    fn application_output_candidate() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version":1,
+            "definition":{
+                "format_version":1,"definition_id":"api-heater-v1","definition_version":1,
+                "parameters":[{
+                    "parameter_id":2,"key":"heater","display_name":"Heater",
+                    "role":"actuator","access":"write_only","unit_id":"percent","unit_symbol":"%",
+                    "value_type":"float","engineering_min":0.0,"engineering_max":100.0,
+                    "write_effect":"output_affecting",
+                    "encoding":{"raw":"u16_be","scale":0.1,"offset":0.0},
+                    "write":{
+                        "request":{"segments":[{"type":"literal","hex":"20"},
+                            {"type":"instance_field","field":"address","encoding":"u8"},
+                            {"type":"instance_field","field":"channel","encoding":"u8"},
+                            {"type":"value_field"}]},
+                        "ack":{"exact_length":3,"matches":[
+                            {"type":"literal_match","offset":0,"hex":"20"},
+                            {"type":"instance_match","offset":1,"field":"address","encoding":"u8"},
+                            {"type":"literal_match","offset":2,"hex":"00"}]},
+                        "readback":{
+                            "request":{"segments":[{"type":"literal","hex":"21"},
+                                {"type":"instance_field","field":"address","encoding":"u8"}]},
+                            "response":{"exact_length":4,"matches":[
+                                {"type":"literal_match","offset":0,"hex":"21"},
+                                {"type":"instance_match","offset":1,"field":"address","encoding":"u8"}],
+                                "extract":{"type":"scalar_extract","offset":2}}
+                        }
+                    }
+                }]
+            },
+            "instances":[{
+                "instrument_id":2001,"key":"api-heater","display_name":"API Heater",
+                "resource_id":7,"address":1,"channel":2,"poll_period_ms":100,
+                "queue_timeout_ms":50,"transaction_timeout_ms":50,"history_capacity":8,
+                "safe_profile":{"min":0.0,"max":100.0,"safe_value":0.0,
+                    "max_lease_ms":2000,"max_proposal_ttl_ms":200,
+                    "required_evidence":"readback"}
+            }]
+        })
+    }
+
+    fn stage_and_begin_api_output(service: &mut ServiceHost) -> u64 {
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_output_candidate()).unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        let id = staged.staged.id();
+        service.begin_simple_device_apply(id, 1).unwrap();
+        id
+    }
+
+    #[test]
+    fn output_candidate_is_hidden_until_exact_safe_evidence_then_published() {
+        let (mut service, wire) = service_for_api_output(false);
+        let candidate_id = stage_and_begin_api_output(&mut service);
+        let candidate = InstrumentId::new(2001);
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(candidate))
+                .is_err()
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let completion = loop {
+            service.host.service(&service.clock).unwrap();
+            if let Some(completion) = service.poll_simple_device_apply() {
+                break completion;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            if !service.api_simple_overlay_active {
+                assert!(
+                    service
+                        .owner()
+                        .query(lab_core::Query::DescribeInstrument(candidate))
+                        .is_err()
+                );
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(completion.candidate_id, candidate_id);
+        assert_eq!(completion.result, Ok(2));
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(candidate))
+                .is_ok()
+        );
+        let writes = &wire.lock().unwrap().writes;
+        assert_eq!(writes.iter().filter(|write| write[0] == 0x20).count(), 1);
+        assert!(writes.iter().any(|write| write == &[0x21, 1]));
+        assert!(service.quarantined_simple_output.is_none());
+    }
+
+    #[test]
+    fn post_send_safe_failure_keeps_one_hidden_quarantine_without_resend() {
+        let (mut service, wire) = service_for_api_output(true);
+        let candidate_id = stage_and_begin_api_output(&mut service);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let completion = loop {
+            service.host.service(&service.clock).unwrap();
+            if let Some(completion) = service.poll_simple_device_apply() {
+                break completion;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(completion.candidate_id, candidate_id);
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::OutputRejected)
+        );
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(2001)))
+                .is_err()
+        );
+        let quarantine = service.quarantined_simple_output.as_ref().unwrap();
+        assert_eq!(quarantine.candidate_id, candidate_id);
+        assert_eq!(quarantine.resource, ResourceId::new(7));
+        let writes_before = wire.lock().unwrap().writes.len();
+        for _ in 0..20 {
+            service.host.service(&service.clock).unwrap();
+        }
+        assert_eq!(wire.lock().unwrap().writes.len(), writes_before);
+        let status = service.simple_configuration_status();
+        assert_eq!(status["quarantine"]["phase"], "reconciliation_required");
+        assert_eq!(status["quarantine"]["safe_resend_blocked"], true);
+        let resource = configuration_api::resource_json(&service, 7).unwrap();
+        assert_eq!(resource["binding_generation"], "1");
+        assert_eq!(resource["capabilities"]["reconnect"], true);
+
+        let reconciled = service
+            .reconnect_resource_with_factory(7, 1, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(ProbeDevice {
+                        readable: VecDeque::new(),
+                        channel_type: 0,
+                    }))
+                })
+            })
+            .unwrap();
+        assert_eq!(reconciled.binding_generation, 2);
+        assert!(service.quarantined_simple_output.is_none());
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(2001)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn application_candidate_stages_then_publishes_atomically_as_process_local_overlay() {
+        let (mut service, _) = service_with_simple_transport();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        assert!(
+            hello[0]["result"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|capability| capability["name"] == "simple_device_provisioning")
+        );
+
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1",
+                    "candidate":application_read_only_candidate(1002,2)}})),
+        );
+        assert_eq!(staged.len(), 2);
+        assert_eq!(staged[0]["state"], "accepted");
+        assert_eq!(staged[1]["state"], "completed");
+        let staged_result = &staged[1]["result"];
+        let candidate_id = staged_result["candidate_id"].clone();
+        assert_eq!(staged_result["definition"]["id"], "simple-v1");
+        assert_eq!(staged_result["instances"], serde_json::json!(["1002"]));
+
+        let before = service
+            .owner()
+            .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)));
+        assert!(before.is_err());
+        let applied = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0]["state"], "accepted");
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+
+        let terminal = loop {
+            service.host.service(&service.clock).unwrap();
+            let replies = application.poll_configuration(&mut service);
+            if !replies.is_empty() {
+                break replies;
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].1["state"], "completed");
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_ok()
+        );
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 2);
+        assert!(service.api_simple_overlay_active);
+        assert_eq!(
+            service.stage_configuration(),
+            Err(LifecycleOperationError::InvalidCandidate)
+        );
+        assert!(service.deployment.as_ref().unwrap().staged().is_none());
+
+        application.detach(&service, 1);
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_ok()
+        );
+        let configured = service
+            .configure_property(
+                "instrument",
+                1002,
+                "poll_period_ms",
+                PropertyValue::Integer(200),
+                2,
+            )
+            .unwrap();
+        assert_eq!(configured.revision, 3);
+        assert!(service.api_simple_overlay_active);
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn pending_application_simple_apply_fences_property_configuration_without_mutation() {
+        let (mut service, _) = service_with_simple_transport();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1",
+                    "candidate":application_read_only_candidate(1002,2)}})),
+        );
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0]["state"], "accepted");
+        let pending = service.pending_simple_apply.as_ref().unwrap();
+        let pending_id = pending.candidate.snapshot.id();
+        let pending_phase = pending.phase;
+        let pending_deadline = pending.deadline;
+
+        let rejected = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"property",
+                "op":"property_configure",
+                "request_id":{"scope":scope,"seq":"3"},
+                "args":{"target":{"kind":"instrument","id":"1001"},
+                    "property":"poll_period_ms","value":200,"expected_revision":"1"}})),
+        );
+        assert_eq!(rejected.len(), 2);
+        assert_eq!(rejected[0]["state"], "accepted");
+        assert_eq!(rejected[1]["state"], "failed");
+        assert_eq!(rejected[1]["code"], "busy");
+        assert_eq!(rejected[1]["category"], "capacity_exhausted");
+        assert_eq!(rejected[1]["retryable"], true);
+        assert_eq!(rejected[1]["resync_required"], false);
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert!(service.deployment.as_ref().unwrap().staged().is_none());
+        let active = &service
+            .deployment
+            .as_ref()
+            .unwrap()
+            .active()
+            .effective()
+            .dto;
+        assert!(matches!(
+            &active.instruments[0],
+            crate::configuration::InstrumentDto::SimpleDevice {
+                poll_period_ms: 100,
+                ..
+            }
+        ));
+        let pending = service.pending_simple_apply.as_ref().unwrap();
+        assert_eq!(pending.candidate.snapshot.id(), pending_id);
+        assert_eq!(pending.phase, pending_phase);
+        assert_eq!(pending.deadline, pending_deadline);
+
+        let terminal = loop {
+            service.host.service(&service.clock).unwrap();
+            let replies = application.poll_configuration(&mut service);
+            if !replies.is_empty() {
+                break replies;
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].1["state"], "completed");
+        assert!(application.poll_configuration(&mut service).is_empty());
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 2);
+    }
+
+    #[test]
+    fn prepared_owner_failure_is_operation_failed_without_partial_publication() {
+        let (mut service, _) = service_for_api_output(false);
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1","candidate":application_output_candidate()}})),
+        );
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0]["state"], "accepted");
+        while service.pending_simple_apply.as_ref().unwrap().phase
+            != SimpleApplyPhase::EstablishSafe
+        {
+            assert!(application.poll_configuration(&mut service).is_empty());
+        }
+        service
+            .host
+            .discard_prepared_simple_overlay(vec![InstrumentId::new(2001)])
+            .unwrap();
+        let terminal = application.poll_configuration(&mut service);
+        assert_eq!(terminal.len(), 1);
+        let terminal = &terminal[0].1;
+        assert_eq!(terminal["state"], "failed");
+        assert_eq!(terminal["code"], "operation_failed");
+        assert_eq!(terminal["category"], "operation_failed");
+        assert_eq!(terminal["retryable"], false);
+        assert_eq!(terminal["resync_required"], false);
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert!(service.quarantined_simple_output.is_none());
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(2001)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn read_only_apply_deadline_is_operation_failed_without_output_quarantine() {
+        let (mut service, _) = service_with_simple_transport();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1",
+                    "candidate":application_read_only_candidate(1002,2)}})),
+        );
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        service.pending_simple_apply.as_mut().unwrap().deadline = Duration::ZERO;
+        let terminal = application.poll_configuration(&mut service);
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].1["state"], "failed");
+        assert_eq!(terminal[0].1["code"], "operation_failed");
+        assert_ne!(terminal[0].1["code"], "output_rejected");
+        assert!(service.quarantined_simple_output.is_none());
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn recorder_reservation_deadline_is_recording_unavailable() {
+        let (mut service, _) = service_with_simple_transport();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1",
+                    "candidate":application_read_only_candidate(1002,2)}})),
+        );
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert!(application.poll_configuration(&mut service).is_empty());
+        assert_eq!(
+            service.pending_simple_apply.as_ref().unwrap().phase,
+            SimpleApplyPhase::ReserveRecording
+        );
+        service.pending_simple_apply.as_mut().unwrap().deadline = Duration::ZERO;
+        let terminal = application.poll_configuration(&mut service);
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].1["state"], "failed");
+        assert_eq!(terminal[0].1["code"], "recording_unavailable");
+        assert_eq!(terminal[0].1["category"], "recording_unavailable");
+        assert_eq!(terminal[0].1["retryable"], true);
+        assert_eq!(terminal[0].1["resync_required"], false);
+        assert!(service.quarantined_simple_output.is_none());
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+    }
+
+    #[test]
+    fn post_send_apply_deadline_is_output_rejected_and_keeps_quarantine() {
+        let (mut service, wire) = service_for_api_output(false);
+        wire.lock().unwrap().withhold_ack = true;
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1","candidate":application_output_candidate()}})),
+        );
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        while service.pending_simple_apply.as_ref().unwrap().phase
+            != SimpleApplyPhase::EstablishSafe
+        {
+            assert!(application.poll_configuration(&mut service).is_empty());
+        }
+        let actuator = service
+            .pending_simple_apply
+            .as_ref()
+            .unwrap()
+            .actuator
+            .unwrap();
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if service
+                .host
+                .prepared_simple_output(actuator)
+                .is_some_and(|snapshot| snapshot.sent.is_some())
+            {
+                break;
+            }
+            assert!(application.poll_configuration(&mut service).is_empty());
+        }
+        let writes_before = wire.lock().unwrap().writes.len();
+        service.pending_simple_apply.as_mut().unwrap().deadline = Duration::ZERO;
+        let terminal = application.poll_configuration(&mut service);
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].1["state"], "failed");
+        assert_eq!(terminal[0].1["code"], "output_rejected");
+        assert!(service.quarantined_simple_output.is_some());
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        for _ in 0..20 {
+            service.host.service(&service.clock).unwrap();
+        }
+        assert_eq!(wire.lock().unwrap().writes.len(), writes_before);
+    }
+
+    #[test]
+    fn application_overlay_activation_is_durable_process_local_provenance() {
+        let (mut service, _) = service_with_simple_transport();
+        let database = temporary_database();
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::Required, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let canonical_hash = candidate.definition.canonical_sha256;
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), 1)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if let Some(completion) = service.poll_simple_device_apply() {
+                assert_eq!(completion.result, Ok(2));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        service.request_shutdown().unwrap();
+        loop {
+            if let Some(status) = service.shutdown_step().unwrap() {
+                assert!(status.recorder_flushed);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(service);
+
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let instance_content: String = connection
+            .query_row(
+                "SELECT CAST(content AS TEXT) FROM provenance_content
+                 WHERE kind='simple_device_instance'
+                   AND CAST(content AS TEXT) LIKE '%\"instrument_id\":\"1002\"%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let instance: serde_json::Value = serde_json::from_str(&instance_content).unwrap();
+        assert_eq!(instance["source"], "process_local_application_candidate");
+        assert_eq!(instance["configuration_revision"], "2");
+        assert_eq!(instance["resource_id"], "7");
+        let overlay_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provenance_content
+                 WHERE kind='runtime_configuration_overlay'
+                   AND CAST(content AS TEXT) LIKE '%process_local_application_candidate%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(overlay_count, 1);
+        let object_id = 1002u64.to_be_bytes();
+        let (definition_hash, binding, descriptor): (Vec<u8>, String, String) = connection
+            .query_row(
+                "SELECT definition_hash,instance_binding,descriptor
+                 FROM object_snapshots WHERE object_kind='instrument' AND object_id=?1
+                 ORDER BY activation_no DESC LIMIT 1",
+                [object_id.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(definition_hash, canonical_hash);
+        let binding: serde_json::Value = serde_json::from_str(&binding).unwrap();
+        assert_eq!(binding["r"], "7");
+        assert_eq!(binding["b"], "1");
+        assert_eq!(binding["m"], "1");
+        let descriptor: serde_json::Value = serde_json::from_str(&descriptor).unwrap();
+        assert_eq!(descriptor["simple_device"]["configuration_revision"], "2");
+        drop(connection);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(database.with_extension("sqlite-shm"));
     }
 
     #[test]

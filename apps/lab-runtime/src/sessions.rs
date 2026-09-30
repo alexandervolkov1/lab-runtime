@@ -8,12 +8,18 @@ use std::{
     time::Duration,
 };
 
+use crate::simple_device::SimpleDeviceCandidate;
+
 /// Hard maximum of retained logical client scopes in one Runtime process.
 pub const MAX_SCOPES: usize = 16;
 /// Hard maximum accepted nonterminal operations across scopes.
 pub const MAX_PENDING: usize = 64;
 /// Hard maximum retained terminal outcomes across scopes.
 pub const MAX_TERMINAL: usize = 256;
+/// Process-wide retained canonical provisioning-payload credit.
+pub const PROVISIONING_RETAINED_BYTES: usize = 524_288;
+/// Fixed structural allowance charged for each retained provisioning mutation.
+pub const PROVISIONING_STRUCTURAL_ALLOWANCE: usize = 8_192;
 /// Maximum accepted nonterminal operations retained by one scope.
 pub(crate) const MAX_PENDING_SCOPE: usize = 8;
 /// Maximum terminal outcomes retained by one scope.
@@ -178,6 +184,13 @@ pub enum Mutation {
     ReloadConfiguration,
     /// Load and retain one bounded configuration candidate without active mutation.
     StageConfiguration,
+    /// Validate and retain one complete process-local SimpleDevice candidate.
+    StageSimpleDeviceCandidate {
+        /// Active configuration revision observed before staging.
+        expected_revision: u64,
+        /// Fully typed normalized candidate retained for exact deduplication.
+        candidate: SimpleDeviceCandidate,
+    },
     /// Apply one retained candidate under its candidate/revision fence.
     ApplyConfiguration {
         /// Process-local staged candidate identity.
@@ -346,6 +359,7 @@ struct Record {
     payload: Mutation,
     state: OperationState,
     terminal_at: Option<Duration>,
+    provisioning_charge: usize,
 }
 struct Scope {
     attached: Option<u64>,
@@ -359,6 +373,7 @@ pub struct SessionStore {
     boot_id: String,
     next_scope: u64,
     scopes: BTreeMap<String, Scope>,
+    retained_provisioning_bytes: usize,
 }
 impl SessionStore {
     /// Create a fresh process-local store from the OS-issued 128-bit boot ID.
@@ -374,6 +389,7 @@ impl SessionStore {
             boot_id: boot_id.into(),
             next_scope: 1,
             scopes: BTreeMap::new(),
+            retained_provisioning_bytes: 0,
         })
     }
 
@@ -479,6 +495,14 @@ impl SessionStore {
         {
             return Admission::Busy;
         }
+        let provisioning_charge = provisioning_charge(&payload);
+        if self
+            .retained_provisioning_bytes
+            .checked_add(provisioning_charge)
+            .is_none_or(|retained| retained > PROVISIONING_RETAINED_BYTES)
+        {
+            return Admission::Busy;
+        }
         let scope = self.scopes.get_mut(scope_id).expect("looked up above");
         scope.high_water = seq;
         scope.last_active = now;
@@ -487,7 +511,9 @@ impl SessionStore {
             payload,
             state: OperationState::Accepted,
             terminal_at: None,
+            provisioning_charge,
         });
+        self.retained_provisioning_bytes += provisioning_charge;
         Admission::Accepted
     }
 
@@ -520,6 +546,7 @@ impl SessionStore {
         record.state = state;
         record.terminal_at = Some(now);
         self.enforce_terminal_bounds();
+        self.recount_provisioning_credit();
         Ok(())
     }
 
@@ -562,6 +589,7 @@ impl SessionStore {
                 || now < scope.last_active
                 || now - scope.last_active < IDLE_SCOPE_TTL
         });
+        self.recount_provisioning_credit();
     }
 
     /// Bounded status useful for pressure tests and host diagnostics.
@@ -571,6 +599,11 @@ impl SessionStore {
             self.pending_count(),
             self.terminal_count(),
         )
+    }
+
+    /// Exact charged bytes currently retained for provisioning mutations.
+    pub const fn retained_provisioning_bytes(&self) -> usize {
+        self.retained_provisioning_bytes
     }
 
     fn pending_count(&self) -> usize {
@@ -623,5 +656,167 @@ impl SessionStore {
                 scope.records.remove(index);
             }
         }
+    }
+
+    fn recount_provisioning_credit(&mut self) {
+        self.retained_provisioning_bytes = self
+            .scopes
+            .values()
+            .flat_map(|scope| &scope.records)
+            .map(|record| record.provisioning_charge)
+            .sum();
+    }
+}
+
+fn provisioning_charge(payload: &Mutation) -> usize {
+    let Mutation::StageSimpleDeviceCandidate { candidate, .. } = payload else {
+        return 0;
+    };
+    candidate.canonical.len().div_ceil(64) * 64 + PROVISIONING_STRUCTURAL_ALLOWANCE
+}
+
+#[cfg(test)]
+mod provisioning_tests {
+    use super::*;
+    use crate::simple_device::parse_simple_candidate;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn candidate() -> SimpleDeviceCandidate {
+        parse_simple_candidate(&json!({
+            "schema_version":1,
+            "definition":{
+                "format_version":1,
+                "definition_id":"session-device",
+                "definition_version":1,
+                "parameters":[{
+                    "parameter_id":1,"key":"value","display_name":"Value",
+                    "role":"measurement","access":"read_only",
+                    "unit_id":"unit","unit_symbol":"u","value_type":"float",
+                    "engineering_min":0.0,"engineering_max":100.0,"write_effect":"none",
+                    "encoding":{"raw":"u8","scale":1.0,"offset":0.0},
+                    "read":{"request":{"segments":[{"type":"literal","hex":"10"}]},
+                        "response":{"exact_length":2,"matches":[{"type":"literal_match","offset":0,"hex":"10"}],
+                        "extract":{"type":"scalar_extract","offset":1}}}
+                }]
+            },
+            "instances":[{"instrument_id":1001,"key":"device-1","display_name":"Device 1",
+                "resource_id":7,"address":1,"channel":0,"poll_period_ms":250,
+                "queue_timeout_ms":250,"transaction_timeout_ms":500,"history_capacity":64}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn provisioning_credit_precedes_sequence_and_is_released_by_retention_cleanup() {
+        let mut maximum = candidate();
+        maximum.canonical = Arc::from(vec![b'x'; 8_192]);
+        let mutation = Mutation::StageSimpleDeviceCandidate {
+            expected_revision: 1,
+            candidate: maximum,
+        };
+        assert_eq!(provisioning_charge(&mutation), 16_384);
+
+        let mut store = SessionStore::new("00112233445566778899aabbccddeeff").unwrap();
+        let mut scopes = Vec::new();
+        for connection in 1..=5 {
+            scopes.push(store.open(None, connection, Duration::ZERO).unwrap().scope);
+        }
+        for index in 0..32 {
+            let scope = &scopes[index / 8];
+            let seq = (index % 8 + 1) as u64;
+            assert_eq!(
+                store.admit(scope, seq, mutation.clone(), Duration::ZERO),
+                Admission::Accepted
+            );
+            store
+                .complete(
+                    scope,
+                    seq,
+                    OperationState::Completed("{}".into()),
+                    Duration::ZERO,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store.retained_provisioning_bytes(),
+            PROVISIONING_RETAINED_BYTES
+        );
+        assert_eq!(
+            store.admit(&scopes[4], 1, mutation.clone(), Duration::ZERO),
+            Admission::Busy
+        );
+        assert_eq!(store.next_seq(&scopes[4]).unwrap(), 1);
+
+        store.expire(TERMINAL_TTL);
+        assert_eq!(store.retained_provisioning_bytes(), 0);
+        assert_eq!(
+            store.admit(&scopes[4], 1, mutation.clone(), TERMINAL_TTL),
+            Admission::Accepted
+        );
+        assert_eq!(
+            store.admit(&scopes[4], 1, mutation, TERMINAL_TTL),
+            Admission::Known(OperationState::Accepted)
+        );
+    }
+
+    #[test]
+    fn provisioning_credit_tracks_mixed_records_conflicts_and_terminal_eviction() {
+        let small = candidate();
+        let small_mutation = Mutation::StageSimpleDeviceCandidate {
+            expected_revision: 1,
+            candidate: small.clone(),
+        };
+        let small_charge = provisioning_charge(&small_mutation);
+        assert_eq!(small_charge % 64, 0);
+        assert!(small_charge < 16_384);
+
+        let mut store = SessionStore::new("10112233445566778899aabbccddeeff").unwrap();
+        let scope = store.open(None, 1, Duration::ZERO).unwrap().scope;
+        for index in 0..33 {
+            let seq = index + 1;
+            assert_eq!(
+                store.admit(&scope, seq, small_mutation.clone(), Duration::ZERO),
+                Admission::Accepted
+            );
+            store
+                .complete(
+                    &scope,
+                    seq,
+                    OperationState::Completed("{}".into()),
+                    Duration::from_nanos(index),
+                )
+                .unwrap();
+        }
+        assert_eq!(store.terminal_count(), 32);
+        assert_eq!(store.retained_provisioning_bytes(), 32 * small_charge);
+        assert_eq!(store.status(&scope, 1), Admission::Unknown);
+
+        let mut different = small_mutation.clone();
+        let Mutation::StageSimpleDeviceCandidate {
+            expected_revision, ..
+        } = &mut different
+        else {
+            unreachable!()
+        };
+        *expected_revision = 2;
+        assert_eq!(
+            store.admit(&scope, 33, different, Duration::from_secs(1)),
+            Admission::Conflict
+        );
+        assert_eq!(store.retained_provisioning_bytes(), 32 * small_charge);
+
+        // Exact normalized candidate equality is independent of the original
+        // JSON numeric spelling retained by the external request.
+        let spelling: serde_json::Value = serde_json::from_slice(&small.canonical).unwrap();
+        let mut equivalent = spelling;
+        equivalent["definition"]["parameters"][0]["engineering_min"] = json!(0);
+        equivalent["definition"]["parameters"][0]["engineering_max"] = json!(100);
+        assert_eq!(parse_simple_candidate(&equivalent).unwrap(), small);
+
+        store.detach(1, Duration::ZERO);
+        assert!(store.status(&scope, 33) != Admission::ScopeUnknown);
+        store.expire(TERMINAL_TTL + Duration::from_nanos(33));
+        assert_eq!(store.retained_provisioning_bytes(), 0);
     }
 }

@@ -46,6 +46,18 @@ impl ServiceHost {
             .find(|resource| resource.id == resource_id)
             .ok_or(LifecycleOperationError::InvalidCandidate)?
             .clone();
+        if self
+            .quarantined_simple_output
+            .as_ref()
+            .is_some_and(|quarantine| quarantine.resource.get() == resource_id)
+        {
+            return self.reconcile_quarantined_simple_output(
+                active,
+                resource,
+                expected_binding_generation,
+                factory,
+            );
+        }
         let instrument = active
             .effective()
             .dto
@@ -466,6 +478,171 @@ impl ServiceHost {
         Ok(ReconnectResourceResult {
             resource_id,
             binding_generation: generation,
+        })
+    }
+
+    fn reconcile_quarantined_simple_output(
+        &mut self,
+        active: crate::configuration::FrozenDeployment,
+        resource: crate::configuration::ResourceDto,
+        expected_binding_generation: u64,
+        factory: impl FnOnce(ComSettings, std::time::Instant) -> Result<ComTransport, SerialError>,
+    ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
+        let quarantine = self
+            .quarantined_simple_output
+            .as_ref()
+            .ok_or(LifecycleOperationError::InvalidCandidate)?;
+        if quarantine.binding_generation != expected_binding_generation {
+            return Err(LifecycleOperationError::Conflict);
+        }
+        let target_generation = expected_binding_generation
+            .checked_add(1)
+            .ok_or(LifecycleOperationError::Conflict)?;
+        let resource_key = quarantine.resource;
+        let instrument = quarantine.actuator.instrument();
+        self.reconnect_diagnostic = Some(ReconnectDiagnostic {
+            resource_id: resource.id,
+            current_generation: expected_binding_generation,
+            target_generation,
+            stage: ReconnectStage::RecorderReservation,
+            com_state: self
+                .host
+                .configured_resource_executor_state(resource_key)
+                .map(executor_com_state),
+            serial_error: None,
+            old_worker_finished: false,
+            replacement_worker_spawned: false,
+            os_port_open_confirmed: false,
+            open_attempts: 0,
+            core_rebind_crossed: false,
+        });
+        let pending = self.begin_resource_recorded_lifecycle("reconnect_resource", &active)?;
+        self.host
+            .begin_configured_resource_reconnect(resource_key)
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+
+        let retirement_deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(resource.recovery_timeout_ms);
+        loop {
+            match self
+                .host
+                .prepare_configured_transport_replacement(resource_key, self.clock.now())
+            {
+                Ok(true) => {
+                    self.reconnect_diagnostic
+                        .as_mut()
+                        .expect("reconciliation diagnostic")
+                        .old_worker_finished = true;
+                    break;
+                }
+                Ok(false) if std::time::Instant::now() < retirement_deadline => {
+                    self.reconnect_diagnostic
+                        .as_mut()
+                        .expect("reconciliation diagnostic")
+                        .stage = ReconnectStage::RetireOldPending;
+                    self.host
+                        .service(&self.clock)
+                        .map_err(|_| LifecycleOperationError::TransportUnavailable)?;
+                    std::thread::yield_now();
+                }
+                _ => {
+                    self.cancel_recorded_lifecycle(pending);
+                    return Err(LifecycleOperationError::TransportUnavailable);
+                }
+            }
+        }
+
+        let settings = match com_settings(&resource, target_generation) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.cancel_recorded_lifecycle(pending);
+                return Err(error);
+            }
+        };
+        let open_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(resource.open_timeout_ms);
+        let mut adapter = match factory(settings, open_deadline) {
+            Ok(adapter) => adapter,
+            Err(_) => {
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::TransportUnavailable);
+            }
+        };
+        loop {
+            match adapter.open_status() {
+                ComOpenStatus::Ready => break,
+                ComOpenStatus::Failed(error) => {
+                    self.reconnect_diagnostic
+                        .as_mut()
+                        .expect("reconciliation diagnostic")
+                        .serial_error = Some(error);
+                    self.cancel_recorded_lifecycle(pending);
+                    self.retire_uninstalled_reconnect_candidate(
+                        resource_key,
+                        adapter,
+                        resource.recovery_timeout_ms,
+                    );
+                    return Err(LifecycleOperationError::TransportUnavailable);
+                }
+                ComOpenStatus::Opening if std::time::Instant::now() < open_deadline => {
+                    self.host
+                        .service(&self.clock)
+                        .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+                    std::thread::yield_now();
+                }
+                ComOpenStatus::Opening => {
+                    self.cancel_recorded_lifecycle(pending);
+                    self.retire_uninstalled_reconnect_candidate(
+                        resource_key,
+                        adapter,
+                        resource.recovery_timeout_ms,
+                    );
+                    return Err(LifecycleOperationError::TransportUnavailable);
+                }
+            }
+        }
+        // Drain the closed executor's bounded terminal evidence before the
+        // explicit reconciliation discards the hidden provisional authority.
+        // The ready replacement is still uninstalled, so a failure here can
+        // retire it while preserving the quarantine evidence.
+        loop {
+            match self.host.discard_prepared_simple_overlay(vec![instrument]) {
+                Ok(()) => break,
+                Err(_) if std::time::Instant::now() < retirement_deadline => {
+                    self.host
+                        .service(&self.clock)
+                        .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+                    std::thread::yield_now();
+                }
+                Err(_) => {
+                    self.cancel_recorded_lifecycle(pending);
+                    self.retire_uninstalled_reconnect_candidate(
+                        resource_key,
+                        adapter,
+                        resource.recovery_timeout_ms,
+                    );
+                    return Err(LifecycleOperationError::OwnerFailure);
+                }
+            }
+        }
+        self.host
+            .install_reconciled_simple_transport(resource_key, Box::new(adapter), self.clock.now())
+            .map_err(|_| LifecycleOperationError::OwnerFailure)?;
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("reconciliation diagnostic")
+            .core_rebind_crossed = true;
+        self.quarantined_simple_output = None;
+        if self.finish_recorded_lifecycle_detailed(pending).is_err() {
+            return Err(LifecycleOperationError::RecordingUnavailable);
+        }
+        self.reconnect_diagnostic
+            .as_mut()
+            .expect("reconciliation diagnostic")
+            .stage = ReconnectStage::Complete;
+        Ok(ReconnectResourceResult {
+            resource_id: resource.id,
+            binding_generation: target_generation,
         })
     }
 

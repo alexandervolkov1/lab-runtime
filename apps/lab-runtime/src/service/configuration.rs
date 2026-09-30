@@ -6,6 +6,492 @@
 use super::*;
 
 impl ServiceHost {
+    pub(crate) fn quarantined_simple_resource_generation(
+        &self,
+        resource: ResourceId,
+    ) -> Option<u64> {
+        self.quarantined_simple_output
+            .as_ref()
+            .filter(|quarantine| quarantine.resource == resource)
+            .map(|quarantine| quarantine.binding_generation)
+    }
+
+    pub(crate) fn simple_configuration_status(&self) -> serde_json::Value {
+        let pending = self.pending_simple_apply.as_ref().map(|pending| {
+            let phase = match pending.phase {
+                SimpleApplyPhase::Prepare => "prepare",
+                SimpleApplyPhase::ReserveRecording => "reserve_recording",
+                SimpleApplyPhase::PrepareTopology => "prepare_topology",
+                SimpleApplyPhase::EstablishSafe => "establish_safe",
+                SimpleApplyPhase::Commit => "commit",
+                SimpleApplyPhase::ConfirmRecording => "confirm_recording",
+            };
+            serde_json::json!({
+                "candidate_id":pending.candidate.snapshot.id().to_string(),
+                "phase":phase,
+                "deadline_ns":pending.deadline.as_nanos().to_string(),
+                "configuration_quiesced":pending.quiesced
+            })
+        });
+        let quarantine = self.quarantined_simple_output.as_ref().map(|quarantine| {
+            serde_json::json!({
+                "candidate_id":quarantine.candidate_id.to_string(),
+                "resource":quarantine.resource.get().to_string(),
+                "actuator":{"instrument":quarantine.actuator.instrument().get().to_string(),
+                    "parameter":quarantine.actuator.parameter().get().to_string()},
+                "binding_generation":quarantine.binding_generation.to_string(),
+                "mapping_revision":quarantine.mapping_revision.to_string(),
+                "phase":"reconciliation_required",
+                "send_started":true,
+                "acknowledged":quarantine.acknowledged,
+                "readback_verified":quarantine.readback_verified,
+                "safe_resend_blocked":true
+            })
+        });
+        serde_json::json!({
+            "overlay_active":self.api_simple_overlay_active,
+            "pending_apply":pending,
+            "quarantine":quarantine
+        })
+    }
+    pub(crate) fn is_staged_simple_device_candidate(&self, candidate_id: u64) -> bool {
+        self.deployment
+            .as_ref()
+            .and_then(DeploymentLifecycle::staged)
+            .is_some_and(|staged| staged.id() == candidate_id)
+            && self
+                .deployment
+                .as_ref()
+                .and_then(DeploymentLifecycle::staged_simple_metadata)
+                .is_some()
+    }
+    /// Validate active cross-references and retain one complete process-local
+    /// SimpleDevice overlay without publishing any candidate entity.
+    pub(crate) fn stage_simple_device_candidate(
+        &mut self,
+        candidate: &SimpleDeviceCandidate,
+        expected_revision: u64,
+    ) -> Result<StagedSimpleDeviceResult, LifecycleOperationError> {
+        if self.pending_simple_apply.is_some() {
+            return Err(LifecycleOperationError::Capacity);
+        }
+        if self
+            .quarantined_simple_output
+            .as_ref()
+            .is_some_and(|quarantine| {
+                candidate
+                    .instances
+                    .iter()
+                    .any(|instance| ResourceId::new(instance.resource_id) == quarantine.resource)
+            })
+        {
+            return Err(LifecycleOperationError::Capacity);
+        }
+        let lifecycle = self
+            .deployment
+            .as_mut()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?;
+        if lifecycle.revision() != expected_revision {
+            return Err(LifecycleOperationError::Conflict);
+        }
+        for instance in &candidate.instances {
+            if !lifecycle
+                .active()
+                .effective()
+                .dto
+                .resources
+                .iter()
+                .any(|resource| resource.id == instance.resource_id)
+            {
+                return Err(LifecycleOperationError::UnknownResource);
+            }
+        }
+        let overlay = lifecycle
+            .active()
+            .with_simple_device_candidate(candidate)
+            .map_err(|_| LifecycleOperationError::InvalidCandidate)?;
+        let staged = lifecycle
+            .stage_simple_device(overlay, candidate, self.clock.now())
+            .map_err(|_| LifecycleOperationError::Capacity)?;
+        Ok(StagedSimpleDeviceResult {
+            staged,
+            definition_id: candidate.definition.definition_id.clone(),
+            definition_version: candidate.definition.definition_version,
+            normalized_sha256: candidate.definition.canonical_sha256,
+            instruments: candidate
+                .instances
+                .iter()
+                .map(|instance| instance.instrument_id)
+                .collect(),
+        })
+    }
+
+    /// Consume one staged API candidate and hand its bounded incremental work to
+    /// the serialized ServiceHost owner. This returns before physical progress.
+    pub(crate) fn begin_simple_device_apply(
+        &mut self,
+        candidate_id: u64,
+        expected_revision: u64,
+    ) -> Result<(), LifecycleOperationError> {
+        if self.pending_simple_apply.is_some() {
+            return Err(LifecycleOperationError::Capacity);
+        }
+        if self.quarantined_simple_output.is_some() {
+            let output_candidate = self
+                .deployment
+                .as_ref()
+                .and_then(DeploymentLifecycle::staged_simple_metadata)
+                .is_some_and(|metadata| metadata.output_capable);
+            if output_candidate {
+                return Err(LifecycleOperationError::Capacity);
+            }
+        }
+        let now = self.clock.now();
+        let deadline = now
+            .checked_add(SIMPLE_APPLY_DEADLINE)
+            .ok_or(LifecycleOperationError::OwnerFailure)?;
+        let candidate = self
+            .deployment
+            .as_mut()
+            .ok_or(LifecycleOperationError::ConfigurationDisabled)?
+            .consume_simple_device(candidate_id, expected_revision, now)
+            .map_err(|error| match error {
+                ApplyError::UnknownCandidate | ApplyError::Conflict | ApplyError::Expired => {
+                    LifecycleOperationError::Conflict
+                }
+                _ => LifecycleOperationError::OwnerFailure,
+            })?;
+        self.pending_simple_apply = Some(PendingSimpleConfigurationApply {
+            candidate,
+            phase: SimpleApplyPhase::Prepare,
+            deadline,
+            actuator: None,
+            recording: None,
+            quiesced: false,
+            publication_prepared: false,
+        });
+        Ok(())
+    }
+
+    /// Advance at most one bounded phase of the process-wide SimpleDevice apply.
+    pub(crate) fn poll_simple_device_apply(&mut self) -> Option<SimpleApplyCompletion> {
+        let mut pending = self.pending_simple_apply.take()?;
+        let now = self.clock.now();
+        let candidate_id = pending.candidate.snapshot.id();
+        if now >= pending.deadline {
+            let error = self.pending_simple_deadline_error(&pending);
+            return Some(self.fail_pending_simple_apply_with(pending, error));
+        }
+        let active = self.deployment.as_ref()?.active().clone();
+        let step = match pending.phase {
+            SimpleApplyPhase::Prepare => {
+                if pending.candidate.metadata.output_capable {
+                    match self.host.enter_configuration_safe_barrier(now) {
+                        Ok(false) => Ok(false),
+                        Err(_) => Err(LifecycleOperationError::OutputRejected),
+                        Ok(true) => {
+                            self.host.begin_configuration_quiesce();
+                            pending.quiesced = true;
+                            pending.phase = SimpleApplyPhase::ReserveRecording;
+                            Ok(false)
+                        }
+                    }
+                } else {
+                    pending.phase = SimpleApplyPhase::ReserveRecording;
+                    Ok(false)
+                }
+            }
+            SimpleApplyPhase::EstablishSafe => {
+                let actuator = pending.actuator.expect("output candidate has actuator");
+                match self.host.prepared_simple_output(actuator) {
+                    Some(snapshot) if snapshot.safe_confirmed => {
+                        pending.phase = SimpleApplyPhase::Commit;
+                        Ok(false)
+                    }
+                    Some(snapshot)
+                        if snapshot.fault_latched
+                            || snapshot.state == lab_core::output::OutputState::FaultLatched =>
+                    {
+                        Err(LifecycleOperationError::OutputRejected)
+                    }
+                    Some(_) => Ok(false),
+                    None => Err(LifecycleOperationError::OwnerFailure),
+                }
+            }
+            SimpleApplyPhase::ReserveRecording => {
+                if pending.recording.is_none() {
+                    let base_revision = self.deployment.as_ref()?.revision();
+                    let committed_revision = match base_revision.checked_add(1) {
+                        Some(revision) => revision,
+                        None => {
+                            return Some(self.fail_pending_simple_apply_with(
+                                pending,
+                                LifecycleOperationError::OwnerFailure,
+                            ));
+                        }
+                    };
+                    let submitted_at = now;
+                    let reopen_required = self.host.begin_configuration_recording_fence(now);
+                    pending.recording = Some(PendingSimpleRecording {
+                        record: ConfigurationLifecycleRecord {
+                            operation_id: candidate_id,
+                            operation_kind: "apply_configuration",
+                            base_revision,
+                            committed_revision,
+                            toml_hash: pending.candidate.loaded.toml_hash(),
+                            affected: configuration_affected(
+                                &pending.candidate.loaded,
+                                base_revision,
+                                committed_revision,
+                            ),
+                            reason: None,
+                            at: now,
+                        },
+                        generation: None,
+                        reopen_required,
+                        submitted_at,
+                    });
+                }
+                let recording = pending.recording.as_mut().expect("created above");
+                match self
+                    .host
+                    .try_reserve_configuration_activation(&recording.record, now)
+                {
+                    Ok(Some(generation)) => {
+                        recording.generation = generation;
+                        pending.phase = SimpleApplyPhase::PrepareTopology;
+                        Ok(false)
+                    }
+                    Ok(None) => Ok(false),
+                    Err(_) => Err(LifecycleOperationError::RecordingUnavailable),
+                }
+            }
+            SimpleApplyPhase::PrepareTopology => match self.host.prepare_simple_device_overlay(
+                &active,
+                &pending.candidate.loaded,
+                now,
+            ) {
+                Ok(actuator) if pending.candidate.metadata.output_capable => {
+                    pending.actuator = actuator;
+                    pending.phase = SimpleApplyPhase::EstablishSafe;
+                    Ok(false)
+                }
+                Ok(None) if !pending.candidate.metadata.output_capable => {
+                    pending.phase = SimpleApplyPhase::Commit;
+                    Ok(false)
+                }
+                Ok(_) | Err(_) => Err(LifecycleOperationError::OwnerFailure),
+            },
+            SimpleApplyPhase::Commit => {
+                let active_revision = self.deployment.as_ref().map(DeploymentLifecycle::revision);
+                let revision = active_revision.and_then(|revision| revision.checked_add(1));
+                let Some(revision) = revision else {
+                    return Some(self.fail_pending_simple_apply_with(
+                        pending,
+                        LifecycleOperationError::OwnerFailure,
+                    ));
+                };
+                let instruments: Vec<_> = pending
+                    .candidate
+                    .metadata
+                    .instruments
+                    .iter()
+                    .copied()
+                    .map(InstrumentId::new)
+                    .collect();
+                if self
+                    .host
+                    .prepare_simple_device_publication(
+                        &active,
+                        &pending.candidate.loaded,
+                        now,
+                        revision,
+                    )
+                    .is_err()
+                {
+                    self.host.rollback_simple_device_publication(
+                        &active,
+                        &pending.candidate.loaded,
+                        instruments,
+                        active_revision.expect("revision checked above"),
+                    );
+                    Err(LifecycleOperationError::OwnerFailure)
+                } else {
+                    pending.publication_prepared = true;
+                    let recording = pending.recording.as_ref().expect("recording reserved");
+                    if self
+                        .host
+                        .commit_reserved_configuration_activation(
+                            recording.generation,
+                            recording.record.clone(),
+                        )
+                        .is_err()
+                    {
+                        self.host.configuration_recording_failed(now);
+                        self.host.rollback_simple_device_publication(
+                            &active,
+                            &pending.candidate.loaded,
+                            instruments,
+                            active_revision.expect("revision checked above"),
+                        );
+                        pending.publication_prepared = false;
+                        Err(LifecycleOperationError::RecordingUnavailable)
+                    } else {
+                        pending.phase = SimpleApplyPhase::ConfirmRecording;
+                        Ok(false)
+                    }
+                }
+            }
+            SimpleApplyPhase::ConfirmRecording => {
+                let recording = pending.recording.as_ref().expect("recording committed");
+                match self.host.live_activation_committed(
+                    recording.generation,
+                    recording.reopen_required,
+                    recording.submitted_at,
+                    now,
+                ) {
+                    Ok(true) => {
+                        let instruments: Vec<_> = pending
+                            .candidate
+                            .metadata
+                            .instruments
+                            .iter()
+                            .copied()
+                            .map(InstrumentId::new)
+                            .collect();
+                        if self
+                            .host
+                            .publish_simple_device_overlay(instruments, now)
+                            .is_err()
+                            || self
+                                .deployment
+                                .as_mut()
+                                .expect("loaded configuration")
+                                .commit_consumed_simple_device(pending.candidate.loaded.clone())
+                                .is_err()
+                        {
+                            return Some(self.fail_pending_simple_apply_with(
+                                pending,
+                                LifecycleOperationError::OwnerFailure,
+                            ));
+                        }
+                        pending.publication_prepared = false;
+                        self.api_simple_overlay_active = true;
+                        if pending.quiesced {
+                            self.host.end_configuration_quiesce();
+                        }
+                        let revision = self.deployment.as_ref()?.revision();
+                        return Some(SimpleApplyCompletion {
+                            candidate_id,
+                            result: Ok(revision),
+                        });
+                    }
+                    Ok(false) => Ok(false),
+                    Err(_) => {
+                        self.host.configuration_recording_failed(now);
+                        Err(LifecycleOperationError::RecordingUnavailable)
+                    }
+                }
+            }
+        };
+        match step {
+            Ok(false) => {
+                self.pending_simple_apply = Some(pending);
+                None
+            }
+            Ok(true) => unreachable!(),
+            Err(error) => Some(self.fail_pending_simple_apply_with(pending, error)),
+        }
+    }
+
+    fn pending_simple_deadline_error(
+        &self,
+        pending: &PendingSimpleConfigurationApply,
+    ) -> LifecycleOperationError {
+        match pending.phase {
+            SimpleApplyPhase::ReserveRecording | SimpleApplyPhase::ConfirmRecording => {
+                LifecycleOperationError::RecordingUnavailable
+            }
+            SimpleApplyPhase::EstablishSafe => LifecycleOperationError::OutputRejected,
+            SimpleApplyPhase::Prepare if pending.candidate.metadata.output_capable => {
+                LifecycleOperationError::OutputRejected
+            }
+            SimpleApplyPhase::Prepare
+            | SimpleApplyPhase::PrepareTopology
+            | SimpleApplyPhase::Commit => LifecycleOperationError::OwnerFailure,
+        }
+    }
+
+    fn fail_pending_simple_apply_with(
+        &mut self,
+        mut pending: PendingSimpleConfigurationApply,
+        error: LifecycleOperationError,
+    ) -> SimpleApplyCompletion {
+        let candidate_id = pending.candidate.snapshot.id();
+        if let Some(recording) = &pending.recording {
+            let _ = self
+                .host
+                .cancel_configuration_activation(recording.generation);
+        }
+        let instruments: Vec<_> = pending
+            .candidate
+            .metadata
+            .instruments
+            .iter()
+            .copied()
+            .map(InstrumentId::new)
+            .collect();
+        if pending.publication_prepared {
+            let active_revision = self
+                .deployment
+                .as_ref()
+                .map(DeploymentLifecycle::revision)
+                .unwrap_or(1);
+            if let Some(active) = self
+                .deployment
+                .as_ref()
+                .map(|lifecycle| lifecycle.active().clone())
+            {
+                self.host.rollback_simple_device_publication(
+                    &active,
+                    &pending.candidate.loaded,
+                    instruments.clone(),
+                    active_revision,
+                );
+                pending.publication_prepared = false;
+            }
+        }
+        let mut ambiguous = false;
+        if let Some(actuator) = pending.actuator
+            && let Some(snapshot) = self.host.prepared_simple_output(actuator)
+            && snapshot.sent.is_some()
+            && !snapshot.safe_confirmed
+        {
+            ambiguous = true;
+            if let Some(binding) = self.host.prepared_simple_binding(actuator.instrument()) {
+                self.quarantined_simple_output = Some(QuarantinedSimpleOutput {
+                    candidate_id,
+                    resource: binding.resource,
+                    actuator,
+                    binding_generation: binding.binding_generation,
+                    mapping_revision: binding.mapping_revision,
+                    acknowledged: snapshot.acknowledged.is_some(),
+                    readback_verified: snapshot.readback.is_some(),
+                });
+            }
+        }
+        if !ambiguous {
+            let _ = self.host.discard_prepared_simple_overlay(instruments);
+        }
+        if pending.quiesced {
+            self.host.end_configuration_quiesce();
+        }
+        SimpleApplyCompletion {
+            candidate_id,
+            result: Err(error),
+        }
+    }
+
     /// Reload, validate, stage and atomically commit a live-safe deployment diff.
     pub fn reload_configuration(
         &mut self,
@@ -20,6 +506,12 @@ impl ServiceHost {
 
     /// Load, validate and retain exactly one immutable candidate without active mutation.
     pub fn stage_configuration(&mut self) -> Result<StagedConfiguration, LifecycleOperationError> {
+        if self.api_simple_overlay_active {
+            return Err(LifecycleOperationError::InvalidCandidate);
+        }
+        if self.pending_simple_apply.is_some() {
+            return Err(LifecycleOperationError::Capacity);
+        }
         let path = self
             .configuration_path
             .as_deref()
@@ -50,6 +542,9 @@ impl ServiceHost {
         value: PropertyValue,
         expected_revision: u64,
     ) -> Result<ReloadConfigurationResult, LifecycleOperationError> {
+        if self.pending_simple_apply.is_some() {
+            return Err(LifecycleOperationError::Capacity);
+        }
         let lifecycle = self
             .deployment
             .as_mut()

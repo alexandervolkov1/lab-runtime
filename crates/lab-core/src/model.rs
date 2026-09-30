@@ -535,6 +535,8 @@ pub enum Error {
     InvalidConfiguration(&'static str),
     /// Required durable-progress prerequisite is closed or has expired.
     RecordingUnavailable,
+    /// An admitted serialized-owner operation failed without a more specific domain cause.
+    OperationFailed,
     /// The attempted observation does not follow the previous one in monotonic time.
     NonMonotonicTime {
         /// Identity of the associated measurement stream, when one exists.
@@ -584,6 +586,7 @@ impl fmt::Display for Error {
             }
             Self::InvalidConfiguration(reason) => write!(f, "invalid configuration: {reason}"),
             Self::RecordingUnavailable => f.write_str("required recording unavailable"),
+            Self::OperationFailed => f.write_str("operation failed"),
             Self::NonMonotonicTime {
                 signal,
                 previous,

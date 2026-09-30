@@ -262,6 +262,9 @@ impl Runtime {
     }
 
     pub(super) fn descriptor(&self, id: InstrumentId) -> Result<&InstrumentDescriptor, Error> {
+        if self.prepared_simple_devices.contains(&id) {
+            return Err(Error::UnknownInstrument(id));
+        }
         self.instruments
             .get(&id)
             .map(|instrument| &instrument.descriptor)
@@ -603,6 +606,8 @@ impl Runtime {
                 self.pending_output_writes.insert(
                     (resource, transaction),
                     PendingOutputWrite {
+                        actuator,
+                        intent,
                         timeout,
                         protocol: prepared.2,
                     },

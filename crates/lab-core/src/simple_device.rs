@@ -1294,6 +1294,71 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prepared_output_discard_cancels_only_pre_send_work() {
+        let instrument = InstrumentId::new(9);
+        let actuator = crate::output::ActuatorId::new(instrument, ParameterId::new(2));
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::new();
+        runtime
+            .register_transport(
+                ResourceId::new(7),
+                Box::new(CountingTransport(writes.clone())),
+            )
+            .unwrap();
+        runtime
+            .command(Command::RegisterPreparedSimpleDevice(
+                writable_instrument_config(),
+            ))
+            .unwrap();
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::BindProfile(SafeProfile {
+                    min: 0.0,
+                    max: 100.0,
+                    safe_value: 0.0,
+                    max_lease: Duration::from_secs(1),
+                    max_proposal_ttl: Duration::from_millis(100),
+                    required_evidence: EvidenceLevel::Readback,
+                }),
+            })
+            .unwrap();
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::RequestSafe,
+            })
+            .unwrap();
+        runtime
+            .command(Command::QueueMetakonOutput {
+                actuator,
+                at: Duration::ZERO,
+                queue_ttl: Duration::from_secs(1),
+                timeout: Duration::from_secs(1),
+            })
+            .unwrap();
+        runtime
+            .command(Command::DiscardPreparedSimpleDevices {
+                instruments: vec![instrument],
+            })
+            .unwrap();
+        assert!(
+            runtime
+                .query(Query::DescribeInstrument(instrument))
+                .is_err()
+        );
+        let QueryResult::Transport(snapshot) =
+            runtime.query(Query::Transport(ResourceId::new(7))).unwrap()
+        else {
+            panic!("transport snapshot missing");
+        };
+        assert_eq!(snapshot.queue_len, 0);
+        assert!(writes.borrow().is_empty());
+    }
+
     struct CountingTransport(Rc<RefCell<Vec<Vec<u8>>>>);
 
     impl ByteTransport for CountingTransport {

@@ -62,10 +62,10 @@ ACCEPTED
 M16.3 writable simple-device actuator + ACK/readback vertical slice:
 ACCEPTED
 M16.4 Application simple-device provisioning:
-AUTHORIZED
+ACCEPTED
 M16.5–M16.7: NOT AUTHORIZED
 Current phase: M16.4 Application simple-device provisioning
-STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_AUTHORIZED
+STATUS: M16_4_SIMPLE_DEVICE_PROVISIONING_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -108,7 +108,11 @@ consolidated acceptance. The read-only M16.1 audit is accepted in
 read-only simple-device implementation commit is
 `aac377470d7142005ad5e0d098fddf6c16734db8`. The accepted M16.3 writable
 simple-device implementation commit is `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
-M16.4 Application provisioning is authorized; M16.5–M16.7 remain unauthorized.
+M16.4 Application provisioning is accepted after external re-review of the original
+implementation plus the pending-apply property fence, existing `operation_failed`
+mapping for internal owner failures, and phase-aware absolute apply deadline with
+quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5–M16.7
+remain unauthorized.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -132,7 +136,7 @@ exhaustive physical qualification.
 
 ## Accepted public/storage surface
 
-- Application registry: 42 operations and 25 capabilities.
+- Application registry: 43 operations and 26 capabilities.
 - Public errors: the accepted 12-category taxonomy.
 - Transports: local bounded TCP/NDJSON and optional loopback WebSocket/JSON through
   one shared eight-client capacity pool.
@@ -194,8 +198,8 @@ without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized unt
 consolidated acceptance. The read-only M16.1 audit is accepted in
 `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; M16.2 is accepted at
 `aac377470d7142005ad5e0d098fddf6c16734db8`; M16.3 is accepted at
-`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`; M16.4 is authorized; and
-M16.5–M16.7 remain unauthorized.
+`df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`; M16.4 is accepted; and M16.5–M16.7
+remain unauthorized.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific

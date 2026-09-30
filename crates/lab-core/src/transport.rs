@@ -333,6 +333,20 @@ impl ResourceExecutor {
         })
     }
 
+    pub(crate) fn replacement(
+        id: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        recovery_timeout: Duration,
+        generation: u64,
+    ) -> Result<Self, TransportError> {
+        if generation == 0 {
+            return Err(TransportError::CounterExhausted);
+        }
+        let mut replacement = Self::with_recovery_timeout(id, adapter, recovery_timeout)?;
+        replacement.generation = generation;
+        Ok(replacement)
+    }
+
     /// Return this executor's stable resource identity.
     pub const fn id(&self) -> ResourceId {
         self.id
@@ -477,6 +491,50 @@ impl ResourceExecutor {
             self.queue.push_back(transaction);
         }
         Ok(id)
+    }
+
+    /// Cancel one output that is still queued and has admitted no physical byte.
+    ///
+    /// Active, recovering, and terminal work is deliberately not cancellable here:
+    /// once byte admission may have happened, Runtime must preserve ambiguity
+    /// evidence instead of treating the transaction as a pre-send failure.
+    pub(crate) fn cancel_queued_output(&mut self, id: TransactionId) -> Option<OutputIntent> {
+        if self
+            .safe_queue
+            .as_ref()
+            .is_some_and(|queued| queued.id == id)
+        {
+            let queued = self.safe_queue.take()?;
+            return match queued.kind {
+                TransactionKind::Output(output) => Some(output.intent),
+                TransactionKind::Read => None,
+            };
+        }
+        let index = self.queue.iter().position(|queued| queued.id == id)?;
+        let queued = self.queue.remove(index)?;
+        match queued.kind {
+            TransactionKind::Output(output) => Some(output.intent),
+            TransactionKind::Read => None,
+        }
+    }
+
+    /// Report whether one retained output correlation has crossed, or may have
+    /// crossed, the first-positive-byte boundary.
+    pub(crate) fn output_may_have_started(&self, id: TransactionId) -> bool {
+        let state_started = match &self.state {
+            OwnedState::Active(active) if active.transaction.id == id => active.write_offset > 0,
+            OwnedState::Recovering(recovery) if recovery.transaction.id == id => recovery.started,
+            _ => false,
+        };
+        state_started
+            || self.events.iter().any(|event| match event {
+                TransportEvent::OutputUncertain { id: event_id, .. } => *event_id == id,
+                TransportEvent::OutputTerminal { record, .. } => record.id == id && record.started,
+                _ => false,
+            })
+            || self
+                .latest
+                .is_some_and(|record| record.id == id && record.started)
     }
 
     pub(crate) fn poll_authorized(
