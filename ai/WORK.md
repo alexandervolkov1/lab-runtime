@@ -1,16 +1,16 @@
-# Current work — M16.1 accepted; M16.2 not authorized
+# Current work — M16.2 read-only simple-device vertical slice
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.1 accepted; M16.2 not authorized
+Current phase: M16.2 read-only simple-device vertical slice
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1 ACCEPTED
+Practical integration architecture: M16.1 ACCEPTED; M16.2 AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -45,8 +45,9 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2–M16.7: NOT AUTHORIZED
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
+M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.3–M16.7: NOT AUTHORIZED
+STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -84,8 +85,7 @@ Application API reference implementation commit is
 `48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
-consolidated acceptance. M16.1 is accepted; no
-implementation slice is authorized.
+consolidated acceptance. M16.1 is accepted; M16.2 alone is authorized.
 
 ## Completed preparation step
 
@@ -205,11 +205,12 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2–M16.7: NOT AUTHORIZED
+M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.3–M16.7: NOT AUTHORIZED
 
-Current phase: M16.1 accepted; M16.2 not authorized
+Current phase: M16.2 read-only simple-device vertical slice
 
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
+STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -351,12 +352,97 @@ SessionStore retained-payload credit, one-slot/30-second lifecycle, process-loca
 restart semantics, and single-owner provisional output preparation are in the audit
 report.
 
-M16.1 is accepted. M16.2 read-only vertical slice,
-M16.3 writable actuator, M16.4 provisioning implementation, M16.5 generic integration
-acceptance, M16.6 fault/
-bounds/provenance/recovery acceptance, M16.7 minimal unknown-device acceptance, and
-M16 consolidated review all remain unauthorized. M13.2 remains blocked on Steel
-dependency safety.
+M16.1 is accepted. M16.2 is the only authorized implementation slice. M16.3 writable
+actuator, M16.4 provisioning implementation, M16.5 generic integration acceptance,
+M16.6 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device
+acceptance, and M16 consolidated review remain unauthorized. M13.2 remains blocked
+on Steel dependency safety.
+
+## M16.2 authorized scope
+
+M16.2 implements only this persistent, file-backed read-only vertical slice:
+
+```text
+persistent/file-backed read-only simple_device startup/composition
+    -> frozen deployment-relative JSON definition artifact
+    -> strict bounded definition parse/validation
+    -> canonical normalization/hash
+    -> compiled fixed-length READ plan
+    -> existing configured COM resource
+    -> existing ResourceExecutor
+    -> ordinary Signal
+    -> generic discovery/current/events/recent history/Recorder/Workbench path
+```
+
+The accepted M16.1 constraints remain authoritative:
+
+- the persistent deployment instrument is `[[instruments]]` with
+  `kind = "simple_device"`;
+- its deployment-relative immutable JSON definition artifact is resolved, bounded,
+  read once, frozen, and hashed through the accepted deployment artifact model;
+- raw definition artifact bytes are at most 8,192 and canonical normalized definition
+  bytes are at most 6,144;
+- a definition contains at most 16 parameters, and request/response transactions are
+  fixed-length and at most 64 bytes;
+- every scalar parameter has exactly one `encoding { raw, scale, offset }` used by
+  its read plan;
+- read-only measurement and diagnostic engineering values may be integer or float;
+  actuators are outside M16.2;
+- a read-only instance may bind an existing `windows_com_read_only` or `windows_com`
+  resource;
+- multiple read-only simple-device instances may share one eligible resource only
+  when their bounded response correlation is sufficient; sharing a resource between
+  simple-device and native/Metakon protocol adapters is invalid and deferred in v1;
+- M16.2 may introduce only the minimal protocol-neutral 64-byte transport seam needed
+  by this slice; the Metakon codec retains its existing 38-byte limit and behavior.
+
+### M16.2 explicit non-goals
+
+M16.2 does not authorize WRITE, Actuator, safe-profile or controller activation, ACK,
+readback, output ambiguity/quarantine, or OutputAuthority changes beyond a strictly
+necessary protocol-neutral type seam. It does not authorize
+`stage_simple_device_candidate`, Application provisioning, incremental provisioning
+apply, process-local API overlays, SessionStore provisioning credit, new COM/resource
+creation, delimiter framing, ASCII-numeric protocol fields, public raw-byte
+operations, scripting, Lua, Steel, Clojure integration, or a Simple Device-specific
+Workbench UI. Generic consumers must not gain `SimpleDevice`-specific branches merely
+to consume ordinary signals.
+
+### M16.2 required implementation evidence
+
+External implementation review must prove all of the following:
+
+1. Exact persistent TOML composition using `kind = "simple_device"`.
+2. The deployment-relative definition artifact is resolved, bounded, read once,
+   frozen, and hashed using the accepted deployment artifact model.
+3. The strict closed JSON definition grammar produces a canonical form of at most
+   6,144 bytes.
+4. Every parameter uses the exact `encoding { raw, scale, offset }` shape.
+5. The READ request grammar has the exact tagged variants `literal`,
+   `instance_field`, and `checksum`.
+6. The response grammar has the exact tagged variants `literal_match`,
+   `instance_match`, `scalar_extract`, and `checksum`.
+7. Fixed response length and every offset, overlap, and byte bound are validated.
+8. Integer engineering ranges use integral `i64` bounds; float ranges use finite
+   `f64` bounds.
+9. Instance address/channel values produce the exact compiled request bytes.
+10. Response length, matches, checksum, extraction, and engineering transform are
+    strict and deterministic.
+11. Bad length, bad literal or instance match, bad checksum, malformed scalar,
+    non-finite `f32`, and engineering-range failures commit no Good sample.
+12. READ retry is bounded by the already accepted clean-recovery policy and retains
+    the original deadline.
+13. `binding_generation` and `mapping_revision` fence stale completions.
+14. Two or more read-only simple-device instances may safely share one eligible
+    resource when response correlation is sufficient.
+15. The resulting measurement is an ordinary Signal and reaches Core discovery,
+    latest and window; Application discovery, current, events and history; the
+    ordinary Workbench model/plot path; and Recorder durable history/provenance.
+16. Generic Workbench, Application measurement/history, controller-input, and
+    Recorder consumers contain no SimpleDevice-specific branch.
+17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
+
+M16.2 requires external review before M16.3. M16.3–M16.7 remain unauthorized.
 
 The M14.6B3 worker-owned episode, explicit-disconnect boundary, non-replay proof,
 overflow unification, bounds, and verification evidence are recorded in

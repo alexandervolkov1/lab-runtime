@@ -41,9 +41,10 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2–M16.7: NOT AUTHORIZED
-Current phase: M16.1 accepted; M16.2 not authorized
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
+M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.3–M16.7: NOT AUTHORIZED
+Current phase: M16.2 read-only simple-device vertical slice
+STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -82,7 +83,8 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. The read-only M16.1 audit is accepted in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; M16.2–M16.7 are unauthorized.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is authorized;
+M16.3–M16.7 are unauthorized.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -204,7 +206,7 @@ operational API or special Workbench/Recorder/history/controller branches. Ardui
 the first intended real-device use case after M16, not M16's architecture. The future
 Clojure client is external, knows the Application API and semantic laboratory
 identities, and does not know the Arduino wire protocol. This sequencing does not
-authorize scripting implementation, M16.2+, or M15.5–M15.8 now.
+authorize scripting implementation, M16.3+, or M15.5–M15.8 now.
 
 ## Final release gate
 

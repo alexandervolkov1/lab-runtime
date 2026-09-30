@@ -57,9 +57,10 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2–M16.7: NOT AUTHORIZED
-Current phase: M16.1 accepted; M16.2 not authorized
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
+M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.3–M16.7: NOT AUTHORIZED
+Current phase: M16.2 read-only simple-device vertical slice
+STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -98,7 +99,8 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance; M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. The read-only M16.1 audit is accepted in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; M16.2–M16.7 remain unauthorized.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is authorized;
+M16.3–M16.7 remain unauthorized.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -182,8 +184,8 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. The read-only M16.1 audit is accepted in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; no implementation slice is
-authorized.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; only M16.2 is authorized, and no
+later implementation slice is authorized.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific

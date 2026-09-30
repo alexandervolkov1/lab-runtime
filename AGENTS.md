@@ -78,9 +78,10 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2–M16.7: NOT AUTHORIZED
-Current phase: M16.1 accepted; M16.2 not authorized
-STATUS: M16_1_DECLARATIVE_DEVICE_AUDIT_ACCEPTED
+M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.3–M16.7: NOT AUTHORIZED
+Current phase: M16.2 read-only simple-device vertical slice
+STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -126,8 +127,8 @@ implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paus
 after M15.4; consolidated M15 acceptance is not claimed. M15.5–M15.8 are deferred and
 unauthorized until M16 consolidated acceptance. The read-only M16.1 declarative
 simple-device architecture/API audit is accepted in
-`ai/M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`; M16.2–M16.7 are not
-authorized.
+`ai/M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is the sole authorized
+implementation slice; M16.3–M16.7 remain unauthorized.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not
