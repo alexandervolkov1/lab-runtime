@@ -15,9 +15,13 @@
 
 use std::{collections::VecDeque, time::Duration};
 
-use crate::metakon::MAX_FRAME_BYTES;
 use crate::output::{DispatchId, OutputIntent};
 
+/// Protocol-neutral maximum request or exact response retained by one byte transaction.
+pub const MAX_TRANSACTION_BYTES: usize = 64;
+// One internal guard byte detects already-available trailing input without
+// enlarging the retained semantic response or introducing a framing timeout.
+const MAX_RESPONSE_READ_BYTES: usize = MAX_TRANSACTION_BYTES + 1;
 /// Maximum ordinary transactions waiting behind one resource owner.
 pub const MAX_QUEUED_TRANSACTIONS: usize = 32;
 /// Largest accepted queue or execution duration in this milestone.
@@ -370,8 +374,8 @@ impl ResourceExecutor {
             return Err(TransportError::QueueFull);
         }
         if request.is_empty()
-            || request.len() > MAX_FRAME_BYTES
-            || !(1..=MAX_FRAME_BYTES).contains(&expected_response)
+            || request.len() > MAX_TRANSACTION_BYTES
+            || !(1..=MAX_TRANSACTION_BYTES).contains(&expected_response)
             || queue_deadline <= queued_at
             || queue_deadline - queued_at > MAX_TRANSACTION_DURATION
             || timeout.is_zero()
@@ -437,8 +441,8 @@ impl ResourceExecutor {
             return Err(TransportError::QueueFull);
         }
         if request.is_empty()
-            || request.len() > MAX_FRAME_BYTES
-            || !(1..=MAX_FRAME_BYTES).contains(&expected_response)
+            || request.len() > MAX_TRANSACTION_BYTES
+            || !(1..=MAX_TRANSACTION_BYTES).contains(&expected_response)
             || queue_deadline <= queued_at
             || queue_deadline - queued_at > MAX_TRANSACTION_DURATION
             || timeout.is_zero()
@@ -601,7 +605,7 @@ impl ResourceExecutor {
             Active {
                 transaction,
                 write_offset: 0,
-                response: Vec::with_capacity(MAX_FRAME_BYTES),
+                response: Vec::with_capacity(MAX_TRANSACTION_BYTES),
                 execution_deadline,
             },
             at,
@@ -649,12 +653,16 @@ impl ResourceExecutor {
 
         if active.write_offset == active.transaction.request.len() {
             let remaining = active.transaction.expected_response - active.response.len();
-            let mut buffer = [0; MAX_FRAME_BYTES];
-            match self.adapter.try_read(&mut buffer[..remaining]) {
+            let guarded = remaining + 1;
+            let mut buffer = [0; MAX_RESPONSE_READ_BYTES];
+            match self.adapter.try_read(&mut buffer[..guarded]) {
                 Ok(count) if count <= remaining => {
                     active.response.extend_from_slice(&buffer[..count])
                 }
-                Ok(_) | Err(_) => {
+                Ok(_) => {
+                    return self.enter_protocol_recovery(active, at);
+                }
+                Err(_) => {
                     return self.enter_recovery(active, at);
                 }
             }
@@ -702,6 +710,24 @@ impl ResourceExecutor {
             transaction: active.transaction,
             deadline,
         }))
+    }
+
+    fn enter_protocol_recovery(
+        &mut self,
+        active: Active,
+        at: Duration,
+    ) -> Result<OwnedState, TransportError> {
+        self.finish(
+            &active.transaction,
+            TransactionOutcome::Failed,
+            active.write_offset > 0,
+            None,
+        );
+        self.fence_ordinary_queue();
+        let deadline = at
+            .checked_add(self.recovery_timeout)
+            .ok_or(TransportError::InvalidTransaction)?;
+        Ok(OwnedState::ProtocolRecovery { deadline })
     }
 
     fn progress_recovery(

@@ -1,16 +1,16 @@
-# Current work — M16.2 read-only simple-device vertical slice
+# Current work — M16.2 focused remediation external re-review
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.2 read-only simple-device vertical slice
+Current phase: M16.2 focused remediation external re-review
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1 ACCEPTED; M16.2 AUTHORIZED
+Practical integration architecture: M16.1 ACCEPTED; M16.2 READY FOR EXTERNAL RE-REVIEW
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -45,9 +45,10 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.2 read-only simple-device vertical slice:
+FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
 M16.3–M16.7: NOT AUTHORIZED
-STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -85,7 +86,8 @@ Application API reference implementation commit is
 `48383185309fc6810dff54b9656067280a535171`. The accepted M15.4 Workbench user guide
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
-consolidated acceptance. M16.1 is accepted; M16.2 alone is authorized.
+consolidated acceptance. M16.1 is accepted; M16.2 focused remediation is complete
+and ready for external re-review; no later M16 slice is authorized.
 
 ## Completed preparation step
 
@@ -205,12 +207,13 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.2 read-only simple-device vertical slice:
+FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
 M16.3–M16.7: NOT AUTHORIZED
 
-Current phase: M16.2 read-only simple-device vertical slice
+Current phase: M16.2 focused remediation external re-review
 
-STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -352,15 +355,16 @@ SessionStore retained-payload credit, one-slot/30-second lifecycle, process-loca
 restart semantics, and single-owner provisional output preparation are in the audit
 report.
 
-M16.1 is accepted. M16.2 is the only authorized implementation slice. M16.3 writable
+M16.1 is accepted. M16.2 focused remediation is complete and ready for external re-review. M16.3 writable
 actuator, M16.4 provisioning implementation, M16.5 generic integration acceptance,
 M16.6 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device
 acceptance, and M16 consolidated review remain unauthorized. M13.2 remains blocked
 on Steel dependency safety.
 
-## M16.2 authorized scope
+## M16.2 implemented review candidate
 
-M16.2 implements only this persistent, file-backed read-only vertical slice:
+The M16.2 review candidate implements only this persistent, file-backed read-only
+vertical slice:
 
 ```text
 persistent/file-backed read-only simple_device startup/composition

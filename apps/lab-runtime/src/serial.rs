@@ -7,9 +7,8 @@
 //! admission is send-start evidence because bytes may reach the device after
 //! that point; it is not evidence that the OS or device accepted every byte.
 
-use lab_core::{
-    metakon::MAX_FRAME_BYTES,
-    transport::{ByteTransport, RecoveryStatus, TransportIoError, TransportShutdown},
+use lab_core::transport::{
+    ByteTransport, MAX_TRANSACTION_BYTES, RecoveryStatus, TransportIoError, TransportShutdown,
 };
 use std::{
     collections::VecDeque,
@@ -24,6 +23,9 @@ use std::{
 };
 
 const RECONNECT_OPEN_MAX_ATTEMPTS: usize = 64;
+// The executor may request one bounded guard byte to detect immediately
+// available trailing input. Semantic request/response frames remain capped at 64.
+const MAX_INTERNAL_READ_BYTES: usize = MAX_TRANSACTION_BYTES + 1;
 const RECONNECT_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -419,7 +421,7 @@ impl ComTransport {
             completions: completion_rx,
             worker: Some(worker),
             pending: false,
-            received: VecDeque::with_capacity(MAX_FRAME_BYTES),
+            received: VecDeque::with_capacity(MAX_INTERNAL_READ_BYTES),
             state: ComState::Opening,
             fault: None,
             clean_boundary: false,
@@ -502,7 +504,7 @@ impl ComTransport {
                 self.pending = false;
                 if self.state != ComState::Closing {
                     self.received
-                        .extend(bytes.into_iter().take(MAX_FRAME_BYTES));
+                        .extend(bytes.into_iter().take(MAX_INTERNAL_READ_BYTES));
                 }
             }
             Ok(Completion::Failed(error)) => {
@@ -555,7 +557,7 @@ impl ByteTransport for ComTransport {
         if self.fault.is_some() {
             return Err(self.transport_error());
         }
-        if bytes.is_empty() || bytes.len() > MAX_FRAME_BYTES {
+        if bytes.is_empty() || bytes.len() > MAX_TRANSACTION_BYTES {
             return Err(TransportIoError::Other);
         }
         if self.state == ComState::Opening || self.pending {
@@ -586,7 +588,7 @@ impl ByteTransport for ComTransport {
         if self.state != ComState::Online || self.pending {
             return Ok(0);
         }
-        let maximum = bytes.len().min(MAX_FRAME_BYTES);
+        let maximum = bytes.len().min(MAX_INTERNAL_READ_BYTES);
         match self.requests.try_send(Request::Read(maximum)) {
             Ok(()) => self.pending = true,
             Err(TrySendError::Full(_)) => {}
@@ -880,7 +882,7 @@ impl SerialDevice for SerialPortDevice {
         self.port
             .set_timeout(self.read_timeout)
             .map_err(map_serialport_error)?;
-        let mut bytes = vec![0; maximum.min(MAX_FRAME_BYTES)];
+        let mut bytes = vec![0; maximum.min(MAX_INTERNAL_READ_BYTES)];
         let read = self.port.read(&mut bytes).map_err(map_io_error)?;
         bytes.truncate(read);
         Ok(bytes)

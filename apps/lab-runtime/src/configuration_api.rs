@@ -7,8 +7,9 @@
 use crate::{
     application::common::{id_field, lifecycle_domain_error},
     configuration::{
-        InstrumentPropertyConstraints, InstrumentPropertyMetadata, InstrumentPropertySource,
-        InstrumentPropertyValue, ManagedComponentDto, PropertyValue, ResourceKindDto,
+        InstrumentDto, InstrumentPropertyConstraints, InstrumentPropertyMetadata,
+        InstrumentPropertySource, InstrumentPropertyValue, ManagedComponentDto, PropertyValue,
+        ResourceKindDto,
     },
     protocol,
     service::ServiceHost,
@@ -249,6 +250,15 @@ pub(crate) fn resource_json(
         .owner()
         .configured_resource_generation(ResourceId::new(resource_id))
         .ok_or("unknown_resource")?;
+    let reconnect = lifecycle
+        .active()
+        .effective()
+        .dto
+        .instruments
+        .iter()
+        .any(|instrument| {
+            matches!(instrument, InstrumentDto::Metakon { resource_id: bound, .. } if *bound == resource_id)
+        });
     Ok(
         json!({"resource":resource_id.to_string(),"name":resource.key,"kind":kind,
         "identity_class":"physical","physical":true,"virtual":false,"state":state,
@@ -257,7 +267,7 @@ pub(crate) fn resource_json(
         "binding_generation":binding_generation.to_string(),
         "transport_generation":snapshot.generation.to_string(),"instruments":instruments,
         "configuration_revision":lifecycle.revision().to_string(),
-        "capabilities":{"reconnect":true,"configuration":true},
+        "capabilities":{"reconnect":reconnect,"configuration":true},
         "deployment":{"port":resource.port},
         "failure":if snapshot.state==ExecutorState::Offline {json!({"code":"transport_unavailable"})} else {Value::Null}}),
     )

@@ -41,10 +41,11 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.2 read-only simple-device vertical slice:
+FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
 M16.3–M16.7: NOT AUTHORIZED
-Current phase: M16.2 read-only simple-device vertical slice
-STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
+Current phase: M16.2 focused remediation external re-review
+STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -83,8 +84,8 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15 is paused
 without consolidated acceptance. M15.5–M15.8 are deferred and unauthorized until M16
 consolidated acceptance. The read-only M16.1 audit is accepted in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is authorized;
-M16.3–M16.7 remain unauthorized.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 focused remediation is
+complete and ready for external re-review; M16.3–M16.7 remain unauthorized.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -292,10 +293,11 @@ or select a Runtime-owned automation language.
   ACK, and READBACK without device-specific Runtime/Application/Workbench code.
 - **M16 consolidated external review:** required before M15.5–M15.8 resume.
 
-M16.2 is authorized. M16.3–M16.7 and consolidated acceptance are not authorized. The
-accepted M16.1 audit freezes the operation, DTO/schema direction, exact bounds, and
-implementation slicing in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`.
-M16.2 requires external review before M16.3 may be authorized.
+M16.2 focused remediation is complete and ready for external re-review. M16.3–M16.7 and consolidated
+acceptance are not authorized. The accepted M16.1 audit freezes the operation,
+DTO/schema direction, exact bounds, and implementation slicing in
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 requires external review
+before M16.3 may be authorized.
 
 ### V1 direction and authority
 

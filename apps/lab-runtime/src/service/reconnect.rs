@@ -32,7 +32,6 @@ impl ServiceHost {
             expected_binding_generation,
             "explicit resource reconnect requested"
         );
-        self.reconnect_diagnostic = None;
         let active = self
             .deployment
             .as_ref()
@@ -61,6 +60,7 @@ impl ServiceHost {
                 _ => None,
             })
             .ok_or(LifecycleOperationError::InvalidCandidate)?;
+        self.reconnect_diagnostic = None;
         let current = self
             .host
             .configured_binding_generation(instrument)

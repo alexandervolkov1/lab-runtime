@@ -585,7 +585,12 @@ impl ApplyPort for LiveApplyPort<'_> {
         if !commit_failed
             && self
                 .host
-                .apply_configuration(self.active, candidate, self.clock.now())
+                .apply_configuration(
+                    self.active,
+                    candidate,
+                    self.clock.now(),
+                    lifecycle.committed_revision,
+                )
                 .is_err()
         {
             commit_failed = true;
@@ -1189,11 +1194,60 @@ queue_timeout_ms=50
 transaction_timeout_ms=50
 "#;
 
+    const SIMPLE_DEFINITION: &[u8] = br#"{"format_version":1,"definition_id":"simple-v1","definition_version":1,"parameters":[{"parameter_id":1,"key":"temperature","display_name":"Temperature","role":"measurement","access":"read_only","unit_id":"degC","unit_symbol":"C","value_type":"float","engineering_min":-50.0,"engineering_max":500.0,"write_effect":"none","encoding":{"raw":"i16_be","scale":0.1,"offset":0.0},"read":{"request":{"segments":[{"type":"literal","hex":"10"},{"type":"instance_field","field":"address","encoding":"u8"}]},"response":{"exact_length":4,"matches":[{"type":"literal_match","offset":0,"hex":"10"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"}],"extract":{"type":"scalar_extract","offset":2},"checksum":null}}}]}"#;
+
+    const SIMPLE_CONFIG: &[u8] = br#"schema_version=1
+[runtime]
+key="bench"
+display_name="Bench"
+[server]
+host="127.0.0.1"
+port=0
+[recording]
+enabled=false
+policy="best_effort"
+[[resources]]
+id=7
+key="bus"
+kind="windows_com_read_only"
+port="COM3"
+baud_rate=9600
+data_bits=8
+parity="none"
+stop_bits=1
+flow_control="none"
+read_timeout_ms=1
+write_timeout_ms=1
+open_timeout_ms=100
+recovery_timeout_ms=100
+[[instruments]]
+kind="simple_device"
+id=1001
+key="simple-1"
+display_name="Simple 1"
+definition="simple.json"
+resource_id=7
+address=1
+channel=0
+poll_period_ms=100
+queue_timeout_ms=50
+transaction_timeout_ms=50
+history_capacity=8
+"#;
+
     struct Reader;
 
     impl ArtifactReader for Reader {
         fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
             Ok(DEFINITION.to_vec())
+        }
+    }
+
+    struct SimpleReader;
+
+    impl ArtifactReader for SimpleReader {
+        fn read(&mut self, _: &Path, _: usize) -> Result<Vec<u8>, ConfigurationError> {
+            Ok(SIMPLE_DEFINITION.to_vec())
         }
     }
 
@@ -1315,6 +1369,100 @@ transaction_timeout_ms=50
         )
     }
 
+    fn service_with_simple_transport() -> (ServiceHost, Arc<AtomicUsize>) {
+        let deployment =
+            parse_runtime_toml(SIMPLE_CONFIG, Path::new("C:\\m16-test"), &mut SimpleReader)
+                .expect("simple test deployment");
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(OldTransport {
+                shutdown_calls: shutdown_calls.clone(),
+                never_finishes: false,
+            }),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        let boot_id = "1123456789abcdef0123456789abcdef".to_owned();
+        host.set_boot_id(&boot_id);
+        let clock = SystemClock::new();
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bound = listener.local_addr().unwrap();
+        (
+            ServiceHost {
+                host,
+                clock,
+                listener,
+                bound,
+                websocket: None,
+                boot_id,
+                stopping_since: None,
+                safe_since: None,
+                recorder_flush_since: None,
+                terminal: None,
+                fatal: false,
+                deployment: Some(DeploymentLifecycle::new(deployment)),
+                configuration_path: None,
+                next_lifecycle_operation: 1,
+                reconnect_diagnostic: None,
+                quarantined_reconnect_candidate: None,
+            },
+            shutdown_calls,
+        )
+    }
+
+    #[test]
+    fn simple_only_resource_projects_generically_but_reconnect_is_not_yet_supported() {
+        let (mut service, shutdown_calls) = service_with_simple_transport();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let current = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"resource","op":"resource",
+                "args":{"resource":"7"}}),
+            ),
+        );
+        let resource = &current[0]["result"];
+        assert_eq!(resource["resource"], "7");
+        assert_eq!(resource["binding_generation"], "1");
+        assert_eq!(resource["transport_generation"], "1");
+        assert_eq!(resource["instruments"], serde_json::json!(["1001"]));
+        assert_eq!(resource["configuration_revision"], "1");
+        assert_eq!(resource["capabilities"]["reconnect"], false);
+        assert_eq!(resource["capabilities"]["configuration"], true);
+
+        let rejected = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"reconnect",
+                "op":"reconnect_resource","request_id":{"scope":scope,"seq":"1"},
+                "args":{"resource":"7","expected_binding_generation":"1"}})),
+        );
+        assert!(
+            rejected
+                .iter()
+                .any(|reply| reply["code"] == "invalid_configuration")
+        );
+        assert_eq!(shutdown_calls.load(Ordering::Acquire), 0);
+        assert!(service.reconnect_diagnostic().is_none());
+        assert_eq!(
+            service
+                .owner()
+                .configured_resource_generation(ResourceId::new(7)),
+            Some(1)
+        );
+    }
+
     fn assert_required_healthy_and_no_outputs(service: &ServiceHost) {
         let status = service.owner().recording_status().unwrap();
         assert_ne!(status.state, RecordingState::Failed);
@@ -1364,6 +1512,8 @@ transaction_timeout_ms=50
         assert_eq!(state["virtual"], false);
         assert_eq!(state["binding_generation"], "1");
         assert_eq!(state["instruments"], serde_json::json!(["11"]));
+        assert_eq!(state["capabilities"]["reconnect"], true);
+        assert_eq!(state["capabilities"]["configuration"], true);
         assert!(state.get("handle").is_none());
 
         let discovery = application.handle(

@@ -260,6 +260,11 @@ impl Runtime {
                     .map(|instrument| &instrument.descriptor)
             })
             .or_else(|| {
+                self.simple_device_instruments
+                    .get(&id)
+                    .map(|instrument| &instrument.descriptor)
+            })
+            .or_else(|| {
                 self.thermal_plants
                     .get(&id)
                     .map(|instrument| &instrument.descriptor)
@@ -634,29 +639,49 @@ impl Runtime {
                 binding_generation,
                 mapping_revision,
             } => {
-                let Some(pending) = self.pending_reads.get(&(resource, id)).cloned() else {
-                    return Ok(());
-                };
-                let generation_matches = pending.binding_generation == binding_generation
-                    && pending.mapping_revision == mapping_revision
-                    && self
-                        .metakon_instruments
-                        .get(&pending.instrument)
-                        .is_some_and(|instrument| {
-                            instrument.binding.resource == resource
-                                && instrument.binding.binding_generation == binding_generation
-                                && instrument.binding.mapping_revision == mapping_revision
-                        });
-                if generation_matches {
-                    self.push_transport_failure(&pending, at)?;
-                    self.record_pending_sample_at(&pending, at);
-                    if let Some(current) = self.pending_reads.get_mut(&(resource, id)) {
-                        current.failure_published = true;
+                if let Some(pending) = self.pending_reads.get(&(resource, id)).cloned() {
+                    let generation_matches = pending.binding_generation == binding_generation
+                        && pending.mapping_revision == mapping_revision
+                        && self
+                            .metakon_instruments
+                            .get(&pending.instrument)
+                            .is_some_and(|instrument| {
+                                instrument.binding.resource == resource
+                                    && instrument.binding.binding_generation == binding_generation
+                                    && instrument.binding.mapping_revision == mapping_revision
+                            });
+                    if generation_matches {
+                        self.push_transport_failure(&pending, at)?;
+                        self.record_pending_sample_at(&pending, at);
+                        if let Some(current) = self.pending_reads.get_mut(&(resource, id)) {
+                            current.failure_published = true;
+                        }
+                    }
+                } else if let Some(pending) =
+                    self.pending_simple_reads.get(&(resource, id)).cloned()
+                {
+                    let generation_matches = pending.binding_generation == binding_generation
+                        && pending.mapping_revision == mapping_revision
+                        && self
+                            .simple_device_instruments
+                            .get(&pending.instrument)
+                            .is_some_and(|instrument| {
+                                instrument.binding.resource == resource
+                                    && instrument.binding.binding_generation == binding_generation
+                                    && instrument.binding.mapping_revision == mapping_revision
+                            });
+                    if generation_matches {
+                        self.push_simple_transport_failure(&pending, at)?;
+                        self.record_pending_simple_sample_at(&pending, at);
+                        if let Some(current) = self.pending_simple_reads.get_mut(&(resource, id)) {
+                            current.failure_published = true;
+                        }
                     }
                 }
             }
             TransportEvent::ReadFenced { id } => {
                 self.pending_reads.remove(&(resource, id));
+                self.pending_simple_reads.remove(&(resource, id));
                 if let Some(pending) = self.pending_output_readbacks.remove(&(resource, id)) {
                     self.fail_output_readback(resource, pending, at)?;
                 }
@@ -665,6 +690,41 @@ impl Runtime {
                 if let Some(pending) = self.pending_output_readbacks.remove(&(resource, record.id))
                 {
                     self.handle_output_readback(resource, pending, record, response, at)?;
+                    return Ok(());
+                }
+                if let Some(pending) = self.pending_simple_reads.remove(&(resource, record.id)) {
+                    let generation_matches = self
+                        .simple_device_instruments
+                        .get(&pending.instrument)
+                        .is_some_and(|instrument| {
+                            instrument.binding.resource == resource
+                                && instrument.binding.binding_generation
+                                    == pending.binding_generation
+                                && instrument.binding.mapping_revision == pending.mapping_revision
+                        });
+                    if !generation_matches {
+                        return Ok(());
+                    }
+                    if record.outcome == TransactionOutcome::Completed {
+                        let value = response.as_deref().and_then(|bytes| {
+                            let instrument =
+                                self.simple_device_instruments.get(&pending.instrument)?;
+                            let descriptor = instrument.descriptor.parameter(pending.parameter)?;
+                            pending.response.decode(bytes, descriptor)
+                        });
+                        if let Some(value) = value {
+                            self.apply_simple_value(&pending, value, at)?;
+                        } else {
+                            self.push_simple_transport_failure(&pending, at)?;
+                            self.resources
+                                .get_mut(&resource)
+                                .expect("executor reinserted before event handling")
+                                .protocol_failure()?;
+                        }
+                    } else if !pending.failure_published {
+                        self.push_simple_transport_failure(&pending, at)?;
+                    }
+                    self.record_pending_simple_sample_at(&pending, at);
                     return Ok(());
                 }
                 let Some(pending) = self.pending_reads.remove(&(resource, record.id)) else {
@@ -1116,6 +1176,86 @@ impl Runtime {
 
     fn record_pending_sample_at(&mut self, pending: &PendingRead, at: Duration) {
         if let Some(instrument) = self.metakon_instruments.get(&pending.instrument)
+            && let Some(descriptor) = instrument.descriptor.parameter(pending.parameter)
+            && let Some(signal) = descriptor.signal
+            && let Some(sample) = instrument
+                .signals
+                .get(&signal)
+                .and_then(|buffer| buffer.latest())
+                .cloned()
+            && sample.at() == at
+        {
+            self.recording_facts.measurement(
+                sample,
+                instrument.binding.binding_generation,
+                instrument.binding.mapping_revision,
+            );
+        }
+    }
+
+    fn apply_simple_value(
+        &mut self,
+        pending: &PendingSimpleRead,
+        value: Value,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let instrument = self
+            .simple_device_instruments
+            .get_mut(&pending.instrument)
+            .ok_or(Error::UnknownInstrument(pending.instrument))?;
+        let descriptor =
+            instrument
+                .descriptor
+                .parameter(pending.parameter)
+                .ok_or(Error::UnknownParameter {
+                    instrument: pending.instrument,
+                    parameter: pending.parameter,
+                })?;
+        descriptor.value_spec.validate(&value)?;
+        let signal = descriptor
+            .signal
+            .ok_or(Error::OperationNotAllowed(pending.parameter))?;
+        instrument
+            .signals
+            .get_mut(&signal)
+            .expect("validated simple signal")
+            .push(Sample::good(signal, descriptor.unit, at, value))
+    }
+
+    fn push_simple_transport_failure(
+        &mut self,
+        pending: &PendingSimpleRead,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let instrument = self
+            .simple_device_instruments
+            .get_mut(&pending.instrument)
+            .ok_or(Error::UnknownInstrument(pending.instrument))?;
+        let descriptor =
+            instrument
+                .descriptor
+                .parameter(pending.parameter)
+                .ok_or(Error::UnknownParameter {
+                    instrument: pending.instrument,
+                    parameter: pending.parameter,
+                })?;
+        let signal = descriptor
+            .signal
+            .ok_or(Error::OperationNotAllowed(pending.parameter))?;
+        instrument
+            .signals
+            .get_mut(&signal)
+            .expect("validated simple signal")
+            .push(Sample::unavailable(
+                signal,
+                descriptor.unit,
+                at,
+                crate::MeasurementFailure::Transport,
+            ))
+    }
+
+    fn record_pending_simple_sample_at(&mut self, pending: &PendingSimpleRead, at: Duration) {
+        if let Some(instrument) = self.simple_device_instruments.get(&pending.instrument)
             && let Some(descriptor) = instrument.descriptor.parameter(pending.parameter)
             && let Some(signal) = descriptor.signal
             && let Some(sample) = instrument

@@ -164,11 +164,17 @@ impl HostCore {
     // Capture the actual currently committed scalar composition before any
     // worker hashing. All source bytes come from the fixed loaded component
     // definitions, never from a pathname reread at recording time.
-    fn frozen_activation_entries(
+    pub(crate) fn frozen_activation_entries(
         &self,
     ) -> Result<(Vec<ProvenanceEntry>, Vec<ProvenanceObject>), Error> {
         let mut entries = self.deployment_provenance.clone();
         entries.reserve(8);
+        let simple_definition_indices = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.kind == "simple_device_definition_canonical")
+            .map(|(index, entry)| (Sha256::digest(&entry.content).into(), index))
+            .collect::<BTreeMap<[u8; 32], usize>>();
         let push =
             |entries: &mut Vec<ProvenanceEntry>, kind: &str, encoding: &str, content: Vec<u8>| {
                 entries.push(ProvenanceEntry {
@@ -322,7 +328,8 @@ impl HostCore {
                 .iter()
                 .find(|(id, _)| id.get() == instrument.id.get())
                 .map(|(id, _)| *id);
-            let (generation, source_index) = if let Some(id) = component {
+            let simple = self.simple_device_provenance.get(&instrument.id);
+            let (generation, source_index, source_content_sha256) = if let Some(id) = component {
                 let QueryResult::Component(snapshot) = self.runtime.query(Query::Component(id))?
                 else {
                     return Err(Error::InvalidConfiguration(
@@ -334,37 +341,86 @@ impl HostCore {
                     *managed_definition_indices
                         .get(&id)
                         .ok_or(Error::InvalidConfiguration("component baseline missing"))?,
+                    None,
+                )
+            } else if let Some(simple) = simple {
+                let binding = self.runtime.simple_device_binding(instrument.id).ok_or(
+                    Error::InvalidConfiguration("simple-device activation binding missing"),
+                )?;
+                (
+                    binding.binding_generation,
+                    *simple_definition_indices
+                        .get(&simple.canonical_sha256)
+                        .ok_or(Error::InvalidConfiguration(
+                            "simple-device canonical definition missing",
+                        ))?,
+                    Some(simple.raw_sha256),
                 )
             } else {
-                (1, 1)
+                (1, 1, None)
             };
             let parameters: Vec<_> = instrument
                 .parameters
                 .iter()
                 .map(parameter_activation_json)
                 .collect();
-            let binding = self.runtime.metakon_binding(instrument.id).map(|binding| {
+            let binding = if let Some(simple) = simple {
+                let binding = self.runtime.simple_device_binding(instrument.id).ok_or(
+                    Error::InvalidConfiguration("simple-device activation binding missing"),
+                )?;
+                Some(
+                    serde_json::json!({
+                        "kind":"simple_v1",
+                        "r":binding.resource.get().to_string(),
+                        "a":simple.address,
+                        "c":simple.channel,
+                        "b":binding.binding_generation.to_string(),
+                        "m":binding.mapping_revision.to_string(),
+                    })
+                    .to_string(),
+                )
+            } else {
+                self.runtime.metakon_binding(instrument.id).map(|binding| {
+                    serde_json::json!({
+                        "resource":binding.resource.get().to_string(),
+                        "device":binding.device,
+                        "channel":binding.channel,
+                        "binding_generation":binding.binding_generation.to_string(),
+                        "mapping_revision":binding.mapping_revision.to_string(),
+                        "expected_output_unit":binding.expected_output_unit.map(|unit|unit.id().to_owned()),
+                    })
+                    .to_string()
+                })
+            };
+            let descriptor = if let Some(simple) = simple {
                 serde_json::json!({
-                    "resource":binding.resource.get().to_string(),
-                    "device":binding.device,
-                    "channel":binding.channel,
-                    "binding_generation":binding.binding_generation.to_string(),
-                    "mapping_revision":binding.mapping_revision.to_string(),
-                    "expected_output_unit":binding.expected_output_unit.map(|unit|unit.id().to_owned()),
+                    "parameters":parameters,
+                    "simple_device":{
+                        "definition_id":simple.definition_id,
+                        "definition_version":simple.definition_version,
+                        "canonical_sha256":hex_sha256(simple.canonical_sha256),
+                        "raw_sha256":hex_sha256(simple.raw_sha256),
+                        "configuration_revision":self.configuration_revision.to_string(),
+                    }
                 })
                 .to_string()
-            });
+            } else {
+                serde_json::json!({"parameters":parameters}).to_string()
+            };
             objects.push(ProvenanceObject {
                 kind: "instrument",
                 id: instrument.id.get().to_be_bytes().to_vec(),
-                logical_key: format!("instrument:{}", instrument.id.get()),
+                logical_key: simple.map_or_else(
+                    || format!("instrument:{}", instrument.id.get()),
+                    |simple| format!("instrument:{}", simple.instrument_key),
+                ),
                 label: instrument.name,
-                descriptor: serde_json::json!({"parameters":parameters}).to_string(),
+                descriptor,
                 unit_key: None,
                 generation: Some(generation),
                 binding,
                 definition_entry_index: source_index,
-                source_content_sha256: None,
+                source_content_sha256,
             });
         }
         for controller in controllers {

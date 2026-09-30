@@ -6,12 +6,12 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.2 read-only simple-device vertical slice
+Current phase: M16.2 focused remediation external re-review
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1 ACCEPTED; M16.2 AUTHORIZED
+Practical integration architecture: M16.1 ACCEPTED; M16.2 READY FOR EXTERNAL RE-REVIEW
 Final release documentation/audit: NOT AUTHORIZED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
@@ -47,9 +47,10 @@ DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1 declarative simple-device architecture/API audit:
 ACCEPTED
-M16.2 read-only simple-device vertical slice: AUTHORIZED
+M16.2 read-only simple-device vertical slice:
+FOCUSED REMEDIATION COMPLETE / READY FOR EXTERNAL RE-REVIEW
 M16.3–M16.7: NOT AUTHORIZED
-STATUS: M16_2_READ_ONLY_SIMPLE_DEVICE_SLICE_AUTHORIZED
+STATUS: M16_2_FOCUSED_REMEDIATION_READY_FOR_EXTERNAL_RE_REVIEW
 ```
 
 The accepted M12.2 implementation commit is
@@ -88,8 +89,8 @@ Application API reference implementation commit is
 implementation commit is `029b82ab5bd7ef39acf00844824be8887f45ffd1`. M15.5–M15.8
 are deferred and unauthorized until M16 consolidated acceptance; consolidated M15
 acceptance is not claimed. The read-only M16.1 audit is accepted in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is the sole authorized
-implementation slice; M16.3–M16.7 remain unauthorized.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 focused remediation is
+complete and ready for external re-review; M16.3–M16.7 remain unauthorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -214,8 +215,9 @@ at implementation commit `eafd73adf43a8a566336bfe1a14370066fe06c5c`. M14.6B3 bou
 reattach is accepted at implementation commit `0319b1d1a7917903c1cf0aa6e4852c149543f7fd`.
 M14.6B4 consolidated recovery/fault acceptance is accepted at implementation commit
 `801a4b559d82a903e9232cc08f5e7d27d714b1d5`; M14 consolidated acceptance is granted.
-M16.1 is accepted in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2 is
-authorized in `WORK.md`; M16.3–M16.7 and remaining final
+M16.1 is accepted in `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. M16.2
+focused remediation is complete and ready for external re-review in `WORK.md`;
+M16.3–M16.7 and remaining final
 M15 documentation, and every later implementation phase remain gated and
 unauthorized.
 

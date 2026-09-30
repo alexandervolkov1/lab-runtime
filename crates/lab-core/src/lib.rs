@@ -37,6 +37,7 @@ pub mod recording;
 pub mod reference;
 mod runtime;
 mod signal;
+pub mod simple_device;
 pub mod transport;
 mod virtual_instrument;
 

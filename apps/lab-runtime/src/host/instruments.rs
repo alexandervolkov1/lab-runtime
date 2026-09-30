@@ -12,10 +12,12 @@ use super::*;
 pub(super) struct ConfiguredInstruments {
     pub(super) measurements: Vec<(InstrumentId, Periodic)>,
     pub(super) metakon_reads: Vec<MetakonReadSchedule>,
+    pub(super) simple_device_reads: Vec<SimpleDeviceReadSchedule>,
     pub(super) virtual_model_generations: BTreeMap<InstrumentId, u64>,
     pub(super) emulator_targets: BTreeSet<SignalId>,
     pub(super) physical_instruments: BTreeSet<InstrumentId>,
     pub(super) configured_probes: Vec<ConfiguredProbe>,
+    pub(super) simple_device_provenance: BTreeMap<InstrumentId, SimpleDeviceProvenance>,
 }
 
 pub(super) fn register_configured_instruments(
@@ -25,10 +27,12 @@ pub(super) fn register_configured_instruments(
     let dto = &deployment.effective().dto;
     let mut measurements = Vec::with_capacity(dto.instruments.len());
     let mut metakon_reads = Vec::new();
+    let mut simple_device_reads = Vec::new();
     let mut virtual_model_generations = BTreeMap::new();
     let mut emulator_targets = BTreeSet::new();
     let mut physical_instruments = BTreeSet::new();
     let mut configured_probes = Vec::new();
+    let mut simple_device_provenance = BTreeMap::new();
 
     for instrument in &dto.instruments {
         match instrument {
@@ -164,15 +168,89 @@ pub(super) fn register_configured_instruments(
                     baseline: None,
                 });
             }
+            InstrumentDto::SimpleDevice {
+                id,
+                key,
+                display_name,
+                definition,
+                resource_id,
+                address,
+                channel,
+                poll_period_ms,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                history_capacity,
+                ..
+            } => {
+                let raw_definition =
+                    deployment
+                        .artifact_bytes(definition)
+                        .ok_or(Error::InvalidConfiguration(
+                            "frozen simple definition source missing",
+                        ))?;
+                let raw_sha256: [u8; 32] = Sha256::digest(raw_definition).into();
+                let definition =
+                    deployment
+                        .simple_definition(definition)
+                        .ok_or(Error::InvalidConfiguration(
+                            "frozen simple definition missing",
+                        ))?;
+                let instrument = InstrumentId::new(*id);
+                let compiled = compile_simple_instance(definition, instrument, *address, *channel)
+                    .map_err(|_| Error::InvalidConfiguration("invalid frozen simple definition"))?;
+                let resource = ResourceId::new(*resource_id);
+                runtime.command(Command::RegisterSimpleDevice(
+                    SimpleDeviceInstrumentConfig {
+                        id: instrument,
+                        name: display_name.clone(),
+                        parameters: compiled.parameters,
+                        binding: SimpleDeviceBinding {
+                            resource,
+                            binding_generation: 1,
+                            mapping_revision: 1,
+                        },
+                        history_capacity: *history_capacity,
+                    },
+                ))?;
+                simple_device_provenance.insert(
+                    instrument,
+                    SimpleDeviceProvenance {
+                        instrument_key: key.clone(),
+                        definition_id: definition.definition_id.clone(),
+                        definition_version: definition.definition_version,
+                        canonical_sha256: definition.canonical_sha256,
+                        raw_sha256,
+                        address: *address,
+                        channel: *channel,
+                    },
+                );
+                physical_instruments.insert(instrument);
+                let descriptor = match runtime.query(Query::DescribeInstrument(instrument))? {
+                    QueryResult::Descriptor(descriptor) => descriptor,
+                    _ => unreachable!(),
+                };
+                for parameter in descriptor.parameters {
+                    simple_device_reads.push(SimpleDeviceReadSchedule {
+                        instrument,
+                        parameter: parameter.id,
+                        resource,
+                        slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
+                        queue_ttl: Duration::from_millis(*queue_timeout_ms),
+                        timeout: Duration::from_millis(*transaction_timeout_ms),
+                    });
+                }
+            }
         }
     }
 
     Ok(ConfiguredInstruments {
         measurements,
         metakon_reads,
+        simple_device_reads,
         virtual_model_generations,
         emulator_targets,
         physical_instruments,
         configured_probes,
+        simple_device_provenance,
     })
 }

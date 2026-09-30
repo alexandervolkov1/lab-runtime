@@ -7,16 +7,19 @@ use lab_runtime::{
     wire::{decode_frame, encode_frame},
 };
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn temporary_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "lab-runtime-m9b6-{}-{}.toml",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }
 

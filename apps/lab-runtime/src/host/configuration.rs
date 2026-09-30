@@ -354,13 +354,21 @@ impl HostCore {
 
     /// Highest active binding generation using one stable logical resource.
     pub(crate) fn configured_resource_generation(&self, resource: ResourceId) -> Option<u64> {
-        self.plan
+        let metakon = self
+            .plan
             .metakon_reads
             .iter()
             .filter_map(|read| self.runtime.metakon_binding(read.instrument))
             .filter(|binding| binding.resource == resource)
-            .map(|binding| binding.binding_generation)
-            .max()
+            .map(|binding| binding.binding_generation);
+        let simple = self
+            .plan
+            .simple_device_reads
+            .iter()
+            .filter_map(|read| self.runtime.simple_device_binding(read.instrument))
+            .filter(|binding| binding.resource == resource)
+            .map(|binding| binding.binding_generation);
+        metakon.chain(simple).max()
     }
 
     /// Copy the authoritative executor state for bounded reconnect diagnostics.
@@ -579,6 +587,7 @@ impl HostCore {
     pub(crate) fn apply_live_configuration(
         &mut self,
         candidate: &FrozenDeployment,
+        configuration_revision: u64,
     ) -> Result<(), Error> {
         for instrument in &candidate.effective().dto.instruments {
             match instrument {
@@ -633,10 +642,45 @@ impl HostCore {
                     read.queue_ttl = Duration::from_millis(*queue_timeout_ms);
                     read.timeout = Duration::from_millis(*transaction_timeout_ms);
                 }
+                InstrumentDto::SimpleDevice {
+                    id,
+                    display_name,
+                    poll_period_ms,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } => {
+                    self.runtime.command(Command::RenameInstrument {
+                        instrument: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                    })?;
+                    let mut found = false;
+                    for read in self
+                        .plan
+                        .simple_device_reads
+                        .iter_mut()
+                        .filter(|read| read.instrument.get() == *id)
+                    {
+                        found = true;
+                        read.slot.period = Duration::from_millis(*poll_period_ms);
+                        read.slot.next_due = self
+                            .last_now
+                            .checked_add(read.slot.period)
+                            .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+                        read.queue_ttl = Duration::from_millis(*queue_timeout_ms);
+                        read.timeout = Duration::from_millis(*transaction_timeout_ms);
+                    }
+                    if !found {
+                        return Err(Error::InvalidConfiguration(
+                            "configured simple-device schedule missing",
+                        ));
+                    }
+                }
             }
         }
+        self.configuration_revision = configuration_revision;
         self.deployment_provenance = candidate
-            .provenance_entries()
+            .provenance_entries(configuration_revision)
             .into_iter()
             .map(|(kind, encoding, content)| ProvenanceEntry {
                 kind,
@@ -720,6 +764,7 @@ impl HostCore {
         active: &FrozenDeployment,
         candidate: &FrozenDeployment,
         at: Duration,
+        configuration_revision: u64,
     ) -> Result<(), Error> {
         let old = &active.effective().dto;
         let new = &candidate.effective().dto;
@@ -885,7 +930,7 @@ impl HostCore {
                 .checked_add(slot.period)
                 .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
         }
-        self.apply_live_configuration(candidate)?;
+        self.apply_live_configuration(candidate, configuration_revision)?;
         self.observe(at, None)
     }
 
@@ -1033,7 +1078,7 @@ impl HostCore {
             }
         }
         self.deployment_provenance = deployment
-            .provenance_entries()
+            .provenance_entries(self.configuration_revision)
             .into_iter()
             .map(|(kind, encoding, content)| ProvenanceEntry {
                 kind,

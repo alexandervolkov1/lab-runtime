@@ -1,8 +1,9 @@
 //! M3 acceptance for bounded single-owner byte transport execution.
 
 use lab_core::transport::{
-    ByteTransport, ExecutorState, MAX_QUEUED_TRANSACTIONS, RecoveryStatus, ResourceExecutor,
-    ResourceId, TransactionOutcome, TransportError, TransportIoError, TransportShutdown,
+    ByteTransport, ExecutorState, MAX_QUEUED_TRANSACTIONS, MAX_TRANSACTION_BYTES, RecoveryStatus,
+    ResourceExecutor, ResourceId, TransactionOutcome, TransportError, TransportIoError,
+    TransportShutdown,
 };
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Duration};
 
@@ -190,6 +191,90 @@ fn queue_capacity_and_exact_deadline_are_explicit() {
         exact.snapshot().latest.unwrap().outcome,
         TransactionOutcome::QueueExpired
     );
+}
+
+#[test]
+fn protocol_neutral_transaction_bound_is_exactly_sixty_four_bytes() {
+    let script = Rc::new(RefCell::new(Script {
+        max_write: MAX_TRANSACTION_BYTES,
+        request_lengths: VecDeque::from([MAX_TRANSACTION_BYTES]),
+        responses: VecDeque::from([vec![0x5a; MAX_TRANSACTION_BYTES]]),
+        ..Script::default()
+    }));
+    let mut executor = make_executor(script.clone());
+    executor
+        .enqueue_read(
+            &[0xa5; MAX_TRANSACTION_BYTES],
+            MAX_TRANSACTION_BYTES,
+            Duration::ZERO,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            false,
+            1,
+            1,
+        )
+        .unwrap();
+    for millisecond in 0..40 {
+        executor.poll(Duration::from_millis(millisecond)).unwrap();
+    }
+    assert_eq!(script.borrow().accepted.len(), MAX_TRANSACTION_BYTES);
+    assert_eq!(
+        executor.snapshot().latest.unwrap().outcome,
+        TransactionOutcome::Completed
+    );
+
+    for (request, response) in [
+        (MAX_TRANSACTION_BYTES + 1, 1),
+        (1, MAX_TRANSACTION_BYTES + 1),
+    ] {
+        assert_eq!(
+            executor.enqueue_read(
+                &vec![0; request],
+                response,
+                Duration::from_secs(2),
+                Duration::from_secs(3),
+                Duration::from_secs(1),
+                false,
+                1,
+                1,
+            ),
+            Err(TransportError::InvalidTransaction)
+        );
+    }
+}
+
+#[test]
+fn trailing_response_byte_fails_transaction_fences_queue_and_requires_clean_boundary() {
+    let script = Rc::new(RefCell::new(Script {
+        max_write: 8,
+        request_lengths: VecDeque::from([1, 2]),
+        responses: VecDeque::from([vec![1, 2, 3, 0xff], vec![7, 8, 9]]),
+        ..Script::default()
+    }));
+    let mut executor = make_executor(script.clone());
+    queue_read(&mut executor, &[0x10], 0);
+    queue_read(&mut executor, &[0x20], 0);
+
+    executor.poll(Duration::ZERO).unwrap();
+    executor.poll(Duration::from_millis(1)).unwrap();
+    assert_eq!(executor.snapshot().state, ExecutorState::Recovering);
+    assert_eq!(
+        executor.snapshot().latest.unwrap().outcome,
+        TransactionOutcome::Failed
+    );
+    assert!(executor.latest_response().is_none());
+    assert_eq!(script.borrow().accepted, [0x10]);
+
+    executor.poll(Duration::from_millis(2)).unwrap();
+    assert_eq!(executor.snapshot().state, ExecutorState::Recovering);
+    executor.poll(Duration::from_millis(3)).unwrap();
+    assert_eq!(executor.snapshot().state, ExecutorState::Idle);
+    assert_eq!(executor.snapshot().generation, 2);
+    queue_read(&mut executor, &[0x30], 4);
+    executor.poll(Duration::from_millis(4)).unwrap();
+    executor.poll(Duration::from_millis(5)).unwrap();
+    assert_eq!(executor.latest_response(), Some([7, 8, 9].as_slice()));
+    assert_eq!(script.borrow().accepted, [0x10, 0x30]);
 }
 
 #[test]

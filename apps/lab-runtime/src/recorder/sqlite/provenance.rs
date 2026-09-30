@@ -57,6 +57,7 @@ impl SqliteStore {
         // component configuration. Preserve their exact spelling and bounds so old
         // content-addressed evidence stays readable.
         let mut managed_source_hashes = BTreeSet::new();
+        let mut simple_source_hashes = BTreeSet::new();
         for entry in entries {
             if entry.kind.is_empty()
                 || entry.kind.len() > 64
@@ -85,6 +86,8 @@ impl SqliteStore {
             let content_hash: [u8; 32] = Sha256::digest(&entry.content).into();
             if entry.kind == "managed_component_source" {
                 managed_source_hashes.insert(content_hash);
+            } else if entry.kind == "simple_device_definition_raw" {
+                simple_source_hashes.insert(content_hash);
             }
             entry_hashes.push(content_hash);
             indexed.push((entry, content_hash));
@@ -106,10 +109,12 @@ impl SqliteStore {
                     .as_ref()
                     .is_some_and(|binding| binding.len() > 128)
                 || object.definition_entry_index >= entry_hashes.len()
-                || (object.kind != "managed_component" && object.source_content_sha256.is_some())
-                || object
-                    .source_content_sha256
-                    .is_some_and(|source_hash| !managed_source_hashes.contains(&source_hash))
+                || object.source_content_sha256.is_some_and(|source_hash| {
+                    !((object.kind == "managed_component"
+                        && managed_source_hashes.contains(&source_hash))
+                        || (object.kind == "instrument"
+                            && simple_source_hashes.contains(&source_hash)))
+                })
             {
                 return Err(StorageError("invalid bounded object baseline".into()));
             }

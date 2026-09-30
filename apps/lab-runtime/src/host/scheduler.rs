@@ -108,6 +108,31 @@ impl HostCore {
                 report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
             }
         }
+        for read in &mut self.plan.simple_device_reads {
+            let now = clock.now();
+            if self.plan.safety.due(now) {
+                return Ok(report);
+            }
+            if self.reconnect_quiesced_resources.contains(&read.resource) {
+                continue;
+            }
+            if let Some(skipped) = read.slot.take(now)? {
+                let outcome = self.runtime.command(Command::QueueSimpleDeviceRead {
+                    instrument: read.instrument,
+                    parameter: read.parameter,
+                    at: clock.now(),
+                    queue_ttl: read.queue_ttl,
+                    timeout: read.timeout,
+                });
+                if let Err(error) = outcome
+                    && !matches!(error, Error::Transport(_))
+                {
+                    return Err(error);
+                }
+                report.measurements += 1;
+                report.skipped_deadlines = report.skipped_deadlines.saturating_add(skipped);
+            }
+        }
         for (reference, slot) in &mut self.plan.references {
             let now = clock.now();
             if self.plan.safety.due(now) {

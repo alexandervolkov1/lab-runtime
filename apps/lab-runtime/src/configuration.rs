@@ -17,6 +17,11 @@ use crate::{
     managed_executor::{
         NativeComponentDefinition, component_property_metadata, validate_component_configuration,
     },
+    simple_device::{
+        CompiledSimpleDefinition, CompiledSimpleInstance, MAX_SIMPLE_DEFINITION_BYTES,
+        MAX_SIMPLE_DEFINITIONS, MAX_SIMPLE_INSTANCES, compile_simple_instance,
+        correlations_distinguish, parse_simple_definition,
+    },
     websocket,
 };
 use lab_core::{
@@ -156,6 +161,7 @@ impl FrozenArtifact {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ArtifactKind {
     InstrumentDefinition,
+    SimpleDeviceDefinition,
 }
 
 /// Fully validated typed deployment used to build a staged Runtime candidate.
@@ -197,6 +203,7 @@ pub struct FrozenDeployment {
     toml_hash: [u8; 32],
     effective: EffectiveDeployment,
     artifacts: Vec<FrozenArtifact>,
+    simple_definitions: Vec<(PathBuf, CompiledSimpleDefinition)>,
     property_overlays: Vec<String>,
 }
 
@@ -265,7 +272,7 @@ impl FrozenDeployment {
                             | InstrumentDto::ThermalPlant { display_name, .. } => {
                                 *display_name = value
                             }
-                            InstrumentDto::Metakon { .. } => {
+                            InstrumentDto::Metakon { .. } | InstrumentDto::SimpleDevice { .. } => {
                                 return Err(ConfigurationError::invalid("property is read-only"));
                             }
                         }
@@ -274,10 +281,16 @@ impl FrozenDeployment {
                         let value = u64::try_from(value)
                             .map_err(|_| ConfigurationError::invalid("invalid property value"))?;
                         validate_period(value, "poll period")?;
+                        if matches!(instrument, InstrumentDto::SimpleDevice { .. }) && value < 10 {
+                            return Err(ConfigurationError::invalid(
+                                "simple-device poll period must be 10..=60000 ms",
+                            ));
+                        }
                         match instrument {
                             InstrumentDto::VirtualMeasurement { poll_period_ms, .. }
                             | InstrumentDto::ThermalPlant { poll_period_ms, .. }
-                            | InstrumentDto::Metakon { poll_period_ms, .. } => {
+                            | InstrumentDto::Metakon { poll_period_ms, .. }
+                            | InstrumentDto::SimpleDevice { poll_period_ms, .. } => {
                                 *poll_period_ms = value
                             }
                         }
@@ -310,7 +323,18 @@ impl FrozenDeployment {
             .map(FrozenArtifact::bytes)
     }
 
-    pub(crate) fn provenance_entries(&self) -> Vec<(String, String, Vec<u8>)> {
+    pub(crate) fn simple_definition(&self, declared: &Path) -> Option<&CompiledSimpleDefinition> {
+        let resolved = self.resolved_path(declared).ok()?;
+        self.simple_definitions
+            .iter()
+            .find(|(path, _)| *path == resolved)
+            .map(|(_, definition)| definition)
+    }
+
+    pub(crate) fn provenance_entries(
+        &self,
+        configuration_revision: u64,
+    ) -> Vec<(String, String, Vec<u8>)> {
         let mut entries =
             Vec::with_capacity(self.artifacts.len() + self.property_overlays.len() + 1);
         entries.push((
@@ -322,12 +346,75 @@ impl FrozenDeployment {
             (
                 match artifact.kind {
                     ArtifactKind::InstrumentDefinition => "instrument_definition",
+                    ArtifactKind::SimpleDeviceDefinition => "simple_device_definition_raw",
                 }
                 .into(),
                 "utf8".into(),
                 artifact.bytes.to_vec(),
             )
         }));
+        entries.extend(self.simple_definitions.iter().map(|(_, definition)| {
+            (
+                "simple_device_definition_canonical".into(),
+                "json".into(),
+                definition.canonical.to_vec(),
+            )
+        }));
+        entries.extend(
+            self.effective
+                .dto
+                .instruments
+                .iter()
+                .filter_map(|instrument| {
+                    let InstrumentDto::SimpleDevice {
+                        id,
+                        key,
+                        definition,
+                        resource_id,
+                        address,
+                        channel,
+                        poll_period_ms,
+                        queue_timeout_ms,
+                        transaction_timeout_ms,
+                        history_capacity,
+                        ..
+                    } = instrument
+                    else {
+                        return None;
+                    };
+                    let compiled = self.simple_definition(definition)?;
+                    let resolved = self.resolved_path(definition).ok()?;
+                    let raw_sha256 = self
+                        .artifacts
+                        .iter()
+                        .find(|artifact| artifact.declared_path == resolved)
+                        .map(|artifact| hex_sha256(artifact.sha256))?;
+                    let content = serde_json::json!({
+                        "grammar_version":1,
+                        "source":"persistent_startup_deployment",
+                        "configuration_revision":configuration_revision.to_string(),
+                        "instrument_id":id.to_string(),
+                        "instrument_key":key,
+                        "definition_source":definition.to_string_lossy(),
+                        "definition_raw_sha256":raw_sha256,
+                        "definition_id":compiled.definition_id,
+                        "definition_version":compiled.definition_version,
+                        "definition_sha256":hex_sha256(compiled.canonical_sha256),
+                        "resource_id":resource_id.to_string(),
+                        "binding_generation":"1",
+                        "mapping_revision":"1",
+                        "address":address,
+                        "channel":channel,
+                        "poll_period_ms":poll_period_ms,
+                        "queue_timeout_ms":queue_timeout_ms,
+                        "transaction_timeout_ms":transaction_timeout_ms,
+                        "history_capacity":history_capacity,
+                    })
+                    .to_string()
+                    .into_bytes();
+                    Some(("simple_device_instance".into(), "json".into(), content))
+                }),
+        );
         entries.extend(self.property_overlays.iter().cloned().map(|content| {
             (
                 "runtime_configuration_overlay".into(),
@@ -369,7 +456,45 @@ impl FrozenDeployment {
             || old.managed_components.len() != new.managed_components.len()
             || old.references.len() != new.references.len()
             || old.controllers.len() != new.controllers.len()
-            || old.safe_profiles.len() != new.safe_profiles.len();
+            || old.safe_profiles.len() != new.safe_profiles.len()
+            || self.simple_definitions != active.simple_definitions
+            || old
+                .instruments
+                .iter()
+                .zip(&new.instruments)
+                .any(|(old, new)| match (old, new) {
+                    (
+                        InstrumentDto::SimpleDevice {
+                            definition: old_definition,
+                            resource_id: old_resource,
+                            address: old_address,
+                            channel: old_channel,
+                            queue_timeout_ms: old_queue,
+                            transaction_timeout_ms: old_timeout,
+                            history_capacity: old_history,
+                            ..
+                        },
+                        InstrumentDto::SimpleDevice {
+                            definition: new_definition,
+                            resource_id: new_resource,
+                            address: new_address,
+                            channel: new_channel,
+                            queue_timeout_ms: new_queue,
+                            transaction_timeout_ms: new_timeout,
+                            history_capacity: new_history,
+                            ..
+                        },
+                    ) => {
+                        old_definition != new_definition
+                            || old_resource != new_resource
+                            || old_address != new_address
+                            || old_channel != new_channel
+                            || old_queue != new_queue
+                            || old_timeout != new_timeout
+                            || old_history != new_history
+                    }
+                    _ => false,
+                });
         let live_safe = self.toml_hash != active.toml_hash
             || old.runtime.display_name != new.runtime.display_name
             || old
@@ -393,6 +518,14 @@ impl FrozenDeployment {
                             display_name: new, ..
                         },
                     ) => old != new,
+                    (
+                        InstrumentDto::SimpleDevice {
+                            display_name: old, ..
+                        },
+                        InstrumentDto::SimpleDevice {
+                            display_name: new, ..
+                        },
+                    ) => old != new,
                     _ => false,
                 });
         let ordinary_live = old
@@ -404,12 +537,23 @@ impl FrozenDeployment {
             || self
                 .artifacts
                 .iter()
-                .filter(|artifact| artifact.kind == ArtifactKind::InstrumentDefinition)
+                .filter(|artifact| {
+                    matches!(
+                        artifact.kind,
+                        ArtifactKind::InstrumentDefinition | ArtifactKind::SimpleDeviceDefinition
+                    )
+                })
                 .map(|artifact| (artifact.declared_path.as_path(), artifact.sha256))
                 .ne(active
                     .artifacts
                     .iter()
-                    .filter(|artifact| artifact.kind == ArtifactKind::InstrumentDefinition)
+                    .filter(|artifact| {
+                        matches!(
+                            artifact.kind,
+                            ArtifactKind::InstrumentDefinition
+                                | ArtifactKind::SimpleDeviceDefinition
+                        )
+                    })
                     .map(|artifact| (artifact.declared_path.as_path(), artifact.sha256)))
             || old
                 .instruments
@@ -419,7 +563,11 @@ impl FrozenDeployment {
                     matches!(
                         (old, new),
                         (InstrumentDto::Metakon { .. }, InstrumentDto::Metakon { .. })
-                    ) && old != new
+                            | (
+                                InstrumentDto::SimpleDevice { .. },
+                                InstrumentDto::SimpleDevice { .. }
+                            )
+                    ) && old.without_live_fields() != new.without_live_fields()
                 });
         let reinitialize = old
             .instruments
@@ -523,12 +671,27 @@ pub fn parse_runtime_toml(
 
     let mut artifacts = Vec::new();
     let mut total_bytes = bytes.len();
+    let mut simple_definitions = Vec::new();
     for instrument in &dto.instruments {
-        if let InstrumentDto::Metakon { definition, .. } = instrument {
-            freeze_definition(base, definition, reader, &mut artifacts, &mut total_bytes)?;
+        match instrument {
+            InstrumentDto::Metakon { definition, .. } => {
+                freeze_definition(base, definition, reader, &mut artifacts, &mut total_bytes)?;
+            }
+            InstrumentDto::SimpleDevice { definition, .. } => {
+                freeze_simple_definition(
+                    base,
+                    definition,
+                    reader,
+                    &mut artifacts,
+                    &mut simple_definitions,
+                    &mut total_bytes,
+                )?;
+            }
+            InstrumentDto::VirtualMeasurement { .. } | InstrumentDto::ThermalPlant { .. } => {}
         }
     }
     validate_frozen_metakon_definitions(&dto, base, &artifacts)?;
+    validate_frozen_simple_definitions(&dto, base, &simple_definitions)?;
     if artifacts.len() > MAX_DEPLOYMENT_ARTIFACTS || total_bytes > MAX_DEPLOYMENT_BYTES {
         return Err(ConfigurationError::TooLarge);
     }
@@ -538,6 +701,7 @@ pub fn parse_runtime_toml(
         toml_hash: Sha256::digest(bytes).into(),
         effective: EffectiveDeployment { dto },
         artifacts,
+        simple_definitions,
         property_overlays: Vec::new(),
     })
 }
@@ -590,6 +754,17 @@ fn prescan(text: &str) -> Result<(), ConfigurationError> {
 fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
     if dto.schema_version != 1 {
         return Err(ConfigurationError::invalid("unsupported schema_version"));
+    }
+    if dto
+        .instruments
+        .iter()
+        .filter(|instrument| matches!(instrument, InstrumentDto::SimpleDevice { .. }))
+        .count()
+        > MAX_SIMPLE_INSTANCES
+    {
+        return Err(ConfigurationError::invalid(
+            "simple-device instance limit reached (32)",
+        ));
     }
     validate_key(&dto.runtime.key)?;
     validate_display_name(&dto.runtime.display_name)?;
@@ -669,6 +844,45 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
                 validate_transaction_time(*queue_timeout_ms, "queue timeout")?;
                 validate_transaction_time(*transaction_timeout_ms, "transaction timeout")?;
             }
+            InstrumentDto::SimpleDevice {
+                display_name,
+                resource_id,
+                address: _,
+                channel: _,
+                poll_period_ms,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                history_capacity,
+                ..
+            } => {
+                validate_display_name(display_name)?;
+                let resource = dto
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == *resource_id)
+                    .ok_or_else(|| ConfigurationError::invalid("unknown resource reference"))?;
+                if !matches!(
+                    resource.kind,
+                    ResourceKindDto::WindowsComReadOnly | ResourceKindDto::WindowsCom
+                ) {
+                    return Err(ConfigurationError::invalid(
+                        "simple device requires an eligible COM resource",
+                    ));
+                }
+                if !(10..=60_000).contains(poll_period_ms) {
+                    return Err(ConfigurationError::invalid(
+                        "simple-device poll period must be 10..=60000 ms",
+                    ));
+                }
+                if !(1..=2_000).contains(queue_timeout_ms)
+                    || !(1..=2_000).contains(transaction_timeout_ms)
+                {
+                    return Err(ConfigurationError::invalid(
+                        "simple-device transaction timing must be 1..=2000 ms",
+                    ));
+                }
+                validate_history(*history_capacity)?;
+            }
             InstrumentDto::VirtualMeasurement {
                 display_name,
                 history_capacity,
@@ -707,6 +921,25 @@ fn validate_structure(dto: &DeploymentDto) -> Result<(), ConfigurationError> {
                 }
                 validate_period(*poll_period_ms, "poll period")?;
             }
+        }
+    }
+    for resource in &dto.resources {
+        let has_simple = dto.instruments.iter().any(|instrument| {
+            matches!(
+                instrument,
+                InstrumentDto::SimpleDevice { resource_id, .. } if *resource_id == resource.id
+            )
+        });
+        let has_native = dto.instruments.iter().any(|instrument| {
+            matches!(
+                instrument,
+                InstrumentDto::Metakon { resource_id, .. } if *resource_id == resource.id
+            )
+        });
+        if has_simple && has_native {
+            return Err(ConfigurationError::invalid(
+                "simple and native protocol adapters may not share one resource",
+            ));
         }
     }
 
@@ -985,6 +1218,94 @@ fn freeze_definition(
     )
 }
 
+fn freeze_simple_definition(
+    base: &Path,
+    declared: &Path,
+    reader: &mut impl ArtifactReader,
+    artifacts: &mut Vec<FrozenArtifact>,
+    definitions: &mut Vec<(PathBuf, CompiledSimpleDefinition)>,
+    total: &mut usize,
+) -> Result<(), ConfigurationError> {
+    let path = resolve_artifact(base, declared)?;
+    if definitions.iter().any(|(existing, _)| *existing == path) {
+        return Ok(());
+    }
+    if definitions.len() >= MAX_SIMPLE_DEFINITIONS {
+        return Err(ConfigurationError::invalid(
+            "simple-device definition limit reached (16)",
+        ));
+    }
+    let bytes = reader.read(&path, MAX_SIMPLE_DEFINITION_BYTES)?;
+    let definition = parse_simple_definition(&bytes)
+        .map_err(|error| ConfigurationError::artifact_text(&error.to_string()))?;
+    push_artifact(
+        ArtifactKind::SimpleDeviceDefinition,
+        path.clone(),
+        bytes,
+        artifacts,
+        total,
+    )?;
+    definitions.push((path, definition));
+    Ok(())
+}
+
+fn validate_frozen_simple_definitions(
+    dto: &DeploymentDto,
+    base: &Path,
+    definitions: &[(PathBuf, CompiledSimpleDefinition)],
+) -> Result<(), ConfigurationError> {
+    let mut identities = BTreeMap::new();
+    let mut instances: Vec<(u64, u64, CompiledSimpleInstance)> = Vec::new();
+    for instrument in &dto.instruments {
+        let InstrumentDto::SimpleDevice {
+            id,
+            definition,
+            resource_id,
+            address,
+            channel,
+            ..
+        } = instrument
+        else {
+            continue;
+        };
+        let path = resolve_artifact(base, definition)?;
+        let compiled = definitions
+            .iter()
+            .find(|(candidate, _)| *candidate == path)
+            .map(|(_, definition)| definition)
+            .ok_or_else(|| ConfigurationError::artifact("frozen simple definition missing"))?;
+        let identity = (compiled.definition_id.as_str(), compiled.definition_version);
+        if let Some(prior) = identities.insert(identity, compiled.canonical_sha256)
+            && prior != compiled.canonical_sha256
+        {
+            return Err(ConfigurationError::artifact(
+                "simple definition ID/version has conflicting normalized content",
+            ));
+        }
+        let instance =
+            compile_simple_instance(compiled, InstrumentId::new(*id), *address, *channel)
+                .map_err(|error| ConfigurationError::artifact_text(&error.to_string()))?;
+        instances.push((*resource_id, *id, instance));
+    }
+    for left in 0..instances.len() {
+        for right in left + 1..instances.len() {
+            if instances[left].0 != instances[right].0 {
+                continue;
+            }
+            for left_plan in &instances[left].2.correlations {
+                for right_plan in &instances[right].2.correlations {
+                    if !correlations_distinguish(left_plan, right_plan) {
+                        return Err(ConfigurationError::invalid(
+                            "shared simple-device responses lack instance correlation",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_frozen_metakon_definitions(
     dto: &DeploymentDto,
     base: &Path,
@@ -1163,7 +1484,7 @@ fn validate_serial(resource: &ResourceDto) -> Result<(), ConfigurationError> {
     Ok(())
 }
 
-fn validate_key(key: &str) -> Result<(), ConfigurationError> {
+pub(crate) fn validate_key(key: &str) -> Result<(), ConfigurationError> {
     let mut bytes = key.bytes();
     if key.len() > 64
         || !matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z'))
@@ -1174,7 +1495,7 @@ fn validate_key(key: &str) -> Result<(), ConfigurationError> {
     Ok(())
 }
 
-fn validate_display_name(name: &str) -> Result<(), ConfigurationError> {
+pub(crate) fn validate_display_name(name: &str) -> Result<(), ConfigurationError> {
     if name.trim().is_empty() || name.len() > 128 {
         return Err(ConfigurationError::invalid("invalid display name"));
     }
@@ -1217,6 +1538,10 @@ fn validate_history(value: usize) -> Result<(), ConfigurationError> {
 
 fn bounded_message(message: &str) -> String {
     message.chars().take(256).collect()
+}
+
+fn hex_sha256(hash: [u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -1464,6 +1789,19 @@ pub(crate) enum InstrumentDto {
         #[serde(default = "default_transaction_ms")]
         transaction_timeout_ms: u64,
     },
+    SimpleDevice {
+        id: u64,
+        key: String,
+        display_name: String,
+        definition: PathBuf,
+        resource_id: u64,
+        address: u16,
+        channel: u16,
+        poll_period_ms: u64,
+        queue_timeout_ms: u64,
+        transaction_timeout_ms: u64,
+        history_capacity: usize,
+    },
 }
 
 impl InstrumentDto {
@@ -1471,7 +1809,8 @@ impl InstrumentDto {
         match self {
             Self::VirtualMeasurement { id, .. }
             | Self::ThermalPlant { id, .. }
-            | Self::Metakon { id, .. } => *id,
+            | Self::Metakon { id, .. }
+            | Self::SimpleDevice { id, .. } => *id,
         }
     }
 
@@ -1479,7 +1818,8 @@ impl InstrumentDto {
         match self {
             Self::VirtualMeasurement { key, .. }
             | Self::ThermalPlant { key, .. }
-            | Self::Metakon { key, .. } => key,
+            | Self::Metakon { key, .. }
+            | Self::SimpleDevice { key, .. } => key,
         }
     }
 
@@ -1488,6 +1828,7 @@ impl InstrumentDto {
             Self::VirtualMeasurement { .. } => "virtual_measurement",
             Self::ThermalPlant { .. } => "thermal_plant",
             Self::Metakon { .. } => "metakon",
+            Self::SimpleDevice { .. } => "simple_device",
         }
     }
 
@@ -1495,14 +1836,17 @@ impl InstrumentDto {
         match self {
             Self::VirtualMeasurement { poll_period_ms, .. }
             | Self::ThermalPlant { poll_period_ms, .. }
-            | Self::Metakon { poll_period_ms, .. } => *poll_period_ms,
+            | Self::Metakon { poll_period_ms, .. }
+            | Self::SimpleDevice { poll_period_ms, .. } => *poll_period_ms,
         }
     }
 
     /// Deployment resource used by a physical adapter, if this kind has one.
     pub(crate) fn bound_resource_id(&self) -> Option<u64> {
         match self {
-            Self::Metakon { resource_id, .. } => Some(*resource_id),
+            Self::Metakon { resource_id, .. } | Self::SimpleDevice { resource_id, .. } => {
+                Some(*resource_id)
+            }
             Self::VirtualMeasurement { .. } | Self::ThermalPlant { .. } => None,
         }
     }
@@ -1546,6 +1890,21 @@ impl InstrumentDto {
                 "metakon:{id}:{key}:{}:{resource_id}:{address}:{queue_timeout_ms}:{transaction_timeout_ms}",
                 definition.display()
             ),
+            Self::SimpleDevice {
+                id,
+                key,
+                definition,
+                resource_id,
+                address,
+                channel,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                history_capacity,
+                ..
+            } => format!(
+                "simple:{id}:{key}:{}:{resource_id}:{address}:{channel}:{queue_timeout_ms}:{transaction_timeout_ms}:{history_capacity}",
+                definition.display()
+            ),
         }
     }
 }
@@ -1568,6 +1927,11 @@ impl InstrumentPropertySource for InstrumentDto {
             minimum: 1,
             maximum: 60_000,
         };
+        const SIMPLE_POLL_BOUNDS: InstrumentPropertyConstraints =
+            InstrumentPropertyConstraints::Integer {
+                minimum: 10,
+                maximum: 60_000,
+            };
 
         match self {
             Self::VirtualMeasurement {
@@ -1699,6 +2063,15 @@ impl InstrumentPropertySource for InstrumentDto {
                 access: InstrumentPropertyAccess::ReadWrite,
                 mutation: InstrumentPropertyMutation::OrdinaryLive,
                 constraints: Some(POLL_BOUNDS),
+            }],
+            Self::SimpleDevice { poll_period_ms, .. } => vec![InstrumentPropertyMetadata {
+                id: "poll_period_ms",
+                value_type: InstrumentPropertyType::Integer,
+                current: InstrumentPropertyValue::Unsigned(*poll_period_ms),
+                unit: Some(MILLISECONDS),
+                access: InstrumentPropertyAccess::ReadWrite,
+                mutation: InstrumentPropertyMutation::OrdinaryLive,
+                constraints: Some(SIMPLE_POLL_BOUNDS),
             }],
         }
     }

@@ -64,6 +64,7 @@ pub mod server;
 pub mod service;
 /// Finite process-local operation retention and reconnect deduplication.
 pub mod sessions;
+pub(crate) mod simple_device;
 /// Optional bounded loopback WebSocket endpoint policy.
 pub mod websocket;
 /// Bounded version-one Application JSON, NDJSON framing and strict DTO validation.

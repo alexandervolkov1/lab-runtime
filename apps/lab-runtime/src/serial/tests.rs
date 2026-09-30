@@ -183,8 +183,22 @@ fn c14_disconnect_requires_explicit_clean_boundary_before_recovery() {
 #[test]
 fn c15_oversize_and_stale_session_work_cannot_cross_rebind_boundary() {
     let shared = Arc::new(Mutex::new(Script::default()));
-    let mut old = ComTransport::with_device(settings(), ScriptedDevice(shared)).unwrap();
-    assert_eq!(old.try_write(&[0; 39]), Err(TransportIoError::Other));
+    let mut old = ComTransport::with_device(settings(), ScriptedDevice(shared.clone())).unwrap();
+    assert_eq!(
+        wait_for(|| match old.try_write(&[0; 64]) {
+            Ok(0) => None,
+            result => Some(result),
+        })
+        .unwrap(),
+        64
+    );
+    wait_for(|| (shared.lock().unwrap().write_slices.len() == 1).then_some(()));
+    assert_eq!(
+        shared.lock().unwrap().write_slices,
+        [vec![0; 64]],
+        "the protocol-neutral COM seam must admit the complete M16 v1 frame"
+    );
+    assert_eq!(old.try_write(&[0; 65]), Err(TransportIoError::Other));
     old.retire();
     assert_eq!(old.try_write(&[1]), Err(TransportIoError::Disconnected));
     assert_eq!(old.snapshot().binding_generation, 4);
@@ -208,6 +222,23 @@ fn c15_oversize_and_stale_session_work_cannot_cross_rebind_boundary() {
     .unwrap();
     assert_eq!(new.snapshot().resource_id, old.snapshot().resource_id);
     assert_eq!(new.snapshot().binding_generation, 5);
+}
+
+#[test]
+fn internal_read_guard_preserves_one_surplus_byte_for_executor_detection() {
+    let shared = Arc::new(Mutex::new(Script {
+        reads: [Ok(vec![0x5a; 65])].into(),
+        ..Script::default()
+    }));
+    let mut transport = ComTransport::with_device(settings(), ScriptedDevice(shared)).unwrap();
+    let mut guarded = [0u8; 65];
+    let count = wait_for(|| match transport.try_read(&mut guarded) {
+        Ok(0) => None,
+        result => Some(result),
+    })
+    .unwrap();
+    assert_eq!(count, 65);
+    assert_eq!(guarded, [0x5a; 65]);
 }
 
 struct DisconnectDevice;

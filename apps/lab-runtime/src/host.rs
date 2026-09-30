@@ -46,6 +46,7 @@ use crate::{
     managed_executor::{
         MOVING_MEAN_IMPLEMENTATION, NativeComponentDefinition, build_component_definition,
     },
+    simple_device::compile_simple_instance,
 };
 use lab_core::{
     AccessMode, Command, CommandResult, Error, InstrumentId, MeasurementFailure,
@@ -62,8 +63,10 @@ use lab_core::{
     plant::ThermalPlantConfig,
     processing::EmaConfig,
     reference::{ReferenceConfig, ReferenceId, ReferenceSnapshot},
+    simple_device::{SimpleDeviceBinding, SimpleDeviceInstrumentConfig},
     transport::{ByteTransport, ExecutorState, ResourceId, TransactionOutcome},
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
@@ -227,6 +230,7 @@ pub struct SchedulePlan {
     safety: Periodic,
     plants: Vec<(InstrumentId, Periodic)>,
     metakon_reads: Vec<MetakonReadSchedule>,
+    simple_device_reads: Vec<SimpleDeviceReadSchedule>,
     references: Vec<(ReferenceId, Periodic)>,
     controllers: Vec<(ControllerId, SignalId, Periodic)>,
     sources: Vec<(ComponentId, Periodic)>,
@@ -239,6 +243,26 @@ struct MetakonReadSchedule {
     slot: Periodic,
     queue_ttl: Duration,
     timeout: Duration,
+}
+
+struct SimpleDeviceReadSchedule {
+    instrument: InstrumentId,
+    parameter: lab_core::ParameterId,
+    resource: ResourceId,
+    slot: Periodic,
+    queue_ttl: Duration,
+    timeout: Duration,
+}
+
+#[derive(Clone)]
+struct SimpleDeviceProvenance {
+    instrument_key: String,
+    definition_id: String,
+    definition_version: u32,
+    canonical_sha256: [u8; 32],
+    raw_sha256: [u8; 32],
+    address: u16,
+    channel: u16,
 }
 
 struct ConfiguredProbe {
@@ -286,6 +310,7 @@ impl SchedulePlan {
             safety: Periodic::new(Duration::from_millis(10)),
             plants: vec![(PLANT, Periodic::new(Duration::from_millis(100)))],
             metakon_reads: Vec::new(),
+            simple_device_reads: Vec::new(),
             references: vec![(REFERENCE, Periodic::new(Duration::from_millis(100)))],
             controllers: vec![(
                 CONTROLLER,
@@ -309,6 +334,7 @@ impl SchedulePlan {
             safety: Periodic::new(Duration::from_millis(10)),
             plants: Vec::new(),
             metakon_reads: Vec::new(),
+            simple_device_reads: Vec::new(),
             references: vec![(reference, Periodic::new(Duration::from_millis(100)))],
             controllers: vec![(controller, input, Periodic::new(Duration::from_millis(100)))],
             sources: Vec::new(),
@@ -393,6 +419,8 @@ pub struct HostCore {
     recorder_finish_requested: bool,
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
     deployment_provenance: Vec<ProvenanceEntry>,
+    configuration_revision: u64,
+    simple_device_provenance: BTreeMap<InstrumentId, SimpleDeviceProvenance>,
     virtual_model_generations: BTreeMap<InstrumentId, u64>,
     emulator_targets: BTreeSet<SignalId>,
     physical_instruments: BTreeSet<InstrumentId>,
@@ -438,10 +466,12 @@ impl HostCore {
         let instruments = instruments::register_configured_instruments(&mut runtime, deployment)?;
         let measurements = instruments.measurements;
         let metakon_reads = instruments.metakon_reads;
+        let simple_device_reads = instruments.simple_device_reads;
         let virtual_model_generations = instruments.virtual_model_generations;
         let emulator_targets = instruments.emulator_targets;
         let physical_instruments = instruments.physical_instruments;
         let configured_probes = instruments.configured_probes;
+        let simple_device_provenance = instruments.simple_device_provenance;
         let mut outputs = Vec::with_capacity(dto.safe_profiles.len());
         let mut active_safety_profiles = Vec::with_capacity(dto.safe_profiles.len());
         for safe in &dto.safe_profiles {
@@ -584,7 +614,7 @@ impl HostCore {
             "00000000000000000000000000000000",
         );
         let deployment_provenance = deployment
-            .provenance_entries()
+            .provenance_entries(1)
             .into_iter()
             .map(|(kind, encoding, content)| ProvenanceEntry {
                 kind,
@@ -599,6 +629,7 @@ impl HostCore {
                 safety: Periodic::new(Duration::from_millis(10)),
                 plants: measurements,
                 metakon_reads,
+                simple_device_reads,
                 references,
                 controllers,
                 sources: Vec::new(),
@@ -620,6 +651,8 @@ impl HostCore {
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
             deployment_provenance,
+            configuration_revision: 1,
+            simple_device_provenance,
             virtual_model_generations,
             emulator_targets,
             physical_instruments,
@@ -734,6 +767,8 @@ impl HostCore {
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
             deployment_provenance: Vec::new(),
+            configuration_revision: 1,
+            simple_device_provenance: BTreeMap::new(),
             virtual_model_generations: BTreeMap::from([(PLANT, 1)]),
             emulator_targets: BTreeSet::new(),
             physical_instruments: BTreeSet::new(),

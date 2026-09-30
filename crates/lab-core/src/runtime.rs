@@ -68,6 +68,9 @@ use crate::reference::{
     ReferenceConfig, ReferenceError, ReferenceId, ReferenceSnapshot, ReferenceValue, RetunedRamp,
     RuntimeReference,
 };
+use crate::simple_device::{
+    SimpleDeviceBinding, SimpleDeviceInstrument, SimpleDeviceInstrumentConfig, SimpleResponsePlan,
+};
 use crate::transport::{
     AuthorizationStep, ByteTransport, ExecutorSnapshot, MAX_QUEUED_TRANSACTIONS, ResourceExecutor,
     ResourceId, TransactionId, TransactionOutcome, TransportError, TransportEvent,
@@ -276,6 +279,8 @@ pub enum Command {
     },
     /// Validate and atomically register a known-profile Metakon definition and binding.
     RegisterMetakon(MetakonInstrumentConfig),
+    /// Validate and atomically register one compiled read-only simple-device instance.
+    RegisterSimpleDevice(SimpleDeviceInstrumentConfig),
     /// Queue one trusted known-profile read; this is a mutation because it schedules I/O.
     QueueMetakonRead {
         /// Registered logical instrument.
@@ -285,6 +290,19 @@ pub enum Command {
         /// Current monotonic Runtime time.
         at: Duration,
         /// Maximum queue wait, capped at 60 seconds.
+        queue_ttl: Duration,
+        /// Execution timeout after resource ownership begins.
+        timeout: Duration,
+    },
+    /// Queue one compiled read-only simple-device transaction.
+    QueueSimpleDeviceRead {
+        /// Registered logical instrument.
+        instrument: InstrumentId,
+        /// Readable parameter with one immutable compiled plan.
+        parameter: ParameterId,
+        /// Current monotonic Runtime time.
+        at: Duration,
+        /// Maximum queue wait, capped by the common transport bound.
         queue_ttl: Duration,
         /// Execution timeout after resource ownership begins.
         timeout: Duration,
@@ -316,6 +334,15 @@ pub enum Command {
         instrument: InstrumentId,
         /// Fully validated replacement binding.
         binding: MetakonBinding,
+        /// Nondecreasing monotonic Runtime time of replacement.
+        at: Duration,
+    },
+    /// Replace one read-only simple-device binding and fence old completions.
+    RebindSimpleDevice {
+        /// Existing logical instrument.
+        instrument: InstrumentId,
+        /// Fully validated replacement binding.
+        binding: SimpleDeviceBinding,
         /// Nondecreasing monotonic Runtime time of replacement.
         at: Duration,
     },
@@ -516,12 +543,14 @@ pub struct Runtime {
     component_runtime: u64,
     instruments: BTreeMap<InstrumentId, VirtualInstrument>,
     metakon_instruments: BTreeMap<InstrumentId, MetakonInstrument>,
+    simple_device_instruments: BTreeMap<InstrumentId, SimpleDeviceInstrument>,
     thermal_plants: BTreeMap<InstrumentId, ThermalPlantInstrument>,
     references: BTreeMap<ReferenceId, RuntimeReference>,
     controllers: BTreeMap<ControllerId, NativeController>,
     outputs: BTreeMap<ActuatorId, OutputAuthority>,
     resources: BTreeMap<ResourceId, ResourceExecutor>,
     pending_reads: BTreeMap<(ResourceId, TransactionId), PendingRead>,
+    pending_simple_reads: BTreeMap<(ResourceId, TransactionId), PendingSimpleRead>,
     pending_output_writes: BTreeMap<(ResourceId, TransactionId), Duration>,
     pending_output_readbacks: BTreeMap<(ResourceId, TransactionId), PendingOutputReadback>,
     unsettled_outputs: BTreeMap<ResourceId, (OutputIntent, crate::output::DispatchId)>,
@@ -543,6 +572,16 @@ struct PendingRead {
     expected: ExpectedRead,
     operation: KnownOperation,
     scale: f64,
+    binding_generation: u64,
+    mapping_revision: u64,
+    failure_published: bool,
+}
+
+#[derive(Clone)]
+struct PendingSimpleRead {
+    instrument: InstrumentId,
+    parameter: ParameterId,
+    response: SimpleResponsePlan,
     binding_generation: u64,
     mapping_revision: u64,
     failure_published: bool,
@@ -884,6 +923,13 @@ impl Runtime {
             .map(|instance| instance.binding)
     }
 
+    /// Copy the committed physical binding used by one simple-device instrument.
+    pub fn simple_device_binding(&self, instrument: InstrumentId) -> Option<SimpleDeviceBinding> {
+        self.simple_device_instruments
+            .get(&instrument)
+            .map(|instance| instance.binding)
+    }
+
     /// Inspect unfinished worker count without waiting for interpreter execution.
     pub fn unfinished_component_workers(&self) -> usize {
         self.executor
@@ -894,6 +940,7 @@ impl Runtime {
     fn contains_instrument(&self, id: InstrumentId) -> bool {
         self.instruments.contains_key(&id)
             || self.metakon_instruments.contains_key(&id)
+            || self.simple_device_instruments.contains_key(&id)
             || self.thermal_plants.contains_key(&id)
             || self
                 .managed
@@ -904,6 +951,7 @@ impl Runtime {
     fn instrument_count(&self) -> usize {
         self.instruments.len()
             + self.metakon_instruments.len()
+            + self.simple_device_instruments.len()
             + self.thermal_plants.len()
             + self.managed.len()
     }
@@ -915,6 +963,11 @@ impl Runtime {
             .map(|instrument| &instrument.signal)
             .or_else(|| {
                 self.metakon_instruments
+                    .get(&id.instrument())
+                    .and_then(|instrument| instrument.signals.get(&id))
+            })
+            .or_else(|| {
+                self.simple_device_instruments
                     .get(&id.instrument())
                     .and_then(|instrument| instrument.signals.get(&id))
             })

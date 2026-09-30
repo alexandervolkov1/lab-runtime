@@ -633,6 +633,28 @@ impl Runtime {
                 }
                 Ok(CommandResult::Registered(id))
             }
+            Command::RegisterSimpleDevice(config) => {
+                let id = config.id;
+                if self.contains_instrument(id) {
+                    return Err(Error::DuplicateInstrument(id));
+                }
+                if self.instrument_count() >= MAX_INSTRUMENTS {
+                    return Err(Error::InvalidConfiguration("instrument limit reached (64)"));
+                }
+                if self.simple_device_instruments.len()
+                    >= crate::simple_device::MAX_SIMPLE_INSTRUMENTS
+                {
+                    return Err(Error::InvalidConfiguration(
+                        "simple-device instrument limit reached (32)",
+                    ));
+                }
+                if !self.resources.contains_key(&config.binding.resource) {
+                    return Err(TransportError::UnknownResource.into());
+                }
+                let instrument = SimpleDeviceInstrument::new(config)?;
+                self.simple_device_instruments.insert(id, instrument);
+                Ok(CommandResult::Registered(id))
+            }
             Command::QueueMetakonRead {
                 instrument,
                 parameter,
@@ -692,6 +714,58 @@ impl Runtime {
                         expected,
                         operation: definition.operation,
                         scale: definition.scale,
+                        binding_generation: binding.binding_generation,
+                        mapping_revision: binding.mapping_revision,
+                        failure_published: false,
+                    },
+                );
+                Ok(CommandResult::TransportQueued(transaction))
+            }
+            Command::QueueSimpleDeviceRead {
+                instrument,
+                parameter,
+                at,
+                queue_ttl,
+                timeout,
+            } => {
+                self.check_transport_time(at)?;
+                let instance = self
+                    .simple_device_instruments
+                    .get(&instrument)
+                    .ok_or(Error::UnknownInstrument(instrument))?;
+                let plan =
+                    instance
+                        .plans
+                        .get(&parameter)
+                        .cloned()
+                        .ok_or(Error::UnknownParameter {
+                            instrument,
+                            parameter,
+                        })?;
+                let binding = instance.binding;
+                let deadline = at
+                    .checked_add(queue_ttl)
+                    .ok_or(TransportError::InvalidTransaction)?;
+                let executor = self
+                    .resources
+                    .get_mut(&binding.resource)
+                    .ok_or(TransportError::UnknownResource)?;
+                let transaction = executor.enqueue_read(
+                    &plan.request,
+                    plan.response.exact_length,
+                    at,
+                    deadline,
+                    timeout,
+                    true,
+                    binding.binding_generation,
+                    binding.mapping_revision,
+                )?;
+                self.pending_simple_reads.insert(
+                    (binding.resource, transaction),
+                    PendingSimpleRead {
+                        instrument,
+                        parameter,
+                        response: plan.response,
                         binding_generation: binding.binding_generation,
                         mapping_revision: binding.mapping_revision,
                         failure_published: false,
@@ -819,6 +893,64 @@ impl Runtime {
                 self.outputs.extend(replacements);
                 Ok(CommandResult::Registered(instrument))
             }
+            Command::RebindSimpleDevice {
+                instrument,
+                binding,
+                at,
+            } => {
+                self.check_transport_time(at)?;
+                if binding.binding_generation == 0
+                    || binding.mapping_revision == 0
+                    || !self.resources.contains_key(&binding.resource)
+                {
+                    return Err(Error::InvalidConfiguration("invalid replacement binding"));
+                }
+                let instance = self
+                    .simple_device_instruments
+                    .get_mut(&instrument)
+                    .ok_or(Error::UnknownInstrument(instrument))?;
+                if binding.binding_generation
+                    != instance
+                        .binding
+                        .binding_generation
+                        .checked_add(1)
+                        .unwrap_or(0)
+                    || binding.mapping_revision
+                        != instance
+                            .binding
+                            .mapping_revision
+                            .checked_add(1)
+                            .unwrap_or(0)
+                {
+                    return Err(Error::InvalidConfiguration("stale simple-device rebind"));
+                }
+                instance.binding = binding;
+                let descriptors: Vec<_> = instance
+                    .descriptor
+                    .parameters
+                    .iter()
+                    .filter_map(|parameter| parameter.signal.map(|signal| (signal, parameter.unit)))
+                    .collect();
+                let mut samples = Vec::with_capacity(descriptors.len());
+                for (signal, unit) in descriptors {
+                    let sample =
+                        Sample::unavailable(signal, unit, at, crate::MeasurementFailure::Transport);
+                    instance
+                        .signals
+                        .get_mut(&signal)
+                        .expect("validated simple signal")
+                        .push(sample.clone())?;
+                    samples.push(sample);
+                }
+                for sample in samples {
+                    self.recording_facts.measurement(
+                        sample,
+                        binding.binding_generation,
+                        binding.mapping_revision,
+                    );
+                }
+                Ok(CommandResult::Registered(instrument))
+            }
             Command::ReconfigureMetakon {
                 config,
                 expected_binding_generation,
@@ -912,6 +1044,8 @@ impl Runtime {
                 } else if let Some(instance) = self.metakon_instruments.get_mut(&instrument) {
                     instance.descriptor.name = name;
                 } else if let Some(instance) = self.thermal_plants.get_mut(&instrument) {
+                    instance.descriptor.name = name;
+                } else if let Some(instance) = self.simple_device_instruments.get_mut(&instrument) {
                     instance.descriptor.name = name;
                 } else {
                     return Err(Error::UnknownInstrument(instrument));
@@ -1016,6 +1150,11 @@ impl Runtime {
                             .map(|instrument| instrument.descriptor.clone()),
                     )
                     .chain(
+                        self.simple_device_instruments
+                            .values()
+                            .map(|instrument| instrument.descriptor.clone()),
+                    )
+                    .chain(
                         self.thermal_plants
                             .values()
                             .map(|instrument| instrument.descriptor.clone()),
@@ -1045,6 +1184,28 @@ impl Runtime {
                         }],
                     }))
                 } else if let Some(instrument) = self.metakon_instruments.get(&id) {
+                    Ok(QueryResult::State(InstrumentState {
+                        instrument: id,
+                        generation: instrument.binding.binding_generation,
+                        configured: instrument.configured(),
+                        observations: instrument
+                            .descriptor
+                            .parameters
+                            .iter()
+                            .filter_map(|parameter| {
+                                parameter.signal.map(|signal| ParameterObservation {
+                                    parameter: parameter.id,
+                                    signal,
+                                    latest: instrument
+                                        .signals
+                                        .get(&signal)
+                                        .and_then(SignalBuffer::latest)
+                                        .cloned(),
+                                })
+                            })
+                            .collect(),
+                    }))
+                } else if let Some(instrument) = self.simple_device_instruments.get(&id) {
                     Ok(QueryResult::State(InstrumentState {
                         instrument: id,
                         generation: instrument.binding.binding_generation,
