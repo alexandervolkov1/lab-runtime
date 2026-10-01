@@ -1433,10 +1433,7 @@ history_capacity=8
     }
 
     fn temporary_database() -> PathBuf {
-        let mut entropy = [0u8; 12];
-        getrandom::fill(&mut entropy).unwrap();
-        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-        std::env::temp_dir().join(format!("lab-runtime-m8-reconnect-{suffix}.sqlite"))
+        crate::test_support::temporary_database("m8-reconnect")
     }
 
     fn service_with_old_transport(never_finishes: bool) -> (ServiceHost, PathBuf) {

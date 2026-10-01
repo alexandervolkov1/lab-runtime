@@ -2828,13 +2828,7 @@ proposal_ttl_ms=200
     }
 
     fn temporary_database() -> PathBuf {
-        let mut entropy = [0u8; 8];
-        getrandom::fill(&mut entropy).unwrap();
-        let suffix = entropy
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        std::env::temp_dir().join(format!("m16-simple-output-{suffix}.sqlite"))
+        crate::test_support::temporary_database("m16-simple-output")
     }
 
     fn advance(host: &mut HostCore, clock: &mut TestClock, milliseconds: u64) {
@@ -3345,18 +3339,10 @@ history_capacity=1024
             assert_eq!(binding["m"], "1");
         }
 
-        let mut entropy = [0u8; 8];
-        getrandom::fill(&mut entropy).unwrap();
-        let suffix = entropy
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let database = std::env::temp_dir().join(format!("m16-simple-capacity-{suffix}.sqlite"));
+        let database = crate::test_support::temporary_database("m16-simple-capacity");
         let mut store = SqliteStore::open(&database).unwrap();
         store.commit_activation(&entries, &objects).unwrap();
         drop(store);
-        std::fs::remove_file(&database).unwrap();
-        let _ = std::fs::remove_file(format!("{}-wal", database.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+        crate::test_support::remove_database(database);
     }
 }

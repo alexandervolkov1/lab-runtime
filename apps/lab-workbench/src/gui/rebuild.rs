@@ -660,53 +660,16 @@ fn next_page(result: &Value) -> Option<(String, String)> {
 }
 
 #[cfg(test)]
+#[path = "rebuild_test_support.rs"]
+mod rebuild_test_support;
+
+#[cfg(test)]
 mod tests {
+    use super::rebuild_test_support::{FakeClient, Sent};
     use super::*;
     use crate::{
         client::types::ConnectionState, model::Freshness, presentation::PresentationDocument,
     };
-    use std::{
-        cell::{Cell, RefCell},
-        collections::VecDeque,
-    };
-
-    #[derive(Clone, Debug, PartialEq)]
-    enum Sent {
-        Query(u64, String, Value),
-        Subscribe(u64, EventCursor, Value),
-    }
-
-    #[derive(Default)]
-    struct FakeClient {
-        next: RefCell<u64>,
-        sent: RefCell<VecDeque<Sent>>,
-        subscriptions: Cell<usize>,
-    }
-
-    impl RebuildClient for FakeClient {
-        fn query(&self, op: &str, args: Value) -> Result<u64, CommandSendError> {
-            let id = next_id(&self.next);
-            self.sent
-                .borrow_mut()
-                .push_back(Sent::Query(id, op.to_owned(), args));
-            Ok(id)
-        }
-
-        fn subscribe(&self, after: EventCursor, filter: Value) -> Result<u64, CommandSendError> {
-            let id = next_id(&self.next);
-            self.subscriptions.set(self.subscriptions.get() + 1);
-            self.sent
-                .borrow_mut()
-                .push_back(Sent::Subscribe(id, after, filter));
-            Ok(id)
-        }
-    }
-
-    fn next_id(next: &RefCell<u64>) -> u64 {
-        let mut value = next.borrow_mut();
-        *value += 1;
-        *value
-    }
 
     fn hello() -> HelloState {
         HelloState {

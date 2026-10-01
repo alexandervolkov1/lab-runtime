@@ -18,10 +18,12 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
-    path::{Path, PathBuf},
+    path::Path,
     rc::Rc,
     time::{Duration, Instant},
 };
+
+mod support;
 
 const DEFINITION: &[u8] = br#"{
   "format_version": 1,
@@ -193,13 +195,6 @@ fn ask(
         1,
         decode_frame(&encode_frame(&request).unwrap()).unwrap(),
     )
-}
-
-fn temporary_database() -> PathBuf {
-    let mut entropy = [0u8; 16];
-    getrandom::fill(&mut entropy).unwrap();
-    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::env::temp_dir().join(format!("lab-runtime-m16-simple-{suffix}.sqlite"))
 }
 
 #[test]
@@ -403,7 +398,7 @@ fn ordinary_simple_measurement_and_frozen_provenance_reach_sqlite() {
     let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
     transports.insert(ResourceId::new(7), Box::new(ScriptedSimpleTransport(wire)));
     let host = HostCore::configured_with_transports(&deployment, transports).unwrap();
-    let database = temporary_database();
+    let database = support::temporary_database("m16-simple");
     let database_text = database.to_string_lossy();
     let options = ServiceOptions::parse(&[
         "--serve",
@@ -431,11 +426,7 @@ fn ordinary_simple_measurement_and_frozen_provenance_reach_sqlite() {
         service.owner_mut().service(&clock).unwrap();
         std::thread::yield_now();
     }
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "simple measurement was not produced"
-        );
+    support::wait_until(deadline, "simple measurement was not produced", || {
         let clock = service.clock_copy();
         service.owner_mut().service(&clock).unwrap();
         let QueryResult::Latest(sample) = service
@@ -448,11 +439,10 @@ fn ordinary_simple_measurement_and_frozen_provenance_reach_sqlite() {
         else {
             unreachable!();
         };
-        if sample.is_some_and(|sample| sample.quality() == SampleQuality::Good) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+        sample
+            .filter(|sample| sample.quality() == SampleQuality::Good)
+            .map(|_| ())
+    });
     service.request_shutdown().unwrap();
     let shutdown_deadline = Instant::now() + Duration::from_secs(4);
     loop {
@@ -554,7 +544,7 @@ fn ordinary_simple_measurement_and_frozen_provenance_reach_sqlite() {
             .collect::<String>()
     );
     drop(database_connection);
-    std::fs::remove_file(database).unwrap();
+    support::remove_database(&database);
 }
 
 #[test]

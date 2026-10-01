@@ -30,6 +30,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod support;
+
+fn temporary_database() -> std::path::PathBuf {
+    support::temporary_database("m7-sqlite")
+}
+
 fn frame(value: JsonValue) -> WireRequest {
     decode_frame(&encode_frame(&value).unwrap()).unwrap()
 }
@@ -575,13 +581,6 @@ fn best_effort_observation_during_held_start_is_queued_behind_the_new_run_barrie
     assert!(count >= 1);
     drop(db);
     std::fs::remove_file(path).unwrap();
-}
-
-fn temporary_database() -> PathBuf {
-    let mut entropy = [0u8; 16];
-    getrandom::fill(&mut entropy).unwrap();
-    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::env::temp_dir().join(format!("lab-runtime-m7-{suffix}.sqlite"))
 }
 
 #[derive(Default)]

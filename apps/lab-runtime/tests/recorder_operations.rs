@@ -8,10 +8,13 @@ use lab_runtime::{
     wire::{WireRequest, decode_frame, encode_frame},
 };
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
+
+mod support;
+
+fn temporary_database() -> std::path::PathBuf {
+    support::temporary_database("m7-api")
+}
 
 fn frame(value: Value) -> WireRequest {
     decode_frame(&encode_frame(&value).unwrap()).unwrap()
@@ -24,13 +27,6 @@ impl Clock for FrozenClock {
     fn now(&self) -> Duration {
         self.0
     }
-}
-
-fn temporary_database() -> PathBuf {
-    let mut entropy = [0u8; 16];
-    getrandom::fill(&mut entropy).unwrap();
-    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::env::temp_dir().join(format!("lab-runtime-m7-api-{suffix}.sqlite"))
 }
 
 #[test]

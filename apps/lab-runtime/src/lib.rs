@@ -71,6 +71,9 @@ pub mod websocket;
 pub mod wire;
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod zz_diagnostics_tests {
     #[test]
     fn bounded_sink_contract_is_isolated_from_timing_sensitive_worker_tests() {

@@ -7,16 +7,12 @@ use lab_core::{
 use lab_runtime::recorder::{
     HistoryBudget, HistoryFilter, RecorderGap, RecorderLimits, RecorderWorker, SqliteStore,
 };
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-fn temporary_database() -> PathBuf {
-    let mut entropy = [0u8; 16];
-    getrandom::fill(&mut entropy).unwrap();
-    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::env::temp_dir().join(format!("lab-runtime-m7-history-{suffix}.sqlite"))
+mod support;
+
+fn temporary_database() -> std::path::PathBuf {
+    support::temporary_database("m7-history")
 }
 
 #[test]

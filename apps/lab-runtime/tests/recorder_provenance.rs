@@ -214,10 +214,15 @@ fn recording_boundary_and_ordered_revisions_reconstruct_current_config() {
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+mod support;
+
+fn temporary_database() -> std::path::PathBuf {
+    support::temporary_database("m7-provenance")
+}
 
 #[derive(Default)]
 struct BindingAckWire {
@@ -543,13 +548,6 @@ fn activation_binding_and_rebound_output_rows_reconstruct_exact_m3_provenance() 
     );
     drop(db);
     std::fs::remove_file(path).unwrap();
-}
-
-fn temporary_database() -> PathBuf {
-    let mut entropy = [0u8; 16];
-    getrandom::fill(&mut entropy).unwrap();
-    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-    std::env::temp_dir().join(format!("lab-runtime-m7-provenance-{suffix}.sqlite"))
 }
 
 #[test]
