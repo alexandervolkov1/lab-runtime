@@ -1,10 +1,10 @@
-# Current work — M16.6 faults, bounds, provenance, recovery acceptance: accepted
+# Current work — M16.7 minimal unknown-device acceptance
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.6 faults, bounds, provenance, recovery acceptance: ACCEPTED
+Current phase: M16.7 minimal unknown-device acceptance
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -44,8 +44,11 @@ M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1–M16.6: ACCEPTED
-M16.7: NOT AUTHORIZED
-STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_ACCEPTED
+M16.7:
+AUTHORIZED
+M16 consolidated external review:
+NOT AUTHORIZED
+STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -93,8 +96,9 @@ existing `operation_failed` mapping for internal owner failures, and phase-aware
 absolute apply deadline with quarantine based on actual
 `send_started && !safe_confirmed` evidence. M16.5 generic integration acceptance is
 externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
-fault/bounds/provenance/recovery acceptance is externally accepted;
-M16.7 remains unauthorized.
+fault/bounds/provenance/recovery acceptance is externally accepted at
+`6021586096453fa03bdbcc28ef740b660f32eeb5`. M16.7 minimal unknown-device acceptance
+is authorized; M16 consolidated external review is not authorized.
 
 ## Completed preparation step
 
@@ -213,11 +217,14 @@ M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1–M16.6: ACCEPTED
-M16.7: NOT AUTHORIZED
+M16.7:
+AUTHORIZED
+M16 consolidated external review:
+NOT AUTHORIZED
 
-Current phase: M16.6 faults, bounds, provenance, recovery acceptance: ACCEPTED
+Current phase: M16.7 minimal unknown-device acceptance
 
-STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_ACCEPTED
+STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -364,8 +371,9 @@ M16.1 is accepted. M16.2 is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
 M16.4 provisioning and M16.5 generic integration acceptance are externally accepted;
 M16.5 is accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
-fault/bounds/provenance/recovery acceptance is externally accepted. M16.7 minimal unknown-device
-acceptance and M16 consolidated review remain unauthorized. M13.2 remains blocked on
+fault/bounds/provenance/recovery acceptance is accepted at
+`6021586096453fa03bdbcc28ef740b660f32eeb5`. M16.7 minimal unknown-device acceptance
+is authorized; M16 consolidated external review remains unauthorized. M13.2 remains blocked on
 Steel dependency safety.
 
 ## M16.2 accepted implementation
@@ -455,7 +463,7 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2–M16.6 are accepted; M16.7 remains unauthorized.
+M16.2–M16.6 are accepted; M16.7 is authorized under the frozen scope below.
 
 ## M16.3 accepted implementation
 
@@ -588,8 +596,8 @@ candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD
 packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
 UI, public raw I/O, scripting, or external-language integration. The M16.4 candidate
 implements only the bounded provisioning surface below. M16.5 is externally accepted;
-M16.6 is externally accepted under the frozen acceptance scope below, and M16.7 remains
-unauthorized.
+M16.6 is externally accepted under the frozen acceptance scope below, and M16.7 is
+authorized only for the frozen minimal unknown-device acceptance.
 
 ## M16.4 implemented Application provisioning slice
 
@@ -745,8 +753,8 @@ uploads, new resources/COM settings, overlay persistence/export, runtime.toml re
 raw byte/serial operations, a new controller or authority/quarantine owner, new
 protocol grammars, expressions/callbacks/state machines, special Workbench UI,
 scripting or external-language integration. M16.4 did not itself authorize later
-slices; M16.6 is externally accepted, while M16.7
-still requires a later explicit coordination gate and external review.
+slices; M16.6 is externally accepted, while M16.7 is authorized by the current
+coordination gate and remains subject to external review.
 
 ## M16.5 accepted generic integration
 
@@ -857,8 +865,50 @@ failures.
 
 M16.6 adds no policy and does not expand the SimpleDevice grammar. It adds no
 operations, capabilities, DTOs, errors, or dependencies; changes no Workbench feature;
-does not begin M16.7; and does not begin Runtime API or Workbench UI API work. Public
-documentation and `.gitignore` remain out of scope. M16.7 remains unauthorized.
+did not begin M16.7; and did not begin Runtime API or Workbench UI API work. Public
+documentation and `.gitignore` remained out of scope. M16.7 is now separately authorized
+under the frozen scope below.
+
+## M16.7 authorized minimal unknown-device acceptance
+
+M16.7 provisions one deterministic unknown, non-Metakon device entirely through the
+existing generic declarative/Application path and demonstrates:
+
+```text
+Application candidate
+-> READ temperature
+-> ordinary Signal
+-> WRITE power
+-> ordinary ActuatorId / OutputAuthority
+-> strict ACK
+-> independent READBACK
+-> controller
+-> Workbench generic discovery/live plot
+-> Recorder/history
+-> reconnect fencing
+-> restart non-persistence
+```
+
+The acceptance fixture represents a non-native device. Runtime, Application, and
+Workbench contain no device-specific implementation branch for it. Expected owners are
+primarily test fixture/data, a scripted physical `ByteTransport` peer, and the existing
+Application/Runtime/Workbench acceptance harnesses.
+
+M16.7 uses the accepted M16.2–M16.6 semantics unchanged. Production changes are
+permitted only when a deterministic RED oracle proves a defect in the already accepted
+generic seam. M16.7 does not authorize:
+
+- a device-specific Runtime driver, Application operation or DTO, or Workbench path;
+- new grammar, policy, transport/resource kind, controller, or authority owner;
+- raw serial or output authority;
+- real Arduino hardware or a real Arduino driver;
+- Steel, Clojure, or Python work;
+- post-M16 Runtime API or Workbench UI API work;
+- public documentation;
+- Cargo dependencies; or
+- `.gitignore` changes.
+
+M16 consolidated external review remains not authorized.
 
 
 ## Accepted M14 consolidated invariants

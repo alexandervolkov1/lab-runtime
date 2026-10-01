@@ -6,7 +6,7 @@
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.6 faults, bounds, provenance, recovery acceptance: ACCEPTED
+Current phase: M16.7 minimal unknown-device acceptance
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
@@ -46,8 +46,11 @@ M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1–M16.6: ACCEPTED
-M16.7: NOT AUTHORIZED
-STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_ACCEPTED
+M16.7:
+AUTHORIZED
+M16 consolidated external review:
+NOT AUTHORIZED
+STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -97,7 +100,9 @@ mapping for internal owner failures, and phase-aware absolute apply deadline wit
 quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
 integration acceptance is externally accepted at
 `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/bounds/provenance/recovery
-acceptance is externally accepted; M16.7 remains unauthorized.
+acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
+M16.7 minimal unknown-device acceptance is authorized; M16 consolidated external review
+is not authorized.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -227,9 +232,10 @@ accepted at `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is accepted at
 `92847a046c4ef2e4e69d24ea51fc56e28e42af38`. M16.5 generic integration acceptance is
 externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/bounds/provenance/recovery
-acceptance is externally accepted under the frozen scope. M16.7, remaining
-final M15 documentation, and every later implementation phase remain gated and
-unauthorized.
+acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
+M16.7 minimal unknown-device acceptance is authorized under its frozen scope; M16
+consolidated external review, remaining final M15 documentation, and every later
+implementation phase remain gated and unauthorized.
 
 ## Later practical validation
 

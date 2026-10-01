@@ -56,9 +56,12 @@ M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
 M16.1–M16.6: ACCEPTED
-M16.7: NOT AUTHORIZED
-Current phase: M16.6 faults, bounds, provenance, recovery acceptance: ACCEPTED
-STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_ACCEPTED
+M16.7:
+AUTHORIZED
+M16 consolidated external review:
+NOT AUTHORIZED
+Current phase: M16.7 minimal unknown-device acceptance
+STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -108,7 +111,9 @@ mapping for internal owner failures, and phase-aware absolute apply deadline wit
 quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
 integration acceptance is externally accepted at
 `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/bounds/provenance/recovery
-acceptance is externally accepted; M16.7 remains unauthorized.
+acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
+M16.7 minimal unknown-device acceptance is authorized; M16 consolidated external review
+is not authorized.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -197,8 +202,9 @@ consolidated acceptance. The read-only M16.1 audit is accepted in
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`; M16.4 is accepted at
 `92847a046c4ef2e4e69d24ea51fc56e28e42af38`; M16.5 generic integration acceptance is
 externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`; M16.6 fault/bounds/provenance/recovery
-acceptance is externally accepted under the frozen scope; and M16.7 remains
-unauthorized.
+acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`; M16.7
+minimal unknown-device acceptance is authorized under its frozen scope; and M16
+consolidated external review remains unauthorized.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific
