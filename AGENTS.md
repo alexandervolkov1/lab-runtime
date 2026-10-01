@@ -76,19 +76,11 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit:
-ACCEPTED
-M16.2 read-only simple-device vertical slice:
-ACCEPTED
-M16.3 writable simple-device actuator + ACK/readback vertical slice:
-ACCEPTED
-M16.4 Application simple-device provisioning:
-ACCEPTED
-M16.5 generic system integration acceptance:
-ACCEPTED
-M16.6–M16.7: NOT AUTHORIZED
-Current phase: M16.5 generic system integration acceptance
-STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
+M16.1–M16.5: ACCEPTED
+M16.6: AUTHORIZED
+M16.7: NOT AUTHORIZED
+Current phase: M16.6 faults, bounds, provenance, recovery acceptance
+STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -143,7 +135,9 @@ The accepted M16.4 Application provisioning implementation commit is
 implementation plus the pending-apply property fence, existing `operation_failed`
 mapping for internal owner failures, and phase-aware absolute apply deadline with
 quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
-integration acceptance is externally accepted; M16.6–M16.7 remain unauthorized.
+integration acceptance is externally accepted at
+`799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/bounds/provenance/recovery
+acceptance is authorized; M16.7 remains unauthorized.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

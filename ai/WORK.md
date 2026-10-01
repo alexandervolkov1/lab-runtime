@@ -1,16 +1,16 @@
-# Current work — M16.5 generic system integration acceptance
+# Current work — M16.6 faults, bounds, provenance, recovery acceptance
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.5 generic system integration acceptance
+Current phase: M16.6 faults, bounds, provenance, recovery acceptance
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.4 ACCEPTED
+Practical integration architecture: M16.1–M16.5 ACCEPTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -43,18 +43,10 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit:
-ACCEPTED
-M16.2 read-only simple-device vertical slice:
-ACCEPTED
-M16.3 writable simple-device actuator + ACK/readback vertical slice:
-ACCEPTED
-M16.4 Application simple-device provisioning:
-ACCEPTED
-M16.5 generic system integration acceptance:
-ACCEPTED
-M16.6–M16.7: NOT AUTHORIZED
-STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
+M16.1–M16.5: ACCEPTED
+M16.6: AUTHORIZED
+M16.7: NOT AUTHORIZED
+STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -101,7 +93,8 @@ implementation plus the pending-apply property fence,
 existing `operation_failed` mapping for internal owner failures, and phase-aware
 absolute apply deadline with quarantine based on actual
 `send_started && !safe_confirmed` evidence. M16.5 generic integration acceptance is
-externally accepted; M16.6–M16.7 remain unauthorized.
+externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
+fault/bounds/provenance/recovery acceptance is authorized; M16.7 remains unauthorized.
 
 ## Completed preparation step
 
@@ -219,21 +212,13 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit:
-ACCEPTED
-M16.2 read-only simple-device vertical slice:
-ACCEPTED
-M16.3 writable simple-device actuator + ACK/readback vertical slice:
-ACCEPTED
-M16.4 Application simple-device provisioning:
-ACCEPTED
-M16.5 generic system integration acceptance:
-ACCEPTED
-M16.6–M16.7: NOT AUTHORIZED
+M16.1–M16.5: ACCEPTED
+M16.6: AUTHORIZED
+M16.7: NOT AUTHORIZED
 
-Current phase: M16.5 generic system integration acceptance
+Current phase: M16.6 faults, bounds, provenance, recovery acceptance
 
-STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
+STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_AUTHORIZED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -378,9 +363,10 @@ report.
 M16.1 is accepted. M16.2 is accepted at
 `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 writable actuator is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
-M16.4 provisioning and M16.5 generic integration acceptance are externally accepted.
-M16.6 fault/bounds/provenance/recovery acceptance, M16.7 minimal unknown-device
-acceptance, and M16 consolidated review remain unauthorized. M13.2 remains blocked on
+M16.4 provisioning and M16.5 generic integration acceptance are externally accepted;
+M16.5 is accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
+fault/bounds/provenance/recovery acceptance is authorized. M16.7 minimal unknown-device
+acceptance and M16 consolidated review remain unauthorized. M13.2 remains blocked on
 Steel dependency safety.
 
 ## M16.2 accepted implementation
@@ -470,7 +456,7 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2–M16.5 are accepted; M16.6–M16.7 remain unauthorized.
+M16.2–M16.5 are accepted; M16.6 is authorized; M16.7 remains unauthorized.
 
 ## M16.3 accepted implementation
 
@@ -603,7 +589,8 @@ candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD
 packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
 UI, public raw I/O, scripting, or external-language integration. The M16.4 candidate
 implements only the bounded provisioning surface below. M16.5 is externally accepted;
-M16.6–M16.7 remain unauthorized.
+M16.6 is authorized only for the frozen acceptance scope below, and M16.7 remains
+unauthorized.
 
 ## M16.4 implemented Application provisioning slice
 
@@ -758,8 +745,9 @@ M16.4 does not authorize chunks, multipart or builder APIs, generic manifest or 
 uploads, new resources/COM settings, overlay persistence/export, runtime.toml rewrite,
 raw byte/serial operations, a new controller or authority/quarantine owner, new
 protocol grammars, expressions/callbacks/state machines, special Workbench UI,
-scripting or external-language integration. M16.6–M16.7 remain unauthorized and each
-requires a later explicit coordination gate and external review.
+scripting or external-language integration. M16.4 did not itself authorize later
+slices; M16.6 is now authorized only by the current coordination gate, while M16.7
+still requires a later explicit coordination gate and external review.
 
 ## M16.5 accepted generic integration
 
@@ -796,11 +784,11 @@ controller validation can use non-discoverable prepared descriptors during atomi
 activation. Writable reconnect replaces authority, re-establishes safe evidence, and
 does not rearm a paused controller. No new operation, capability, DTO, transport kind,
 authority, or consumer-specific SimpleDevice presentation/history path is introduced.
-M16.5 does not authorize a SimpleDevice-specific Workbench panel/editor, plot,
+M16.5 did not itself authorize a SimpleDevice-specific Workbench panel/editor, plot,
 Recorder, or controller path; a new Application operation, public DTO/error/category,
 transport/resource type, authority path, or raw serial/output API; configuration
-persistence/export; M16.6 fault-matrix work; M16.7 unknown-device acceptance; scripting
-or external-language work; or the separately discussed post-M16 UI/API roadmap.
+persistence/export; later-slice work; scripting or external-language work; or the
+separately discussed post-M16 UI/API roadmap.
 
 The authority boundaries remain unchanged: Runtime owns experiment semantics,
 Workbench owns presentation semantics, Workbench consumes the same Runtime Application
@@ -813,6 +801,33 @@ overflow unification, bounds, and verification evidence are recorded in
 
 The executable 30-row recovery/fault matrix, A-J scenarios, process/fault-injection
 methodology, and final evidence are recorded in `M14_6B4_RECOVERY_FAULT_ACCEPTANCE.md`.
+
+## M16.6 authorized fault/bounds/provenance/recovery acceptance
+
+M16.6 is acceptance-first. Execute the frozen section-17 boundary matrix and
+section-18 deterministic failure acceptance in
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. Production fixes are allowed only
+for concrete defects demonstrated by red oracles.
+
+The authorized acceptance scope is exactly:
+
+- malformed grammar and conversions;
+- exact capacities and deadlines;
+- pre-send versus post-send ambiguity;
+- rebind and stale-mapping fencing;
+- prepared-state capacity, identity, and deadline;
+- safe-barrier behavior;
+- Required Recorder failure;
+- SessionStore retained provisioning credit;
+- client death;
+- Runtime restart;
+- exact in-memory and SQLite provenance; and
+- preservation and restoration of the prior persistent deployment.
+
+M16.6 adds no policy and does not expand the SimpleDevice grammar. It adds no
+operations, capabilities, DTOs, errors, or dependencies; changes no Workbench feature;
+does not begin M16.7; and does not begin Runtime API or Workbench UI API work. Public
+documentation and `.gitignore` remain out of scope. M16.7 remains unauthorized.
 
 
 ## Accepted M14 consolidated invariants

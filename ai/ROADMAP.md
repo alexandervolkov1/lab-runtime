@@ -39,19 +39,11 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1 declarative simple-device architecture/API audit:
-ACCEPTED
-M16.2 read-only simple-device vertical slice:
-ACCEPTED
-M16.3 writable simple-device actuator + ACK/readback vertical slice:
-ACCEPTED
-M16.4 Application simple-device provisioning:
-ACCEPTED
-M16.5 generic system integration acceptance:
-ACCEPTED
-M16.6–M16.7: NOT AUTHORIZED
-Current phase: M16.5 generic system integration acceptance
-STATUS: M16_5_GENERIC_INTEGRATION_ACCEPTED
+M16.1–M16.5: ACCEPTED
+M16.6: AUTHORIZED
+M16.7: NOT AUTHORIZED
+Current phase: M16.6 faults, bounds, provenance, recovery acceptance
+STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_AUTHORIZED
 ```
 
 The accepted M12.2 implementation commit is
@@ -99,7 +91,9 @@ The accepted M16.4 Application provisioning implementation commit is
 implementation plus the pending-apply property fence, existing `operation_failed`
 mapping for internal owner failures, and phase-aware absolute apply deadline with
 quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 generic
-integration acceptance is externally accepted; M16.6–M16.7 remain unauthorized.
+integration acceptance is externally accepted at
+`799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/bounds/provenance/recovery
+acceptance is authorized; M16.7 remains unauthorized.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -303,7 +297,8 @@ or select a Runtime-owned automation language.
   stage, explicit safe apply, then ordinary rediscovery.
 - **M16.5:** accepted generic Workbench/plot/history/Recorder/controller/reconnect
   integration with no declarative-device special branches.
-- **M16.6:** complete fault, bounds, provenance, and recovery acceptance.
+- **M16.6:** authorized acceptance-first fault, bounds, provenance, and recovery
+  acceptance against the frozen section-17 bounds and section-18 failure matrix.
 - **M16.7:** minimal unknown-device acceptance for READ measurement, WRITE actuator,
   ACK, and READBACK without device-specific Runtime/Application/Workbench code.
 - **M16 consolidated external review:** required before M15.5–M15.8 resume.
@@ -311,8 +306,8 @@ or select a Runtime-owned automation language.
 M16.2 is accepted at `aac377470d7142005ad5e0d098fddf6c16734db8`. M16.3 is accepted
 at `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`. M16.4 is accepted at
 `92847a046c4ef2e4e69d24ea51fc56e28e42af38`. M16.5 generic integration acceptance is
-externally accepted; M16.6–M16.7 and consolidated acceptance are not authorized. The
-accepted M16.1 audit freezes the
+externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 is authorized;
+M16.7 and consolidated acceptance are not authorized. The accepted M16.1 audit freezes the
 operation, DTO/schema direction, exact bounds, and implementation slicing in
 `M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`.
 
