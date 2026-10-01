@@ -609,6 +609,15 @@ impl OutputAuthority {
         }
     }
 
+    /// Retain the safe obligation while exposing an exact terminal pre-send
+    /// transport failure. No send evidence is created by this transition.
+    pub(crate) fn fail_transport_before_send(&mut self, intent: OutputIntent) {
+        if self.transport_reserved == Some(intent) {
+            self.abort_transport(intent);
+            self.snapshot.outcome = Some(DispatchOutcome::Failed);
+        }
+    }
+
     /// Revoke ordinary authority as soon as a started physical write becomes uncertain.
     pub(crate) fn transport_uncertain(&mut self, id: DispatchId) -> Result<(), Error> {
         let dispatch = self

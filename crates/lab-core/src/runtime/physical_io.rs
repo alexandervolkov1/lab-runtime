@@ -905,7 +905,7 @@ impl Runtime {
                 let pending_write = self.pending_output_writes.remove(&(resource, record.id));
                 let Some(dispatch) = dispatch else {
                     if let Some(authority) = self.outputs.get_mut(&intent.actuator) {
-                        authority.abort_transport(intent);
+                        authority.fail_transport_before_send(intent);
                     }
                     return Ok(());
                 };

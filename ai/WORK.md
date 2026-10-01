@@ -1,16 +1,16 @@
-# Current work — M16.6 faults, bounds, provenance, recovery acceptance
+# Current work — M16.6 faults, bounds, provenance, recovery acceptance: accepted
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.6 faults, bounds, provenance, recovery acceptance
+Current phase: M16.6 faults, bounds, provenance, recovery acceptance: ACCEPTED
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
 Developer Preview artifact: READY LOCALLY
 v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.5 ACCEPTED
+Practical integration architecture: M16.1–M16.6 ACCEPTED
 M12.1 WebSocket architecture audit: ACCEPTED
 M12.2 transport-neutral server seam: ACCEPTED
 M12.3 bounded WebSocket/JSON transport: ACCEPTED
@@ -43,10 +43,9 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1–M16.5: ACCEPTED
-M16.6: AUTHORIZED
+M16.1–M16.6: ACCEPTED
 M16.7: NOT AUTHORIZED
-STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_AUTHORIZED
+STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -94,7 +93,8 @@ existing `operation_failed` mapping for internal owner failures, and phase-aware
 absolute apply deadline with quarantine based on actual
 `send_started && !safe_confirmed` evidence. M16.5 generic integration acceptance is
 externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
-fault/bounds/provenance/recovery acceptance is authorized; M16.7 remains unauthorized.
+fault/bounds/provenance/recovery acceptance is externally accepted;
+M16.7 remains unauthorized.
 
 ## Completed preparation step
 
@@ -212,13 +212,12 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1–M16.5: ACCEPTED
-M16.6: AUTHORIZED
+M16.1–M16.6: ACCEPTED
 M16.7: NOT AUTHORIZED
 
-Current phase: M16.6 faults, bounds, provenance, recovery acceptance
+Current phase: M16.6 faults, bounds, provenance, recovery acceptance: ACCEPTED
 
-STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_AUTHORIZED
+STATUS: M16_6_FAULT_BOUNDS_PROVENANCE_RECOVERY_ACCEPTED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -365,7 +364,7 @@ M16.1 is accepted. M16.2 is accepted at
 `df5ec6b7b0a10b3bcd3e43f4b213095c1f846c35`.
 M16.4 provisioning and M16.5 generic integration acceptance are externally accepted;
 M16.5 is accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
-fault/bounds/provenance/recovery acceptance is authorized. M16.7 minimal unknown-device
+fault/bounds/provenance/recovery acceptance is externally accepted. M16.7 minimal unknown-device
 acceptance and M16 consolidated review remain unauthorized. M13.2 remains blocked on
 Steel dependency safety.
 
@@ -456,7 +455,7 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2–M16.5 are accepted; M16.6 is authorized; M16.7 remains unauthorized.
+M16.2–M16.6 are accepted; M16.7 remains unauthorized.
 
 ## M16.3 accepted implementation
 
@@ -589,7 +588,7 @@ candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD
 packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
 UI, public raw I/O, scripting, or external-language integration. The M16.4 candidate
 implements only the bounded provisioning surface below. M16.5 is externally accepted;
-M16.6 is authorized only for the frozen acceptance scope below, and M16.7 remains
+M16.6 is externally accepted under the frozen acceptance scope below, and M16.7 remains
 unauthorized.
 
 ## M16.4 implemented Application provisioning slice
@@ -746,7 +745,7 @@ uploads, new resources/COM settings, overlay persistence/export, runtime.toml re
 raw byte/serial operations, a new controller or authority/quarantine owner, new
 protocol grammars, expressions/callbacks/state machines, special Workbench UI,
 scripting or external-language integration. M16.4 did not itself authorize later
-slices; M16.6 is now authorized only by the current coordination gate, while M16.7
+slices; M16.6 is externally accepted, while M16.7
 still requires a later explicit coordination gate and external review.
 
 ## M16.5 accepted generic integration
@@ -802,14 +801,14 @@ overflow unification, bounds, and verification evidence are recorded in
 The executable 30-row recovery/fault matrix, A-J scenarios, process/fault-injection
 methodology, and final evidence are recorded in `M14_6B4_RECOVERY_FAULT_ACCEPTANCE.md`.
 
-## M16.6 authorized fault/bounds/provenance/recovery acceptance
+## M16.6 accepted fault/bounds/provenance/recovery acceptance
 
-M16.6 is acceptance-first. Execute the frozen section-17 boundary matrix and
+M16.6 was acceptance-first. The implementation executes the frozen section-17 boundary matrix and
 section-18 deterministic failure acceptance in
-`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. Production fixes are allowed only
-for concrete defects demonstrated by red oracles.
+`M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md`. Production changes were limited
+to a concrete defect demonstrated by a red oracle.
 
-The authorized acceptance scope is exactly:
+The implemented acceptance scope is exactly:
 
 - malformed grammar and conversions;
 - exact capacities and deadlines;
@@ -823,6 +822,38 @@ The authorized acceptance scope is exactly:
 - Runtime restart;
 - exact in-memory and SQLite provenance; and
 - preservation and restoration of the prior persistent deployment.
+
+The focused M16.6 suites pass 32/32 tests. One deterministic RED oracle found that a
+provisional safe write failing before its first byte retained the safe obligation but
+did not expose a terminal pre-send transport failure, leaving apply pending until its
+absolute deadline. The internal authority now records the existing `Failed` outcome
+without fabricating `sent` evidence; apply maps that exact state to the existing
+retryable `transport_unavailable` result and retires prepared state without quarantine.
+No public schema, operation, capability, DTO, error, grammar, dependency, or retry
+mechanism changed.
+
+External source-review remediation adds a production-DTO legal maximal-shape oracle:
+the compact candidate reaches the exact 6,144-byte canonical-definition boundary,
+keeps its candidate/envelope lexical counts and depths within 900/909 and 8/10, uses
+maximal valid mutation identities, passes the production Application decoder and
+SimpleDevice compiler, and rejects both byte-over and structural-over mutations.
+Application-candidate provenance now recomputes `SHA256(candidate.canonical)` and
+asserts the complete process-local overlay identity in both frozen memory and SQLite.
+
+Acceptance proves the frozen 8,192 / 6,144 / 900 / 909 / 16,383 limits, exact timing,
+history and queue edges, the 524,288-byte SessionStore provisioning credit, strict
+reply/conversion/ACK/readback behavior, pre-send versus post-send ambiguity, stale
+binding/mapping fencing, one-slot stage/pending/prepared/quarantine ownership, Required
+Recorder durability failure, client death, and clean Runtime restart without overlay,
+mutation, output, or evidence replay. In-memory objects and SQLite rows agree on
+definition/candidate hashes, instance and parameter identity, resource and generation,
+mapping/configuration revision, safety/controller/reference association, source class,
+and Runtime/build/deployment provenance. Immutable definition content remains one
+content object across multiple measurements and instances.
+
+Final remediation verification passes formatting and warnings-denied Clippy. Debug and
+release workspace suites each pass 750 tests with 11 explicitly ignored and zero
+failures.
 
 M16.6 adds no policy and does not expand the SimpleDevice grammar. It adds no
 operations, capabilities, DTOs, errors, or dependencies; changes no Workbench feature;

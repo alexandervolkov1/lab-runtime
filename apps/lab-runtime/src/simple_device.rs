@@ -1664,8 +1664,69 @@ mod tests {
         })
     }
 
+    fn maximal_legal_read_only_candidate() -> Value {
+        let parameters = (1..=7)
+            .map(|parameter_id| {
+                let segment_count = 8;
+                let match_count = match parameter_id {
+                    1..=4 => 8,
+                    5 => 4,
+                    6 => 0,
+                    _ => 0,
+                };
+                json!({
+                    "parameter_id":parameter_id,
+                    "key":char::from(b'a' + u8::try_from(parameter_id - 1).unwrap()).to_string(),
+                    "display_name":if parameter_id == 1 { "x".repeat(33) } else { "x".into() },
+                    "role":"diagnostic",
+                    "access":"read_only",
+                    "unit_id":"u",
+                    "unit_symbol":"u",
+                    "value_type":"integer",
+                    "engineering_min":0,
+                    "engineering_max":255,
+                    "write_effect":"none",
+                    "encoding":{"raw":"u8","scale":1.0,"offset":0.0},
+                    "read":{
+                        "request":{"segments":vec![json!({"type":"literal","hex":"00"});segment_count]},
+                        "response":{
+                            "exact_length":9,
+                            "matches":vec![json!({"type":"literal_match","offset":0,"hex":"00"});match_count],
+                            "extract":{"type":"scalar_extract","offset":1}
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let candidate = json!({
+            "schema_version":1,
+            "definition":{
+                "format_version":1,
+                "definition_id":"d",
+                "definition_version":1,
+                "parameters":parameters
+            },
+            "instances":[
+                {"instrument_id":1,"key":"i1","display_name":"x","resource_id":1,
+                    "address":1,"channel":1,"poll_period_ms":10,"queue_timeout_ms":1,
+                    "transaction_timeout_ms":1,"history_capacity":1},
+                {"instrument_id":2,"key":"i2","display_name":"x","resource_id":2,
+                    "address":2,"channel":2,"poll_period_ms":10,"queue_timeout_ms":1,
+                    "transaction_timeout_ms":1,"history_capacity":1},
+                {"instrument_id":3,"key":"i3","display_name":"x","resource_id":3,
+                    "address":3,"channel":3,"poll_period_ms":10,"queue_timeout_ms":1,
+                    "transaction_timeout_ms":1,"history_capacity":1},
+                {"instrument_id":4,"key":"i4","display_name":"x","resource_id":4,
+                    "address":4,"channel":4,"poll_period_ms":10,"queue_timeout_ms":1,
+                    "transaction_timeout_ms":1,"history_capacity":1}
+            ]
+        });
+        let dto: CandidateDto = serde_json::from_value(candidate).unwrap();
+        serde_json::to_value(dto).unwrap()
+    }
+
     #[test]
-    fn application_candidate_is_closed_bounded_and_semantically_normalized() {
+    fn m16_6_application_candidate_is_closed_bounded_and_semantically_normalized() {
         let candidate = read_only_candidate();
         let compiled = parse_simple_candidate(&candidate).unwrap();
         assert_eq!(compiled.schema_version, 1);
@@ -1695,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn application_candidate_collective_byte_value_and_depth_bounds_are_exact() {
+    fn m16_6_application_candidate_collective_byte_value_and_depth_bounds_are_exact() {
         let mut exact_bytes = json!({"padding":""});
         let base = serde_json::to_vec(&exact_bytes).unwrap().len();
         exact_bytes["padding"] = json!("x".repeat(MAX_SIMPLE_CANDIDATE_BYTES - base));
@@ -1759,7 +1820,139 @@ mod tests {
     }
 
     #[test]
-    fn application_candidate_cardinality_and_conditioned_instance_shape_are_exact() {
+    fn m16_6_maximal_legal_candidate_and_envelope_reach_frozen_shape_limits() {
+        let candidate = maximal_legal_read_only_candidate();
+        let (candidate_values, candidate_depth) = json_shape(&candidate);
+        // The exact 6,144-byte canonical-definition cap is reached before the
+        // independent 900-value pre-scan ceiling. This compact legal shape uses
+        // all eight request segments wherever present and spends the remaining
+        // canonical credit on legal response matches.
+        assert_eq!(candidate_values, 539);
+        assert!(candidate_values <= MAX_SIMPLE_CANDIDATE_VALUES);
+        assert!(candidate_depth <= MAX_SIMPLE_CANDIDATE_DEPTH);
+        let candidate_bytes = serde_json::to_vec(&candidate).unwrap();
+        assert!(
+            candidate_bytes.len() <= MAX_SIMPLE_CANDIDATE_BYTES,
+            "maximal legal candidate was {} bytes",
+            candidate_bytes.len()
+        );
+        let definition_bytes = serde_json::to_vec(&candidate["definition"]).unwrap();
+        assert!(
+            definition_bytes.len() <= MAX_SIMPLE_CANONICAL_BYTES,
+            "maximal legal definition was {} bytes",
+            definition_bytes.len()
+        );
+        assert_eq!(definition_bytes.len(), MAX_SIMPLE_CANONICAL_BYTES);
+        let compiled = parse_simple_candidate(&candidate).unwrap();
+        assert_eq!(compiled.instances.len(), 4);
+        assert_eq!(compiled.definition.parameters.len(), 7);
+
+        let whole = json!({
+            "v":1,
+            "msg_id":"m".repeat(64),
+            "op":"stage_simple_device_candidate",
+            "request_id":{"scope":"s".repeat(64),"seq":u64::MAX.to_string()},
+            "args":{"expected_revision":u64::MAX.to_string(),"candidate":candidate}
+        });
+        assert_eq!(whole["msg_id"].as_str().unwrap().len(), 64);
+        assert_eq!(whole["request_id"]["scope"].as_str().unwrap().len(), 64);
+        assert_eq!(whole["request_id"]["seq"], u64::MAX.to_string());
+        assert_eq!(whole["args"]["expected_revision"], u64::MAX.to_string());
+        let (whole_values, whole_depth) = json_shape(&whole);
+        assert_eq!(whole_values, candidate_values + 9);
+        assert!(whole_values <= 909);
+        assert!(whole_depth <= 10);
+        let encoded = serde_json::to_vec(&whole).unwrap();
+        assert!(
+            encoded.len() <= 8_496,
+            "maximal legal request was {} bytes",
+            encoded.len()
+        );
+        let decoded = crate::wire::decode_application_json(&encoded).unwrap();
+        let decoded_candidate = &decoded.args["candidate"];
+        let (decoded_values, decoded_depth) = json_shape(decoded_candidate);
+        assert_eq!(decoded_values, candidate_values);
+        assert!(decoded_depth <= 8);
+        parse_simple_candidate(decoded_candidate).unwrap();
+
+        let mut over = decoded_candidate.clone();
+        over["definition"]["parameters"][0]["display_name"] = json!("x".repeat(34));
+        assert_eq!(json_shape(&over).0, candidate_values);
+        assert!(matches!(
+            parse_simple_candidate(&over),
+            Err(SimpleCandidateError::Semantic(message))
+                if message.contains("exceeds 6144 bytes")
+        ));
+
+        let mut over = decoded_candidate.clone();
+        over["definition"]["parameters"][0]["read"]["request"]["segments"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"literal","hex":"00"}));
+        assert_eq!(json_shape(&over).0, candidate_values + 3);
+        assert!(matches!(
+            parse_simple_candidate(&over),
+            Err(SimpleCandidateError::Semantic(message))
+                if message.contains("request segment count must be 1..=8")
+        ));
+    }
+
+    #[test]
+    fn m16_6_application_body_accepts_16383_and_rejects_16384_bytes() {
+        let request = json!({
+            "v":1,
+            "msg_id":"m16-6-boundary",
+            "op":"stage_simple_device_candidate",
+            "request_id":{"scope":"scope","seq":"1"},
+            "args":{"expected_revision":"1","candidate":read_only_candidate()}
+        });
+        let mut exact = serde_json::to_vec(&request).unwrap();
+        assert!(exact.len() < crate::wire::APPLICATION_JSON_LIMIT);
+        exact.resize(crate::wire::APPLICATION_JSON_LIMIT, b' ');
+        let decoded = crate::wire::decode_application_json(&exact).unwrap();
+        assert_eq!(decoded.op, "stage_simple_device_candidate");
+        assert_eq!(decoded.args["candidate"]["schema_version"], 1);
+
+        exact.push(b' ');
+        let error = crate::wire::decode_application_json(&exact).unwrap_err();
+        assert_eq!(error.code, "frame_too_large");
+    }
+
+    #[test]
+    fn m16_6_candidate_timing_and_history_boundaries_are_exact() {
+        let mut candidate = read_only_candidate();
+        for (poll, queue, transaction, history) in [(10, 1, 1, 1), (60_000, 2_000, 2_000, 1_024)] {
+            candidate["instances"][0]["poll_period_ms"] = json!(poll);
+            candidate["instances"][0]["queue_timeout_ms"] = json!(queue);
+            candidate["instances"][0]["transaction_timeout_ms"] = json!(transaction);
+            candidate["instances"][0]["history_capacity"] = json!(history);
+            parse_simple_candidate(&candidate).unwrap();
+        }
+
+        for (field, value) in [
+            ("poll_period_ms", 9),
+            ("poll_period_ms", 60_001),
+            ("queue_timeout_ms", 0),
+            ("queue_timeout_ms", 2_001),
+            ("transaction_timeout_ms", 0),
+            ("transaction_timeout_ms", 2_001),
+            ("history_capacity", 0),
+            ("history_capacity", 1_025),
+        ] {
+            let mut invalid = read_only_candidate();
+            invalid["instances"][0][field] = json!(value);
+            assert!(
+                matches!(
+                    parse_simple_candidate(&invalid),
+                    Err(SimpleCandidateError::Semantic(_))
+                ),
+                "accepted out-of-range {field}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn m16_6_application_candidate_cardinality_and_conditioned_instance_shape_are_exact() {
         let mut read_only = read_only_candidate();
         let first = read_only["instances"][0].clone();
         for ordinal in 2..=4 {
@@ -1831,7 +2024,7 @@ mod tests {
     }
 
     #[test]
-    fn writable_schema_rejects_invalid_actuator_and_ack_shapes() {
+    fn m16_6_writable_schema_rejects_invalid_actuator_and_ack_shapes() {
         let base: Value = serde_json::from_slice(&writable_definition()).unwrap();
         let mut second = base.clone();
         second["parameters"]
@@ -2031,7 +2224,7 @@ history_capacity=1024
     }
 
     #[test]
-    fn raw_and_canonical_definition_bounds_are_independent_and_exact() {
+    fn m16_6_raw_and_canonical_definition_bounds_are_independent_and_exact() {
         let compact = definition();
         let mut exact_raw = compact.clone();
         exact_raw.resize(MAX_SIMPLE_DEFINITION_BYTES, b' ');
@@ -2076,7 +2269,56 @@ history_capacity=1024
     }
 
     #[test]
-    fn closed_schema_rejects_invalid_semantics_and_transaction_shapes() {
+    fn m16_6_canonical_definition_accepts_6144_and_rejects_6145_bytes() {
+        let template = parsed_definition()["parameters"][0].clone();
+        let mut exact = None;
+        for count in 1..=MAX_PARAMETERS {
+            let mut value = parsed_definition();
+            value["parameters"].as_array_mut().unwrap().clear();
+            for index in 1..=count {
+                let mut parameter = template.clone();
+                parameter["parameter_id"] = json!(index);
+                parameter["key"] = json!(format!("p{index}"));
+                parameter["display_name"] = json!("x");
+                value["parameters"].as_array_mut().unwrap().push(parameter);
+            }
+            let mut dto: DefinitionDto = serde_json::from_value(value).unwrap();
+            normalize_validated_ranges(&mut dto).unwrap();
+            let base = serde_json::to_vec(&dto).unwrap().len();
+            let maximum = base + count * 127;
+            if base <= MAX_SIMPLE_CANONICAL_BYTES && MAX_SIMPLE_CANONICAL_BYTES < maximum {
+                let mut remaining = MAX_SIMPLE_CANONICAL_BYTES - base;
+                for parameter in &mut dto.parameters {
+                    let added = remaining.min(127);
+                    parameter.display_name = "x".repeat(added + 1);
+                    remaining -= added;
+                }
+                assert_eq!(remaining, 0);
+                exact = Some(dto);
+                break;
+            }
+        }
+        let exact = exact.expect("legal definition can reach the frozen canonical bound");
+        let compiled = compile_definition_dto(exact.clone()).unwrap();
+        assert_eq!(compiled.canonical.len(), MAX_SIMPLE_CANONICAL_BYTES);
+
+        let mut over = exact;
+        let adjustable = over
+            .parameters
+            .iter_mut()
+            .find(|parameter| parameter.display_name.len() < 128)
+            .expect("exact construction leaves one bounded byte available");
+        adjustable.display_name.push('x');
+        assert_eq!(
+            serde_json::to_vec(&over).unwrap().len(),
+            MAX_SIMPLE_CANONICAL_BYTES + 1
+        );
+        let error = compile_definition_dto(over).unwrap_err();
+        assert!(error.to_string().contains("exceeds 6144 bytes"));
+    }
+
+    #[test]
+    fn m16_6_closed_schema_rejects_invalid_semantics_and_transaction_shapes() {
         let mut cases = Vec::new();
         let mut push = |name: &'static str, mutate: fn(&mut Value)| {
             let mut value = parsed_definition();
@@ -2160,7 +2402,7 @@ history_capacity=1024
     }
 
     #[test]
-    fn all_twelve_raw_encodings_compile_from_the_closed_schema() {
+    fn m16_6_all_twelve_raw_encodings_compile_from_the_closed_schema() {
         for raw in [
             "u8", "i8", "u16_le", "u16_be", "i16_le", "i16_be", "u32_le", "u32_be", "i32_le",
             "i32_be", "f32_le", "f32_be",
@@ -2178,7 +2420,7 @@ history_capacity=1024
     }
 
     #[test]
-    fn fixed_request_and_response_bounds_accept_sixty_four_and_reject_sixty_five() {
+    fn m16_6_fixed_request_and_response_bounds_accept_sixty_four_and_reject_sixty_five() {
         let mut value = parsed_definition();
         value["parameters"][0]["read"]["request"]["segments"] = json!([
             {"type":"literal","hex":"00".repeat(32)},
@@ -2253,7 +2495,7 @@ history_capacity=1024
     }
 
     #[test]
-    fn persistent_freeze_retains_exact_and_canonical_provenance() {
+    fn m16_6_persistent_freeze_retains_exact_and_canonical_provenance() {
         struct Reader(Vec<u8>);
         impl ArtifactReader for Reader {
             fn read(&mut self, _: &Path, maximum: usize) -> Result<Vec<u8>, ConfigurationError> {
@@ -2645,7 +2887,7 @@ proposal_ttl_ms=200
     }
 
     #[test]
-    fn persistent_writable_controller_and_recorder_use_generic_authority_and_binding() {
+    fn m16_6_persistent_writable_controller_and_recorder_use_generic_authority_and_binding() {
         let mut reader = ControlledReader;
         let deployment = parse_runtime_toml(
             &controlled_writable_toml(),
@@ -2817,6 +3059,37 @@ proposal_ttl_ms=200
         let db = rusqlite::Connection::open(&database).unwrap();
         let instrument_id = 1001u64.to_be_bytes();
         let parameter_id = 2u64.to_be_bytes();
+        let measurement_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM measurements", [], |row| row.get(0))
+            .unwrap();
+        assert!(measurement_count > 1);
+        let canonical_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM provenance_content
+                 WHERE kind='simple_device_definition_canonical'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            canonical_count, 1,
+            "definition content must not be duplicated per measurement"
+        );
+        for kind in [
+            "runtime_toml",
+            "rust_build",
+            "native_composition",
+            "deployment_config",
+        ] {
+            let count: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM provenance_content WHERE kind=?1",
+                    [kind],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "missing or duplicated {kind} provenance");
+        }
         for stage in [
             "requested",
             "authorized",
@@ -2929,7 +3202,7 @@ proposal_ttl_ms=200
     }
 
     #[test]
-    fn maximum_simple_provenance_cardinality_fits_existing_recorder_credits() {
+    fn m16_6_maximum_simple_provenance_cardinality_fits_existing_recorder_credits() {
         struct ManyReader;
         impl ArtifactReader for ManyReader {
             fn read(&mut self, path: &Path, maximum: usize) -> Result<Vec<u8>, ConfigurationError> {

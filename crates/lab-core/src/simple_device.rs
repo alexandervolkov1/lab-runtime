@@ -912,7 +912,65 @@ mod tests {
     }
 
     #[test]
-    fn integer_engineering_requires_integral_result() {
+    fn m16_6_response_fault_matrix_rejects_every_nonexact_reply() {
+        let plan = SimpleResponsePlan {
+            exact_length: 7,
+            matches: vec![
+                SimpleResponseMatch {
+                    kind: SimpleResponseMatchKind::Literal,
+                    offset: 0,
+                    expected: vec![0x10],
+                },
+                SimpleResponseMatch {
+                    kind: SimpleResponseMatchKind::Instance,
+                    offset: 1,
+                    expected: vec![1, 2],
+                },
+            ],
+            extract_offset: 3,
+            encoding: SimpleScalarEncoding::I16Be,
+            scale: 0.1,
+            engineering_offset: 0.0,
+            checksum: Some(SimpleResponseChecksum {
+                offset: 5,
+                algorithm: SimpleChecksum::Crc16Modbus,
+            }),
+        };
+        let descriptor = descriptor(ValueSpec::Float {
+            min: -50.0,
+            max: 500.0,
+        });
+        let response = |prefix: [u8; 5]| {
+            let mut response = prefix.to_vec();
+            SimpleChecksum::Crc16Modbus.append(&prefix, &mut response);
+            response
+        };
+        let good = response([0x10, 1, 2, 0, 250]);
+        assert_eq!(plan.decode(&good, &descriptor), Some(Value::Float(25.0)));
+
+        let mut cases = Vec::new();
+        cases.push(good[..good.len() - 1].to_vec());
+        let mut oversized = good.clone();
+        oversized.push(0);
+        cases.push(oversized);
+        cases.push(response([0x11, 1, 2, 0, 250]));
+        cases.push(response([0x10, 2, 2, 0, 250]));
+        cases.push(response([0x10, 1, 3, 0, 250]));
+        let mut bad_checksum = good.clone();
+        *bad_checksum.last_mut().unwrap() ^= 1;
+        cases.push(bad_checksum);
+        cases.push(response([0x10, 1, 2, 0x13, 0x89]));
+        for malformed in cases {
+            assert_eq!(
+                plan.decode(&malformed, &descriptor),
+                None,
+                "nonexact reply was accepted: {malformed:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn m16_6_integer_engineering_requires_integral_result() {
         let plan = SimpleResponsePlan {
             exact_length: 1,
             matches: vec![],
@@ -929,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn output_encoding_is_exact_and_never_rounds_or_clips() {
+    fn m16_6_output_encoding_is_exact_and_never_rounds_or_clips() {
         assert_eq!(
             SimpleScalarEncoding::U8.encode(255.0, 1.0, 0.0),
             Some(vec![255])
@@ -957,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_ack_and_exact_raw_readback_do_not_use_engineering_tolerance() {
+    fn m16_6_strict_ack_and_exact_raw_readback_do_not_use_engineering_tolerance() {
         let ack = SimpleAckPlan {
             exact_length: 3,
             matches: vec![SimpleResponseMatch {
@@ -1006,10 +1064,36 @@ mod tests {
             plan.verify_readback(&nonfinite, &descriptor, &1.0f32.to_be_bytes()),
             None
         );
+        for nonfinite in [f32::INFINITY, f32::NEG_INFINITY] {
+            let mut response = vec![0x21, 1];
+            response.extend_from_slice(&nonfinite.to_be_bytes());
+            assert_eq!(
+                plan.verify_readback(&response, &descriptor, &1.0f32.to_be_bytes()),
+                None
+            );
+        }
+
+        let integer = SimpleResponsePlan {
+            exact_length: 4,
+            matches: vec![SimpleResponseMatch {
+                kind: SimpleResponseMatchKind::Literal,
+                offset: 0,
+                expected: vec![0x21, 1],
+            }],
+            extract_offset: 2,
+            encoding: SimpleScalarEncoding::U16Be,
+            scale: 0.1,
+            engineering_offset: 0.0,
+            checksum: None,
+        };
+        assert_eq!(
+            integer.verify_readback(&[0x21, 1, 0, 251], &descriptor, &[0, 250]),
+            Some((25.1, false))
+        );
     }
 
     #[test]
-    fn nonfinite_float_and_out_of_range_values_are_never_decoded() {
+    fn m16_6_nonfinite_float_and_out_of_range_values_are_never_decoded() {
         let float_plan = SimpleResponsePlan {
             exact_length: 4,
             matches: vec![],
@@ -1029,6 +1113,18 @@ mod tests {
             ),
             None
         );
+        for nonfinite in [f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                float_plan.decode(
+                    &nonfinite.to_be_bytes(),
+                    &descriptor(ValueSpec::Float {
+                        min: -10.0,
+                        max: 10.0,
+                    }),
+                ),
+                None
+            );
+        }
         let integer_plan = SimpleResponsePlan {
             exact_length: 1,
             matches: vec![],
@@ -1040,6 +1136,25 @@ mod tests {
         };
         assert_eq!(
             integer_plan.decode(&[11], &descriptor(ValueSpec::Integer { min: 0, max: 10 })),
+            None
+        );
+        let overflowing_integer = SimpleResponsePlan {
+            exact_length: 4,
+            matches: vec![],
+            extract_offset: 0,
+            encoding: SimpleScalarEncoding::U32Be,
+            scale: 3_000_000_000.0,
+            engineering_offset: 0.0,
+            checksum: None,
+        };
+        assert_eq!(
+            overflowing_integer.decode(
+                &u32::MAX.to_be_bytes(),
+                &descriptor(ValueSpec::Integer {
+                    min: i64::MIN,
+                    max: i64::MAX,
+                }),
+            ),
             None
         );
     }
@@ -1711,6 +1826,92 @@ mod tests {
     }
 
     #[test]
+    fn m16_6_simple_queue_capacity_and_exclusive_deadline_are_exact() {
+        let response = [0x10, 1, 0, 250, 0, 0];
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::new();
+        runtime
+            .register_transport(
+                ResourceId::new(7),
+                Box::new(CountingTransport(writes.clone())),
+            )
+            .unwrap();
+        runtime
+            .command(Command::RegisterSimpleDevice(instrument_config(&response)))
+            .unwrap();
+        for _ in 0..crate::transport::MAX_QUEUED_TRANSACTIONS {
+            runtime
+                .command(Command::QueueSimpleDeviceRead {
+                    instrument: InstrumentId::new(1),
+                    parameter: ParameterId::new(2),
+                    at: Duration::ZERO,
+                    queue_ttl: Duration::from_secs(1),
+                    timeout: Duration::from_secs(1),
+                })
+                .unwrap();
+        }
+        assert!(matches!(
+            runtime.command(Command::QueueSimpleDeviceRead {
+                instrument: InstrumentId::new(1),
+                parameter: ParameterId::new(2),
+                at: Duration::ZERO,
+                queue_ttl: Duration::from_secs(1),
+                timeout: Duration::from_secs(1),
+            }),
+            Err(Error::Transport(
+                crate::transport::TransportError::QueueFull
+            ))
+        ));
+        let QueryResult::Transport(snapshot) =
+            runtime.query(Query::Transport(ResourceId::new(7))).unwrap()
+        else {
+            panic!("transport snapshot missing");
+        };
+        assert_eq!(
+            snapshot.queue_len,
+            crate::transport::MAX_QUEUED_TRANSACTIONS
+        );
+
+        let deadline_writes = Rc::new(RefCell::new(Vec::new()));
+        let mut exact = Runtime::new();
+        exact
+            .register_transport(
+                ResourceId::new(7),
+                Box::new(CountingTransport(deadline_writes.clone())),
+            )
+            .unwrap();
+        exact
+            .command(Command::RegisterSimpleDevice(instrument_config(&response)))
+            .unwrap();
+        exact
+            .command(Command::QueueSimpleDeviceRead {
+                instrument: InstrumentId::new(1),
+                parameter: ParameterId::new(2),
+                at: Duration::ZERO,
+                queue_ttl: Duration::from_millis(1),
+                timeout: Duration::from_millis(1),
+            })
+            .unwrap();
+        exact
+            .command(Command::PollTransports {
+                at: Duration::from_millis(1),
+            })
+            .unwrap();
+        assert!(deadline_writes.borrow().is_empty());
+        let QueryResult::Latest(Some(sample)) = exact
+            .query(Query::GetLatestSignal(SignalId::new(
+                InstrumentId::new(1),
+                ParameterId::new(2),
+            )))
+            .unwrap()
+        else {
+            panic!("deadline failure sample missing");
+        };
+        assert_eq!(sample.quality(), SampleQuality::Unavailable);
+        assert_eq!(sample.value(), None);
+    }
+
+    #[test]
     fn runtime_commits_an_ordinary_signal_and_recording_fact() {
         let mut response = vec![0x10, 1, 0, 250];
         let prefix = response.clone();
@@ -1759,7 +1960,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_completion_after_rebind_cannot_replace_unavailable_fence() {
+    fn m16_6_stale_completion_after_rebind_cannot_replace_unavailable_fence() {
         let mut response = vec![0x10, 1, 0, 250];
         let prefix = response.clone();
         SimpleChecksum::Crc16Modbus.append(&prefix, &mut response);
@@ -1816,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_protocol_reply_commits_only_unavailable_evidence() {
+    fn m16_6_malformed_protocol_reply_commits_only_unavailable_evidence() {
         let mut response = vec![0x11, 1, 0, 250];
         let prefix = response.clone();
         SimpleChecksum::Crc16Modbus.append(&prefix, &mut response);

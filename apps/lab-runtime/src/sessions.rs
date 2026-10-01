@@ -708,7 +708,7 @@ mod provisioning_tests {
     }
 
     #[test]
-    fn provisioning_credit_precedes_sequence_and_is_released_by_retention_cleanup() {
+    fn m16_6_provisioning_credit_precedes_sequence_and_is_released_by_retention_cleanup() {
         let mut maximum = candidate();
         maximum.canonical = Arc::from(vec![b'x'; 8_192]);
         let mutation = Mutation::StageSimpleDeviceCandidate {
@@ -761,7 +761,7 @@ mod provisioning_tests {
     }
 
     #[test]
-    fn provisioning_credit_tracks_mixed_records_conflicts_and_terminal_eviction() {
+    fn m16_6_provisioning_credit_tracks_mixed_records_conflicts_and_terminal_eviction() {
         let small = candidate();
         let small_mutation = Mutation::StageSimpleDeviceCandidate {
             expected_revision: 1,

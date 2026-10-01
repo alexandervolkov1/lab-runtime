@@ -1237,6 +1237,7 @@ mod reconnect_preparation_tests {
         metakon::crc,
         transport::{RecoveryStatus, TransportIoError, TransportShutdown},
     };
+    use sha2::{Digest, Sha256};
     use std::{
         collections::{BTreeMap, VecDeque},
         path::Path,
@@ -1593,6 +1594,11 @@ unit_symbol="C"
         writes: Vec<Vec<u8>>,
         bad_ack: bool,
         withhold_ack: bool,
+        fail_output_before_send: bool,
+        partial_output_once: bool,
+        fail_after_partial: bool,
+        mismatch_readback: bool,
+        malformed_readback: bool,
     }
 
     struct ProvisioningTransport(Arc<Mutex<ProvisioningWire>>);
@@ -1618,7 +1624,14 @@ unit_symbol="C"
                 }
                 Some(0x21) => {
                     let raw = wire.raw;
-                    wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                    if wire.malformed_readback {
+                        wire.readable.extend([0x22, bytes[1], raw[0], raw[1]]);
+                    } else if wire.mismatch_readback {
+                        let raw = u16::from_be_bytes(raw).saturating_add(1).to_be_bytes();
+                        wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                    } else {
+                        wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                    }
                 }
                 _ => return Err(SerialError::Other),
             }
@@ -1635,6 +1648,18 @@ unit_symbol="C"
     impl ByteTransport for ProvisioningTransport {
         fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
             let mut wire = self.0.lock().unwrap();
+            if wire.fail_after_partial {
+                return Err(TransportIoError::Disconnected);
+            }
+            if bytes.first() == Some(&0x20) && wire.fail_output_before_send {
+                return Err(TransportIoError::Disconnected);
+            }
+            if bytes.first() == Some(&0x20) && wire.partial_output_once {
+                wire.partial_output_once = false;
+                wire.fail_after_partial = true;
+                wire.writes.push(bytes[..1].to_vec());
+                return Ok(1);
+            }
             wire.writes.push(bytes.to_vec());
             match bytes.first().copied() {
                 Some(0x10) => {
@@ -1653,7 +1678,14 @@ unit_symbol="C"
                 }
                 Some(0x21) => {
                     let raw = wire.raw;
-                    wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                    if wire.malformed_readback {
+                        wire.readable.extend([0x22, bytes[1], raw[0], raw[1]]);
+                    } else if wire.mismatch_readback {
+                        let raw = u16::from_be_bytes(raw).saturating_add(1).to_be_bytes();
+                        wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                    } else {
+                        wire.readable.extend([0x21, bytes[1], raw[0], raw[1]]);
+                    }
                 }
                 _ => return Err(TransportIoError::Other),
             }
@@ -1811,6 +1843,18 @@ unit_symbol="C"
         id
     }
 
+    fn poll_simple_apply_to_terminal(service: &mut ServiceHost) -> SimpleApplyCompletion {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if let Some(completion) = service.poll_simple_device_apply() {
+                return completion;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn output_candidate_is_hidden_until_exact_safe_evidence_then_published() {
         let (mut service, wire) = service_for_api_output(false);
@@ -1908,6 +1952,265 @@ unit_symbol="C"
             service
                 .owner()
                 .query(lab_core::Query::DescribeInstrument(InstrumentId::new(2001)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn m16_6_pre_send_transport_failure_retires_without_quarantine() {
+        let (mut service, wire) = service_for_api_output(false);
+        wire.lock().unwrap().fail_output_before_send = true;
+        let candidate_id = stage_and_begin_api_output(&mut service);
+        let completion = poll_simple_apply_to_terminal(&mut service);
+        assert_eq!(completion.candidate_id, candidate_id);
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::TransportUnavailable)
+        );
+        assert!(wire.lock().unwrap().writes.is_empty());
+        assert!(service.pending_simple_apply.is_none());
+        assert!(service.quarantined_simple_output.is_none());
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(2001)))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn m16_6_partial_send_is_ambiguous_quarantined_and_never_retried() {
+        let (mut service, wire) = service_for_api_output(false);
+        wire.lock().unwrap().partial_output_once = true;
+        let candidate_id = stage_and_begin_api_output(&mut service);
+        let completion = poll_simple_apply_to_terminal(&mut service);
+        assert_eq!(completion.candidate_id, candidate_id);
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::OutputRejected)
+        );
+        let writes = wire.lock().unwrap().writes.clone();
+        assert_eq!(writes, [vec![0x20]]);
+        assert!(service.quarantined_simple_output.is_some());
+        for _ in 0..20 {
+            service.host.service(&service.clock).unwrap();
+        }
+        assert_eq!(wire.lock().unwrap().writes, writes);
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+    }
+
+    #[test]
+    fn m16_6_malformed_and_mismatching_readback_never_publish_or_resend() {
+        for malformed in [false, true] {
+            let (mut service, wire) = service_for_api_output(false);
+            if malformed {
+                wire.lock().unwrap().malformed_readback = true;
+            } else {
+                wire.lock().unwrap().mismatch_readback = true;
+            }
+            let candidate_id = stage_and_begin_api_output(&mut service);
+            let completion = poll_simple_apply_to_terminal(&mut service);
+            assert_eq!(completion.candidate_id, candidate_id);
+            assert_eq!(
+                completion.result,
+                Err(LifecycleOperationError::OutputRejected)
+            );
+            let writes = wire.lock().unwrap().writes.clone();
+            assert_eq!(writes.iter().filter(|write| write[0] == 0x20).count(), 1);
+            assert_eq!(writes.iter().filter(|write| write[0] == 0x21).count(), 1);
+            assert!(service.quarantined_simple_output.is_some());
+            assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+            assert!(
+                service
+                    .owner()
+                    .query(lab_core::Query::DescribeInstrument(InstrumentId::new(2001)))
+                    .is_err()
+            );
+            for _ in 0..20 {
+                service.host.service(&service.clock).unwrap();
+            }
+            assert_eq!(wire.lock().unwrap().writes, writes);
+        }
+    }
+
+    #[test]
+    fn m16_6_stage_pending_and_identity_slots_are_exact_and_stable() {
+        let (mut service, _) = service_with_simple_transport();
+        let first =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let second =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1003, 3))
+                .unwrap();
+        let staged = service.stage_simple_device_candidate(&first, 1).unwrap();
+        let identity = staged.staged.id();
+        assert_eq!(
+            service.stage_simple_device_candidate(&second, 1),
+            Err(LifecycleOperationError::Capacity)
+        );
+        assert_eq!(
+            service.deployment.as_ref().unwrap().staged().unwrap().id(),
+            identity
+        );
+        assert_eq!(
+            service.begin_simple_device_apply(identity + 1, 1),
+            Err(LifecycleOperationError::Conflict)
+        );
+        assert_eq!(
+            service.begin_simple_device_apply(identity, 2),
+            Err(LifecycleOperationError::Conflict)
+        );
+        assert_eq!(
+            service.deployment.as_ref().unwrap().staged().unwrap().id(),
+            identity
+        );
+        service.begin_simple_device_apply(identity, 1).unwrap();
+        assert!(service.deployment.as_ref().unwrap().staged().is_none());
+        assert_eq!(
+            service.begin_simple_device_apply(identity, 1),
+            Err(LifecycleOperationError::Capacity)
+        );
+        assert_eq!(
+            service
+                .pending_simple_apply
+                .as_ref()
+                .unwrap()
+                .candidate
+                .snapshot
+                .id(),
+            identity
+        );
+        let completion = poll_simple_apply_to_terminal(&mut service);
+        assert_eq!(completion.candidate_id, identity);
+        assert_eq!(completion.result, Ok(2));
+    }
+
+    #[test]
+    fn m16_6_client_death_does_not_cancel_staged_or_accepted_work() {
+        let drive_client = |service: &mut ServiceHost, application: &mut Application| {
+            let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+            let hello = application.handle(
+                service,
+                1,
+                request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                    "args":{"scope":null}})),
+            );
+            let scope = hello[0]["result"]["scope"].clone();
+            let staged = application.handle(
+                service,
+                1,
+                request(serde_json::json!({"v":1,"msg_id":"stage",
+                    "op":"stage_simple_device_candidate",
+                    "request_id":{"scope":scope,"seq":"1"},
+                    "args":{"expected_revision":"1",
+                        "candidate":application_read_only_candidate(1002,2)}})),
+            );
+            (scope, staged[1]["result"]["candidate_id"].clone())
+        };
+
+        let (mut staged_service, _) = service_with_simple_transport();
+        let mut staged_client = Application::new(staged_service.boot_id()).unwrap();
+        let (_, staged_id) = drive_client(&mut staged_service, &mut staged_client);
+        staged_client.detach(&staged_service, 1);
+        assert_eq!(
+            staged_service
+                .deployment
+                .as_ref()
+                .unwrap()
+                .staged()
+                .unwrap()
+                .id()
+                .to_string(),
+            staged_id.as_str().unwrap()
+        );
+        assert!(
+            staged_service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+
+        let (mut accepted_service, _) = service_with_simple_transport();
+        let mut accepted_client = Application::new(accepted_service.boot_id()).unwrap();
+        let (scope, candidate_id) = drive_client(&mut accepted_service, &mut accepted_client);
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let accepted = accepted_client.handle(
+            &mut accepted_service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration","request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0]["state"], "accepted");
+        accepted_client.detach(&accepted_service, 1);
+        let completion = poll_simple_apply_to_terminal(&mut accepted_service);
+        assert_eq!(completion.result, Ok(2));
+        assert!(
+            accepted_service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn m16_6_restart_restores_persistent_baseline_without_overlay_or_replay() {
+        let (mut read_only, _) = service_with_simple_transport();
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let staged = read_only
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        read_only
+            .begin_simple_device_apply(staged.staged.id(), 1)
+            .unwrap();
+        assert_eq!(poll_simple_apply_to_terminal(&mut read_only).result, Ok(2));
+        assert!(read_only.api_simple_overlay_active);
+        drop(read_only);
+
+        let (restarted, _) = service_with_simple_transport();
+        assert_eq!(restarted.deployment.as_ref().unwrap().revision(), 1);
+        assert!(!restarted.api_simple_overlay_active);
+        assert!(restarted.pending_simple_apply.is_none());
+        assert!(restarted.quarantined_simple_output.is_none());
+        assert!(
+            restarted
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1001)))
+                .is_ok()
+        );
+        assert!(
+            restarted
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+
+        let (mut output, output_wire) = service_for_api_output(false);
+        stage_and_begin_api_output(&mut output);
+        assert_eq!(poll_simple_apply_to_terminal(&mut output).result, Ok(2));
+        assert!(!output_wire.lock().unwrap().writes.is_empty());
+        drop(output);
+
+        let (mut restarted_output, restarted_wire) = service_for_api_output(false);
+        for _ in 0..20 {
+            restarted_output
+                .host
+                .service(&restarted_output.clock)
+                .unwrap();
+        }
+        assert_eq!(restarted_output.deployment.as_ref().unwrap().revision(), 1);
+        assert!(!restarted_output.api_simple_overlay_active);
+        assert!(restarted_output.pending_simple_apply.is_none());
+        assert!(restarted_output.quarantined_simple_output.is_none());
+        assert!(restarted_wire.lock().unwrap().writes.is_empty());
+        assert!(
+            restarted_output
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(2001)))
                 .is_err()
         );
     }
@@ -2742,6 +3045,75 @@ unit_symbol="C"
     }
 
     #[test]
+    fn m16_6_required_recorder_durability_failure_preserves_prior_deployment() {
+        let (mut service, _) = service_with_simple_transport();
+        let prior = service.deployment.as_ref().unwrap().active().clone();
+        let database = temporary_database();
+        drop(crate::recorder::SqliteStore::open(&database).unwrap());
+        let injection = rusqlite::Connection::open(&database).unwrap();
+        injection
+            .execute_batch(
+                "CREATE TRIGGER m16_6_fail_configuration BEFORE INSERT ON configurations
+                 WHEN NEW.activation_no=X'0000000000000002'
+                 BEGIN SELECT RAISE(ABORT,'m16.6 injected activation durability failure'); END;",
+            )
+            .unwrap();
+        drop(injection);
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::Required, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), 1)
+            .unwrap();
+        let completion = poll_simple_apply_to_terminal(&mut service);
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::RecordingUnavailable)
+        );
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert_eq!(service.deployment.as_ref().unwrap().active(), &prior);
+        assert!(!service.api_simple_overlay_active);
+        assert!(service.pending_simple_apply.is_none());
+        assert!(service.quarantined_simple_output.is_none());
+        assert!(
+            service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1001)))
+                .is_ok()
+        );
+        assert!(
+            service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+        drop(service);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+    }
+
+    #[test]
     fn post_send_apply_deadline_is_output_rejected_and_keeps_quarantine() {
         let (mut service, wire) = service_for_api_output(false);
         wire.lock().unwrap().withhold_ack = true;
@@ -2833,6 +3205,7 @@ unit_symbol="C"
             crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
                 .unwrap();
         let canonical_hash = candidate.definition.canonical_sha256;
+        let candidate_hash: [u8; 32] = Sha256::digest(&candidate.canonical).into();
         let staged = service
             .stage_simple_device_candidate(&candidate, 1)
             .unwrap();
@@ -2849,6 +3222,96 @@ unit_symbol="C"
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         }
+        let (entries, objects) = service.host.frozen_activation_entries().unwrap();
+        let canonical_hex: String = canonical_hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let candidate_hex: String = candidate_hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == "simple_device_definition_canonical")
+                .count(),
+            1,
+            "one immutable definition must be shared rather than copied per instance"
+        );
+        let canonical_index = entries
+            .iter()
+            .position(|entry| entry.kind == "simple_device_definition_canonical")
+            .unwrap();
+        assert_eq!(
+            entries[canonical_index].content,
+            candidate.definition.canonical.as_ref()
+        );
+        assert!(entries.iter().any(|entry| {
+            entry.kind == "rust_build" && entry.content == env!("CARGO_PKG_VERSION").as_bytes()
+        }));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| { entry.kind == "runtime_toml" && entry.content == SIMPLE_CONFIG })
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == "native_composition")
+        );
+        let overlay = entries
+            .iter()
+            .find(|entry| entry.kind == "runtime_configuration_overlay")
+            .unwrap();
+        let overlay: serde_json::Value = serde_json::from_slice(&overlay.content).unwrap();
+        assert_eq!(overlay["source"], "process_local_application_candidate");
+        assert_eq!(overlay["definition_id"], "simple-v1");
+        assert_eq!(overlay["definition_version"], 1);
+        assert_eq!(overlay["definition_sha256"], canonical_hex);
+        assert_eq!(overlay["candidate_sha256"], candidate_hex);
+        assert_eq!(overlay["instances"], serde_json::json!(["1002"]));
+        let api_instance = entries
+            .iter()
+            .find(|entry| {
+                entry.kind == "simple_device_instance"
+                    && String::from_utf8_lossy(&entry.content)
+                        .contains("\"instrument_id\":\"1002\"")
+            })
+            .unwrap();
+        let api_instance: serde_json::Value =
+            serde_json::from_slice(&api_instance.content).unwrap();
+        assert_eq!(
+            api_instance["source"],
+            "process_local_application_candidate"
+        );
+        assert_eq!(api_instance["definition_id"], "simple-v1");
+        assert_eq!(api_instance["definition_version"], 1);
+        assert_eq!(api_instance["definition_sha256"], canonical_hex);
+        assert_eq!(api_instance["configuration_revision"], "2");
+        assert_eq!(api_instance["resource_id"], "7");
+        assert_eq!(api_instance["binding_generation"], "1");
+        assert_eq!(api_instance["mapping_revision"], "1");
+        let api_object = objects
+            .iter()
+            .find(|object| object.kind == "instrument" && object.id == 1002u64.to_be_bytes())
+            .unwrap();
+        assert_eq!(api_object.definition_entry_index, canonical_index);
+        let object_binding: serde_json::Value =
+            serde_json::from_str(api_object.binding.as_ref().unwrap()).unwrap();
+        assert_eq!(object_binding["r"], "7");
+        assert_eq!(object_binding["b"], "1");
+        assert_eq!(object_binding["m"], "1");
+        let object_descriptor: serde_json::Value =
+            serde_json::from_str(&api_object.descriptor).unwrap();
+        assert_eq!(
+            object_descriptor["simple_device"]["definition_id"],
+            "simple-v1"
+        );
+        assert_eq!(
+            object_descriptor["simple_device"]["canonical_sha256"],
+            canonical_hex
+        );
         service.request_shutdown().unwrap();
         loop {
             if let Some(status) = service.shutdown_step().unwrap() {
@@ -2874,16 +3337,45 @@ unit_symbol="C"
         assert_eq!(instance["source"], "process_local_application_candidate");
         assert_eq!(instance["configuration_revision"], "2");
         assert_eq!(instance["resource_id"], "7");
-        let overlay_count: i64 = connection
+        let overlay_content: String = connection
             .query_row(
-                "SELECT COUNT(*) FROM provenance_content
-                 WHERE kind='runtime_configuration_overlay'
-                   AND CAST(content AS TEXT) LIKE '%process_local_application_candidate%'",
+                "SELECT CAST(content AS TEXT) FROM provenance_content
+                 WHERE kind='runtime_configuration_overlay'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(overlay_count, 1);
+        let overlay: serde_json::Value = serde_json::from_str(&overlay_content).unwrap();
+        assert_eq!(overlay["source"], "process_local_application_candidate");
+        assert_eq!(overlay["definition_id"], "simple-v1");
+        assert_eq!(overlay["definition_version"], 1);
+        assert_eq!(overlay["definition_sha256"], canonical_hex);
+        assert_eq!(overlay["candidate_sha256"], candidate_hex);
+        assert_eq!(overlay["instances"], serde_json::json!(["1002"]));
+        let canonical_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provenance_content
+                 WHERE kind='simple_device_definition_canonical'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(canonical_count, 1);
+        for kind in [
+            "runtime_toml",
+            "rust_build",
+            "native_composition",
+            "deployment_config",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM provenance_content WHERE kind=?1",
+                    [kind],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "missing or duplicated {kind} provenance");
+        }
         let object_id = 1002u64.to_be_bytes();
         let (definition_hash, binding, descriptor): (Vec<u8>, String, String) = connection
             .query_row(

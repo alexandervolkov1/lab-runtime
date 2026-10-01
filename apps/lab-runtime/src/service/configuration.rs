@@ -209,6 +209,13 @@ impl ServiceHost {
                         Ok(false)
                     }
                     Some(snapshot)
+                        if snapshot.sent.is_none()
+                            && snapshot.outcome
+                                == Some(lab_core::output::DispatchOutcome::Failed) =>
+                    {
+                        Err(LifecycleOperationError::TransportUnavailable)
+                    }
+                    Some(snapshot)
                         if snapshot.fault_latched
                             || snapshot.state == lab_core::output::OutputState::FaultLatched =>
                     {
