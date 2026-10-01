@@ -466,6 +466,9 @@ impl ServiceHost {
     ) -> SimpleApplyCompletion {
         let candidate_id = pending.candidate.snapshot.id();
         if let Some(recording) = &pending.recording {
+            // Recorder cancellation is cleanup-only after the original apply
+            // failure has been selected. Its failure cannot turn that result
+            // into success and Recorder state remains authoritative.
             let _ = self
                 .host
                 .cancel_configuration_activation(recording.generation);
@@ -670,6 +673,9 @@ impl ServiceHost {
                             break;
                         }
                         Ok(false) if std::time::Instant::now() < deadline => {
+                            // This is a bounded progress turn while waiting for
+                            // Recorder confirmation; the deadline/error branch
+                            // remains authoritative for the apply result.
                             let _ = self.host.service(&self.clock);
                             std::thread::yield_now();
                         }
@@ -793,6 +799,8 @@ impl ServiceHost {
     }
 
     pub(super) fn cancel_recorded_lifecycle(&mut self, pending: PendingRecordedLifecycle) {
+        // Cancellation is best-effort cleanup for an already selected domain
+        // failure; Recorder state remains authoritative if it cannot cancel.
         let _ = self
             .host
             .cancel_configuration_activation(pending.generation);

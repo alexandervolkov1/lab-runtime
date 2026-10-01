@@ -10,13 +10,15 @@ transport handles, SQLite internals, or GUI presentation state.
 
 - [Protocol and sessions](protocol-and-sessions.md): transports, envelopes, hello,
   scopes, IDs, and versioning.
-- [Operations](operations.md): the exact 42-operation registry, availability, and 25
+- [Operations](operations.md): the exact 43-operation registry, availability, and 26
   capabilities.
 - [Events, mutations, and recovery](events-mutations-and-recovery.md): subscriptions,
   frozen projections, operation lifecycle, sequencing, and deduplication.
 - [Errors and limits](errors-and-limits.md): stable public errors and canonical bounds.
 - [System architecture](../architecture.md): Runtime/Workbench ownership and process
   lifetime.
+- [Extending Runtime](../extending-runtime.md): native and declarative instrument
+  onboarding boundaries.
 
 ## Purpose and transports
 

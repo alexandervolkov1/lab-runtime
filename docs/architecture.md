@@ -52,6 +52,25 @@ Runtime is the sole authoritative mutable experiment owner. It owns:
 Runtime contains no presentation ownership. It does not own windows, panels, plots,
 layout, or GUI selection state.
 
+### Declarative SimpleDevice onboarding
+
+The Application API can provision a bounded declarative SimpleDevice through
+`stage_simple_device_candidate` followed by the ordinary configuration apply
+lifecycle. A valid candidate becomes an ordinary Runtime instrument: its signals,
+actuators, controller inputs, recent history, Recorder facts, and Workbench
+projections use the same generic paths as native instruments.
+
+Prepared SimpleDevice topology is physically inert and is not publicly discoverable
+until publication succeeds. Publication holds the required bounded event capacity
+before durable activation; after the durable activation boundary, the prepared
+publication is installed as one serialized atomic owner operation. A resource
+reconnect is fenced while a SimpleDevice publication is pending.
+
+An API-provisioned overlay is process-local. It remains owned by Runtime across
+client or Workbench disconnect, but is not restored after a Runtime restart; the
+persistent deployment is restored instead. Failed pre-durable applies do not become
+successful activation provenance.
+
 ### lab-workbench.exe
 
 Workbench is a separate native Application client. Its private Rust client owns one

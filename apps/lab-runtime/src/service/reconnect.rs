@@ -89,6 +89,7 @@ impl ServiceHost {
             os_port_open_confirmed: false,
             open_attempts: 0,
             core_rebind_crossed: false,
+            cleanup_failure: None,
         });
         if let Some((quarantined_resource, candidate)) =
             self.quarantined_reconnect_candidate.as_mut()
@@ -317,7 +318,7 @@ impl ServiceHost {
             .rebind_configured_transport(resource_key, Box::new(adapter), self.clock.now())
             .is_err()
         {
-            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            self.retire_failed_reconnect_best_effort(resource_key, resource.recovery_timeout_ms);
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
@@ -338,7 +339,7 @@ impl ServiceHost {
             .begin_configured_probes_for_resource(resource_key, self.clock.now())
             .is_err()
         {
-            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            self.retire_failed_reconnect_best_effort(resource_key, resource.recovery_timeout_ms);
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
@@ -357,8 +358,10 @@ impl ServiceHost {
                         .as_mut()
                         .expect("diagnostic initialized")
                         .stage = ReconnectStage::ProbeFailed;
-                    let _ =
-                        self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+                    self.retire_failed_reconnect_best_effort(
+                        resource_key,
+                        resource.recovery_timeout_ms,
+                    );
                     self.cancel_recorded_lifecycle(pending);
                     return Err(LifecycleOperationError::OwnerFailure);
                 }
@@ -368,7 +371,10 @@ impl ServiceHost {
                     .as_mut()
                     .expect("diagnostic initialized")
                     .stage = ReconnectStage::ProbeFailed;
-                let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+                self.retire_failed_reconnect_best_effort(
+                    resource_key,
+                    resource.recovery_timeout_ms,
+                );
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
@@ -377,7 +383,10 @@ impl ServiceHost {
                     .as_mut()
                     .expect("diagnostic initialized")
                     .stage = ReconnectStage::ProbeFailed;
-                let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+                self.retire_failed_reconnect_best_effort(
+                    resource_key,
+                    resource.recovery_timeout_ms,
+                );
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
@@ -388,7 +397,7 @@ impl ServiceHost {
             .request_configured_physical_safe(self.clock.now())
             .is_err()
         {
-            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            self.retire_failed_reconnect_best_effort(resource_key, resource.recovery_timeout_ms);
             self.cancel_recorded_lifecycle(pending);
             return Err(LifecycleOperationError::OwnerFailure);
         }
@@ -432,7 +441,10 @@ impl ServiceHost {
             if std::time::Instant::now() >= output_deadline
                 || self.host.service(&self.clock).is_err()
             {
-                let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+                self.retire_failed_reconnect_best_effort(
+                    resource_key,
+                    resource.recovery_timeout_ms,
+                );
                 self.cancel_recorded_lifecycle(pending);
                 return Err(LifecycleOperationError::OwnerFailure);
             }
@@ -450,7 +462,7 @@ impl ServiceHost {
                 RecordedLifecycleFailureStage::Commit => ReconnectStage::LifecycleRecorderCommit,
                 RecordedLifecycleFailureStage::Durability => ReconnectStage::LifecycleDurability,
             };
-            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            self.retire_failed_reconnect_best_effort(resource_key, resource.recovery_timeout_ms);
             return Err(LifecycleOperationError::RecordingUnavailable);
         }
         self.reconnect_diagnostic
@@ -462,7 +474,7 @@ impl ServiceHost {
             .activate_configured_resource_after_reconnect(resource_key, self.clock.now())
             .is_err()
         {
-            let _ = self.retire_failed_reconnect(resource_key, resource.recovery_timeout_ms);
+            self.retire_failed_reconnect_best_effort(resource_key, resource.recovery_timeout_ms);
             return Err(LifecycleOperationError::OwnerFailure);
         }
         self.reconnect_diagnostic
@@ -515,6 +527,7 @@ impl ServiceHost {
             os_port_open_confirmed: false,
             open_attempts: 0,
             core_rebind_crossed: false,
+            cleanup_failure: None,
         });
         let pending = self.begin_resource_recorded_lifecycle("reconnect_resource", &active)?;
         self.host
@@ -667,8 +680,33 @@ impl ServiceHost {
                 self.quarantined_reconnect_candidate = Some((resource, candidate));
                 return;
             }
-            let _ = self.host.service(&self.clock);
+            if self.host.service(&self.clock).is_err() {
+                self.record_reconnect_cleanup_issue("candidate_retirement_service_failure");
+                tracing::error!("failed uninstalled reconnect candidate cleanup progress");
+            }
             std::thread::yield_now();
+        }
+    }
+
+    fn retire_failed_reconnect_best_effort(&mut self, resource: ResourceId, timeout_ms: u64) {
+        if let Err(error) = self.retire_failed_reconnect(resource, timeout_ms) {
+            self.record_reconnect_cleanup_failure(error);
+        }
+    }
+
+    fn record_reconnect_cleanup_failure(&mut self, error: LifecycleOperationError) {
+        let reason = match error {
+            LifecycleOperationError::OwnerFailure => "retirement_owner_failure",
+            LifecycleOperationError::TransportUnavailable => "retirement_transport_failure",
+            _ => "retirement_failure",
+        };
+        self.record_reconnect_cleanup_issue(reason);
+        tracing::error!(?error, "failed reconnect cleanup did not complete");
+    }
+
+    fn record_reconnect_cleanup_issue(&mut self, reason: &'static str) {
+        if let Some(diagnostic) = self.reconnect_diagnostic.as_mut() {
+            diagnostic.cleanup_failure.get_or_insert(reason);
         }
     }
 
@@ -677,6 +715,11 @@ impl ServiceHost {
         resource: ResourceId,
         timeout_ms: u64,
     ) -> Result<(), LifecycleOperationError> {
+        #[cfg(test)]
+        if self.reconnect_cleanup_retire_failure {
+            self.record_reconnect_cleanup_issue("retirement_injected_failure");
+            return Err(LifecycleOperationError::OwnerFailure);
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             match self
@@ -685,7 +728,12 @@ impl ServiceHost {
             {
                 Ok(true) => return Ok(()),
                 Ok(false) if std::time::Instant::now() < deadline => {
-                    if self.host.service(&self.clock).is_err() {
+                    #[cfg(test)]
+                    let service_failed = self.reconnect_cleanup_service_failure;
+                    #[cfg(not(test))]
+                    let service_failed = false;
+                    if service_failed || self.host.service(&self.clock).is_err() {
+                        self.record_reconnect_cleanup_issue("retirement_service_failure");
                         return Err(LifecycleOperationError::OwnerFailure);
                     }
                     std::thread::yield_now();

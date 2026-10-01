@@ -214,6 +214,10 @@ pub struct ServiceHost {
     pending_simple_apply: Option<PendingSimpleConfigurationApply>,
     quarantined_simple_output: Option<QuarantinedSimpleOutput>,
     api_simple_overlay_active: bool,
+    #[cfg(test)]
+    reconnect_cleanup_retire_failure: bool,
+    #[cfg(test)]
+    reconnect_cleanup_service_failure: bool,
 }
 
 const SIMPLE_APPLY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
@@ -405,6 +409,8 @@ pub struct ReconnectDiagnostic {
     pub open_attempts: usize,
     /// Whether Core installed the replacement and crossed the generation fence.
     pub core_rebind_crossed: bool,
+    /// Bounded internal cleanup failure observed after the reconnect failed.
+    pub cleanup_failure: Option<&'static str>,
 }
 
 impl ReconnectDiagnostic {
@@ -422,6 +428,7 @@ impl ReconnectDiagnostic {
             "os_port_open_confirmed": self.os_port_open_confirmed,
             "open_attempts": self.open_attempts,
             "core_rebind_crossed": self.core_rebind_crossed,
+            "cleanup_failure": self.cleanup_failure,
         })
     }
 }
@@ -839,6 +846,10 @@ impl ServiceHost {
             pending_simple_apply: None,
             quarantined_simple_output: None,
             api_simple_overlay_active: false,
+            #[cfg(test)]
+            reconnect_cleanup_retire_failure: false,
+            #[cfg(test)]
+            reconnect_cleanup_service_failure: false,
         })
     }
     /// Validate identity/profile, then bind only IPv4 loopback in that order.
@@ -1092,6 +1103,10 @@ impl ServiceHost {
             pending_simple_apply: None,
             quarantined_simple_output: None,
             api_simple_overlay_active: false,
+            #[cfg(test)]
+            reconnect_cleanup_retire_failure: false,
+            #[cfg(test)]
+            reconnect_cleanup_service_failure: false,
         })
     }
 
@@ -1486,6 +1501,10 @@ history_capacity=8
                 pending_simple_apply: None,
                 quarantined_simple_output: None,
                 api_simple_overlay_active: false,
+                #[cfg(test)]
+                reconnect_cleanup_retire_failure: false,
+                #[cfg(test)]
+                reconnect_cleanup_service_failure: false,
             },
             database,
         )
@@ -1532,6 +1551,10 @@ history_capacity=8
                 pending_simple_apply: None,
                 quarantined_simple_output: None,
                 api_simple_overlay_active: false,
+                #[cfg(test)]
+                reconnect_cleanup_retire_failure: false,
+                #[cfg(test)]
+                reconnect_cleanup_service_failure: false,
             },
             shutdown_calls,
         )
@@ -1892,6 +1915,10 @@ unit_symbol="C"
                 pending_simple_apply: None,
                 quarantined_simple_output: None,
                 api_simple_overlay_active: false,
+                #[cfg(test)]
+                reconnect_cleanup_retire_failure: false,
+                #[cfg(test)]
+                reconnect_cleanup_service_failure: false,
             },
             wire,
         )
@@ -2153,6 +2180,10 @@ unit_symbol="C"
                 pending_simple_apply: None,
                 quarantined_simple_output: None,
                 api_simple_overlay_active: false,
+                #[cfg(test)]
+                reconnect_cleanup_retire_failure: false,
+                #[cfg(test)]
+                reconnect_cleanup_service_failure: false,
             },
             wire,
         )
@@ -5329,6 +5360,66 @@ unit_symbol="C"
 
         let status = shutdown_and_remove(service, database);
         assert!(status.transports_closed);
+        assert!(status.recorder_flushed);
+    }
+
+    #[test]
+    fn reconnect_retirement_cleanup_failure_is_recorded_without_changing_failure_result() {
+        let (mut service, database) = service_with_old_transport(false);
+        service.reconnect_cleanup_retire_failure = true;
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(ProbeDevice {
+                        readable: VecDeque::new(),
+                        channel_type: 2,
+                    }))
+                })
+            }),
+            Err(LifecycleOperationError::OwnerFailure)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ProbeFailed);
+        assert_eq!(
+            diagnostic.cleanup_failure,
+            Some("retirement_injected_failure")
+        );
+        assert!(diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(2));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
+        assert!(status.recorder_flushed);
+    }
+
+    #[test]
+    fn reconnect_retirement_service_failure_is_recorded_without_granting_success() {
+        let (mut service, database) = service_with_old_transport(false);
+        service.reconnect_cleanup_service_failure = true;
+
+        assert_eq!(
+            service.reconnect_resource_with_factory(7, 1, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(ProbeDevice {
+                        readable: VecDeque::new(),
+                        channel_type: 2,
+                    }))
+                })
+            }),
+            Err(LifecycleOperationError::OwnerFailure)
+        );
+        let diagnostic = service.reconnect_diagnostic().unwrap();
+        assert_eq!(diagnostic.stage, ReconnectStage::ProbeFailed);
+        assert_eq!(
+            diagnostic.cleanup_failure,
+            Some("retirement_service_failure")
+        );
+        assert!(diagnostic.core_rebind_crossed);
+        assert_eq!(service.owner().configured_binding_generation(11), Some(2));
+        assert_required_healthy_and_no_outputs(&service);
+
+        let status = shutdown_and_remove(service, database);
         assert!(status.recorder_flushed);
     }
 

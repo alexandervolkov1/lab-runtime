@@ -13,7 +13,7 @@ The Application API is a supported language-neutral product boundary, not an
 implementation detail of Workbench. Runtime currently exposes it over local
 TCP/NDJSON and optional loopback WebSocket/JSON; native Workbench uses TCP.
 
-The authoritative registry contains 42 operations (22 queries and 20 mutations) and
-25 structured capabilities. Clients must begin with `hello` and use the operations,
+The authoritative registry contains 43 operations (22 queries and 21 mutations) and
+26 structured capabilities. Clients must begin with `hello` and use the operations,
 capabilities, limits, scope, next sequence, and event cursors returned by that Runtime
 instead of assuming a static composition.

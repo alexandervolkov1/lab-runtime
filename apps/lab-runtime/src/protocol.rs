@@ -804,6 +804,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_registry_documentation_matches_source_counts_and_simple_device_entries() {
+        let operations = include_str!("../../../docs/api/operations.md");
+        let api_readme = include_str!("../../../docs/api/README.md");
+        let application_api = include_str!("../../../docs/application-api.md");
+        let limits = include_str!("../../../docs/api/errors-and-limits.md");
+        let operation_count = OPERATIONS.len();
+        let query_count = OPERATIONS
+            .iter()
+            .filter(|operation| operation.kind == OperationKind::Query)
+            .count();
+        let mutation_count = OPERATIONS.len() - query_count;
+        let capability_count = CAPABILITIES.len();
+        assert!(operations.contains(&format!(
+            "exactly {operation_count} unique operations: {query_count}\nqueries and {mutation_count} mutations"
+        )));
+        assert!(operations.contains("`stage_simple_device_candidate`"));
+        assert!(operations.contains("`simple_device_provisioning`"));
+        assert!(api_readme.contains(&format!("exact {operation_count}-operation registry")));
+        assert!(api_readme.contains(&format!("{capability_count}\n  capabilities")));
+        assert!(application_api.contains(&format!(
+            "{operation_count} operations ({query_count} queries and {mutation_count} mutations)"
+        )));
+        assert!(application_api.contains(&format!("{capability_count} structured capabilities")));
+        assert!(limits.contains(&format!("{capability_count} currently registered")));
+    }
+
+    #[test]
     fn declarations_and_errors_fit_their_published_bounds() {
         assert!(OPERATIONS.len() <= 64);
         assert!(OPERATIONS.iter().all(|operation| {

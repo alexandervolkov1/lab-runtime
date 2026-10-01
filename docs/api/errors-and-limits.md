@@ -180,7 +180,7 @@ terminal Completed/Failed outcome, physical-state proof, or blind-retry permissi
 | `reference_result_records` / `controller_result_records` | 1 / 1 | result records |
 | `pid_configuration_fields` / `controller_configuration_fields` | 5 / 6 | policy groups |
 | `recorder.label_bytes` / `status_records` / `event_bytes` | 128 / 1 / 4,096 | Recorder API bounds |
-| `capabilities` | 32 | advertised capability capacity (25 currently registered) |
+| `capabilities` | 32 | advertised capability capacity (26 currently registered) |
 | `semantic_name_bytes` | 64 | operation/code/category/semantic name |
 | `error_message_bytes` / `error_details_bytes` | 256 / 2,048 | public error text/details |
 | `configuration.property_records` | 256 | property records |

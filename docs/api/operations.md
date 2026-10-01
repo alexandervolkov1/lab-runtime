@@ -3,8 +3,8 @@
 Applicable to Application protocol v1 and the current repository/v0.1 product.
 
 The source authority is the single registry in
-`apps/lab-runtime/src/protocol.rs`. It contains exactly 42 unique operations: 22
-queries and 20 mutations.
+`apps/lab-runtime/src/protocol.rs`. It contains exactly 43 unique operations: 22
+queries and 21 mutations.
 
 ## Availability
 
@@ -15,6 +15,7 @@ Every operation has one source-defined availability category:
 | `Always` | present in every active composition |
 | `Recorder` | durable Recorder/history service configured |
 | `Configuration` | declarative deployment lifecycle configured |
+| `SimpleDeviceProvisioning` | an eligible configured resource and declarative provisioning path are available |
 | `ResourceReconnect` | at least one configured physical resource supports explicit reconnect |
 | `EmulatorPublication` | at least one explicit virtual signal accepts external publication |
 | `VirtualModelLifecycle` | at least one Runtime-owned virtual model supports restart |
@@ -59,6 +60,7 @@ on a mode/kind; operation-specific validation still applies.
 | `controller_reset_failed` | Mutation | `controller` | Paused projection | Always | acknowledge safely failed controller |
 | `runtime_shutdown` | Mutation | none | truthful finite cleanup/safety/Recorder result | Always | explicitly request Runtime process shutdown |
 | `stage_configuration` | Mutation | none | candidate ID, base revision, expiry, classified effects | Configuration | validate and retain one deployment candidate |
+| `stage_simple_device_candidate` | Mutation | `expected_revision`, `candidate` | candidate ID, definition identity, bounded expiry and classified effects | SimpleDeviceProvisioning | validate and retain one process-local declarative SimpleDevice candidate |
 | `apply_configuration` | Mutation | `candidate_id`, `expected_revision` | new committed configuration revision | Configuration | apply retained candidate under fences |
 | `reload_configuration` | Mutation | none | new revision | Configuration | read, validate, stage, and apply source atomically |
 | `property_configure` | Mutation | `target`, `property`, `value`, `expected_revision` | target/property/new revision | Configuration | apply supported scalar property |
@@ -107,6 +109,7 @@ operation availability.
 | `configuration_properties` | `configuration_properties` |
 | `configuration_write` | `property_configure` |
 | `deployment_configuration` | `stage_configuration` |
+| `simple_device_provisioning` | `stage_simple_device_candidate` |
 | `resource_reconnect` | `reconnect_resource` |
 | `virtual_instruments` | `discover` |
 | `emulator_publication` | `emulator_publish` |

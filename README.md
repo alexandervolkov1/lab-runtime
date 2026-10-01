@@ -34,6 +34,7 @@ stop its Recorder, or roll back an admitted operation.
 ## Current capabilities
 
 - virtual instruments and declaratively configured physical resources;
+- bounded declarative SimpleDevice onboarding through the existing Application API;
 - current measurements, bounded recent history, live subscriptions, and durable
   Recorder history;
 - References, native PID controllers, finite output leases, and central output
@@ -47,6 +48,8 @@ stop its Recorder, or roll back an admitted operation.
 The full Application API is broader than the Workbench GUI. Workbench deliberately
 exposes a typed safe operator subset rather than a raw button for every API operation.
 See the [Application API reference](docs/api/README.md) for the complete surface.
+Declarative SimpleDevice onboarding and its lifecycle boundaries are described in
+the [extension guide](docs/extending-runtime.md).
 
 ## Build and run
 

@@ -359,7 +359,7 @@ authority fails closed because exact recovery persistence cannot be trusted.
 Workbench intentionally does not expose every Application operation as a GUI action.
 The current GUI does not provide:
 
-- a raw 42-operation console;
+- a raw full-operation console;
 - a durable history browser;
 - experiment annotation controls;
 - Runtime shutdown controls;

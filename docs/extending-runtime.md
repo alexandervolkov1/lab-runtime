@@ -36,6 +36,31 @@ The implementation must:
 - accept only the declared input shape and generation/revision semantics;
 - avoid all Runtime, transport, SQLite, client, and `OutputAuthority` access.
 
+## Add a declarative SimpleDevice
+
+For a bounded device whose protocol fits the accepted declarative schema, use the
+Application candidate path rather than adding a device-specific Runtime,
+Application, Recorder, or Workbench branch:
+
+1. Define the validated protocol and typed parameters using the existing SimpleDevice
+   grammar and scalar/checksum rules.
+2. Submit the complete candidate through `stage_simple_device_candidate` and apply it
+   through the ordinary configuration lifecycle.
+3. Bind it to an existing eligible resource and, when needed, an existing Reference
+   and safe profile.
+
+The candidate is parsed, cross-referenced, bounded, and prepared before activation.
+Prepared topology performs no physical work and is not publicly discoverable. The
+publication path holds its bounded event capacity before Recorder activation and
+installs the prepared topology only after the durable activation boundary. Reconnect
+of a participating resource is fenced while publication is pending.
+
+The resulting signal and actuator identities are ordinary Runtime entities and flow
+through discovery, current/latest measurements, recent history, controller input,
+OutputAuthority, strict ACK/readback, Recorder provenance, and generic Workbench
+rebuild. An API-provisioned overlay is process-local and is not restored by a Runtime
+restart; failed pre-durable applies leave no successful activation provenance.
+
 The static registry supplies constructor/dispatch identity and generic property
 metadata. The ordinary component definition registers a normal signal, so discovery,
 current measurements, recent history, subscriptions, controller input, Recorder
