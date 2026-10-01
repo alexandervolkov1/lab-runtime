@@ -1,53 +1,33 @@
-# Current work — M16 complete fast/simple-device integration
+# Current work — pre-M17 cleanup and readiness
 
-```text
-M8–M11: ACCEPTED
-Developer-preview technical gate: PASSED
-Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16 complete
-Repository documentation hygiene: COMPLETE
-Developer Preview Reference: COMPLETE
-Preview packaging: COMPLETE
-Developer Preview artifact: READY LOCALLY
-v0.1.0-preview.1: PUBLISHED
-Practical integration architecture: M16.1–M16.6 ACCEPTED
-M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: ACCEPTED
-M12.4 transport parity/fault acceptance: ACCEPTED
-M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12: ACCEPTED
-M13.1: ACCEPTED
-M13 dependency safety resolution: ACCEPTED
-M13.2 Steel:
-BLOCKED ON STEEL DEPENDENCY SAFETY
-NOT AUTHORIZED
-M14.1 Workbench architecture audit: ACCEPTED
-M14.2 bounded native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal native GUI: ACCEPTED
-M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: ACCEPTED
-M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
-M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
-M14.6B2B2 Exact Retry GUI: ACCEPTED
-M14.6B3 bounded fault reattach: ACCEPTED
-M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
-M14.6 recovery/reconnect/fault acceptance: ACCEPTED
-M14 consolidated acceptance: ACCEPTED
-M15.1 documentation/productization audit: ACCEPTED
-M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: ACCEPTED
-M15.5–M15.8:
-DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
-NOT AUTHORIZED
-M16.1–M16.7: ACCEPTED
-M16 consolidated external review: ACCEPTED
-M17: NOT AUTHORIZED
-STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
-```
+## Canonical current state
+
+M16 is complete and externally accepted. Its generic fast/simple/declarative
+SimpleDevice onboarding is accepted, including ordinary Runtime/Application,
+controller/output, reconnect/restart, Recorder/provenance, and Workbench behavior.
+
+C1/C2 public-documentation and reconnect-diagnostic cleanup is complete. C3
+test-infrastructure cleanup is complete. The current phase is pre-M17 cleanup and
+readiness review. M17 has not started. The future dual Runtime/Workbench API has
+not started.
+
+Arduino and Clojure/Babashka validation belong after the future dual API and are
+not part of the current phase.
+
+Current clean baseline commits:
+
+- M16 completion: `48a22f34d23053eb2c1d6752663701872b6fa6d3`
+- C1/C2 cleanup: `5768fc58aafec51f089d7bfece1ffea17f595fd4`
+- C3 test-infrastructure cleanup: `0e6f97f5c1bbf4f70540e5708e236055e6ab7547`
+
+Current authorization boundary:
+
+- Allowed: documentation cleanup, approved behavior-preserving cleanup, and readiness review.
+- Not authorized: M17 implementation, dual Runtime/Workbench API work, new M17
+  operations/capabilities, Arduino integration, Clojure/Babashka client work, or
+  broad architecture redesign.
+
+Historical milestone records below remain evidence and are not current authorization.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -190,42 +170,9 @@ during the consolidation.
 
 ## Current authorization
 
-```text
-M12: ACCEPTED
-M13.1: ACCEPTED
-M13 dependency safety resolution: ACCEPTED
-M13.2 Steel:
-BLOCKED ON STEEL DEPENDENCY SAFETY
-NOT AUTHORIZED
-M14.1 Workbench architecture audit: ACCEPTED
-M14.2 bounded native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal native GUI: ACCEPTED
-M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: ACCEPTED
-M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
-M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
-M14.6B2B2 Exact Retry GUI: ACCEPTED
-M14.6B3 bounded fault reattach: ACCEPTED
-M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
-M14.6 recovery/reconnect/fault acceptance: ACCEPTED
-M14 consolidated acceptance: ACCEPTED
-M15.1 documentation/productization audit: ACCEPTED
-M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: ACCEPTED
-M15.5–M15.8:
-DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
-NOT AUTHORIZED
-M16.1–M16.7: ACCEPTED
-M16 consolidated external review: ACCEPTED
-M17: NOT AUTHORIZED
-
-Current phase: M16 complete
-
-STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
-```
+The active authorization is the boundary in
+[`Canonical current state`](#canonical-current-state) above. Historical milestone
+authorization and evidence remain recorded in the sections below.
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
 one-shot TCP/NDJSON host architecture is historical accepted evidence. The later

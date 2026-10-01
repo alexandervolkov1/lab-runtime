@@ -2,49 +2,9 @@
 
 ## Current status
 
-```text
-M8–M11: ACCEPTED
-Developer-preview technical gate: PASSED
-Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-v0.1.0-preview.1: PUBLISHED
-M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: ACCEPTED
-M12.4 transport parity/fault acceptance: ACCEPTED
-M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12: ACCEPTED
-M13.1: ACCEPTED
-M13 dependency safety resolution: ACCEPTED
-M13.2 Steel:
-BLOCKED ON STEEL DEPENDENCY SAFETY
-NOT AUTHORIZED
-M14.1 Workbench architecture audit: ACCEPTED
-M14.2 bounded native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal native GUI: ACCEPTED
-M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: ACCEPTED
-M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
-M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
-M14.6B2B2 Exact Retry GUI: ACCEPTED
-M14.6B3 bounded fault reattach: ACCEPTED
-M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
-M14.6 recovery/reconnect/fault acceptance: ACCEPTED
-M14 consolidated acceptance: ACCEPTED
-M15.1 documentation/productization audit: ACCEPTED
-M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: ACCEPTED
-M15.5–M15.8:
-DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
-NOT AUTHORIZED
-M16.1–M16.7: ACCEPTED
-M16 consolidated external review: ACCEPTED
-Current phase: M16 complete
-M17: NOT AUTHORIZED
-STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
-```
+See the canonical current-state summary and authorization in
+[`ai/WORK.md`](WORK.md#canonical-current-state). This release plan retains
+release sequencing, packaging records, and historical milestone evidence below.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -156,8 +116,9 @@ The preview package needs concise, current developer material:
 - bounded diagnostics collection;
 - reproducible preview packaging.
 
-This preparation did not change the accepted 42-operation / 25-capability API,
-SQLite schema, scheduler, output safety or Runtime ownership.
+At that historical preparation point, the preparation did not change the then-current
+operation/capability registry, SQLite schema, scheduler, output safety or Runtime
+ownership. The current post-M16 registry is maintained in the public API reference.
 
 ## Current path to v0.1.0
 
@@ -220,10 +181,11 @@ M16 declarative simple-device layer
 
 M16 makes bounded simple devices ordinary Runtime instruments without device-specific
 operational API or special Workbench/Recorder/history/controller branches. Arduino is
-the first intended real-device use case after M16, not M16's architecture. The future
-Clojure client is external, knows the Application API and semantic laboratory
-identities, and does not know the Arduino wire protocol. This sequencing does not
-authorize scripting implementation or M15.5–M15.8 now. M16.7 is accepted under the
+the first intended real-device use case after the future dual Runtime/Workbench API
+boundary, not M16's architecture. The future Clojure client is external, knows the
+Application API and semantic laboratory identities, and does not know the Arduino
+wire protocol. This sequencing does not authorize scripting implementation or
+M15.5–M15.8 now. M16.7 is accepted under the
 frozen minimal unknown-device acceptance; M16 consolidated review recorded M16 READY
 TO CLOSE. M17 remains unauthorized.
 

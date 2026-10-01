@@ -39,49 +39,9 @@ historical context and never overrides it.
 
 ## Current phase
 
-```text
-M8–M11: ACCEPTED
-Developer-preview technical gate: PASSED
-Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-v0.1.0-preview.1: PUBLISHED
-M12.1 WebSocket architecture audit: ACCEPTED
-M12.2 transport-neutral server seam: ACCEPTED
-M12.3 bounded WebSocket/JSON transport: ACCEPTED
-M12.4 transport parity/fault acceptance: ACCEPTED
-M12.5 browser/ClojureScript smoke acceptance: ACCEPTED
-M12: ACCEPTED
-M13.1: ACCEPTED
-M13 dependency safety resolution: ACCEPTED
-M13.2 Steel:
-BLOCKED ON STEEL DEPENDENCY SAFETY
-NOT AUTHORIZED
-M14.1 Workbench architecture audit: ACCEPTED
-M14.2 bounded native Application client: ACCEPTED
-M14.3 WorkbenchModel + PresentationDocument: ACCEPTED
-M14.4 minimal native GUI: ACCEPTED
-M14.5 operator controls + properties/config: ACCEPTED
-M14.6A recovery/fault audit: ACCEPTED
-M14.6B1 recovery UI + one-shot operation_status: ACCEPTED
-M14.6B2A quarantine projection / restart classification: ACCEPTED
-M14.6B2B1 Exact Retry core / evidence lifecycle: ACCEPTED
-M14.6B2B2 Exact Retry GUI: ACCEPTED
-M14.6B3 bounded fault reattach: ACCEPTED
-M14.6B4 consolidated recovery/fault acceptance: ACCEPTED
-M14.6 recovery/reconnect/fault acceptance: ACCEPTED
-M14 consolidated acceptance: ACCEPTED
-M15.1 documentation/productization audit: ACCEPTED
-M15.2 README + getting started: ACCEPTED
-M15.3 architecture + Application API reference: ACCEPTED
-M15.4 Workbench user guide: ACCEPTED
-M15.5–M15.8:
-DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
-NOT AUTHORIZED
-M16.1–M16.7: ACCEPTED
-M16 consolidated external review: ACCEPTED
-Current phase: M16 complete
-M17: NOT AUTHORIZED
-STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
-```
+The canonical current-state summary and active authorization are maintained in
+[`ai/WORK.md`](ai/WORK.md#canonical-current-state). Historical milestone status
+and architectural decisions remain recorded in the coordination documents below.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
