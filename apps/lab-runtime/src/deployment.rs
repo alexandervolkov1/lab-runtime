@@ -329,18 +329,16 @@ impl DeploymentLifecycle {
         })
     }
 
-    /// Publish a successfully prepared consumed overlay as one new revision.
-    pub(crate) fn commit_consumed_simple_device(
+    /// Publish a consumed overlay whose exact revision transition was prevalidated.
+    pub(crate) fn commit_prevalidated_simple_device(
         &mut self,
         candidate: FrozenDeployment,
-    ) -> Result<u64, ApplyError> {
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or(ApplyError::OwnerFailure)?;
+        revision: u64,
+    ) -> u64 {
+        debug_assert_eq!(self.revision.checked_add(1), Some(revision));
         self.active = candidate;
         self.revision = revision;
-        Ok(revision)
+        revision
     }
 
     /// Release an unapplied candidate at its exact monotonic residence bound.

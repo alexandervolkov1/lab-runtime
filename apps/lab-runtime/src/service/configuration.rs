@@ -4,6 +4,7 @@
 //! module; no reconnect, deployment, or shutdown state is copied into a manager.
 
 use super::*;
+use lab_core::control::ControllerId;
 
 impl ServiceHost {
     pub(crate) fn quarantined_simple_resource_generation(
@@ -168,7 +169,8 @@ impl ServiceHost {
             actuator: None,
             recording: None,
             quiesced: false,
-            publication_prepared: false,
+            publication: None,
+            committed_revision: None,
         });
         Ok(())
     }
@@ -306,6 +308,23 @@ impl ServiceHost {
                     .copied()
                     .map(InstrumentId::new)
                     .collect();
+                let controllers: Vec<_> = pending
+                    .candidate
+                    .loaded
+                    .effective()
+                    .dto
+                    .controllers
+                    .iter()
+                    .filter(|controller| {
+                        !active
+                            .effective()
+                            .dto
+                            .controllers
+                            .iter()
+                            .any(|old| old.id == controller.id)
+                    })
+                    .map(|controller| ControllerId::new(controller.id))
+                    .collect();
                 if self
                     .host
                     .prepare_simple_device_publication(
@@ -324,7 +343,27 @@ impl ServiceHost {
                     );
                     Err(LifecycleOperationError::OwnerFailure)
                 } else {
-                    pending.publication_prepared = true;
+                    match self
+                        .host
+                        .prepare_simple_device_overlay_publication(instruments.clone(), controllers)
+                    {
+                        Ok(publication) => {
+                            pending.publication = Some(publication);
+                            pending.committed_revision = Some(revision);
+                        }
+                        Err(_) => {
+                            self.host.rollback_simple_device_publication(
+                                &active,
+                                &pending.candidate.loaded,
+                                instruments,
+                                active_revision.expect("revision checked above"),
+                            );
+                            return Some(self.fail_pending_simple_apply_with(
+                                pending,
+                                LifecycleOperationError::OwnerFailure,
+                            ));
+                        }
+                    }
                     let recording = pending.recording.as_ref().expect("recording reserved");
                     if self
                         .host
@@ -335,13 +374,16 @@ impl ServiceHost {
                         .is_err()
                     {
                         self.host.configuration_recording_failed(now);
+                        self.host.cancel_simple_device_overlay_publication(
+                            pending.publication.take().expect("publication prepared"),
+                        );
                         self.host.rollback_simple_device_publication(
                             &active,
                             &pending.candidate.loaded,
                             instruments,
                             active_revision.expect("revision checked above"),
                         );
-                        pending.publication_prepared = false;
+                        pending.committed_revision = None;
                         Err(LifecycleOperationError::RecordingUnavailable)
                     } else {
                         pending.phase = SimpleApplyPhase::ConfirmRecording;
@@ -358,36 +400,24 @@ impl ServiceHost {
                     now,
                 ) {
                     Ok(true) => {
-                        let instruments: Vec<_> = pending
-                            .candidate
-                            .metadata
-                            .instruments
-                            .iter()
-                            .copied()
-                            .map(InstrumentId::new)
-                            .collect();
-                        if self
-                            .host
-                            .publish_simple_device_overlay(instruments, now)
-                            .is_err()
-                            || self
-                                .deployment
-                                .as_mut()
-                                .expect("loaded configuration")
-                                .commit_consumed_simple_device(pending.candidate.loaded.clone())
-                                .is_err()
-                        {
-                            return Some(self.fail_pending_simple_apply_with(
-                                pending,
-                                LifecycleOperationError::OwnerFailure,
-                            ));
-                        }
-                        pending.publication_prepared = false;
+                        let publication = pending
+                            .publication
+                            .take()
+                            .expect("durable activation owns prepared publication");
+                        let revision = pending
+                            .committed_revision
+                            .take()
+                            .expect("deployment revision was prevalidated");
+                        self.host
+                            .commit_simple_device_overlay_publication(publication, now);
+                        self.deployment
+                            .as_mut()
+                            .expect("loaded configuration")
+                            .commit_prevalidated_simple_device(pending.candidate.loaded, revision);
                         self.api_simple_overlay_active = true;
                         if pending.quiesced {
                             self.host.end_configuration_quiesce();
                         }
-                        let revision = self.deployment.as_ref()?.revision();
                         return Some(SimpleApplyCompletion {
                             candidate_id,
                             result: Ok(revision),
@@ -448,7 +478,10 @@ impl ServiceHost {
             .copied()
             .map(InstrumentId::new)
             .collect();
-        if pending.publication_prepared {
+        let mut topology_rolled_back = false;
+        if let Some(publication) = pending.publication.take() {
+            self.host
+                .cancel_simple_device_overlay_publication(publication);
             let active_revision = self
                 .deployment
                 .as_ref()
@@ -465,7 +498,8 @@ impl ServiceHost {
                     instruments.clone(),
                     active_revision,
                 );
-                pending.publication_prepared = false;
+                pending.committed_revision = None;
+                topology_rolled_back = true;
             }
         }
         let mut ambiguous = false;
@@ -487,8 +521,10 @@ impl ServiceHost {
                 });
             }
         }
-        if !ambiguous {
-            let _ = self.host.discard_prepared_simple_overlay(instruments);
+        if !ambiguous && !topology_rolled_back {
+            self.host
+                .discard_prepared_simple_overlay(instruments)
+                .expect("prepared SimpleDevice failure cleanup invariant");
         }
         if pending.quiesced {
             self.host.end_configuration_quiesce();

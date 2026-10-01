@@ -27,6 +27,9 @@ impl ServiceHost {
         expected_binding_generation: u64,
         factory: impl FnOnce(ComSettings, std::time::Instant) -> Result<ComTransport, SerialError>,
     ) -> Result<ReconnectResourceResult, LifecycleOperationError> {
+        if self.pending_simple_apply.is_some() {
+            return Err(LifecycleOperationError::Capacity);
+        }
         tracing::info!(
             event = "resource_reconnect_requested",
             resource_id,

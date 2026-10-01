@@ -76,13 +76,11 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1–M16.6: ACCEPTED
-M16.7:
-AUTHORIZED
-M16 consolidated external review:
-NOT AUTHORIZED
-Current phase: M16.7 minimal unknown-device acceptance
-STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
+M16.1–M16.7: ACCEPTED
+M16 consolidated external review: ACCEPTED
+Current phase: M16 complete
+M17: NOT AUTHORIZED
+STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -140,8 +138,13 @@ quarantine based on actual `send_started && !safe_confirmed` evidence. M16.5 gen
 integration acceptance is externally accepted at
 `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/bounds/provenance/recovery
 acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
-M16.7 minimal unknown-device acceptance is authorized; M16 consolidated external review
-is not authorized.
+M16 fast/simple/declarative instrument onboarding is complete and externally accepted;
+prepared SimpleDevice topology is physically inert until publication, participating
+resource reconnect is fenced while publication is pending, and failed pre-durable
+apply leaves no hidden topology or pending transport work.
+The atomic publication boundary, held EventLog capacity, controller/output semantics,
+reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
+Final external review result: M16 READY TO CLOSE.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

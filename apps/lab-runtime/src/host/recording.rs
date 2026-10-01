@@ -1027,6 +1027,11 @@ impl HostCore {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn poll_recorder_for_test(&mut self, now: Duration) {
+        self.poll_recorder(now);
+    }
+
     fn flush_deferred_safe_terminals(&mut self, now: Duration) {
         let deferred = self.pending_operations.iter().find_map(|(key, pending)| {
             pending

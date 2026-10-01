@@ -839,11 +839,15 @@ impl SimpleDeviceInstrument {
 mod tests {
     use super::*;
     use crate::{
-        Command, CommandResult, Query, QueryResult, Runtime, SampleQuality, Unit, ValueSpec,
+        Command, CommandResult, Query, QueryResult, Runtime, SampleQuality, TEMPERATURE, Unit,
+        ValueSpec,
+        control::{ControllerError, ControllerId, NativeControllerConfig, PidConfig},
         output::{
             EvidenceLevel, OutputCommand, OutputOwner, OutputProposal, OutputResult, OutputState,
             SafeProfile,
         },
+        processing::EmaConfig,
+        reference::ReferenceId,
         transport::{ByteTransport, RecoveryStatus, TransportIoError},
     };
     use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Duration};
@@ -1237,6 +1241,274 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prepared_topology_fences_every_controller_mutation_until_publication() {
+        let instrument = InstrumentId::new(9);
+        let input_instrument = InstrumentId::new(22);
+        let reference = ReferenceId::new(23);
+        let controller = ControllerId::new(24);
+        let output = crate::output::ActuatorId::new(instrument, ParameterId::new(2));
+        let mut runtime = Runtime::new();
+        runtime
+            .register_transport(
+                ResourceId::new(7),
+                Box::new(CountingTransport(Rc::new(RefCell::new(Vec::new())))),
+            )
+            .unwrap();
+        runtime
+            .command(Command::RegisterThermalPlant(
+                crate::plant::ThermalPlantConfig {
+                    id: input_instrument,
+                    name: "prepared input".into(),
+                    history_capacity: 8,
+                    ambient_temperature: 20.0,
+                    initial_temperature: 20.0,
+                    gain_per_percent: 0.5,
+                    time_constant: Duration::from_secs(5),
+                },
+            ))
+            .unwrap();
+        runtime
+            .command(Command::RegisterReference(
+                crate::reference::ReferenceConfig::Fixed {
+                    id: reference,
+                    value: 25.0,
+                    unit: Unit::CELSIUS,
+                },
+            ))
+            .unwrap();
+        runtime
+            .command(Command::RegisterPreparedSimpleDevice(
+                writable_instrument_config(),
+            ))
+            .unwrap();
+        runtime
+            .command(Command::Output {
+                actuator: output,
+                at: Duration::ZERO,
+                command: OutputCommand::BindProfile(SafeProfile {
+                    min: 0.0,
+                    max: 100.0,
+                    safe_value: 0.0,
+                    max_lease: Duration::from_secs(5),
+                    max_proposal_ttl: Duration::from_secs(1),
+                    required_evidence: EvidenceLevel::Readback,
+                }),
+            })
+            .unwrap();
+        runtime
+            .command(Command::Output {
+                actuator: output,
+                at: Duration::ZERO,
+                command: OutputCommand::RequestSafe,
+            })
+            .unwrap();
+        let CommandResult::Output(OutputResult::Dispatched(safe)) = runtime
+            .command(Command::Output {
+                actuator: output,
+                at: Duration::ZERO,
+                command: OutputCommand::BeginDispatch,
+            })
+            .unwrap()
+        else {
+            panic!("safe dispatch missing");
+        };
+        runtime
+            .command(Command::Output {
+                actuator: output,
+                at: Duration::ZERO,
+                command: OutputCommand::Complete {
+                    dispatch_id: safe.id(),
+                    outcome: crate::output::DispatchOutcome::ReadbackVerified,
+                },
+            })
+            .unwrap();
+        let config = NativeControllerConfig {
+            id: controller,
+            input: SignalId::new(input_instrument, TEMPERATURE),
+            output,
+            reference,
+            ema: EmaConfig {
+                time_constant: Duration::from_secs(1),
+                warmup_samples: 1,
+                unit: Unit::CELSIUS,
+            },
+            pid: PidConfig {
+                kp: 1.0,
+                ki: 0.1,
+                kd: 0.0,
+                output_min: 0.0,
+                output_max: 100.0,
+            },
+            max_input_age: Duration::from_secs(2),
+            max_tick_gap: Duration::from_secs(2),
+            lease_lifetime: Duration::from_secs(5),
+            proposal_ttl: Duration::from_secs(1),
+        };
+        runtime
+            .command(Command::RegisterController(config))
+            .unwrap();
+        runtime
+            .command(Command::PrepareController(controller))
+            .unwrap();
+        let replacement = NativeControllerConfig {
+            ema: EmaConfig {
+                time_constant: Duration::from_millis(500),
+                warmup_samples: 2,
+                unit: Unit::CELSIUS,
+            },
+            ..config
+        };
+        let pid = PidConfig {
+            kp: 2.0,
+            ..config.pid
+        };
+        let prepared = Err(Error::Controller(ControllerError::InvalidState));
+        assert_eq!(
+            runtime.command(Command::ConfigureControllerPid {
+                controller,
+                pid,
+                expected_revision: 1,
+            }),
+            prepared
+        );
+        assert_eq!(
+            runtime.command(Command::ReconfigureController {
+                controller,
+                config: replacement,
+                expected_revision: 1,
+            }),
+            prepared
+        );
+        runtime
+            .command(Command::PublishPreparedSimpleDevices {
+                instruments: vec![instrument],
+            })
+            .unwrap();
+        runtime
+            .command(Command::ConfigureControllerPid {
+                controller,
+                pid,
+                expected_revision: 1,
+            })
+            .unwrap();
+        runtime
+            .command(Command::ReconfigureController {
+                controller,
+                config: replacement,
+                expected_revision: 2,
+            })
+            .unwrap();
+
+        let publish = |runtime: &mut Runtime| {
+            runtime
+                .command(Command::PublishPreparedSimpleDevices {
+                    instruments: vec![instrument],
+                })
+                .unwrap();
+        };
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument: input_instrument,
+                parameter: TEMPERATURE,
+                at: Duration::from_millis(1),
+            })
+            .unwrap();
+        runtime.mark_simple_device_prepared_for_test(instrument);
+        assert_eq!(
+            runtime.command(Command::StartController {
+                controller,
+                at: Duration::from_millis(1),
+            }),
+            prepared
+        );
+        publish(&mut runtime);
+        runtime
+            .command(Command::StartController {
+                controller,
+                at: Duration::from_millis(1),
+            })
+            .unwrap();
+
+        runtime.mark_simple_device_prepared_for_test(instrument);
+        assert_eq!(
+            runtime.command(Command::TickController {
+                controller,
+                at: Duration::from_millis(2),
+            }),
+            prepared
+        );
+        publish(&mut runtime);
+        runtime
+            .command(Command::TickController {
+                controller,
+                at: Duration::from_millis(2),
+            })
+            .unwrap();
+
+        runtime.mark_simple_device_prepared_for_test(instrument);
+        assert_eq!(
+            runtime.command(Command::PauseController {
+                controller,
+                at: Duration::from_millis(2),
+            }),
+            prepared
+        );
+        publish(&mut runtime);
+        runtime
+            .command(Command::PauseController {
+                controller,
+                at: Duration::from_millis(2),
+            })
+            .unwrap();
+
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument: input_instrument,
+                parameter: TEMPERATURE,
+                at: Duration::from_millis(3),
+            })
+            .unwrap();
+        runtime.mark_simple_device_prepared_for_test(instrument);
+        assert_eq!(
+            runtime.command(Command::ResumeController {
+                controller,
+                at: Duration::from_millis(3),
+            }),
+            prepared
+        );
+        publish(&mut runtime);
+        runtime
+            .command(Command::ResumeController {
+                controller,
+                at: Duration::from_millis(3),
+            })
+            .unwrap();
+
+        assert_eq!(
+            runtime.command(Command::TickController {
+                controller,
+                at: Duration::from_millis(2_004),
+            }),
+            Err(Error::Controller(ControllerError::InvalidTickTime))
+        );
+        runtime.mark_simple_device_prepared_for_test(instrument);
+        assert_eq!(
+            runtime.command(Command::ResetFailedController {
+                controller,
+                at: Duration::from_millis(2_004),
+            }),
+            prepared
+        );
+        publish(&mut runtime);
+        runtime
+            .command(Command::ResetFailedController {
+                controller,
+                at: Duration::from_millis(2_004),
+            })
+            .unwrap();
+    }
+
     impl ByteTransport for WritableTransport {
         fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
             self.writes.push(bytes.to_vec());
@@ -1476,6 +1748,52 @@ mod tests {
 
     struct CountingTransport(Rc<RefCell<Vec<Vec<u8>>>>);
 
+    struct DelayedWritableTransport(Rc<RefCell<DelayedWritableState>>);
+
+    struct DelayedWritableState {
+        readable: VecDeque<u8>,
+        writes: Vec<Vec<u8>>,
+        raw: [u8; 2],
+        withhold_completion: bool,
+    }
+
+    impl ByteTransport for DelayedWritableTransport {
+        fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+            let mut state = self.0.borrow_mut();
+            state.writes.push(bytes.to_vec());
+            match bytes.first().copied() {
+                Some(0x20) => {
+                    state
+                        .raw
+                        .copy_from_slice(bytes.get(2..4).ok_or(TransportIoError::Other)?);
+                    if !state.withhold_completion {
+                        state.readable.extend([0x20, 1, 0]);
+                    }
+                }
+                Some(0x21) if !state.withhold_completion => {
+                    let raw = state.raw;
+                    state.readable.extend([0x21, 1, raw[0], raw[1]]);
+                }
+                Some(0x21) => {}
+                _ => return Err(TransportIoError::Other),
+            }
+            Ok(bytes.len())
+        }
+
+        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+            let mut state = self.0.borrow_mut();
+            let count = bytes.len().min(state.readable.len());
+            for byte in &mut bytes[..count] {
+                *byte = state.readable.pop_front().expect("bounded readable length");
+            }
+            Ok(count)
+        }
+
+        fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+            Ok(RecoveryStatus::Complete)
+        }
+    }
+
     impl ByteTransport for CountingTransport {
         fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
             self.0.borrow_mut().push(bytes.to_vec());
@@ -1608,6 +1926,202 @@ mod tests {
                 .is_err()
         );
         assert!(writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn stale_started_write_completion_cannot_settle_replacement_after_rebind() {
+        let instrument = InstrumentId::new(9);
+        let actuator = crate::output::ActuatorId::new(instrument, ParameterId::new(2));
+        let state = Rc::new(RefCell::new(DelayedWritableState {
+            readable: VecDeque::new(),
+            writes: Vec::new(),
+            raw: [0; 2],
+            withhold_completion: false,
+        }));
+        let mut runtime = Runtime::new();
+        runtime
+            .register_transport(
+                ResourceId::new(7),
+                Box::new(DelayedWritableTransport(state.clone())),
+            )
+            .unwrap();
+        runtime
+            .command(Command::RegisterSimpleDevice(writable_instrument_config()))
+            .unwrap();
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::BindProfile(SafeProfile {
+                    min: 0.0,
+                    max: 100.0,
+                    safe_value: 0.0,
+                    max_lease: Duration::from_secs(1),
+                    max_proposal_ttl: Duration::from_millis(100),
+                    required_evidence: EvidenceLevel::Readback,
+                }),
+            })
+            .unwrap();
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::ZERO,
+                command: OutputCommand::RequestSafe,
+            })
+            .unwrap();
+        runtime
+            .command(Command::QueueMetakonOutput {
+                actuator,
+                at: Duration::ZERO,
+                queue_ttl: Duration::from_secs(1),
+                timeout: Duration::from_secs(1),
+            })
+            .unwrap();
+        for millisecond in 0..20 {
+            runtime
+                .command(Command::PollTransports {
+                    at: Duration::from_millis(millisecond),
+                })
+                .unwrap();
+        }
+        {
+            let mut current = state.borrow_mut();
+            current.withhold_completion = true;
+        }
+        let CommandResult::Output(OutputResult::Lease(lease)) = runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::from_millis(20),
+                command: OutputCommand::Acquire {
+                    owner: OutputOwner::Manual(8),
+                    lifetime: Duration::from_millis(500),
+                },
+            })
+            .unwrap()
+        else {
+            panic!("lease missing");
+        };
+        runtime
+            .command(Command::Output {
+                actuator,
+                at: Duration::from_millis(20),
+                command: OutputCommand::Propose(OutputProposal {
+                    lease,
+                    value: Value::Float(25.0),
+                    unit: Unit::PERCENT,
+                    ttl: Duration::from_millis(100),
+                }),
+            })
+            .unwrap();
+        runtime
+            .command(Command::QueueMetakonOutput {
+                actuator,
+                at: Duration::from_millis(20),
+                queue_ttl: Duration::from_millis(100),
+                timeout: Duration::from_millis(100),
+            })
+            .unwrap();
+        runtime
+            .command(Command::PollTransports {
+                at: Duration::from_millis(20),
+            })
+            .unwrap();
+        assert!(
+            state
+                .borrow()
+                .writes
+                .iter()
+                .any(|bytes| bytes.first() == Some(&0x20))
+        );
+        let before = runtime.simple_device_binding(instrument).unwrap();
+        runtime
+            .command(Command::RebindSimpleDevice {
+                instrument,
+                binding: SimpleDeviceBinding {
+                    binding_generation: 2,
+                    mapping_revision: 2,
+                    ..before
+                },
+                at: Duration::from_millis(21),
+            })
+            .unwrap();
+        {
+            let mut current = state.borrow_mut();
+            current.readable.extend([0x20, 1, 0]);
+            let raw = current.raw;
+            current.readable.extend([0x21, 1, raw[0], raw[1]]);
+        }
+        let stale_result = runtime.command(Command::PollTransports {
+            at: Duration::from_millis(21),
+        });
+        assert!(stale_result.is_err());
+        let QueryResult::Output(snapshot) = runtime.query(Query::Output(actuator)).unwrap() else {
+            panic!("replacement output missing");
+        };
+        let replacement = runtime.simple_device_binding(instrument).unwrap();
+        assert_eq!(replacement.binding_generation, 2);
+        assert_eq!(replacement.mapping_revision, 2);
+        assert!(!snapshot.safe_confirmed);
+        assert!(snapshot.acknowledged.is_none());
+        assert!(snapshot.readback.is_none());
+        assert_ne!(
+            snapshot.outcome,
+            Some(crate::output::DispatchOutcome::ReadbackVerified)
+        );
+    }
+
+    #[test]
+    fn simple_rebind_rejects_binding_and_mapping_generation_exhaustion() {
+        for (binding_generation, mapping_revision, replacement) in [
+            (
+                u64::MAX,
+                1,
+                SimpleDeviceBinding {
+                    resource: ResourceId::new(7),
+                    binding_generation: 1,
+                    mapping_revision: 2,
+                    output_queue_ttl: Some(Duration::from_secs(1)),
+                    output_timeout: Some(Duration::from_secs(1)),
+                },
+            ),
+            (
+                1,
+                u64::MAX,
+                SimpleDeviceBinding {
+                    resource: ResourceId::new(7),
+                    binding_generation: 2,
+                    mapping_revision: 1,
+                    output_queue_ttl: Some(Duration::from_secs(1)),
+                    output_timeout: Some(Duration::from_secs(1)),
+                },
+            ),
+        ] {
+            let instrument = InstrumentId::new(9);
+            let mut config = writable_instrument_config();
+            config.binding.binding_generation = binding_generation;
+            config.binding.mapping_revision = mapping_revision;
+            let mut runtime = Runtime::new();
+            runtime
+                .register_transport(
+                    ResourceId::new(7),
+                    Box::new(CountingTransport(Rc::new(RefCell::new(Vec::new())))),
+                )
+                .unwrap();
+            runtime
+                .command(Command::RegisterSimpleDevice(config))
+                .unwrap();
+            assert_eq!(
+                runtime.command(Command::RebindSimpleDevice {
+                    instrument,
+                    binding: replacement,
+                    at: Duration::ZERO,
+                }),
+                Err(Error::InvalidConfiguration("stale simple-device rebind"))
+            );
+            let current = runtime.simple_device_binding(instrument).unwrap();
+            assert_eq!(current.binding_generation, binding_generation);
+            assert_eq!(current.mapping_revision, mapping_revision);
+        }
     }
 
     #[test]
@@ -1823,6 +2337,62 @@ mod tests {
                 "simple-device instrument limit reached (32)"
             ))
         ));
+    }
+
+    #[test]
+    fn prepared_simple_device_read_is_inert_until_publication() {
+        let response = [0x10, 1, 0, 250, 0, 0];
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::new();
+        runtime
+            .register_transport(
+                ResourceId::new(7),
+                Box::new(CountingTransport(writes.clone())),
+            )
+            .unwrap();
+        runtime
+            .command(Command::RegisterPreparedSimpleDevice(instrument_config(
+                &response,
+            )))
+            .unwrap();
+
+        assert!(matches!(
+            runtime.command(Command::QueueSimpleDeviceRead {
+                instrument: InstrumentId::new(1),
+                parameter: ParameterId::new(2),
+                at: Duration::ZERO,
+                queue_ttl: Duration::from_secs(1),
+                timeout: Duration::from_secs(1),
+            }),
+            Err(Error::UnknownInstrument(instrument)) if instrument == InstrumentId::new(1)
+        ));
+        let QueryResult::Transport(snapshot) =
+            runtime.query(Query::Transport(ResourceId::new(7))).unwrap()
+        else {
+            panic!("transport snapshot missing");
+        };
+        assert_eq!(snapshot.queue_len, 0);
+        assert!(writes.borrow().is_empty());
+
+        runtime
+            .command(Command::PublishPreparedSimpleDevices {
+                instruments: vec![InstrumentId::new(1)],
+            })
+            .unwrap();
+        runtime
+            .command(Command::QueueSimpleDeviceRead {
+                instrument: InstrumentId::new(1),
+                parameter: ParameterId::new(2),
+                at: Duration::ZERO,
+                queue_ttl: Duration::from_secs(1),
+                timeout: Duration::from_secs(1),
+            })
+            .unwrap();
+        assert_eq!(writes.borrow().len(), 0);
+        runtime
+            .command(Command::PollTransports { at: Duration::ZERO })
+            .unwrap();
+        assert_eq!(writes.borrow().len(), 1);
     }
 
     #[test]

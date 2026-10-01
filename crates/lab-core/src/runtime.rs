@@ -537,6 +537,16 @@ pub struct ParameterObservation {
     pub latest: Option<Sample>,
 }
 
+/// Owner-held proof that one bounded prepared SimpleDevice set can be published.
+///
+/// Construction validates the complete identity set while it is still hidden.
+/// The serialized host owns this value until it either discards the prepared
+/// topology before durability or consumes it through the infallible publication
+/// boundary.
+pub struct PreparedSimpleDevicePublication {
+    instruments: Vec<InstrumentId>,
+}
+
 /// Sole synchronous owner of mutable experiment/domain state.
 ///
 /// A `Runtime` owns instruments, committed observations, References, controllers,
@@ -1009,6 +1019,72 @@ impl Runtime {
                     .map(|instance| instance.descriptor.clone())
             })
             .flatten()
+    }
+
+    /// Snapshot one hidden prepared signal for prebuilding its publication fact.
+    pub fn prepared_simple_signal_snapshot(
+        &self,
+        signal: SignalId,
+    ) -> Option<(Option<Sample>, u64)> {
+        self.prepared_simple_devices
+            .contains(&signal.instrument())
+            .then(|| {
+                let instrument = self.simple_device_instruments.get(&signal.instrument())?;
+                let latest = instrument.signals.get(&signal)?.latest().cloned();
+                Some((latest, instrument.binding.binding_generation))
+            })
+            .flatten()
+    }
+
+    /// Snapshot one controller whose input or output belongs to hidden topology.
+    pub fn prepared_simple_controller_snapshot(
+        &self,
+        id: ControllerId,
+    ) -> Option<(ControllerSnapshot, NativeControllerConfig)> {
+        self.controllers
+            .get(&id)
+            .filter(|controller| self.controller_uses_prepared_topology(controller))
+            .map(|controller| (controller.snapshot(), controller.config))
+    }
+
+    /// Validate and freeze the exact hidden instrument set for later publication.
+    pub fn prepare_simple_device_publication(
+        &self,
+        instruments: Vec<InstrumentId>,
+    ) -> Result<PreparedSimpleDevicePublication, Error> {
+        if instruments.is_empty() || instruments.len() > 4 {
+            return Err(Error::InvalidConfiguration(
+                "invalid prepared simple-device publication",
+            ));
+        }
+        let unique: BTreeSet<_> = instruments.iter().copied().collect();
+        if unique.len() != instruments.len()
+            || instruments
+                .iter()
+                .any(|instrument| !self.prepared_simple_devices.contains(instrument))
+        {
+            return Err(Error::InvalidConfiguration(
+                "invalid prepared simple-device publication",
+            ));
+        }
+        Ok(PreparedSimpleDevicePublication { instruments })
+    }
+
+    /// Publish a previously validated hidden topology without a remaining domain error.
+    pub fn commit_simple_device_publication(
+        &mut self,
+        publication: PreparedSimpleDevicePublication,
+    ) {
+        for instrument in publication.instruments {
+            let removed = self.prepared_simple_devices.remove(&instrument);
+            debug_assert!(removed, "prepared publication ownership was violated");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_simple_device_prepared_for_test(&mut self, instrument: InstrumentId) {
+        assert!(self.simple_device_instruments.contains_key(&instrument));
+        assert!(self.prepared_simple_devices.insert(instrument));
     }
 
     /// Clone the complete activation graph, including an owner-held prepared

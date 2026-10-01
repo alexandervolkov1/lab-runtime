@@ -97,6 +97,8 @@ impl HostCore {
             snapshot.generation
         } else if let Some(binding) = self.runtime.metakon_binding(signal.instrument()) {
             binding.binding_generation
+        } else if let Some(binding) = self.runtime.simple_device_binding(signal.instrument()) {
+            binding.binding_generation
         } else {
             self.virtual_model_generations
                 .get(&signal.instrument())

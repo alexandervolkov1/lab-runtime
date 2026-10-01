@@ -12,7 +12,7 @@ use lab_core::control::ControllerId;
 use lab_core::managed::{ComponentId, ComponentState};
 use lab_core::output::ActuatorId;
 use lab_core::reference::ReferenceId;
-use lab_core::{ParameterRole, Query, QueryResult, Runtime, SignalId};
+use lab_core::{InstrumentId, ParameterRole, Query, QueryResult, Runtime, SignalId};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -35,6 +35,8 @@ pub enum EventError {
     Exhausted,
     /// A public fact would exceed the fixed event record size.
     Oversized,
+    /// A prepared publication reservation is missing, duplicated, or stale.
+    Reservation,
 }
 
 #[derive(Clone)]
@@ -44,6 +46,23 @@ enum Target {
     Reference(ReferenceId),
     Output(ActuatorId),
     Component(ComponentId),
+}
+
+struct PreparedEvent {
+    target: Target,
+    data: Value,
+    record_data: Value,
+}
+
+struct PublicationReservation {
+    id: u64,
+    capacity: u64,
+}
+
+/// Exact prevalidated EventLog work owned by one pending configuration apply.
+pub(crate) struct PreparedEventPublication {
+    reservation_id: u64,
+    events: Vec<PreparedEvent>,
 }
 impl Target {
     fn key(&self) -> String {
@@ -138,6 +157,8 @@ pub struct EventLog {
     targets: Vec<Target>,
     facts: BTreeMap<String, Value>,
     ring: VecDeque<Value>,
+    next_publication_reservation: u64,
+    publication_reservation: Option<PublicationReservation>,
 }
 impl EventLog {
     /// Capture a no-event baseline from registered bounded public identities.
@@ -173,14 +194,22 @@ impl EventLog {
             targets,
             facts,
             ring: VecDeque::new(),
+            next_publication_reservation: 1,
+            publication_reservation: None,
         }
     }
 
     /// Reset process identity before readiness, preserving no old process cursor.
     pub fn set_boot_id(&mut self, boot_id: &str) {
+        debug_assert!(self.publication_reservation.is_none());
         self.boot_id = boot_id.into();
         self.sequence = 0;
         self.ring.clear();
+        self.next_publication_reservation = 1;
+    }
+    #[cfg(test)]
+    pub(crate) fn force_sequence_for_test(&mut self, sequence: u64) {
+        self.sequence = sequence;
     }
     /// Track a trusted staged component before asynchronous init can commit.
     pub fn track_component(&mut self, id: ComponentId) {
@@ -204,6 +233,159 @@ impl EventLog {
             self.targets.push(Target::Controller(id));
             self.targets.sort_by_key(Target::key);
         }
+    }
+    /// Prebuild and reserve the exact hidden SimpleDevice facts needed at publication.
+    pub(crate) fn prepare_simple_device_publication(
+        &mut self,
+        runtime: &Runtime,
+        instruments: &[InstrumentId],
+        controllers: &[ControllerId],
+    ) -> Result<PreparedEventPublication, EventError> {
+        if self.publication_reservation.is_some() {
+            return Err(EventError::Reservation);
+        }
+        let mut events = Vec::new();
+        for instrument in instruments {
+            let descriptor = runtime
+                .prepared_simple_descriptor(*instrument)
+                .ok_or(EventError::Reservation)?;
+            for parameter in descriptor.parameters {
+                if let Some(signal) = parameter.signal {
+                    let (latest, generation) = runtime
+                        .prepared_simple_signal_snapshot(signal)
+                        .ok_or(EventError::Reservation)?;
+                    let data = latest.map_or_else(
+                        || {
+                            json!({
+                                "signal":{"instrument":signal.instrument().get().to_string(),
+                                    "parameter":signal.parameter().get().to_string()},
+                                "value":Value::Null,"quality":"unavailable","status":"not_observed",
+                                "failure":"not_observed","observed_at_ns":Value::Null,
+                                "source_at_ns":Value::Null,"generation":generation.to_string()
+                            })
+                        },
+                        |sample| sample_json(&sample, generation),
+                    );
+                    events.push(PreparedEvent {
+                        target: Target::Signal(signal),
+                        record_data: data.clone(),
+                        data,
+                    });
+                }
+                if parameter.role == ParameterRole::Actuator {
+                    let actuator = ActuatorId::new(*instrument, parameter.id);
+                    let snapshot = runtime
+                        .prepared_simple_output_snapshot(actuator)
+                        .ok_or(EventError::Reservation)?;
+                    let data = output_json(snapshot);
+                    events.push(PreparedEvent {
+                        target: Target::Output(actuator),
+                        record_data: data.clone(),
+                        data,
+                    });
+                }
+            }
+        }
+        for controller in controllers {
+            let (snapshot, config) = runtime
+                .prepared_simple_controller_snapshot(*controller)
+                .ok_or(EventError::Reservation)?;
+            let data = controller_projection_json(snapshot, config);
+            events.push(PreparedEvent {
+                target: Target::Controller(*controller),
+                record_data: data.clone(),
+                data,
+            });
+        }
+        events.sort_by_key(|event| event.target.key());
+        for pair in events.windows(2) {
+            if pair[0].target.key() == pair[1].target.key() {
+                return Err(EventError::Reservation);
+            }
+        }
+        for event in &events {
+            if self
+                .targets
+                .iter()
+                .any(|target| target.key() == event.target.key())
+            {
+                return Err(EventError::Reservation);
+            }
+            validate_record_bound(&self.boot_id, &event.target, &event.data)?;
+        }
+        let capacity = u64::try_from(events.len()).map_err(|_| EventError::Exhausted)?;
+        self.sequence
+            .checked_add(capacity)
+            .ok_or(EventError::Exhausted)?;
+        self.targets.reserve(events.len());
+        self.ring.reserve(events.len().min(EVENT_RING_LIMIT));
+        let reservation_id = self.next_publication_reservation;
+        self.next_publication_reservation =
+            reservation_id.checked_add(1).ok_or(EventError::Exhausted)?;
+        self.publication_reservation = Some(PublicationReservation {
+            id: reservation_id,
+            capacity,
+        });
+        Ok(PreparedEventPublication {
+            reservation_id,
+            events,
+        })
+    }
+
+    /// Release one unpublished batch before its Recorder activation can become durable.
+    pub(crate) fn cancel_simple_device_publication(
+        &mut self,
+        publication: PreparedEventPublication,
+    ) {
+        let reservation = self
+            .publication_reservation
+            .take()
+            .expect("pending apply owns its EventLog reservation");
+        debug_assert_eq!(reservation.id, publication.reservation_id);
+        debug_assert_eq!(reservation.capacity, publication.events.len() as u64);
+    }
+
+    /// Install a prevalidated batch by consuming its held sequence capacity exactly once.
+    pub(crate) fn commit_simple_device_publication(
+        &mut self,
+        publication: PreparedEventPublication,
+        at: Duration,
+    ) {
+        let reservation = self
+            .publication_reservation
+            .take()
+            .expect("durable apply owns its EventLog reservation");
+        debug_assert_eq!(reservation.id, publication.reservation_id);
+        debug_assert_eq!(reservation.capacity, publication.events.len() as u64);
+        for event in publication.events {
+            let sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("held EventLog sequence capacity");
+            let record = event_record(
+                &self.boot_id,
+                sequence,
+                at,
+                event.target.kind(),
+                event.target.id(),
+                event.record_data,
+                None,
+            );
+            debug_assert!(
+                crate::wire::encode_application_json(&record)
+                    .is_ok_and(|encoded| encoded.len() <= EVENT_SIZE_LIMIT),
+                "prepared event exceeded its validated bound"
+            );
+            self.sequence = sequence;
+            if self.ring.len() == EVENT_RING_LIMIT {
+                self.ring.pop_front();
+            }
+            self.ring.push_back(record);
+            let key = event.target.key();
+            self.targets.push(event.target);
+            self.facts.insert(key, event.data);
+        }
+        self.targets.sort_by_key(Target::key);
     }
     /// Track a trusted Reference registered after initial composition.
     pub fn track_reference(&mut self, id: ReferenceId) {
@@ -415,8 +597,12 @@ impl EventLog {
         cause: Option<(&str, u64)>,
     ) -> Result<(), EventError> {
         let sequence = self.sequence.checked_add(1).ok_or(EventError::Exhausted)?;
-        let record = json!({"v":1,"type":"event","boot_id":self.boot_id,"seq":sequence.to_string(),"published_at":nanos(at),
-            "kind":kind,"target":target,"data":data,"request_id":cause.map(|(scope,seq)|json!({"scope":scope,"seq":seq.to_string()}))});
+        if let Some(reservation) = &self.publication_reservation {
+            sequence
+                .checked_add(reservation.capacity)
+                .ok_or(EventError::Exhausted)?;
+        }
+        let record = event_record(&self.boot_id, sequence, at, kind, target, data, cause);
         if crate::wire::encode_application_json(&record)
             .map_err(|_| EventError::Oversized)?
             .len()
@@ -455,5 +641,88 @@ impl EventLog {
     /// Test and bounded-diagnostic view of the retained replay window.
     pub fn after(&self, cursor: u64) -> Result<Vec<Value>, EventError> {
         self.scan_after(cursor, 32)
+    }
+}
+
+fn event_record(
+    boot_id: &str,
+    sequence: u64,
+    at: Duration,
+    kind: &str,
+    target: Value,
+    data: Value,
+    cause: Option<(&str, u64)>,
+) -> Value {
+    json!({"v":1,"type":"event","boot_id":boot_id,"seq":sequence.to_string(),"published_at":nanos(at),
+        "kind":kind,"target":target,"data":data,"request_id":cause.map(|(scope,seq)|json!({"scope":scope,"seq":seq.to_string()}))})
+}
+
+fn validate_record_bound(boot_id: &str, target: &Target, data: &Value) -> Result<(), EventError> {
+    let record = event_record(
+        boot_id,
+        u64::MAX,
+        Duration::MAX,
+        target.kind(),
+        target.id(),
+        data.clone(),
+        None,
+    );
+    if crate::wire::encode_application_json(&record)
+        .map_err(|_| EventError::Oversized)?
+        .len()
+        > EVENT_SIZE_LIMIT
+    {
+        return Err(EventError::Oversized);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lab_core::{InstrumentId, ParameterId};
+
+    #[test]
+    fn cancelled_publication_releases_held_sequence_capacity_exactly_once() {
+        let mut log = EventLog::new(&Runtime::new(), &[], &[], "boot");
+        log.sequence = u64::MAX - 3;
+        let publication = PreparedEventPublication {
+            reservation_id: 1,
+            events: vec![
+                PreparedEvent {
+                    target: Target::Signal(SignalId::new(
+                        InstrumentId::new(1),
+                        ParameterId::new(1),
+                    )),
+                    data: json!({"generation":"1"}),
+                    record_data: json!({"generation":"1"}),
+                },
+                PreparedEvent {
+                    target: Target::Signal(SignalId::new(
+                        InstrumentId::new(1),
+                        ParameterId::new(2),
+                    )),
+                    data: json!({"generation":"1"}),
+                    record_data: json!({"generation":"1"}),
+                },
+            ],
+        };
+        log.publication_reservation = Some(PublicationReservation { id: 1, capacity: 2 });
+
+        log.configuration_state(Duration::ZERO, json!({"unrelated":1}))
+            .unwrap();
+        assert_eq!(log.sequence, u64::MAX - 2);
+        assert_eq!(
+            log.configuration_state(Duration::ZERO, json!({"would_steal":true})),
+            Err(EventError::Exhausted)
+        );
+
+        log.cancel_simple_device_publication(publication);
+        assert!(log.publication_reservation.is_none());
+        log.configuration_state(Duration::ZERO, json!({"released":1}))
+            .unwrap();
+        log.configuration_state(Duration::ZERO, json!({"released":2}))
+            .unwrap();
+        assert_eq!(log.sequence, u64::MAX);
     }
 }

@@ -33,7 +33,7 @@ use crate::{
         ApplyError, ApplyPort, ApplyResult, ConsumedSimpleCandidate, DeploymentLifecycle,
         StageError, StagedConfiguration,
     },
-    host::{Clock, HostCore, ShutdownStatus, SystemClock},
+    host::{Clock, HostCore, PreparedSimpleOverlayPublication, ShutdownStatus, SystemClock},
     managed_executor::ManagedExecutor,
     protocol::ProtocolFeatures,
     serial::{
@@ -225,7 +225,8 @@ struct PendingSimpleConfigurationApply {
     actuator: Option<ActuatorId>,
     recording: Option<PendingSimpleRecording>,
     quiesced: bool,
-    publication_prepared: bool,
+    publication: Option<PreparedSimpleOverlayPublication>,
+    committed_revision: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1235,6 +1236,7 @@ mod reconnect_preparation_tests {
     use lab_core::{
         ParameterId, Query, QueryResult, SampleQuality, SignalId,
         metakon::crc,
+        simple_device::SimpleChecksum,
         transport::{RecoveryStatus, TransportIoError, TransportShutdown},
     };
     use sha2::{Digest, Sha256};
@@ -1605,6 +1607,146 @@ unit_symbol="C"
 
     struct ProvisioningDevice(Arc<Mutex<ProvisioningWire>>);
 
+    const UNKNOWN_THERMAL_INSTRUMENT_ID: u64 = 1607;
+    const UNKNOWN_THERMAL_CONTROLLER_ID: u64 = 1607;
+    const UNKNOWN_THERMAL_ADDRESS: u8 = 0x2a;
+    const UNKNOWN_THERMAL_CHANNEL: u8 = 1;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum UnknownThermalRequest {
+        ReadTemperature,
+        WritePower([u8; 2]),
+        ReadbackPower,
+    }
+
+    struct UnknownThermalWire {
+        readable: VecDeque<u8>,
+        requests: Vec<Vec<u8>>,
+        recognized: Vec<UnknownThermalRequest>,
+        temperature_raw: i16,
+        power_raw: [u8; 2],
+    }
+
+    impl UnknownThermalWire {
+        fn new(temperature_raw: i16) -> Self {
+            Self {
+                readable: VecDeque::new(),
+                requests: Vec::new(),
+                recognized: Vec::new(),
+                temperature_raw,
+                power_raw: [0, 0],
+            }
+        }
+
+        fn checked_prefix(bytes: &[u8], length: usize) -> Option<&[u8]> {
+            if bytes.len() != length || length < 2 {
+                return None;
+            }
+            let prefix = &bytes[..length - 2];
+            let mut expected = prefix.to_vec();
+            SimpleChecksum::Crc16Modbus.append(prefix, &mut expected);
+            (expected == bytes).then_some(prefix)
+        }
+
+        fn enqueue_crc(&mut self, prefix: &[u8]) {
+            let mut response = prefix.to_vec();
+            SimpleChecksum::Crc16Modbus.append(prefix, &mut response);
+            self.readable.extend(response);
+        }
+
+        fn accept(&mut self, bytes: &[u8]) -> Result<(), ()> {
+            self.requests.push(bytes.to_vec());
+            match bytes.first().copied() {
+                Some(0xa1) => {
+                    let prefix = Self::checked_prefix(bytes, 5).ok_or(())?;
+                    if prefix != [0xa1, UNKNOWN_THERMAL_ADDRESS, UNKNOWN_THERMAL_CHANNEL] {
+                        return Err(());
+                    }
+                    self.recognized.push(UnknownThermalRequest::ReadTemperature);
+                    let raw = self.temperature_raw.to_be_bytes();
+                    self.enqueue_crc(&[
+                        0xa1,
+                        UNKNOWN_THERMAL_ADDRESS,
+                        UNKNOWN_THERMAL_CHANNEL,
+                        raw[0],
+                        raw[1],
+                    ]);
+                }
+                Some(0xb1) => {
+                    let prefix = Self::checked_prefix(bytes, 7).ok_or(())?;
+                    if prefix[..3] != [0xb1, UNKNOWN_THERMAL_ADDRESS, UNKNOWN_THERMAL_CHANNEL] {
+                        return Err(());
+                    }
+                    self.power_raw.copy_from_slice(&prefix[3..5]);
+                    self.recognized
+                        .push(UnknownThermalRequest::WritePower(self.power_raw));
+                    self.enqueue_crc(&[0xb1, UNKNOWN_THERMAL_ADDRESS, 0x00]);
+                }
+                Some(0xb2) => {
+                    let prefix = Self::checked_prefix(bytes, 5).ok_or(())?;
+                    if prefix != [0xb2, UNKNOWN_THERMAL_ADDRESS, UNKNOWN_THERMAL_CHANNEL] {
+                        return Err(());
+                    }
+                    self.recognized.push(UnknownThermalRequest::ReadbackPower);
+                    self.enqueue_crc(&[
+                        0xb2,
+                        UNKNOWN_THERMAL_ADDRESS,
+                        UNKNOWN_THERMAL_CHANNEL,
+                        self.power_raw[0],
+                        self.power_raw[1],
+                    ]);
+                }
+                _ => return Err(()),
+            }
+            Ok(())
+        }
+    }
+
+    struct UnknownThermalTransport(Arc<Mutex<UnknownThermalWire>>);
+
+    struct UnknownThermalDevice(Arc<Mutex<UnknownThermalWire>>);
+
+    impl ByteTransport for UnknownThermalTransport {
+        fn try_write(&mut self, bytes: &[u8]) -> Result<usize, TransportIoError> {
+            self.0
+                .lock()
+                .unwrap()
+                .accept(bytes)
+                .map_err(|()| TransportIoError::Other)?;
+            Ok(bytes.len())
+        }
+
+        fn try_read(&mut self, bytes: &mut [u8]) -> Result<usize, TransportIoError> {
+            let mut wire = self.0.lock().unwrap();
+            let count = bytes.len().min(wire.readable.len());
+            for byte in &mut bytes[..count] {
+                *byte = wire.readable.pop_front().unwrap();
+            }
+            Ok(count)
+        }
+
+        fn try_recover(&mut self) -> Result<RecoveryStatus, TransportIoError> {
+            Ok(RecoveryStatus::Complete)
+        }
+    }
+
+    impl SerialDevice for UnknownThermalDevice {
+        fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
+            self.0
+                .lock()
+                .unwrap()
+                .accept(bytes)
+                .map_err(|()| SerialError::Other)?;
+            Ok(bytes.len())
+        }
+
+        fn read_once(&mut self, maximum: usize) -> Result<Vec<u8>, SerialError> {
+            let mut wire = self.0.lock().unwrap();
+            let count = maximum.min(wire.readable.len());
+            Ok(wire.readable.drain(..count).collect())
+        }
+    }
+
     impl SerialDevice for ProvisioningDevice {
         fn write_once(&mut self, bytes: &[u8]) -> Result<usize, SerialError> {
             let mut wire = self.0.lock().unwrap();
@@ -1830,6 +1972,190 @@ unit_symbol="C"
             "proposal_ttl_ms":200
         });
         candidate
+    }
+
+    fn unknown_thermal_candidate() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version":1,
+            "definition":{
+                "format_version":1,
+                "definition_id":"m16-unknown-thermal-v1",
+                "definition_version":1,
+                "parameters":[
+                    {
+                        "parameter_id":1,
+                        "key":"temperature",
+                        "display_name":"Temperature",
+                        "role":"measurement",
+                        "access":"read_only",
+                        "unit_id":"degC",
+                        "unit_symbol":"C",
+                        "value_type":"float",
+                        "engineering_min":-50.0,
+                        "engineering_max":150.0,
+                        "write_effect":"none",
+                        "encoding":{"raw":"i16_be","scale":0.1,"offset":0.0},
+                        "read":{
+                            "request":{"segments":[
+                                {"type":"literal","hex":"a1"},
+                                {"type":"instance_field","field":"address","encoding":"u8"},
+                                {"type":"instance_field","field":"channel","encoding":"u8"},
+                                {"type":"checksum","algorithm":"crc16_modbus"}
+                            ]},
+                            "response":{
+                                "exact_length":7,
+                                "matches":[
+                                    {"type":"literal_match","offset":0,"hex":"a1"},
+                                    {"type":"instance_match","offset":1,"field":"address","encoding":"u8"},
+                                    {"type":"instance_match","offset":2,"field":"channel","encoding":"u8"}
+                                ],
+                                "extract":{"type":"scalar_extract","offset":3},
+                                "checksum":{"type":"checksum","offset":5,"algorithm":"crc16_modbus"}
+                            }
+                        }
+                    },
+                    {
+                        "parameter_id":2,
+                        "key":"power",
+                        "display_name":"Power",
+                        "role":"actuator",
+                        "access":"write_only",
+                        "unit_id":"percent",
+                        "unit_symbol":"%",
+                        "value_type":"float",
+                        "engineering_min":0.0,
+                        "engineering_max":100.0,
+                        "write_effect":"output_affecting",
+                        "encoding":{"raw":"u16_be","scale":0.1,"offset":0.0},
+                        "write":{
+                            "request":{"segments":[
+                                {"type":"literal","hex":"b1"},
+                                {"type":"instance_field","field":"address","encoding":"u8"},
+                                {"type":"instance_field","field":"channel","encoding":"u8"},
+                                {"type":"value_field"},
+                                {"type":"checksum","algorithm":"crc16_modbus"}
+                            ]},
+                            "ack":{
+                                "exact_length":5,
+                                "matches":[
+                                    {"type":"literal_match","offset":0,"hex":"b1"},
+                                    {"type":"instance_match","offset":1,"field":"address","encoding":"u8"},
+                                    {"type":"literal_match","offset":2,"hex":"00"}
+                                ],
+                                "checksum":{"type":"checksum","offset":3,"algorithm":"crc16_modbus"}
+                            },
+                            "readback":{
+                                "request":{"segments":[
+                                    {"type":"literal","hex":"b2"},
+                                    {"type":"instance_field","field":"address","encoding":"u8"},
+                                    {"type":"instance_field","field":"channel","encoding":"u8"},
+                                    {"type":"checksum","algorithm":"crc16_modbus"}
+                                ]},
+                                "response":{
+                                    "exact_length":7,
+                                    "matches":[
+                                        {"type":"literal_match","offset":0,"hex":"b2"},
+                                        {"type":"instance_match","offset":1,"field":"address","encoding":"u8"},
+                                        {"type":"instance_match","offset":2,"field":"channel","encoding":"u8"}
+                                    ],
+                                    "extract":{"type":"scalar_extract","offset":3},
+                                    "checksum":{"type":"checksum","offset":5,"algorithm":"crc16_modbus"}
+                                }
+                            }
+                        }
+                    }
+                ]
+            },
+            "instances":[{
+                "instrument_id":UNKNOWN_THERMAL_INSTRUMENT_ID,
+                "key":"unknown-thermal-1",
+                "display_name":"Unknown Thermal 1",
+                "resource_id":7,
+                "address":UNKNOWN_THERMAL_ADDRESS,
+                "channel":UNKNOWN_THERMAL_CHANNEL,
+                "poll_period_ms":200,
+                "queue_timeout_ms":50,
+                "transaction_timeout_ms":50,
+                "history_capacity":16,
+                "safe_profile":{
+                    "min":0.0,
+                    "max":100.0,
+                    "safe_value":0.0,
+                    "max_lease_ms":2000,
+                    "max_proposal_ttl_ms":200,
+                    "required_evidence":"readback"
+                },
+                "controller":{
+                    "id":UNKNOWN_THERMAL_CONTROLLER_ID,
+                    "key":"unknown-thermal-controller",
+                    "input_instrument_id":UNKNOWN_THERMAL_INSTRUMENT_ID,
+                    "input_parameter_id":1,
+                    "output_instrument_id":UNKNOWN_THERMAL_INSTRUMENT_ID,
+                    "output_parameter_id":2,
+                    "reference_id":10,
+                    "period_ms":100,
+                    "ema_time_constant_ms":100,
+                    "ema_warmup_samples":1,
+                    "kp":1.0,
+                    "ki":0.0,
+                    "kd":0.0,
+                    "output_min":0.0,
+                    "output_max":100.0,
+                    "max_input_age_ms":500,
+                    "max_tick_gap_ms":500,
+                    "lease_lifetime_ms":2000,
+                    "proposal_ttl_ms":200
+                }
+            }]
+        })
+    }
+
+    fn service_for_unknown_thermal(
+        boot_id: &str,
+        temperature_raw: i16,
+    ) -> (ServiceHost, Arc<Mutex<UnknownThermalWire>>) {
+        let deployment = parse_runtime_toml(
+            API_OUTPUT_BASE_CONFIG,
+            Path::new("C:\\m16-unknown-thermal"),
+            &mut SimpleReader,
+        )
+        .unwrap();
+        let wire = Arc::new(Mutex::new(UnknownThermalWire::new(temperature_raw)));
+        let mut transports: BTreeMap<ResourceId, Box<dyn ByteTransport>> = BTreeMap::new();
+        transports.insert(
+            ResourceId::new(7),
+            Box::new(UnknownThermalTransport(wire.clone())),
+        );
+        let mut host = HostCore::configured_with_transports(&deployment, transports).unwrap();
+        host.set_boot_id(boot_id);
+        let clock = SystemClock::new();
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bound = listener.local_addr().unwrap();
+        (
+            ServiceHost {
+                host,
+                clock,
+                listener,
+                bound,
+                websocket: None,
+                boot_id: boot_id.to_owned(),
+                stopping_since: None,
+                safe_since: None,
+                recorder_flush_since: None,
+                terminal: None,
+                fatal: false,
+                deployment: Some(DeploymentLifecycle::new(deployment)),
+                configuration_path: None,
+                next_lifecycle_operation: 1,
+                reconnect_diagnostic: None,
+                quarantined_reconnect_candidate: None,
+                pending_simple_apply: None,
+                quarantined_simple_output: None,
+                api_simple_overlay_active: false,
+            },
+            wire,
+        )
     }
 
     fn stage_and_begin_api_output(service: &mut ServiceHost) -> u64 {
@@ -2324,6 +2650,116 @@ unit_symbol="C"
     }
 
     #[test]
+    fn event_capacity_failure_before_recorder_submission_preserves_previous_topology() {
+        let (mut service, _) = service_with_simple_transport();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        let before = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"before","op":"discover","args":{}})),
+        )[0]["result"]["records"]
+            .clone();
+        assert!(
+            !before
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["id"] == serde_json::json!({"id":"2002"}))
+        );
+        let before_event_facts = service.host.event_log().projection_records();
+        let (before_provenance_entries, before_provenance_objects) =
+            service.host.frozen_activation_entries().unwrap();
+        let before_provenance_objects = format!("{before_provenance_objects:?}");
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"stage","op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},"args":{"expected_revision":"1",
+                    "candidate":application_read_only_candidate(1002,2)}}),
+            ),
+        );
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let applied = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"apply","op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},"args":{"candidate_id":candidate_id,
+                    "expected_revision":"1"}}),
+            ),
+        );
+        assert_eq!(applied[0]["state"], "accepted");
+
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(u64::MAX);
+        let terminal = (0..8)
+            .find_map(|_| {
+                let replies = application.poll_configuration(&mut service);
+                (!replies.is_empty()).then_some(replies)
+            })
+            .unwrap_or_default();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].1["state"], "failed");
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert!(!service.api_simple_overlay_active);
+        assert!(
+            service
+                .owner()
+                .query(lab_core::Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+        let after = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"after","op":"discover","args":{}})),
+        )[0]["result"]["records"]
+            .clone();
+        assert_eq!(after, before);
+        assert_eq!(
+            service.host.event_log().projection_records(),
+            before_event_facts
+        );
+        let (after_provenance_entries, after_provenance_objects) =
+            service.host.frozen_activation_entries().unwrap();
+        assert_eq!(after_provenance_entries, before_provenance_entries);
+        assert_eq!(
+            format!("{after_provenance_objects:?}"),
+            before_provenance_objects
+        );
+    }
+
+    #[test]
+    fn consume_simple_device_expires_at_the_exact_frozen_deadline() {
+        let (mut service, _) = service_with_simple_transport();
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        let expiry = staged.staged.expires_at();
+        let candidate_id = staged.staged.id();
+        let lifecycle = service.deployment.as_mut().unwrap();
+        assert!(matches!(
+            lifecycle.consume_simple_device(candidate_id, 1, expiry),
+            Err(ApplyError::Expired)
+        ));
+        assert!(lifecycle.staged().is_none());
+        assert_eq!(lifecycle.revision(), 1);
+    }
+
+    #[test]
     fn api_provisioned_signals_use_generic_application_history_recorder_and_shared_reconnect() {
         let (mut service, _) = service_for_api_output(false);
         let database = temporary_database();
@@ -2408,11 +2844,16 @@ unit_symbol="C"
         assert_eq!(accepted[0]["state"], "accepted");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            service.host.service(&service.clock).unwrap();
+            service.host.poll_recorder_for_test(service.clock.now());
             let terminal = application.poll_configuration(&mut service);
             if !terminal.is_empty() {
                 assert_eq!(terminal.len(), 1);
-                assert_eq!(terminal[0].1["state"], "completed", "{terminal:#?}");
+                assert_eq!(
+                    terminal[0].1["state"],
+                    "completed",
+                    "{terminal:#?}; recorder={:#?}",
+                    service.host.recording_status()
+                );
                 break;
             }
             assert!(std::time::Instant::now() < deadline);
@@ -2804,6 +3245,755 @@ unit_symbol="C"
     }
 
     #[test]
+    fn m16_7_unknown_device_uses_only_generic_application_runtime_and_recorder_paths() {
+        let candidate_json = unknown_thermal_candidate();
+        let candidate = crate::simple_device::parse_simple_candidate(&candidate_json).unwrap();
+        assert_eq!(candidate.definition.definition_id, "m16-unknown-thermal-v1");
+        assert_eq!(candidate.instances[0].key, "unknown-thermal-1");
+        let hash_hex = |hash: [u8; 32]| {
+            hash.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let definition_hash = candidate.definition.canonical_sha256;
+        let candidate_hash = hash_hex(Sha256::digest(candidate.canonical.as_ref()).into());
+        let instrument_id = UNKNOWN_THERMAL_INSTRUMENT_ID.to_string();
+
+        let (mut service, old_wire) =
+            service_for_unknown_thermal("3123456789abcdef0123456789abcdef", 215);
+        let database = temporary_database();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let hello = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let scope = hello[0]["result"]["scope"].clone();
+        for forbidden in [
+            "send_raw_bytes",
+            "raw_serial_write",
+            "execute_device_command",
+            "unchecked_register_write",
+        ] {
+            assert!(crate::protocol::operation_spec(forbidden).is_none());
+        }
+        assert!(
+            hello[0]["result"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|capability| {
+                    let name = capability["name"].as_str().unwrap();
+                    !name.contains("raw")
+                        && !name.contains("unknown_thermal")
+                        && !name.contains("m16_unknown")
+                })
+        );
+        let before = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"before","op":"discover","args":{}})),
+        );
+        assert!(
+            !before[0]["result"]["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["kind"] == "instrument" && record["id"] == instrument_id)
+        );
+
+        let cursor = service.owner().event_log().latest_cursor();
+        let boot_id = service.boot_id().to_owned();
+        let subscribed = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"subscribe","op":"subscribe",
+                "args":{"after":{"boot_id":boot_id,"seq":cursor.to_string()},
+                    "filter":{"kinds":["signal"],"targets":[]}}}),
+            ),
+        );
+        assert!(subscribed[0]["result"]["subscription"].is_string());
+
+        let staged = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"stage",
+                "op":"stage_simple_device_candidate",
+                "request_id":{"scope":scope,"seq":"1"},
+                "args":{"expected_revision":"1","candidate":candidate_json}})),
+        );
+        assert_eq!(staged[1]["state"], "completed", "{staged:#?}");
+        let candidate_id = staged[1]["result"]["candidate_id"].clone();
+        let accepted = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"apply",
+                "op":"apply_configuration",
+                "request_id":{"scope":scope,"seq":"2"},
+                "args":{"candidate_id":candidate_id,"expected_revision":"1"}})),
+        );
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0]["state"], "accepted");
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let pending_debug = service.pending_simple_apply.as_ref().map(|pending| {
+                (
+                    pending.phase,
+                    pending.actuator,
+                    pending
+                        .actuator
+                        .and_then(|actuator| service.host.prepared_simple_output(actuator)),
+                )
+            });
+            let terminal = application.poll_configuration(&mut service);
+            if !terminal.is_empty() {
+                assert_eq!(terminal.len(), 1);
+                assert_eq!(
+                    terminal[0].1["state"],
+                    "completed",
+                    "terminal={terminal:#?} pending={pending_debug:#?} requests={:#?}",
+                    old_wire.lock().unwrap().requests,
+                );
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        let safe_sequence = old_wire.lock().unwrap().recognized.clone();
+        assert!(safe_sequence.windows(2).any(|pair| {
+            pair == [
+                UnknownThermalRequest::WritePower([0, 0]),
+                UnknownThermalRequest::ReadbackPower,
+            ]
+        }));
+
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::BestEffort, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+        service
+            .host
+            .start_recording("M16.7 unknown device", service.clock.now())
+            .unwrap();
+        while service.host.recording_status().unwrap().state != RecordingState::Recording {
+            service.host.service(&service.clock).unwrap();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let recorded_read_target = old_wire
+            .lock()
+            .unwrap()
+            .recognized
+            .iter()
+            .filter(|request| **request == UnknownThermalRequest::ReadTemperature)
+            .count()
+            + 1;
+
+        let after = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"after","op":"discover","args":{}})),
+        );
+        let records = after[0]["result"]["records"].as_array().unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|record| record["kind"] == "instrument" && record["id"] == instrument_id)
+        );
+        assert!(records.iter().any(|record| record["kind"] == "signal"
+            && record["id"] == serde_json::json!({"instrument":instrument_id,"parameter":"1"})));
+        assert!(records.iter().any(|record| record["kind"] == "output"
+            && record["id"] == serde_json::json!({"instrument":instrument_id,"parameter":"2"})));
+        assert!(records.iter().any(|record| record["kind"] == "controller"
+            && record["id"]
+                == serde_json::json!({"id": UNKNOWN_THERMAL_CONTROLLER_ID.to_string()})));
+        let described = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"describe","op":"describe",
+                "args":{"instrument":instrument_id}}),
+            ),
+        );
+        let power = described[0]["result"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["id"] == "2")
+            .unwrap();
+        assert_eq!(power["role"], "actuator");
+        assert_eq!(power["access"], "write_only");
+        assert_eq!(power["write_effect"], "output_affecting");
+
+        let temperature = SignalId::new(
+            InstrumentId::new(UNKNOWN_THERMAL_INSTRUMENT_ID),
+            ParameterId::new(1),
+        );
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if matches!(
+                service.owner().query(Query::GetLatestSignal(temperature)),
+                Ok(QueryResult::Latest(Some(sample)))
+                    if sample.quality() == SampleQuality::Good
+                        && sample.value() == Some(&lab_core::Value::Float(21.5))
+            ) && old_wire
+                .lock()
+                .unwrap()
+                .recognized
+                .iter()
+                .filter(|request| **request == UnknownThermalRequest::ReadTemperature)
+                .count()
+                >= recorded_read_target
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(
+            old_wire
+                .lock()
+                .unwrap()
+                .recognized
+                .contains(&UnknownThermalRequest::ReadTemperature)
+        );
+        let current = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"current",
+                "op":"measurements_current","args":{}})),
+        );
+        assert!(
+            current[0]["result"]["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["signal"]
+                    == serde_json::json!({"instrument":instrument_id,"parameter":"1"})
+                    && record["quality"] == "good"
+                    && record["value"] == 21.5)
+        );
+        let latest = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"latest","op":"latest",
+                "args":{"signal":{"instrument":instrument_id,"parameter":"1"}}})),
+        );
+        assert_eq!(latest[0]["result"]["value"], 21.5);
+        let window = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"window","op":"measurement_window",
+                "args":{"signal":{"instrument":instrument_id,"parameter":"1"},
+                    "max_records":8}}),
+            ),
+        );
+        assert_eq!(window[0]["result"]["source"], "runtime_recent");
+        assert!(
+            window[0]["result"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["quality"] == "good" && record["value"] == 21.5)
+        );
+        let mut signal_events = Vec::new();
+        for _ in 0..8 {
+            let batch = application.pump_events(&service, 1);
+            if batch.is_empty() {
+                break;
+            }
+            signal_events.extend(batch);
+        }
+        assert!(signal_events.iter().any(|event| event["kind"] == "signal"
+            && event["target"] == serde_json::json!({"instrument":instrument_id,"parameter":"1"})
+            && event["data"]["quality"] == "good"
+            && event["data"]["value"] == 21.5));
+        service.host.stop_recording().unwrap();
+        while service.host.recording_status().unwrap().state != RecordingState::Idle {
+            service.host.service(&service.clock).unwrap();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let controller = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"controller","op":"controller",
+                "args":{"controller":UNKNOWN_THERMAL_CONTROLLER_ID.to_string()}}),
+            ),
+        );
+        assert_eq!(controller[0]["result"]["state"], "ready");
+        let output_before = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"output-before","op":"output",
+                "args":{"actuator":{"instrument":instrument_id,"parameter":"2"}}}),
+            ),
+        );
+        assert_eq!(output_before[0]["result"]["state"], "disarmed");
+        assert_eq!(output_before[0]["result"]["safe_confirmed"], true);
+
+        let started = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"start","op":"controller_start",
+                "request_id":{"scope":scope,"seq":"3"},
+                "args":{"controller":UNKNOWN_THERMAL_CONTROLLER_ID.to_string()}}),
+            ),
+        );
+        assert_eq!(started[1]["state"], "completed");
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let output = application.handle(
+                &mut service,
+                1,
+                request(
+                    serde_json::json!({"v":1,"msg_id":"output-running","op":"output",
+                    "args":{"actuator":{"instrument":instrument_id,"parameter":"2"}}}),
+                ),
+            );
+            if output[0]["result"]["outcome"] == "readback_verified"
+                && output[0]["result"]["owner"]["kind"] == "automatic"
+                && old_wire.lock().unwrap().recognized.iter().any(
+                    |request| matches!(request, UnknownThermalRequest::WritePower(raw) if *raw != [0, 0]),
+                )
+            {
+                assert_eq!(
+                    output[0]["result"]["owner"]["id"],
+                    UNKNOWN_THERMAL_CONTROLLER_ID.to_string()
+                );
+                assert!(output[0]["result"]["requested"].is_number());
+                assert!(output[0]["result"]["sent"]["value"].is_number());
+                assert!(output[0]["result"]["acknowledged"]["value"].is_number());
+                assert!(output[0]["result"]["readback"]["value"].is_number());
+                assert_eq!(
+                    output[0]["result"]["requested"],
+                    output[0]["result"]["readback"]["value"]
+                );
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{output:#?}");
+            std::thread::yield_now();
+        }
+        let normal_sequences = old_wire.lock().unwrap().recognized.clone();
+        let non_safe_writes: Vec<_> = normal_sequences
+            .iter()
+            .enumerate()
+            .filter_map(|(index, request)| match request {
+                UnknownThermalRequest::WritePower(raw) if *raw != [0, 0] => Some((index, *raw)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(non_safe_writes.len(), 1, "{normal_sequences:#?}");
+        assert!(matches!(
+            normal_sequences.get(non_safe_writes[0].0 + 1),
+            Some(UnknownThermalRequest::ReadbackPower)
+        ));
+
+        let paused = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"pause","op":"controller_pause",
+                "request_id":{"scope":scope,"seq":"4"},
+                "args":{"controller":UNKNOWN_THERMAL_CONTROLLER_ID.to_string()}}),
+            ),
+        );
+        assert_eq!(paused[1]["result"]["state"], "paused");
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if service.host.configured_physical_outputs_safe().unwrap() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let replacement_wire = Arc::new(Mutex::new(UnknownThermalWire::new(220)));
+        let device_wire = replacement_wire.clone();
+        let reconnect = service
+            .reconnect_resource_with_factory(7, 1, move |settings, _| {
+                let device_wire = device_wire.clone();
+                ComTransport::with_device_factory(settings, move || {
+                    Ok(Box::new(UnknownThermalDevice(device_wire.clone())))
+                })
+            })
+            .unwrap();
+        assert_eq!(reconnect.binding_generation, 2);
+        let resource = configuration_api::resource_json(&service, 7).unwrap();
+        assert_eq!(resource["binding_generation"], "2");
+        assert_eq!(resource["transport_generation"], "2");
+        assert_eq!(resource["instruments"], serde_json::json!([instrument_id]));
+        let rebound_binding = service
+            .host
+            .prepared_simple_binding(InstrumentId::new(UNKNOWN_THERMAL_INSTRUMENT_ID))
+            .unwrap();
+        assert_eq!(rebound_binding.binding_generation, 2);
+        assert_eq!(rebound_binding.mapping_revision, 2);
+
+        service
+            .host
+            .start_recording("M16.7 unknown device after reconnect", service.clock.now())
+            .unwrap();
+        while service.host.recording_status().unwrap().state != RecordingState::Recording {
+            service.host.service(&service.clock).unwrap();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        {
+            let mut stale = old_wire.lock().unwrap();
+            stale.enqueue_crc(&[
+                0xa1,
+                UNKNOWN_THERMAL_ADDRESS,
+                UNKNOWN_THERMAL_CHANNEL,
+                0x03,
+                0xe7,
+            ]);
+            stale.enqueue_crc(&[0xb1, UNKNOWN_THERMAL_ADDRESS, 0x00]);
+            stale.enqueue_crc(&[
+                0xb2,
+                UNKNOWN_THERMAL_ADDRESS,
+                UNKNOWN_THERMAL_CHANNEL,
+                0x03,
+                0xe7,
+            ]);
+        }
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if matches!(
+                service.owner().query(Query::GetLatestSignal(temperature)),
+                Ok(QueryResult::Latest(Some(sample)))
+                    if sample.quality() == SampleQuality::Good
+                        && sample.value() == Some(&lab_core::Value::Float(22.0))
+            ) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let reconnect_discovery = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"reconnect-discovery",
+                "op":"discover","args":{}})),
+        );
+        let mut reconnect_records: Vec<_> = reconnect_discovery[0]["result"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| {
+                (record["kind"] == "instrument" && record["id"] == instrument_id)
+                    || (record["kind"] == "signal"
+                        && record["id"]
+                            == serde_json::json!({"instrument":instrument_id,"parameter":"1"}))
+            })
+            .cloned()
+            .collect();
+        reconnect_records.sort_by_key(|record| if record["kind"] == "instrument" { 0 } else { 1 });
+        let reconnect_current = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"reconnect-current",
+                "op":"measurements_current","args":{}})),
+        );
+        let mut reconnect_current: Vec<_> = reconnect_current[0]["result"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| {
+                record["signal"] == serde_json::json!({"instrument":instrument_id,"parameter":"1"})
+            })
+            .cloned()
+            .collect();
+        let mut reconnect_event = None;
+        for _ in 0..8 {
+            let batch = application.pump_events(&service, 1);
+            if let Some(event) = batch.into_iter().find(|event| {
+                event["kind"] == "signal"
+                    && event["target"]
+                        == serde_json::json!({"instrument":instrument_id,"parameter":"1"})
+                    && event["data"]["generation"] == "2"
+                    && event["data"]["value"] == 22.0
+            }) {
+                reconnect_event = Some(serde_json::json!({
+                    "kind":event["kind"],
+                    "target":event["target"],
+                    "data":event["data"]
+                }));
+                break;
+            }
+        }
+        let mut reconnect_event = reconnect_event.expect("replacement-generation signal event");
+        let normalize_time = |sample: &mut serde_json::Value| {
+            for field in ["observed_at", "observed_at_ns", "source_at_ns"] {
+                sample[field] = serde_json::json!("3000000000");
+            }
+        };
+        normalize_time(&mut reconnect_current[0]);
+        normalize_time(&mut reconnect_event["data"]);
+        let captured_application_shape = serde_json::json!({
+            "records":reconnect_records,
+            "current":reconnect_current,
+            "event":reconnect_event
+        });
+        let workbench_fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../test-data/m16_unknown_reconnect_application.json"
+        ))
+        .unwrap();
+        assert_eq!(captured_application_shape, workbench_fixture);
+        let rebound_latest = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"rebound-latest","op":"latest",
+                "args":{"signal":{"instrument":instrument_id,"parameter":"1"}}}),
+            ),
+        );
+        assert_eq!(rebound_latest[0]["result"]["value"], 22.0);
+        let rebound_controller = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"rebound-controller","op":"controller",
+                "args":{"controller":UNKNOWN_THERMAL_CONTROLLER_ID.to_string()}}),
+            ),
+        );
+        assert_eq!(rebound_controller[0]["result"]["state"], "paused");
+        let rebound_output = application.handle(
+            &mut service,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"rebound-output","op":"output",
+                "args":{"actuator":{"instrument":instrument_id,"parameter":"2"}}}),
+            ),
+        );
+        assert!(rebound_output[0]["result"]["owner"].is_null());
+        assert_eq!(rebound_output[0]["result"]["safe_confirmed"], true);
+        let replacement_sequences = replacement_wire.lock().unwrap().recognized.clone();
+        assert!(replacement_sequences.windows(2).any(|pair| {
+            pair == [
+                UnknownThermalRequest::WritePower([0, 0]),
+                UnknownThermalRequest::ReadbackPower,
+            ]
+        }));
+
+        let (entries, _) = service.host.frozen_activation_entries().unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry.kind == "simple_device_definition_canonical"
+                && Sha256::digest(&entry.content).as_slice() == definition_hash
+        }));
+        let overlay: serde_json::Value = serde_json::from_slice(
+            &entries
+                .iter()
+                .find(|entry| entry.kind == "runtime_configuration_overlay")
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+        assert_eq!(overlay["source"], "process_local_application_candidate");
+        assert_eq!(overlay["definition_id"], "m16-unknown-thermal-v1");
+        assert_eq!(overlay["definition_version"], 1);
+        assert_eq!(overlay["definition_sha256"], hash_hex(definition_hash));
+        assert_eq!(overlay["candidate_sha256"], candidate_hash);
+        assert_eq!(overlay["instances"], serde_json::json!([instrument_id]));
+        let activation_instance: serde_json::Value = serde_json::from_slice(
+            &entries
+                .iter()
+                .find(|entry| {
+                    entry.kind == "simple_device_instance"
+                        && String::from_utf8_lossy(&entry.content)
+                            .contains("\"instrument_id\":\"1607\"")
+                })
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+        assert_eq!(activation_instance["binding_generation"], "1");
+        assert_eq!(activation_instance["mapping_revision"], "1");
+
+        service.request_shutdown().unwrap();
+        loop {
+            if let Some(status) = service.shutdown_step().unwrap() {
+                assert!(status.recorder_flushed);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(service);
+
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let (generation, revision, value): (Vec<u8>, Vec<u8>, f64) = connection
+            .query_row(
+                "SELECT generation,revision,float_value FROM measurements
+                 WHERE instrument_id=?1 AND parameter_id=?2 AND quality='good'
+                   AND float_value=?3
+                 ORDER BY record_seq DESC LIMIT 1",
+                rusqlite::params![
+                    UNKNOWN_THERMAL_INSTRUMENT_ID.to_be_bytes().as_slice(),
+                    1u64.to_be_bytes().as_slice(),
+                    21.5_f64,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(generation, 1u64.to_be_bytes());
+        assert_eq!(revision, 1u64.to_be_bytes());
+        assert_eq!(value, 21.5);
+        let (reconnected_generation, reconnected_revision, reconnected_value): (
+            Vec<u8>,
+            Vec<u8>,
+            f64,
+        ) = connection
+            .query_row(
+                "SELECT generation,revision,float_value FROM measurements
+                 WHERE instrument_id=?1 AND parameter_id=?2 AND quality='good'
+                   AND float_value=?3
+                 ORDER BY record_seq DESC LIMIT 1",
+                rusqlite::params![
+                    UNKNOWN_THERMAL_INSTRUMENT_ID.to_be_bytes().as_slice(),
+                    1u64.to_be_bytes().as_slice(),
+                    22.0_f64,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(reconnected_generation, 2u64.to_be_bytes());
+        assert_eq!(reconnected_revision, 2u64.to_be_bytes());
+        assert_eq!(reconnected_value, 22.0);
+        let instance_content: String = connection
+            .query_row(
+                "SELECT CAST(content AS TEXT) FROM provenance_content
+                 WHERE kind='simple_device_instance'
+                   AND CAST(content AS TEXT) LIKE '%\"instrument_id\":\"1607\"%'
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let instance: serde_json::Value = serde_json::from_str(&instance_content).unwrap();
+        assert_eq!(instance["definition_id"], "m16-unknown-thermal-v1");
+        assert_eq!(instance["source"], "process_local_application_candidate");
+        assert_eq!(instance["resource_id"], "7");
+        assert_eq!(instance["binding_generation"], "1");
+        assert_eq!(instance["mapping_revision"], "1");
+        let overlay_content: String = connection
+            .query_row(
+                "SELECT CAST(content AS TEXT) FROM provenance_content
+                 WHERE kind='runtime_configuration_overlay'
+                 ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let persisted_overlay: serde_json::Value = serde_json::from_str(&overlay_content).unwrap();
+        assert_eq!(
+            persisted_overlay["source"],
+            "process_local_application_candidate"
+        );
+        assert_eq!(persisted_overlay["definition_id"], "m16-unknown-thermal-v1");
+        assert_eq!(persisted_overlay["definition_version"], 1);
+        assert_eq!(
+            persisted_overlay["definition_sha256"],
+            hash_hex(definition_hash)
+        );
+        assert_eq!(persisted_overlay["candidate_sha256"], candidate_hash);
+        assert_eq!(
+            persisted_overlay["instances"],
+            serde_json::json!([instrument_id])
+        );
+        let fixture_schema_objects: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE name LIKE '%unknown_thermal%' OR sql LIKE '%unknown_thermal%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fixture_schema_objects, 0);
+        drop(connection);
+
+        let (mut restarted, restarted_wire) =
+            service_for_unknown_thermal("4123456789abcdef0123456789abcdef", 230);
+        assert_eq!(restarted.deployment.as_ref().unwrap().revision(), 1);
+        assert!(!restarted.api_simple_overlay_active);
+        assert!(
+            restarted
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(
+                    UNKNOWN_THERMAL_INSTRUMENT_ID,
+                )))
+                .is_err()
+        );
+        let mut restarted_application = Application::new(restarted.boot_id()).unwrap();
+        let restarted_hello = restarted_application.handle(
+            &mut restarted,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"restart-hello","op":"hello",
+                "args":{"scope":null}}),
+            ),
+        );
+        assert!(restarted_hello[0]["result"]["scope"].is_string());
+        let restarted_discovery = restarted_application.handle(
+            &mut restarted,
+            1,
+            request(
+                serde_json::json!({"v":1,"msg_id":"restart-discover","op":"discover",
+                "args":{}}),
+            ),
+        );
+        let restarted_records = restarted_discovery[0]["result"]["records"]
+            .as_array()
+            .unwrap();
+        assert!(
+            restarted_records
+                .iter()
+                .any(|record| record["kind"] == "resource" && record["id"] == "7")
+        );
+        assert!(
+            restarted_records
+                .iter()
+                .any(|record| record["kind"] == "reference"
+                    && record["id"] == serde_json::json!({"id":"10"}))
+        );
+        assert!(
+            !restarted_records
+                .iter()
+                .any(|record| { record["kind"] == "instrument" && record["id"] == instrument_id })
+        );
+        for _ in 0..16 {
+            restarted.host.service(&restarted.clock).unwrap();
+        }
+        assert!(restarted_wire.lock().unwrap().requests.is_empty());
+
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(database.with_extension("sqlite-shm"));
+    }
+
+    #[test]
     fn pending_application_simple_apply_fences_property_configuration_without_mutation() {
         let (mut service, _) = service_with_simple_transport();
         let mut application = Application::new(service.boot_id()).unwrap();
@@ -3107,6 +4297,484 @@ unit_symbol="C"
                 .query(Query::DescribeInstrument(InstrumentId::new(1002)))
                 .is_err()
         );
+        drop(service);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+    }
+
+    #[test]
+    fn insufficient_event_capacity_fails_before_durable_activation() {
+        let (mut service, _) = service_with_simple_transport();
+        let prior = service.deployment.as_ref().unwrap().active().clone();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let _ = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let database = temporary_database();
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::BestEffort, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+        let before = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"before","op":"discover","args":{}})),
+        )[0]["result"]["records"]
+            .clone();
+        assert!(
+            !before
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["id"] == serde_json::json!({"id":"2002"}))
+        );
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), 1)
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let _ = service.poll_simple_device_apply();
+            if service
+                .pending_simple_apply
+                .as_ref()
+                .is_some_and(|pending| pending.phase == SimpleApplyPhase::Commit)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(u64::MAX);
+        let completion = service.poll_simple_device_apply().unwrap();
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::OwnerFailure)
+        );
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 1);
+        assert_eq!(service.deployment.as_ref().unwrap().active(), &prior);
+        assert!(!service.api_simple_overlay_active);
+        assert!(
+            service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_err()
+        );
+        let after = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"after","op":"discover","args":{}})),
+        )[0]["result"]["records"]
+            .clone();
+        assert_eq!(after, before);
+        drop(service);
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let activations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(activations, 1);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+    }
+
+    #[test]
+    fn prepared_read_apply_failure_starts_no_physical_work_and_cleans_topology() {
+        let (mut service, wire) = service_for_api_output(false);
+        let prior_revision = service.deployment.as_ref().unwrap().revision();
+        let mut application = Application::new(service.boot_id()).unwrap();
+        let request = |value| decode_frame(&encode_frame(&value).unwrap()).unwrap();
+        let _ = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"hello","op":"hello",
+                "args":{"scope":null}})),
+        );
+        let before = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"before","op":"discover","args":{}})),
+        )[0]["result"]["records"]
+            .clone();
+        assert!(
+            !before
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["id"] == serde_json::json!({"id":"2002"}))
+        );
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(2002, 2))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, prior_revision)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), prior_revision)
+            .unwrap();
+        let before_sequence = service.host.event_log().latest_cursor();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let _ = service.poll_simple_device_apply();
+            assert!(
+                wire.lock()
+                    .unwrap()
+                    .writes
+                    .iter()
+                    .all(|bytes| bytes.first() != Some(&0x10))
+            );
+            assert!(
+                service
+                    .owner()
+                    .query(Query::DescribeInstrument(InstrumentId::new(2002)))
+                    .is_err()
+            );
+            if service
+                .pending_simple_apply
+                .as_ref()
+                .is_some_and(|pending| pending.phase == SimpleApplyPhase::Commit)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(u64::MAX);
+        let completion = service.poll_simple_device_apply().unwrap();
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::OwnerFailure)
+        );
+        assert!(service.pending_simple_apply.is_none());
+        assert_eq!(
+            service.deployment.as_ref().unwrap().revision(),
+            prior_revision
+        );
+        assert!(!service.api_simple_overlay_active);
+        assert!(
+            service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(2002)))
+                .is_err()
+        );
+        assert!(wire.lock().unwrap().writes.is_empty());
+        let after = application.handle(
+            &mut service,
+            1,
+            request(serde_json::json!({"v":1,"msg_id":"after","op":"discover","args":{}})),
+        )[0]["result"]["records"]
+            .clone();
+        assert!(
+            !after
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["id"] == serde_json::json!({"id":"2002"}))
+        );
+
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(before_sequence);
+        let staged = service
+            .stage_simple_device_candidate(&candidate, prior_revision)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), prior_revision)
+            .unwrap();
+        let completion = poll_simple_apply_to_terminal(&mut service);
+        assert_eq!(completion.result, Ok(prior_revision + 1));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            if wire
+                .lock()
+                .unwrap()
+                .writes
+                .iter()
+                .any(|bytes| bytes.first() == Some(&0x10))
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn durable_publication_consumes_held_event_capacity_after_unrelated_activity() {
+        let (mut service, _) = service_with_simple_transport();
+        let database = temporary_database();
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::BestEffort, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(1002, 2))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), 1)
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let _ = service.poll_simple_device_apply();
+            if service
+                .pending_simple_apply
+                .as_ref()
+                .is_some_and(|pending| pending.phase == SimpleApplyPhase::Commit)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(u64::MAX - 2);
+        assert!(service.poll_simple_device_apply().is_none());
+        let generation = service
+            .pending_simple_apply
+            .as_ref()
+            .and_then(|pending| pending.recording.as_ref())
+            .and_then(|recording| recording.generation)
+            .expect("Recorder generation reserved");
+        assert_eq!(
+            service.pending_simple_apply.as_ref().unwrap().phase,
+            SimpleApplyPhase::ConfirmRecording
+        );
+        service
+            .host
+            .event_log_mut()
+            .configuration_state(Duration::ZERO, serde_json::json!({"unrelated":true}))
+            .unwrap();
+        assert_eq!(service.host.event_log().latest_cursor(), u64::MAX - 1);
+        assert_eq!(
+            service.host.event_log_mut().configuration_state(
+                Duration::ZERO,
+                serde_json::json!({"would_steal_reserved_capacity":true})
+            ),
+            Err(crate::events::EventError::Exhausted)
+        );
+        while service
+            .host
+            .recording_status()
+            .is_none_or(|status| status.activation_generation < generation)
+        {
+            service.host.poll_recorder_for_test(service.clock.now());
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let completion = service.poll_simple_device_apply().unwrap();
+        assert_eq!(completion.result, Ok(2));
+        assert_eq!(service.host.event_log().latest_cursor(), u64::MAX);
+        assert_eq!(service.deployment.as_ref().unwrap().revision(), 2);
+        assert!(
+            service
+                .owner()
+                .query(Query::DescribeInstrument(InstrumentId::new(1002)))
+                .is_ok()
+        );
+        let published_facts = service.host.event_log().projection_records();
+        assert!(published_facts.iter().any(|record| {
+            record["kind"] == "signal"
+                && record["target"] == serde_json::json!({"instrument":"1002","parameter":"1"})
+        }));
+        let replay = service
+            .host
+            .event_log()
+            .scan_after(u64::MAX - 1, 1)
+            .unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0]["seq"], u64::MAX.to_string());
+        assert_eq!(replay[0]["kind"], "signal");
+        let (entries, _) = service.host.frozen_activation_entries().unwrap();
+        assert!(entries.iter().any(|entry| {
+            entry.kind == "runtime_configuration_overlay"
+                && String::from_utf8_lossy(&entry.content)
+                    .contains("process_local_application_candidate")
+        }));
+        drop(service);
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let activations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(activations, 2);
+        let _ = std::fs::remove_file(&database);
+        let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+    }
+
+    #[test]
+    fn reconnect_is_fenced_while_simple_publication_batch_is_pending() {
+        let (mut service, _) = service_for_api_output(false);
+        let database = temporary_database();
+        let anchor =
+            TimeAnchor::capture(|| service.clock.now(), || Ok(std::time::SystemTime::now()))
+                .unwrap();
+        let recorder = RecorderWorker::open_with_boot_clock(
+            &database,
+            RecorderLimits::default(),
+            service.boot_id(),
+            anchor,
+            service.clock,
+        )
+        .unwrap();
+        service
+            .host
+            .attach_recorder(recorder, RecordingPolicy::Required, service.clock.now())
+            .unwrap();
+        await_recorder_activation(&mut service.host).unwrap();
+
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(2003, 3))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 1)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), 1)
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let _ = service.poll_simple_device_apply();
+            if service
+                .pending_simple_apply
+                .as_ref()
+                .is_some_and(|pending| pending.phase == SimpleApplyPhase::ConfirmRecording)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            service
+                .host
+                .configured_resource_generation(ResourceId::new(7)),
+            Some(1)
+        );
+        let reconnect = service.reconnect_resource_with_factory(7, 1, |settings, _| {
+            ComTransport::with_device_factory(settings, || {
+                Ok(Box::new(SimpleProbeDevice {
+                    readable: VecDeque::new(),
+                }))
+            })
+        });
+        assert_eq!(reconnect, Err(LifecycleOperationError::Capacity));
+        assert_eq!(
+            service
+                .host
+                .configured_resource_generation(ResourceId::new(7)),
+            Some(1)
+        );
+
+        let completion = poll_simple_apply_to_terminal(&mut service);
+        assert_eq!(completion.result, Ok(2));
+        let reconnect = service
+            .reconnect_resource_with_factory(7, 1, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(SimpleProbeDevice {
+                        readable: VecDeque::new(),
+                    }))
+                })
+            })
+            .unwrap();
+        assert_eq!(reconnect.binding_generation, 2);
+
+        let candidate =
+            crate::simple_device::parse_simple_candidate(&application_read_only_candidate(2004, 4))
+                .unwrap();
+        let staged = service
+            .stage_simple_device_candidate(&candidate, 2)
+            .unwrap();
+        service
+            .begin_simple_device_apply(staged.staged.id(), 2)
+            .unwrap();
+        let before_sequence = service.host.event_log().latest_cursor();
+        loop {
+            service.host.service(&service.clock).unwrap();
+            let _ = service.poll_simple_device_apply();
+            if service
+                .pending_simple_apply
+                .as_ref()
+                .is_some_and(|pending| pending.phase == SimpleApplyPhase::Commit)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(u64::MAX);
+        let completion = service.poll_simple_device_apply().unwrap();
+        assert_eq!(
+            completion.result,
+            Err(LifecycleOperationError::OwnerFailure)
+        );
+        service
+            .host
+            .event_log_mut()
+            .force_sequence_for_test(before_sequence);
+        let reconnect = service
+            .reconnect_resource_with_factory(7, 2, |settings, _| {
+                ComTransport::with_device_factory(settings, || {
+                    Ok(Box::new(SimpleProbeDevice {
+                        readable: VecDeque::new(),
+                    }))
+                })
+            })
+            .unwrap();
+        assert_eq!(reconnect.binding_generation, 3);
         drop(service);
         let _ = std::fs::remove_file(&database);
         let _ = std::fs::remove_file(format!("{}-wal", database.display()));

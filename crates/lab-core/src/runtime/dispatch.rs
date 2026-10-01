@@ -549,12 +549,18 @@ impl Runtime {
                 controller,
                 pid,
                 expected_revision,
-            } => self.configure_controller_pid(controller, pid, expected_revision),
+            } => {
+                self.reject_prepared_controller_mutation(controller)?;
+                self.configure_controller_pid(controller, pid, expected_revision)
+            }
             Command::ReconfigureController {
                 controller,
                 config,
                 expected_revision,
-            } => self.reconfigure_controller(controller, config, expected_revision),
+            } => {
+                self.reject_prepared_controller_mutation(controller)?;
+                self.reconfigure_controller(controller, config, expected_revision)
+            }
             Command::PrepareController(id) => {
                 let result = self.prepare_controller(id);
                 if result.is_ok() {
@@ -563,6 +569,7 @@ impl Runtime {
                 result
             }
             Command::StartController { controller, at } => {
+                self.reject_prepared_controller_mutation(controller)?;
                 self.require_recording_open(at)?;
                 let result =
                     self.start_or_resume_controller(controller, at, ControllerState::Ready);
@@ -572,12 +579,14 @@ impl Runtime {
                 result
             }
             Command::TickController { controller, at } => {
+                self.reject_prepared_controller_mutation(controller)?;
                 self.require_recording_open(at)?;
                 let result = self.tick_controller(controller, at);
                 self.capture_controller_fact(controller, at);
                 result
             }
             Command::PauseController { controller, at } => {
+                self.reject_prepared_controller_mutation(controller)?;
                 let result = self.pause_controller(controller, at);
                 if result.is_ok() {
                     self.capture_controller_fact(controller, at);
@@ -585,6 +594,7 @@ impl Runtime {
                 result
             }
             Command::ResumeController { controller, at } => {
+                self.reject_prepared_controller_mutation(controller)?;
                 self.require_recording_open(at)?;
                 let result =
                     self.start_or_resume_controller(controller, at, ControllerState::Paused);
@@ -594,6 +604,7 @@ impl Runtime {
                 result
             }
             Command::ResetFailedController { controller, at } => {
+                self.reject_prepared_controller_mutation(controller)?;
                 let result = self.reset_failed_controller(controller, at);
                 if result.is_ok() {
                     self.capture_controller_fact(controller, at);
@@ -829,6 +840,9 @@ impl Runtime {
                 timeout,
             } => {
                 self.check_transport_time(at)?;
+                if self.prepared_simple_devices.contains(&instrument) {
+                    return Err(Error::UnknownInstrument(instrument));
+                }
                 let instance = self
                     .simple_device_instruments
                     .get(&instrument)

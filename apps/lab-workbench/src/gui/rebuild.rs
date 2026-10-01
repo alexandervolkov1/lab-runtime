@@ -960,7 +960,11 @@ mod tests {
     }
 
     #[test]
-    fn provisioned_ordinary_signal_rebuilds_and_updates_the_single_live_subscription() {
+    fn m16_7_unknown_device_signal_rebuilds_and_updates_the_generic_live_trace() {
+        let reconnect_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../test-data/m16_unknown_reconnect_application.json"
+        ))
+        .unwrap();
         let client = FakeClient::default();
         let mut model = WorkbenchModel::new(PresentationDocument::empty("provisioned"));
         let mut coordinator = RebuildCoordinator::default();
@@ -985,8 +989,10 @@ mod tests {
                 json!({
                     "projection":"d","revision":{"boot_id":"boot","event_seq":"2"},
                     "records":[
-                        {"kind":"instrument","id":"1002"},
-                        {"kind":"signal","id":{"instrument":"1002","parameter":"1"}}
+                        {"kind":"instrument","id":"1607","key":"unknown-thermal-1"},
+                        {"kind":"signal","id":{"instrument":"1607","parameter":"1"}},
+                        {"kind":"output","id":{"instrument":"1607","parameter":"2"}},
+                        {"kind":"controller","id":{"id":"1607"}}
                     ],"next_index":null,"complete":true
                 }),
             ),
@@ -1004,8 +1010,8 @@ mod tests {
                 &op,
                 json!({
                     "projection":"m","revision":{"boot_id":"boot","event_seq":"3"},
-                    "records":[{"signal":{"instrument":"1002","parameter":"1"},
-                        "value":20.0,"quality":"good","observed_at_ns":"2000000000"}],
+                    "records":[{"signal":{"instrument":"1607","parameter":"1"},
+                        "value":21.5,"quality":"good","observed_at_ns":"2000000000"}],
                     "next_index":null,"complete":true
                 }),
             ),
@@ -1053,7 +1059,7 @@ mod tests {
         );
 
         let signal = crate::presentation::RuntimeRef::Signal {
-            instrument: "1002".into(),
+            instrument: "1607".into(),
             parameter: "1".into(),
         };
         assert_eq!(model.observations.freshness, Freshness::Fresh);
@@ -1069,14 +1075,117 @@ mod tests {
                 seq: 6,
             },
             envelope: json!({"kind":"signal",
-                "target":{"instrument":"1002","parameter":"1"},
-                "data":{"signal":{"instrument":"1002","parameter":"1"},
-                    "quality":"good","value":21.5,"observed_at_ns":"2500000000"}}),
+                "target":{"instrument":"1607","parameter":"1"},
+                "data":{"signal":{"instrument":"1607","parameter":"1"},
+                    "quality":"good","value":22.0,"observed_at_ns":"2500000000"}}),
         });
         let points = model.observations.live[&signal].points();
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].time_seconds, 2.5);
-        assert_eq!(points[0].value, 21.5);
+        assert_eq!(points[0].value, 22.0);
+
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            ClientUpdate::State(ConnectionState::Disconnected),
+        );
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            ClientUpdate::Hello(hello()),
+        );
+        let Sent::Query(reconnect_discover, op, _) = client.sent.borrow_mut().pop_front().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(op, "discover");
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            reply(
+                reconnect_discover,
+                &op,
+                json!({
+                    "projection":"d2","revision":{"boot_id":"boot","event_seq":"8"},
+                    "records":reconnect_fixture["records"].clone(),
+                    "next_index":null,"complete":true
+                }),
+            ),
+        );
+        let Sent::Query(reconnect_measurements, op, _) =
+            client.sent.borrow_mut().pop_front().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(op, "measurements_current");
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            reply(
+                reconnect_measurements,
+                &op,
+                json!({
+                    "projection":"m2","revision":{"boot_id":"boot","event_seq":"8"},
+                    "records":reconnect_fixture["current"].clone(),
+                    "next_index":null,"complete":true
+                }),
+            ),
+        );
+        let Sent::Query(reconnect_fence, op, _) = client.sent.borrow_mut().pop_front().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(op, "discover");
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            reply(
+                reconnect_fence,
+                &op,
+                json!({"projection":"f2","revision":{"boot_id":"boot","event_seq":"8"},
+                    "records":[],"next_index":null,"complete":true}),
+            ),
+        );
+        let Sent::Subscribe(reconnect_subscribe, after, _) =
+            client.sent.borrow_mut().pop_front().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(after.boot_id, "boot");
+        assert_eq!(after.seq, 8);
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            reply(
+                reconnect_subscribe,
+                "subscribe",
+                json!({"subscription":"all-2","accepted_cursor":{"boot_id":"boot","seq":"8"}}),
+            ),
+        );
+        apply(
+            &mut coordinator,
+            &mut model,
+            &client,
+            ClientUpdate::SubscriptionProgress(json!({"cursor":{"boot_id":"boot","seq":"8"}})),
+        );
+        assert_eq!(model.observations.freshness, Freshness::Fresh);
+        model.apply_client_update(ClientUpdate::Event {
+            cursor: EventCursor {
+                boot_id: "boot".into(),
+                seq: 9,
+            },
+            envelope: reconnect_fixture["event"].clone(),
+        });
+        let points = model.observations.live[&signal].points();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].value, 22.0);
+        assert_eq!(points[0].time_seconds, 3.0);
     }
 
     #[test]

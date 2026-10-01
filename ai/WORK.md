@@ -1,10 +1,10 @@
-# Current work — M16.7 minimal unknown-device acceptance
+# Current work — M16 complete fast/simple-device integration
 
 ```text
 M8–M11: ACCEPTED
 Developer-preview technical gate: PASSED
 Core technical implementation for v0.1: FUNCTIONALLY COMPLETE
-Current phase: M16.7 minimal unknown-device acceptance
+Current phase: M16 complete
 Repository documentation hygiene: COMPLETE
 Developer Preview Reference: COMPLETE
 Preview packaging: COMPLETE
@@ -43,12 +43,10 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1–M16.6: ACCEPTED
-M16.7:
-AUTHORIZED
-M16 consolidated external review:
-NOT AUTHORIZED
-STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
+M16.1–M16.7: ACCEPTED
+M16 consolidated external review: ACCEPTED
+M17: NOT AUTHORIZED
+STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
 ```
 
 The accepted M12.2 implementation commit is
@@ -97,8 +95,12 @@ absolute apply deadline with quarantine based on actual
 `send_started && !safe_confirmed` evidence. M16.5 generic integration acceptance is
 externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
 fault/bounds/provenance/recovery acceptance is externally accepted at
-`6021586096453fa03bdbcc28ef740b660f32eeb5`. M16.7 minimal unknown-device acceptance
-is authorized; M16 consolidated external review is not authorized.
+`6021586096453fa03bdbcc28ef740b660f32eeb5`. M16 fast/simple/declarative instrument
+onboarding is complete and externally accepted. Prepared SimpleDevice topology is
+physically inert until publication; held EventLog capacity and the atomic publication
+boundary are real; reconnect is fenced during pending publication; controller/output,
+reconnect/restart, Recorder/provenance, and Workbench acceptance are complete. Final
+external review result: M16 READY TO CLOSE.
 
 ## Completed preparation step
 
@@ -216,15 +218,13 @@ M15.4 Workbench user guide: ACCEPTED
 M15.5–M15.8:
 DEFERRED UNTIL M16 CONSOLIDATED ACCEPTANCE
 NOT AUTHORIZED
-M16.1–M16.6: ACCEPTED
-M16.7:
-AUTHORIZED
-M16 consolidated external review:
-NOT AUTHORIZED
+M16.1–M16.7: ACCEPTED
+M16 consolidated external review: ACCEPTED
+M17: NOT AUTHORIZED
 
-Current phase: M16.7 minimal unknown-device acceptance
+Current phase: M16 complete
 
-STATUS: M16_7_UNKNOWN_DEVICE_ACCEPTANCE_AUTHORIZED
+STATUS: M16_FAST_SIMPLE_DEVICE_INTEGRATION_ACCEPTED
 ```
 
 M13.1 is accepted in `M13_1_STEEL_EXTERNAL_HOST_ARCHITECTURE_AUDIT.md`. Its external
@@ -373,7 +373,8 @@ M16.4 provisioning and M16.5 generic integration acceptance are externally accep
 M16.5 is accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6
 fault/bounds/provenance/recovery acceptance is accepted at
 `6021586096453fa03bdbcc28ef740b660f32eeb5`. M16.7 minimal unknown-device acceptance
-is authorized; M16 consolidated external review remains unauthorized. M13.2 remains blocked on
+is accepted; M16 consolidated external review found no blockers and recorded M16 READY
+TO CLOSE. M13.2 remains blocked on
 Steel dependency safety.
 
 ## M16.2 accepted implementation
@@ -463,7 +464,8 @@ External implementation review must prove all of the following:
     Recorder consumers contain no SimpleDevice-specific branch.
 17. Existing Metakon behavior and its 38-byte codec validation remain unchanged.
 
-M16.2–M16.6 are accepted; M16.7 is authorized under the frozen scope below.
+M16.2–M16.7 are accepted under the frozen scope below; consolidated review recorded
+M16 READY TO CLOSE.
 
 ## M16.3 accepted implementation
 
@@ -595,9 +597,9 @@ definition upload, process-local overlays, incremental provisioning apply, Sessi
 candidate credit, new resource or COM provisioning, delimiter/ASCII/binary64/BCD/
 packed-bit grammars, general expressions/callbacks/state machines, a special Workbench
 UI, public raw I/O, scripting, or external-language integration. The M16.4 candidate
-implements only the bounded provisioning surface below. M16.5 is externally accepted;
-M16.6 is externally accepted under the frozen acceptance scope below, and M16.7 is
-authorized only for the frozen minimal unknown-device acceptance.
+implements only the bounded provisioning surface below. M16.5–M16.7 are externally
+accepted under the frozen acceptance scope; consolidated review recorded M16 READY TO
+CLOSE.
 
 ## M16.4 implemented Application provisioning slice
 
@@ -613,9 +615,20 @@ stage_simple_device_candidate
     -> immediate Accepted
     -> Runtime-owned incremental preparation
     -> process-local active overlay
-    -> atomic publication or terminal failure
+    -> pre-durable terminal failure or non-fallible final publication
     -> post-send quarantine when physical output outcome is ambiguous
 ```
+
+Final publication uses a generic prebuilt Core/EventLog batch. Before submitting the
+Recorder activation, the owner validates Core publication admissibility, the exact
+deployment revision transition, every discovery target and encoded event bound, and
+holds the exact EventLog sequence capacity required by the candidate's signals,
+outputs, and optional controllers. Ordinary EventLog appenders cannot consume held
+capacity. Cancellation before durable activation releases it; durable confirmation
+consumes it exactly once while the serialized owner publishes Core topology, EventLog
+facts/replay entries, host metadata already prepared under the hidden-topology fence,
+and the deployment revision without a remaining domain-error path. Instruments are
+published by ordinary Core discovery and therefore require no separate EventLog fact.
 
 ### Public surface and candidate
 
@@ -753,8 +766,8 @@ uploads, new resources/COM settings, overlay persistence/export, runtime.toml re
 raw byte/serial operations, a new controller or authority/quarantine owner, new
 protocol grammars, expressions/callbacks/state machines, special Workbench UI,
 scripting or external-language integration. M16.4 did not itself authorize later
-slices; M16.6 is externally accepted, while M16.7 is authorized by the current
-coordination gate and remains subject to external review.
+slices; M16.6 and M16.7 are externally accepted, and consolidated review recorded M16
+READY TO CLOSE.
 
 ## M16.5 accepted generic integration
 
@@ -831,7 +844,9 @@ The implemented acceptance scope is exactly:
 - exact in-memory and SQLite provenance; and
 - preservation and restoration of the prior persistent deployment.
 
-The focused M16.6 suites pass 32/32 tests. One deterministic RED oracle found that a
+The focused M16.6 suites pass with zero failures, including the additional controller,
+publication, stale-output, expiry, and generation-boundary oracles. One deterministic
+RED oracle found that a
 provisional safe write failing before its first byte retained the safe obligation but
 did not expose a terminal pre-send transport failure, leaving apply pending until its
 absolute deadline. The internal authority now records the existing `Failed` outcome
@@ -860,8 +875,8 @@ and Runtime/build/deployment provenance. Immutable definition content remains on
 content object across multiple measurements and instances.
 
 Final remediation verification passes formatting and warnings-denied Clippy. Debug and
-release workspace suites each pass 750 tests with 11 explicitly ignored and zero
-failures.
+release workspace suites pass with zero failures; package-level counts are reported by
+the verification run rather than frozen in this coordination note.
 
 M16.6 adds no policy and does not expand the SimpleDevice grammar. It adds no
 operations, capabilities, DTOs, errors, or dependencies; changes no Workbench feature;
@@ -869,9 +884,9 @@ did not begin M16.7; and did not begin Runtime API or Workbench UI API work. Pub
 documentation and `.gitignore` remained out of scope. M16.7 is now separately authorized
 under the frozen scope below.
 
-## M16.7 authorized minimal unknown-device acceptance
+## M16 complete fast/simple/declarative instrument integration
 
-M16.7 provisions one deterministic unknown, non-Metakon device entirely through the
+M16 provisions one deterministic unknown, non-Metakon device entirely through the
 existing generic declarative/Application path and demonstrates:
 
 ```text
@@ -894,9 +909,13 @@ Workbench contain no device-specific implementation branch for it. Expected owne
 primarily test fixture/data, a scripted physical `ByteTransport` peer, and the existing
 Application/Runtime/Workbench acceptance harnesses.
 
-M16.7 uses the accepted M16.2–M16.6 semantics unchanged. Production changes are
+Prepared SimpleDevice topology is physically inert until publication. A participating
+resource cannot reconnect while a SimpleDevice publication is pending, and a failed
+pre-durable apply deterministically leaves no hidden topology or pending transport work.
+
+M16 uses the accepted M16.2–M16.6 semantics unchanged. Production changes were
 permitted only when a deterministic RED oracle proves a defect in the already accepted
-generic seam. M16.7 does not authorize:
+generic seam. M16 did not authorize:
 
 - a device-specific Runtime driver, Application operation or DTO, or Workbench path;
 - new grammar, policy, transport/resource kind, controller, or authority owner;
@@ -908,7 +927,46 @@ generic seam. M16.7 does not authorize:
 - Cargo dependencies; or
 - `.gitignore` changes.
 
-M16 consolidated external review remains not authorized.
+The implemented test-only fixture uses definition `m16-unknown-thermal-v1`, instrument
+key `unknown-thermal-1`, one existing `windows_com` resource, and existing Reference
+`10`. Its peer rejects every request that is not the exact address/channel/length/CRC16
+form. Temperature READ is `A1 + address + channel + CRC16` with a strictly correlated
+signed big-endian response. Power WRITE is `B1 + address + channel + u16_be value +
+CRC16`, followed by a strict semantic ACK and a distinct `B2` READBACK transaction.
+
+One Runtime acceptance drives real `hello`, `stage_simple_device_candidate`,
+`apply_configuration`, and terminal `completed`; proves pre/post discovery, ordinary
+Signal/Actuator/controller projection, physical READ, current/latest/recent/event paths,
+SQLite measurement and existing SimpleDevice provenance, safe activation, native PID
+output through `OutputAuthority`, exact WRITE/ACK/READBACK separation, reconnect binding
+and mapping revision `1 -> 2`, replacement-generation fencing, generic safe
+re-establishment, no controller rearm, and fresh-process restoration of the persistent
+resource/Reference baseline with no overlay or spontaneous write replay. A separate
+Core oracle holds a physical WRITE transaction across rebind and proves stale ACK and
+READBACK bytes cannot settle the replacement authority.
+
+The real Runtime/Application reconnect acceptance captures and verifies the production
+discovery/current/event shape for replacement generation `2`. One Workbench acceptance
+reuses that shared captured shape through the existing FakeClient boundary to exercise
+the ordinary rebuild coordinator. It resolves the normal `RuntimeRef::Signal`, uses the
+one generic subscription, rebuilds without changing the Runtime boot identity, and
+appends the replacement-generation event to the ordinary bounded live trace; it is not
+a second physical Runtime-to-Workbench transport fixture.
+
+The focused M16 suite passes its Core, Runtime, and Workbench acceptance tests. Source/symbol audit finds the fictional
+identity only in `#[cfg(test)]` fixture/rebuild data, finds no fixture branch in
+production Runtime/Application/Workbench consumers, and confirms the public operation
+registry has no raw byte/register/device-command authority. No public schema, grammar,
+policy, dependency, documentation, or `.gitignore` change was required. Generic
+corrections were limited to controller discovery publication, prepared-controller
+mutation fencing, exact held EventLog sequence capacity with a prebuilt non-fallible
+final publication batch, and SimpleDevice replacement-generation projection through
+the existing discovery/current path. Formatting, warnings-denied Clippy, and workspace
+debug/release tests pass with zero failures; the exact aggregate count is reported by
+the verification run rather than frozen in this coordination note.
+
+The final consolidated external review found no blockers: M16 READY TO CLOSE. M17 and
+the future dual Runtime/Workbench API remain unauthorized and unstarted.
 
 
 ## Accepted M14 consolidated invariants

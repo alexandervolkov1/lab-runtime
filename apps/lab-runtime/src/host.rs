@@ -28,6 +28,7 @@
 
 mod components;
 mod configuration;
+pub(crate) use configuration::PreparedSimpleOverlayPublication;
 mod instruments;
 mod lifecycle;
 mod recording;
@@ -808,6 +809,9 @@ fn event_domain_error(error: EventError) -> Error {
         EventError::Gap | EventError::Future => Error::InvalidConfiguration("event cursor invalid"),
         EventError::Exhausted => Error::InvalidConfiguration("event sequence exhausted"),
         EventError::Oversized => Error::InvalidConfiguration("event record exceeds M6 bound"),
+        EventError::Reservation => {
+            Error::InvalidConfiguration("event publication reservation invalid")
+        }
     }
 }
 #[cfg(test)]

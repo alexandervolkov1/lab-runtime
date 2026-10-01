@@ -5,6 +5,11 @@
 
 use super::*;
 
+pub(crate) struct PreparedSimpleOverlayPublication {
+    core: lab_core::PreparedSimpleDevicePublication,
+    events: crate::events::PreparedEventPublication,
+}
+
 impl HostCore {
     /// Install additive SimpleDevice authority behind Core's non-discoverable
     /// preparation fence. Existing topology remains the only query-visible graph.
@@ -120,9 +125,11 @@ impl HostCore {
             Ok(prepared_actuator)
         })();
         if result.is_err() && !registered.is_empty() {
-            let _ = self.runtime.command(Command::DiscardPreparedSimpleDevices {
-                instruments: registered,
-            });
+            self.runtime
+                .command(Command::DiscardPreparedSimpleDevices {
+                    instruments: registered,
+                })
+                .expect("prepared SimpleDevice registration cleanup invariant");
         }
         result
     }
@@ -146,6 +153,17 @@ impl HostCore {
         &mut self,
         instruments: Vec<InstrumentId>,
     ) -> Result<(), Error> {
+        let instruments: Vec<_> = instruments
+            .into_iter()
+            .filter(|instrument| {
+                self.runtime
+                    .prepared_simple_descriptor(*instrument)
+                    .is_some()
+            })
+            .collect();
+        if instruments.is_empty() {
+            return Ok(());
+        }
         self.runtime
             .command(Command::DiscardPreparedSimpleDevices { instruments })?;
         Ok(())
@@ -334,15 +352,41 @@ impl HostCore {
         Ok(())
     }
 
-    /// Publish an already recorded topology and begin its ordinary schedules.
-    pub(crate) fn publish_simple_device_overlay(
+    /// Validate Core publication and hold exact EventLog capacity before durability.
+    pub(crate) fn prepare_simple_device_overlay_publication(
         &mut self,
         instruments: Vec<InstrumentId>,
+        controllers: Vec<ControllerId>,
+    ) -> Result<PreparedSimpleOverlayPublication, Error> {
+        let core = self
+            .runtime
+            .prepare_simple_device_publication(instruments.clone())?;
+        let events = self
+            .events
+            .prepare_simple_device_publication(&self.runtime, &instruments, &controllers)
+            .map_err(event_domain_error)?;
+        Ok(PreparedSimpleOverlayPublication { core, events })
+    }
+
+    /// Release held EventLog capacity while the candidate is still non-durable.
+    pub(crate) fn cancel_simple_device_overlay_publication(
+        &mut self,
+        publication: PreparedSimpleOverlayPublication,
+    ) {
+        self.events
+            .cancel_simple_device_publication(publication.events);
+    }
+
+    /// Publish a durably confirmed, fully prepared topology without a domain failure path.
+    pub(crate) fn commit_simple_device_overlay_publication(
+        &mut self,
+        publication: PreparedSimpleOverlayPublication,
         at: Duration,
-    ) -> Result<(), Error> {
+    ) {
         self.runtime
-            .command(Command::PublishPreparedSimpleDevices { instruments })?;
-        self.observe(at, None)
+            .commit_simple_device_publication(publication.core);
+        self.events
+            .commit_simple_device_publication(publication.events, at);
     }
 
     /// Remove all non-published candidate metadata and restore active provenance.
@@ -368,9 +412,8 @@ impl HostCore {
             .retain(|instrument| !prepared.contains(instrument));
         self.simple_device_provenance
             .retain(|instrument, _| !prepared.contains(instrument));
-        let _ = self
-            .runtime
-            .command(Command::DiscardPreparedSimpleDevices { instruments });
+        self.discard_prepared_simple_overlay(instruments)
+            .expect("prepared SimpleDevice rollback cleanup invariant");
         self.configuration_revision = active_revision;
         self.deployment_provenance = active
             .provenance_entries(self.configuration_revision)

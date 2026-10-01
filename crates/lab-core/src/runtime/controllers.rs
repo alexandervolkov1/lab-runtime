@@ -183,6 +183,20 @@ impl Runtime {
             || self.instrument_is_prepared(controller.config.output.instrument())
     }
 
+    pub(super) fn reject_prepared_controller_mutation(
+        &self,
+        id: ControllerId,
+    ) -> Result<(), Error> {
+        let controller = self
+            .controllers
+            .get(&id)
+            .ok_or(ControllerError::UnknownController)?;
+        if self.controller_uses_prepared_topology(controller) {
+            return Err(ControllerError::InvalidState.into());
+        }
+        Ok(())
+    }
+
     pub(super) fn start_or_resume_controller(
         &mut self,
         id: ControllerId,

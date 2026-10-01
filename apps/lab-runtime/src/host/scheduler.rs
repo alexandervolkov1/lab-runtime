@@ -113,6 +113,13 @@ impl HostCore {
             if self.plan.safety.due(now) {
                 return Ok(report);
             }
+            if self
+                .runtime
+                .prepared_simple_descriptor(read.instrument)
+                .is_some()
+            {
+                continue;
+            }
             if self.reconnect_quiesced_resources.contains(&read.resource) {
                 continue;
             }
