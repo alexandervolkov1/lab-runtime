@@ -62,8 +62,9 @@ The atomic publication boundary, held EventLog capacity, controller/output seman
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
 Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
 cleanup and concluded READY TO START M17. External re-review accepted the M17.1
-contract and ownership freeze. M17.2 is AUTHORIZED / READY TO START and is not
-implemented.
+contract and ownership freeze. External re-review accepted the transport-independent
+M17.2 dispatcher after focused remediation. M17.3 is AUTHORIZED / READY TO START /
+NOT IMPLEMENTED.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -176,7 +177,8 @@ a distinct bounded Workbench-owned client/presentation surface. One Workbench
 dispatcher must share the existing single `ClientHandle`; it cannot add another
 Runtime session store, mutation sequencer, recovery engine or subscription system.
 The M17.1 contract in `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` is
-externally accepted. M17.2 is AUTHORIZED / READY TO START and is not implemented.
+externally accepted. M17.2 is also externally accepted. M17.3 is AUTHORIZED / READY
+TO START / NOT IMPLEMENTED.
 
 ## End-to-end integration validation
 
@@ -198,8 +200,9 @@ Application API and semantic laboratory identities, and does not know the Arduin
 wire protocol. This sequencing does not authorize scripting implementation or
 M15.5–M15.8 now. M16.7 is accepted under the
 frozen minimal unknown-device acceptance; M16 consolidated review recorded M16 READY
-TO CLOSE. M17.1 is externally accepted. M17.2 is AUTHORIZED / READY TO START under
-`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` and is not implemented.
+TO CLOSE. M17.1 is externally accepted. M17.2 is implemented under
+`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` and externally accepted after
+focused remediation. M17.3 is authorized and ready to start but remains unimplemented.
 
 ## Final release gate
 

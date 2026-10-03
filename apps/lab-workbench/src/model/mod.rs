@@ -133,7 +133,11 @@ impl WorkbenchModel {
     }
 
     /// Deterministically consumes one ordered update from the single client owner.
-    pub(crate) fn apply_client_update(&mut self, update: ClientUpdate) {
+    ///
+    /// The return value is false only when a malformed recovery projection was
+    /// rejected without replacing the current projection.
+    pub(crate) fn apply_client_update(&mut self, update: ClientUpdate) -> bool {
+        let mut accepted = true;
         match update {
             ClientUpdate::State(state) => self.apply_connection_state(state),
             ClientUpdate::Hello(hello) => self.apply_hello(hello),
@@ -148,7 +152,7 @@ impl WorkbenchModel {
                 active,
                 quarantined,
             } => {
-                self.apply_recovery_projection(active, quarantined);
+                accepted = self.apply_recovery_projection(active, quarantined);
             }
             ClientUpdate::Event { cursor, envelope } => {
                 self.recovery.event_cursor = Some(cursor.clone());
@@ -222,6 +226,7 @@ impl WorkbenchModel {
                 self.refresh_unresolved();
             }
         }
+        accepted
     }
 
     /// Adds one point to a bounded display-only signal window.
@@ -235,13 +240,6 @@ impl WorkbenchModel {
             .entry(source)
             .or_default()
             .push(point)
-    }
-
-    /// Applies one validated presentation mutation and refreshes unresolved targets.
-    pub(crate) fn apply_ui_command(&mut self, command: UiCommand) -> Result<(), UiCommandError> {
-        command::apply_ui_command(&mut self.presentation, command)?;
-        self.refresh_unresolved();
-        Ok(())
     }
 
     /// Marks one submitted lab intent pending authoritative admission/result.
@@ -429,10 +427,28 @@ impl WorkbenchModel {
         &mut self,
         active: Vec<RecoveryRecord>,
         quarantined: Vec<QuarantinedRecoveryRecord>,
-    ) {
+    ) -> bool {
+        if let Err(reason) = Self::validate_recovery_projection(&active, &quarantined) {
+            self.client_error = Some(reason.into());
+            return false;
+        }
+        self.recovery.mutations = active;
+        self.recovery.quarantined = quarantined;
+        self.recovery.reconciliation_required.retain(|identity| {
+            self.recovery.mutations.iter().any(|record| {
+                record.identity == *identity && requires_reconciliation(record.admission)
+            })
+        });
+        true
+    }
+
+    /// Validates a candidate recovery projection without changing accepted state.
+    pub(crate) fn validate_recovery_projection(
+        active: &[RecoveryRecord],
+        quarantined: &[QuarantinedRecoveryRecord],
+    ) -> Result<(), &'static str> {
         if active.len() > MAX_IN_FLIGHT || quarantined.len() > MAX_IN_FLIGHT {
-            self.client_error = Some("worker recovery projection exceeded bound".into());
-            return;
+            return Err("worker recovery projection exceeded bound");
         }
         let mut identities = BTreeSet::new();
         let active_has_duplicate = active.iter().any(|record| {
@@ -450,16 +466,9 @@ impl WorkbenchModel {
             ))
         });
         if active_has_duplicate || quarantine_has_duplicate {
-            self.client_error = Some("worker recovery projection contained duplicates".into());
-            return;
+            return Err("worker recovery projection contained duplicates");
         }
-        self.recovery.mutations = active;
-        self.recovery.quarantined = quarantined;
-        self.recovery.reconciliation_required.retain(|identity| {
-            self.recovery.mutations.iter().any(|record| {
-                record.identity == *identity && requires_reconciliation(record.admission)
-            })
-        });
+        Ok(())
     }
 
     fn apply_event(&mut self, cursor: u64, envelope: Value) {

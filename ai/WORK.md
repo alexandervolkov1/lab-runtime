@@ -1,4 +1,4 @@
-# Current work — M17.2 authorized under accepted M17.1 contract
+# Current work — M17.3 bounded external adapter ready to start
 
 ## Canonical current state
 
@@ -17,7 +17,10 @@ presentation/client access. It preserves the existing one Runtime Application pa
 and one Workbench Runtime client worker. External re-review accepted the exact
 operation shapes, recovery-generation fence, terminal-write `call_id` lifetime,
 revision precheck, ownership model, bounds and acceptance matrix. M17.1 is ACCEPTED.
-M17.2 is AUTHORIZED / READY TO START and is not implemented.
+M17.2 implements the transport-independent single-owner Workbench dispatcher and
+presentation revision path under that freeze. Its focused external-review blockers
+are remediated, and external re-review accepted M17.2 with no remaining correctness
+or ownership blocker. M17.3 is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 
 Arduino and full Clojure/Babashka validation remain later work. M17.5 may add only
 the minimal language-boundary smoke evidence frozen by the M17.1 acceptance matrix;
@@ -32,10 +35,15 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Authorized: M17.2 implementation under the frozen, accepted M17.1 contract.
-- Not authorized: M17.3 or later implementation, Runtime operation/capability
+- Allowed next slice: M17.3 bounded external Workbench adapter under the accepted
+  M17.1 contract and accepted M17.2 dispatcher.
+- Not authorized: M17.4 or later implementation, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.
+- M17.3 guardrail: external adapter lab query, mutation, and status requests must
+  enter only through `WorkbenchDispatcher::dispatch()`. The existing
+  `WorkbenchDispatcher::client()` accessor remains solely for accepted internal
+  GUI/operator workflows unless a narrower internal seam later replaces it.
 
 Historical milestone records below remain evidence and are not current authorization.
 
@@ -59,9 +67,45 @@ The proposed contract freezes:
 - independently reviewable M17.2 dispatcher, M17.3 bounded adapter, M17.4
   fault/parity acceptance, and M17.5 language smoke/consolidated review slices.
 
-External re-review accepted this contract. M17.2 is authorized to begin under the
-freeze; this documentation task does not implement it. No implementation may cross
-the M17.2 boundary into a later milestone automatically.
+External re-review accepted this contract. M17.2 implements the private typed
+dispatcher under the freeze and is externally accepted. M17.3 is separately
+authorized and ready to start.
+
+## Accepted M17.2 implementation
+
+The implementation adds one renderer-neutral `WorkbenchDispatcher` that owns the
+existing `WorkbenchModel` and exactly one existing `ClientHandle`. It exposes the 15
+frozen typed operations without a listener or framing layer. Laboratory submissions
+delegate only to `ClientHandle::query`, `ClientHandle::mutation`, and the exact active
+recovery target path through `ClientHandle::operation_status`; the worker remains the
+only allocator of Runtime message, scope, and mutation sequence identity.
+
+GUI presentation mutation and typed `ui_*` calls share one transactional presentation
+owner. The process-local presentation revision starts at 1, prechecks Workbench
+identity/revision before clone and validation, advances exactly once on success, and
+fails closed on exhaustion. The checked recovery generation starts at 1, advances
+only for a changed accepted atomic worker projection, and supplies deterministic
+record/end/restart enumeration without another recovery store. Typed event production
+preserves lab caller correlation but adds no network queue, replay, or subscription.
+
+External-review remediation removed synthetic `local_rejected` events on continuity
+loss, validates recovery projections before checking exhausted change-generation
+capacity, and removes the dispatcher's general mutable-model escape hatch. Pending
+lab correlation now survives `ResnapshotRequired` until a genuine worker terminal
+update or caller detach. The existing rebuild, operator, and GUI paths use narrow
+dispatcher-owned methods while retaining the same `ClientHandle` and accepted
+behavior.
+
+External re-review accepted the implementation and all three remediations. The next
+adapter must use `WorkbenchDispatcher::dispatch()` for every external lab operation;
+it must not use the internal `client()` accessor to issue query, mutation, or status
+commands.
+
+Focused dispatcher tests pass `14 passed; 0 failed`. The complete Workbench suite
+passes `175 passed; 9 ignored; 0 failed`; all nine ignored process acceptances pass
+when run explicitly. Focused M16 regression passes 8 Core, 25 Runtime, and 1 Workbench
+tests, and the complete debug and release workspace suites pass with zero failures.
+Formatting and full workspace all-target/all-feature warnings-denied Clippy pass.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -947,8 +991,9 @@ debug/release tests pass with zero failures; the exact aggregate count is report
 the verification run rather than frozen in this coordination note.
 
 The final consolidated external review found no blockers: M16 READY TO CLOSE. M17.1
-is an accepted documentation-only contract and ownership freeze. M17.2 is AUTHORIZED /
-READY TO START and is not implemented; later implementation remains unauthorized.
+is an accepted documentation-only contract and ownership freeze. M17.2 is externally
+accepted. M17.3 is AUTHORIZED / READY TO START / NOT IMPLEMENTED; M17.4 and later
+implementation remain unauthorized.
 
 
 ## Accepted M14 consolidated invariants

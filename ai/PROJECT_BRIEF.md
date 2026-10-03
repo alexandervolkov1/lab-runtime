@@ -78,8 +78,10 @@ The atomic publication boundary, held EventLog capacity, controller/output seman
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
 Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
 cleanup and concluded READY TO START M17. External re-review accepted the
-documentation-only M17.1 contract and ownership freeze. M17.2 is AUTHORIZED / READY
-TO START and is not implemented.
+documentation-only M17.1 contract and ownership freeze. External re-review accepted
+the M17.2 private single-owner Workbench dispatcher and presentation revision path
+after its focused blockers were remediated. M17.3 is AUTHORIZED / READY TO START /
+NOT IMPLEMENTED.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -173,7 +175,9 @@ minimal unknown-device acceptance is accepted under its frozen scope; M16 consol
 external review found no blockers and recorded M16 READY TO CLOSE. M17.1 now freezes
 the proposed separate direct Runtime and Workbench-owned client surfaces in
 `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. External re-review accepted the
-freeze. M17.2 is AUTHORIZED / READY TO START and is not implemented.
+freeze. M17.2 is externally accepted as a transport-independent dispatcher with no
+external listener or framing. M17.3 is authorized and ready to start, but remains
+unimplemented.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific

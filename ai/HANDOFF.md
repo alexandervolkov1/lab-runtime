@@ -69,8 +69,13 @@ Runtime and Workbench-owned client surfaces, one shared Workbench Runtime client
 owner, exact correlation/identity separation, bounded Workbench envelopes and
 lifecycle, and the M17.2-M17.5 acceptance matrix. External re-review accepted the
 exact operation contracts, generation-safe recovery enumeration, terminal-write
-`call_id` lifetime, revision precheck, ownership model and bounds. M17.2 is AUTHORIZED /
-READY TO START and is not implemented.
+`call_id` lifetime, revision precheck, ownership model and bounds. M17.2 implements
+the private typed single-owner dispatcher and presentation revision path without an
+external listener or framing. External re-review accepted M17.2 after its three
+focused blockers were remediated. M17.3 is AUTHORIZED / READY TO START / NOT
+IMPLEMENTED. Its external adapter must submit lab operations through
+`WorkbenchDispatcher::dispatch()`, never through the internal GUI/operator
+`WorkbenchDispatcher::client()` accessor.
 
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
@@ -203,8 +208,8 @@ externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/b
 acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
 M16 fast/simple/declarative instrument onboarding is complete and externally accepted;
 the final consolidated external review found no blockers and recorded M16 READY TO CLOSE.
-M17.1 is ACCEPTED. M17.2 is AUTHORIZED / READY TO START and is not implemented; later
-implementation remains unauthorized and unstarted.
+M17.1 and M17.2 are ACCEPTED. M17.3 is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+M17.4 and later implementation remain unauthorized and unstarted.
 
 ## Later practical validation
 

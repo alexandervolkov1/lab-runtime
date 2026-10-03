@@ -109,8 +109,12 @@ Final external review result: M16 READY TO CLOSE.
 
 The pre-M17 audit found no required cleanup and concluded READY TO START M17.
 External re-review accepted the documentation-only M17.1 contract and ownership
-freeze in `ai/M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. M17.2 is
-AUTHORIZED / READY TO START and is not implemented.
+freeze in `ai/M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. The M17.2
+single-owner Workbench dispatcher and presentation revision path is externally
+accepted. M17.3 is AUTHORIZED / READY TO START / NOT IMPLEMENTED. Its external
+adapter must submit lab query, mutation, and status calls only through
+`WorkbenchDispatcher::dispatch()`; `WorkbenchDispatcher::client()` remains solely
+for accepted internal GUI/operator workflows.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

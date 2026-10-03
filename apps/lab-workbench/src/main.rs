@@ -1,10 +1,13 @@
 //! Native Workbench client with one bounded Application worker and client-owned GUI.
 
 mod client;
+mod dispatcher;
 mod gui;
 mod model;
 mod ownership;
 mod presentation;
+#[path = "gui/rebuild.rs"]
+mod rebuild;
 mod recovery;
 mod storage;
 
@@ -87,8 +90,35 @@ mod operator_boundary_tests {
     #[test]
     fn ordinary_gui_source_has_no_raw_or_prohibited_application_mutations() {
         let source = include_str!("gui/app.rs");
+        let dispatcher = include_str!("dispatcher.rs");
         assert!(!source.contains(".mutation("));
         assert!(!source.contains(".retry_mutation("));
+        assert!(!source.contains(".apply_ui_command("));
+        assert!(!source.contains(".presentation ="));
+        assert!(!source.contains(".client_error ="));
+        assert_eq!(
+            source
+                .matches("ClientHandle::spawn_with_recovery_journal_and_wake")
+                .count(),
+            1
+        );
+        assert!(!dispatcher.contains("ClientHandle::spawn"));
+        assert!(!dispatcher.contains("DerefMut"));
+        assert!(!dispatcher.contains("model_and_client"));
+        assert!(!dispatcher.contains("interrupt_pending_lab"));
+        assert!(!dispatcher.contains("-> &mut WorkbenchModel"));
+        assert!(!dispatcher.contains("Option<(&mut WorkbenchModel"));
+        let production_dispatcher = dispatcher
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("dispatcher has production source");
+        assert_eq!(
+            production_dispatcher
+                .matches("kind: LabUpdateKind::LocalRejected")
+                .count(),
+            1,
+            "only ClientUpdate::LocalRejected may produce a local-rejected lab update"
+        );
         for prohibited in [
             "runtime_shutdown",
             "emulator_publish",

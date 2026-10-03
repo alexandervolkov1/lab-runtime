@@ -4,6 +4,7 @@ use super::rebuild::RebuildCoordinator;
 use crate::{
     client::ClientHandle,
     client::types::{ConnectionState, KnownAdmission, RecoveryQuarantineReason},
+    dispatcher::WorkbenchDispatcher,
     model::{
         ControllerLifecycleIntent, EXACT_RETRY_WARNING, ExactRetryState, ExactRetryWorkflow,
         Freshness, OperatorIntent, OperatorWarning, OperatorWorkflow, OperatorWorkflowState,
@@ -31,8 +32,7 @@ pub(crate) const UPDATES_PER_FRAME: usize = 64;
 const SMOKE_DEADLINE: Duration = Duration::from_secs(30);
 
 pub(crate) struct WorkbenchApp {
-    model: WorkbenchModel,
-    client: Option<ClientHandle>,
+    model: WorkbenchDispatcher<ClientHandle>,
     rebuild: RebuildCoordinator,
     operator: OperatorWorkflow,
     recovery_status: RecoveryStatusTracker,
@@ -80,8 +80,7 @@ impl WorkbenchApp {
             .map(PathBuf::from)
             .map(KillProbe::new);
         Ok(Self {
-            model: WorkbenchModel::new(presentation),
-            client: Some(client),
+            model: WorkbenchDispatcher::new(WorkbenchModel::new(presentation), client),
             rebuild: RebuildCoordinator::default(),
             operator: OperatorWorkflow::default(),
             recovery_status: RecoveryStatusTracker::default(),
@@ -105,22 +104,25 @@ impl WorkbenchApp {
     }
 
     fn drain_updates(&mut self) -> usize {
-        let Some(client) = self.client.as_ref() else {
-            return 0;
-        };
         let mut updates = Vec::with_capacity(UPDATES_PER_FRAME);
-        let count = drain_bounded(
-            || client.try_recv(),
-            |update| updates.push(update),
-            UPDATES_PER_FRAME,
-        );
+        let count = {
+            let Some(client) = self.model.client() else {
+                return 0;
+            };
+            drain_bounded(
+                || client.try_recv(),
+                |update| updates.push(update),
+                UPDATES_PER_FRAME,
+            )
+        };
         for update in updates {
             self.model.apply_client_update(update.clone());
             self.recovery_status.after_update(&update);
             self.exact_retry
                 .after_update(&update, &self.model, &self.recovery_status);
             self.operator.after_update(&update);
-            self.rebuild.after_update(&update, &mut self.model, client);
+            self.model.advance_rebuild(&mut self.rebuild, &update);
+            let _ = self.model.finish_model_turn();
         }
         self.ensure_selection_and_default_plot();
         count
@@ -157,8 +159,8 @@ impl WorkbenchApp {
                     display_unit: None,
                 }],
             };
-            if let Err(error) = self.model.apply_ui_command(UiCommand::AddPlot { plot }) {
-                self.model.client_error = Some(error.to_string());
+            if let Err(error) = self.model.apply_gui_ui(UiCommand::AddPlot { plot }) {
+                self.model.set_client_error(error.to_string());
             }
         }
     }
@@ -180,22 +182,22 @@ impl WorkbenchApp {
         if ui
             .add_enabled(!connected, egui::Button::new(connect_label))
             .clicked()
-            && let Some(client) = self.client.as_ref()
+            && let Some(client) = self.model.client()
         {
             let scope = (!quarantined)
                 .then(|| self.model.recovery.scope.clone())
                 .flatten();
             if let Err(error) = client.connect(scope) {
-                self.model.client_error = Some(error.to_string());
+                self.model.set_client_error(error.to_string());
             }
         }
         if ui
             .add_enabled(connected, egui::Button::new("Disconnect"))
             .clicked()
-            && let Some(client) = self.client.as_ref()
+            && let Some(client) = self.model.client()
             && let Err(error) = client.disconnect()
         {
-            self.model.client_error = Some(error.to_string());
+            self.model.set_client_error(error.to_string());
         }
     }
 
@@ -337,12 +339,12 @@ impl WorkbenchApp {
         let pending = matches!(record.status, RecoveryStatusState::Pending { .. });
         let response = ui.add_enabled(availability.check_status, egui::Button::new("Check Status"));
         if response.clicked()
-            && let Some(client) = self.client.as_ref()
+            && let Some(client) = self.model.client()
             && let Err(error) =
                 self.recovery_status
                     .check_status(&self.model, client, record.identity.clone())
         {
-            self.model.client_error = Some(error.to_string());
+            self.model.set_client_error(error.to_string());
         }
         if !availability.check_status && !pending {
             ui.small(format!(
@@ -357,7 +359,7 @@ impl WorkbenchApp {
                 self.exact_retry
                     .begin(&self.model, &self.recovery_status, record.identity)
         {
-            self.model.client_error = Some(error.to_string());
+            self.model.set_client_error(error.to_string());
         }
     }
 
@@ -392,7 +394,7 @@ impl WorkbenchApp {
                     if ui
                         .add_enabled(current, egui::Button::new("Confirm Exact Retry"))
                         .clicked()
-                        && let Some(client) = self.client.as_ref()
+                        && let Some(client) = self.model.client()
                     {
                         let _ =
                             self.exact_retry
@@ -605,7 +607,7 @@ impl WorkbenchApp {
                     if ui
                         .add_enabled(current, egui::Button::new("Confirm"))
                         .clicked()
-                        && let Some(client) = self.client.as_ref()
+                        && let Some(client) = self.model.client()
                     {
                         match self.operator.confirm(&self.model, client) {
                             Ok(command_id) => {
@@ -1080,7 +1082,7 @@ impl WorkbenchApp {
                 smoke.phase = SmokePhase::ConfirmMutation;
             }
             SmokePhase::ConfirmMutation => {
-                let Some(client) = self.client.as_ref() else {
+                let Some(client) = self.model.client() else {
                     smoke.finish(false, &self.model, "client_missing", context);
                     return;
                 };
@@ -1141,7 +1143,7 @@ impl WorkbenchApp {
             SmokePhase::AwaitRestored
                 if context.input(|input| input.viewport().minimized) == Some(false) =>
             {
-                if let Some(client) = self.client.as_ref()
+                if let Some(client) = self.model.client()
                     && client.disconnect().is_ok()
                 {
                     smoke.phase = SmokePhase::AwaitStale;
@@ -1161,7 +1163,7 @@ impl WorkbenchApp {
                         "reference_retune",
                     )
                 });
-                if let Some(client) = self.client.as_ref()
+                if let Some(client) = self.model.client()
                     && client.connect(self.model.recovery.scope.clone()).is_ok()
                 {
                     smoke.phase = SmokePhase::ReattachedFresh;
@@ -1229,10 +1231,10 @@ impl WorkbenchApp {
     }
 
     fn shutdown_client(&mut self) {
-        if let Some(client) = self.client.take()
+        if let Some(client) = self.model.take_client()
             && let Err(error) = client.shutdown()
         {
-            self.model.client_error = Some(error.to_owned());
+            self.model.set_client_error(error.to_owned());
         }
     }
 }

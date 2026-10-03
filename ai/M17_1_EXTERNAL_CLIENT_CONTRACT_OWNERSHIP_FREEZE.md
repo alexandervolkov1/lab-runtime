@@ -7,7 +7,8 @@ M16 consolidated acceptance: ACCEPTED
 Pre-M17 cleanup and readiness: COMPLETE
 M17.1 external review: ACCEPTED
 M17.1 status: ACCEPTED
-M17.2 implementation: AUTHORIZED / READY TO START / NOT IMPLEMENTED
+M17.2 implementation: ACCEPTED
+M17.3 implementation: AUTHORIZED / READY TO START / NOT IMPLEMENTED
 ```
 
 This document freezes the proposed M17 external boundary before implementation. It
@@ -1079,5 +1080,6 @@ remediated contract with no remaining blockers.
 
 ```text
 M17.1: ACCEPTED
-M17.2: AUTHORIZED / READY TO START / NOT IMPLEMENTED
+M17.2: ACCEPTED
+M17.3: AUTHORIZED / READY TO START / NOT IMPLEMENTED
 ```

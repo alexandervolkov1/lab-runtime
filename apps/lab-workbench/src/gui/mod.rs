@@ -1,7 +1,7 @@
 //! Minimal native Workbench GUI over the one bounded Application client owner.
 
 mod app;
-pub(crate) mod rebuild;
+pub(crate) use crate::rebuild;
 
 use crate::{
     ownership::WorkspaceOwnership,
