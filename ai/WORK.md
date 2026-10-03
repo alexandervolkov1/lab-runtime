@@ -1,4 +1,4 @@
-# Current work — pre-M17 cleanup and readiness
+# Current work — M17.2 authorized under accepted M17.1 contract
 
 ## Canonical current state
 
@@ -7,27 +7,61 @@ SimpleDevice onboarding is accepted, including ordinary Runtime/Application,
 controller/output, reconnect/restart, Recorder/provenance, and Workbench behavior.
 
 C1/C2 public-documentation and reconnect-diagnostic cleanup is complete. C3
-test-infrastructure cleanup is complete. The current phase is pre-M17 cleanup and
-readiness review. M17 has not started. The future dual Runtime/Workbench API has
-not started.
+test-infrastructure cleanup is complete. The read-only pre-M17 audit found no
+required cleanup and concluded READY TO START M17.
 
-Arduino and Clojure/Babashka validation belong after the future dual API and are
-not part of the current phase.
+M17.1 now freezes the proposed language-neutral external client contract in
+`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. It defines two distinct
+surfaces: direct access to the existing Runtime Application API, and Workbench-owned
+presentation/client access. It preserves the existing one Runtime Application path
+and one Workbench Runtime client worker. External re-review accepted the exact
+operation shapes, recovery-generation fence, terminal-write `call_id` lifetime,
+revision precheck, ownership model, bounds and acceptance matrix. M17.1 is ACCEPTED.
+M17.2 is AUTHORIZED / READY TO START and is not implemented.
+
+Arduino and full Clojure/Babashka validation remain later work. M17.5 may add only
+the minimal language-boundary smoke evidence frozen by the M17.1 acceptance matrix;
+it is not part of the current phase.
 
 Current clean baseline commits:
 
 - M16 completion: `48a22f34d23053eb2c1d6752663701872b6fa6d3`
 - C1/C2 cleanup: `5768fc58aafec51f089d7bfece1ffea17f595fd4`
 - C3 test-infrastructure cleanup: `0e6f97f5c1bbf4f70540e5708e236055e6ab7547`
+- Pre-M17 coordination baseline: `229fb7d0eadab970249cb088aefae7e30914e6aa`
 
 Current authorization boundary:
 
-- Allowed: documentation cleanup, approved behavior-preserving cleanup, and readiness review.
-- Not authorized: M17 implementation, dual Runtime/Workbench API work, new M17
-  operations/capabilities, Arduino integration, Clojure/Babashka client work, or
-  broad architecture redesign.
+- Authorized: M17.2 implementation under the frozen, accepted M17.1 contract.
+- Not authorized: M17.3 or later implementation, Runtime operation/capability
+  changes, GUI features, Steel, a client SDK, Arduino integration, full
+  Clojure/Babashka client work, or broad redesign.
 
 Historical milestone records below remain evidence and are not current authorization.
+
+## Accepted M17.1 contract freeze
+
+The proposed contract freezes:
+
+- direct Runtime Application access over the already accepted TCP/NDJSON and
+  WebSocket/JSON transports, with callers owning their Runtime scope/recovery;
+- a separate language-neutral Workbench client surface for mediated lab commands
+  and Workbench-owned presentation;
+- one Workbench dispatcher and the existing single `ClientHandle` as the only
+  Workbench path to Runtime;
+- separate external `call_id`, Workbench `command_id`, and authoritative Runtime
+  `{scope, seq}` identity domains;
+- exact request/result/error/event envelopes, fixed v1 operations, transactional
+  presentation revision, queue/byte/deadline bounds, overload, caller-death,
+  disconnect, recovery, and shutdown behavior;
+- no Workbench Runtime-event subscription/relay, second sequencer, second recovery
+  journal, Exact Retry endpoint, GUI feature, scripting engine, or language SDK;
+- independently reviewable M17.2 dispatcher, M17.3 bounded adapter, M17.4
+  fault/parity acceptance, and M17.5 language smoke/consolidated review slices.
+
+External re-review accepted this contract. M17.2 is authorized to begin under the
+freeze; this documentation task does not implement it. No implementation may cross
+the M17.2 boundary into a later milestone automatically.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -912,8 +946,9 @@ the existing discovery/current path. Formatting, warnings-denied Clippy, and wor
 debug/release tests pass with zero failures; the exact aggregate count is reported by
 the verification run rather than frozen in this coordination note.
 
-The final consolidated external review found no blockers: M16 READY TO CLOSE. M17 and
-the future dual Runtime/Workbench API remain unauthorized and unstarted.
+The final consolidated external review found no blockers: M16 READY TO CLOSE. M17.1
+is an accepted documentation-only contract and ownership freeze. M17.2 is AUTHORIZED /
+READY TO START and is not implemented; later implementation remains unauthorized.
 
 
 ## Accepted M14 consolidated invariants

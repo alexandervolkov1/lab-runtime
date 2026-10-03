@@ -62,6 +62,16 @@ The atomic publication boundary, held EventLog capacity, controller/output seman
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
 Final external review result: M16 READY TO CLOSE.
 
+The pre-M17 read-only audit found no required cleanup and concluded READY TO START
+M17. M17.1 is the accepted documentation-only contract in
+`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. It freezes separate direct
+Runtime and Workbench-owned client surfaces, one shared Workbench Runtime client
+owner, exact correlation/identity separation, bounded Workbench envelopes and
+lifecycle, and the M17.2-M17.5 acceptance matrix. External re-review accepted the
+exact operation contracts, generation-safe recovery enumeration, terminal-write
+`call_id` lifetime, revision precheck, ownership model and bounds. M17.2 is AUTHORIZED /
+READY TO START and is not implemented.
+
 External review accepted M11 at
 `31a39cf02e7d58a42d731368f56164226566c5e8`. The accepted v0.1 core has no known
 developer-preview-blocking correctness, safety or durability defect. This is not a
@@ -193,7 +203,8 @@ externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/b
 acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
 M16 fast/simple/declarative instrument onboarding is complete and externally accepted;
 the final consolidated external review found no blockers and recorded M16 READY TO CLOSE.
-M17 and the future dual Runtime/Workbench API remain unauthorized and unstarted.
+M17.1 is ACCEPTED. M17.2 is AUTHORIZED / READY TO START and is not implemented; later
+implementation remains unauthorized and unstarted.
 
 ## Later practical validation
 
@@ -208,7 +219,7 @@ M16 declarative simple-device layer
 ```
 
 M16 is mandatory before that real-device exercise. Arduino is its first intended
-real-device acceptance/use case after the future dual Runtime/Workbench API boundary,
+real-device acceptance/use case after the M17 Runtime/Workbench client boundary,
 not M16's architecture. The future Clojure client is an external Application client
 that knows semantic laboratory entities, not COM,
 protocol bytes, CRC, register offsets, scaling, SQLite paths, or OutputAuthority

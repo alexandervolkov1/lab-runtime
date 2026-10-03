@@ -32,6 +32,7 @@ ai/M14_6B3_BOUNDED_FAULT_REATTACH.md
 ai/M14_6B4_RECOVERY_FAULT_ACCEPTANCE.md
 ai/M15_1_DOCUMENTATION_PRODUCTIZATION_AUDIT.md
 ai/M16_1_DECLARATIVE_DEVICE_ARCHITECTURE_API_AUDIT.md
+ai/M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md
 ```
 
 `ai/WORK.md` is the only detailed current authorization. Archived material is
@@ -105,6 +106,11 @@ apply leaves no hidden topology or pending transport work.
 The atomic publication boundary, held EventLog capacity, controller/output semantics,
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
 Final external review result: M16 READY TO CLOSE.
+
+The pre-M17 audit found no required cleanup and concluded READY TO START M17.
+External re-review accepted the documentation-only M17.1 contract and ownership
+freeze in `ai/M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. M17.2 is
+AUTHORIZED / READY TO START and is not implemented.
 
 Functionally complete means the accepted Runtime functionality is implemented and no
 known preview-blocking correctness, safety or durability defect remains. It does not

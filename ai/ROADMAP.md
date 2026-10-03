@@ -60,8 +60,10 @@ resource reconnect is fenced while publication is pending, and failed pre-durabl
 apply leaves no hidden topology or pending transport work.
 The atomic publication boundary, held EventLog capacity, controller/output semantics,
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
-Final external review result: M16 READY TO CLOSE. M17 and the future dual
-Runtime/Workbench API remain unauthorized and unstarted.
+Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
+cleanup and concluded READY TO START M17. External re-review accepted the M17.1
+contract and ownership freeze. M17.2 is AUTHORIZED / READY TO START and is not
+implemented.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -100,10 +102,10 @@ M16 declarative simple-device layer
 → Clojure/Clay analysis and system identification
 ```
 
-Arduino is the first intended real-device acceptance/use case after the future dual
-Runtime/Workbench API boundary, not the architecture of M16 itself. Runtime continues
-to own experiment semantics. The future Clojure client is an external Application
-client and does not know the Arduino wire protocol. This remains future sequencing,
+Arduino is the first intended real-device acceptance/use case after the M17
+Runtime/Workbench client boundary, not the architecture of M16 itself. Runtime
+continues to own experiment semantics. The future Clojure client is an external
+Application client and does not know the Arduino wire protocol. This remains future sequencing,
 not current authorization.
 
 The published preview contains TCP/NDJSON. The accepted post-preview M12.3 commit on
@@ -315,6 +317,37 @@ it, explicitly safe-apply it, and rediscover an ordinary instrument. Candidate u
 must not activate anything, and no operation names are chosen in this coordination
 transition.
 
+## M17 — external Runtime and Workbench client boundary
+
+M17 preserves the existing Runtime Application API and adds only the separate
+Workbench-owned client/presentation boundary frozen in
+`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`.
+
+```text
+direct clients ----------------> existing Runtime Application API
+                                 TCP/NDJSON or WebSocket/JSON
+
+GUI / external Workbench calls -> one Workbench dispatcher
+                                 -> one existing ClientHandle
+                                 -> existing Runtime Application API
+```
+
+- **M17.1:** documentation-only contract and ownership freeze, including exact
+  per-operation shapes, identity separation, generation-safe recovery enumeration,
+  terminal-write correlation lifetime, bounds, lifecycle and acceptance matrix.
+  ACCEPTED.
+- **M17.2:** implement the single-owner Workbench dispatcher and presentation
+  revision path. AUTHORIZED / READY TO START; not implemented.
+- **M17.3:** add the bounded opt-in loopback Workbench adapter through that dispatcher.
+- **M17.4:** complete concurrency, recovery, fault, transport-parity, M16 and process
+  lifetime acceptance.
+- **M17.5:** complete minimal language-boundary smoke, documentation and consolidated
+  external review without creating a client SDK or adding Steel.
+
+M17 may not create a second Runtime operation/session/subscription implementation or
+move presentation authority into Runtime. Steel, GUI features, remote access and a
+reusable client SDK remain outside M17.
+
 ## Final release gate
 
 The later final documentation/package audit will require polished architecture,
@@ -324,7 +357,7 @@ unauthorized until M16 consolidated acceptance.
 
 ## Explicit non-goals
 
-- no GUI or Presentation API;
+- no GUI feature work and no presentation concepts in Runtime;
 - no bundled scripting runtime or first-party client SDK;
 - no dynamic plugin framework;
 - no new convenience API merely for documentation;

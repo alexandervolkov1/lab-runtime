@@ -76,8 +76,10 @@ resource reconnect is fenced while publication is pending, and failed pre-durabl
 apply leaves no hidden topology or pending transport work.
 The atomic publication boundary, held EventLog capacity, controller/output semantics,
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
-Final external review result: M16 READY TO CLOSE. M17 and the future dual
-Runtime/Workbench API remain unauthorized and unstarted.
+Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
+cleanup and concluded READY TO START M17. External re-review accepted the
+documentation-only M17.1 contract and ownership freeze. M17.2 is AUTHORIZED / READY
+TO START and is not implemented.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -168,8 +170,10 @@ consolidated acceptance. The read-only M16.1 audit is accepted in
 externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`; M16.6 fault/bounds/provenance/recovery
 acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`; M16.7
 minimal unknown-device acceptance is accepted under its frozen scope; M16 consolidated
-external review found no blockers and recorded M16 READY TO CLOSE. M17 and the future
-dual Runtime/Workbench API remain unauthorized.
+external review found no blockers and recorded M16 READY TO CLOSE. M17.1 now freezes
+the proposed separate direct Runtime and Workbench-owned client surfaces in
+`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. External re-review accepted the
+freeze. M17.2 is AUTHORIZED / READY TO START and is not implemented.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific

@@ -60,8 +60,10 @@ resource reconnect is fenced while publication is pending, and failed pre-durabl
 apply leaves no hidden topology or pending transport work.
 The atomic publication boundary, held EventLog capacity, controller/output semantics,
 reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are complete.
-Final external review result: M16 READY TO CLOSE. M17 and the future dual
-Runtime/Workbench API remain unauthorized and unstarted.
+Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
+cleanup and concluded READY TO START M17. External re-review accepted the M17.1
+contract and ownership freeze. M17.2 is AUTHORIZED / READY TO START and is not
+implemented.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -133,6 +135,8 @@ M15.1–M15.4 accepted product documentation
     ↓
 M16 declarative simple-device layer
     ↓
+M17 external Runtime / Workbench client boundary
+    ↓
 M15.5–M15.8 final post-M16 documentation work
     ↓
 final documentation / packaging / review
@@ -167,6 +171,13 @@ Client owns presentation semantics.
 
 No UI or scripting semantics may enter Runtime core.
 
+M17 keeps direct laboratory clients on the existing Runtime Application API and adds
+a distinct bounded Workbench-owned client/presentation surface. One Workbench
+dispatcher must share the existing single `ClientHandle`; it cannot add another
+Runtime session store, mutation sequencer, recovery engine or subscription system.
+The M17.1 contract in `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` is
+externally accepted. M17.2 is AUTHORIZED / READY TO START and is not implemented.
+
 ## End-to-end integration validation
 
 ```text
@@ -181,13 +192,14 @@ M16 declarative simple-device layer
 
 M16 makes bounded simple devices ordinary Runtime instruments without device-specific
 operational API or special Workbench/Recorder/history/controller branches. Arduino is
-the first intended real-device use case after the future dual Runtime/Workbench API
+the first intended real-device use case after the M17 Runtime/Workbench client API
 boundary, not M16's architecture. The future Clojure client is external, knows the
 Application API and semantic laboratory identities, and does not know the Arduino
 wire protocol. This sequencing does not authorize scripting implementation or
 M15.5–M15.8 now. M16.7 is accepted under the
 frozen minimal unknown-device acceptance; M16 consolidated review recorded M16 READY
-TO CLOSE. M17 remains unauthorized.
+TO CLOSE. M17.1 is externally accepted. M17.2 is AUTHORIZED / READY TO START under
+`M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` and is not implemented.
 
 ## Final release gate
 
