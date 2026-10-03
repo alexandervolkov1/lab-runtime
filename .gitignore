@@ -1,7 +1,9 @@
 /target/
 /dist/
 /all.txt
-/.clj-kondo/.cache/
-/.lsp/.cache/
+/.clj-kondo/
+/.lsp/
+/m17_*_review.txt
+/m17_*_final.txt
 ai/project_snapshot.txt
 m12-3-cargo-diff.txt
