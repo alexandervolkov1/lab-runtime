@@ -66,8 +66,8 @@ contract and ownership freeze. External re-review accepted the transport-indepen
 M17.2 dispatcher after focused remediation. External re-review accepted the bounded
 IPv4-loopback TCP/NDJSON adapter and all bounded-network remediation as M17.3.
 M17.4 and consolidated M17.1-M17.4 review are ACCEPTED after independent closure of
-remediated blockers B1-B5. M17.5 becomes AUTHORIZED / READY TO START / NOT IMPLEMENTED
-after the acceptance commit.
+remediated blockers B1-B5. M17.5 is externally ACCEPTED with no blockers;
+M17.1-M17.5 are ACCEPTED and M17 is CLOSED.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -182,7 +182,9 @@ Runtime session store, mutation sequencer, recovery engine or subscription syste
 The M17.1 contract in `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` is
 externally accepted. M17.2, M17.3, M17.4, and consolidated M17.1-M17.4 review are
 ACCEPTED, including the independently re-reviewed B1-B5 Workbench remediation.
-M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance commit.
+M17.5 is ACCEPTED with no blockers and M17 is CLOSED. Language smoke evidence does
+not authorize release publication. PRE-RELEASE CLEANUP AND DOCUMENTATION is the next
+authorized phase; this closure task does not start it.
 
 ## End-to-end integration validation
 
@@ -207,8 +209,9 @@ frozen minimal unknown-device acceptance; M16 consolidated review recorded M16 R
 TO CLOSE. M17.1 is externally accepted. M17.2 is implemented under
 `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` and externally accepted after
 focused remediation. M17.3, M17.4, and consolidated M17.1-M17.4 review are ACCEPTED
-after remediation and independent closure of B1-B5. M17.5 is AUTHORIZED / READY TO
-START / NOT IMPLEMENTED after the acceptance commit. No release is authorized here.
+after remediation and independent closure of B1-B5. M17.5 is ACCEPTED and M17 is
+CLOSED. Arduino/Clojure/Clay integration remains post-preview practical work; no
+release is authorized here.
 
 ## Final release gate
 

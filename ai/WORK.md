@@ -1,4 +1,4 @@
-# Current work — M17.1-M17.4 accepted; M17.5 ready to start
+# Current work — M17 closed; pre-release cleanup and documentation next
 
 ## Canonical current state
 
@@ -27,10 +27,11 @@ blockers B1-B5. All five were remediated and independently re-reviewed by Astra:
 ALL B1-B5 CLOSED, with no new blockers. M17.1, M17.2, M17.3, and M17.4 are ACCEPTED;
 consolidated M17.1-M17.4 review is ACCEPTED.
 
-Arduino and full Clojure/Babashka validation remain later work. M17.5 may add only
-the minimal language-boundary smoke evidence frozen by the M17.1 acceptance matrix;
-M17.5 becomes AUTHORIZED / READY TO START / NOT IMPLEMENTED upon the commit recording
-this consolidated acceptance. This acceptance/commit task does not implement M17.5.
+Arduino and full Clojure/Babashka validation remain later work. M17.5 adds only
+the minimal language-boundary smoke evidence frozen by the M17.1 acceptance matrix.
+The accepted M17.4/consolidated remediation baseline is
+`e79ae8243bc49f59692c7ff435c15b2d30d4c248`. External review accepted M17.5 with no
+blockers. M17.1, M17.2, M17.3, M17.4, and M17.5 are ACCEPTED. M17 is CLOSED.
 
 Current clean baseline commits:
 
@@ -41,10 +42,10 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Allowed now: record consolidated acceptance and commit M17.4 plus B1-B5 remediation.
-  After that commit, M17.5 minimal language-boundary smoke, documentation and final
-  review are authorized under the frozen acceptance matrix; implementation is unstarted.
-- Not authorized: later implementation beyond M17.5, Runtime operation/capability
+- Allowed now: record final acceptance and commit the accepted M17.5 change set.
+  The next authorized phase is PRE-RELEASE CLEANUP AND DOCUMENTATION; it is not
+  started by this closure task. Release publication is not authorized.
+- Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.
 - M17.3 guardrail: external adapter lab query, mutation, and status requests must
@@ -53,6 +54,70 @@ Current authorization boundary:
   GUI/operator workflows unless a narrower internal seam later replaces it.
 
 Historical milestone records below remain evidence and are not current authorization.
+
+## Accepted M17.5 language-boundary and closure evidence
+
+The optional `clients/babashka-smoke` fixtures are standalone wire examples, not a
+client SDK or the future Clojure project. `runtime.clj` uses actual TCP/NDJSON hello
+and the read-only `reference` query against a virtual-demo Runtime, parses responses
+in Babashka, and validates protocol/correlation, server-issued identities and committed
+Reference fields. This is the explicitly approved safe subset of the frozen matrix.
+
+The matrix also requires Workbench language evidence. The separate `workbench.clj`
+uses actual Workbench hello/status, a mediated safe query and correlated `lab_update`,
+presentation reads, one UI-only add-plot, a stale-revision conflict, the exact final
+document/revision and `presentation_changed`, then disconnects. Bounded startup status
+observation is not recovery polling. No Runtime mutation, retry, subscription or
+language-specific production semantics are added by these fixtures.
+
+The PowerShell runner starts real Runtime and native Workbench processes on ephemeral
+loopback ports with a temporary workspace, then runs each Babashka script repeatedly.
+Only Babashka exchanges API messages. Process deadlines and finite fixture cleanup
+apply. Babashka remains optional; Cargo/production dependencies and Rust source are
+unchanged. The existing real-browser ClojureScript smoke remains a direct Runtime
+WebSocket regression. Full Arduino + Clojure + Clay integration is post-preview work.
+
+Public documentation now links the two surfaces and the separate Workbench API guide,
+including exact bounds, correlation, recovery fences, B1-B5 behavior, local trust and
+single-owner authority. The accepted M17.1 normative contract remains unchanged except
+status. External review accepted this M17.5 evidence and documentation with no
+blockers. M17.1-M17.5 are ACCEPTED and M17 is CLOSED. No Runtime/Core/SimpleDevice/
+Recorder/OutputAuthority production semantics changed.
+
+M17.5 verification (per-command counts; overlapping selections are not additive):
+
+- Babashka 1.13.220: 3/3 direct Runtime and 3/3 separate Workbench smoke runs;
+  both scripts also reject missing-port invocation with nonzero exit.
+- Existing real-browser ClojureScript 1.12.145 smoke: PASS in Chrome 154.0.8037.97,
+  with Runtime hello/query/mutation/status, retained-scope reattach, exact dedup and
+  event replay. No Workbench proxy is involved.
+- M17.2 dispatcher: 16 passed; M17.3 adapter: 36 passed.
+- M17.4 with ignored entries enabled: 7 passed (six acceptance scenarios including
+  real-process B4, plus the child-fixture entry).
+- Workbench debug/release: each 215 passed, 11 ignored; zero failures.
+- Runtime transport parity: 10 passed; WebSocket transport: 13 passed;
+  API protocol/foundation: 10 passed; protocol/registry consistency: 3 passed.
+- M16 focused: Core 8, Runtime 25, Workbench 1 passed.
+- Full workspace debug rerun and release: each 819 passed, 13 ignored, zero failures
+  (nested child-process test summaries excluded from aggregate counts).
+- Workbench source/ownership checks: 2 passed; frozen worker-control/client-bound
+  checks: 3 passed; exact 15-operation check included in the dispatcher suite.
+- All-target/all-feature warnings-denied workspace Clippy, fmt, relative Markdown
+  file-target check (80 targets), heading-fragment check (7), and diff check: PASS.
+
+The initial workspace debug run hit `sqlite: database is locked` during unchanged
+`emulator_api::discovery_publication_current_history_event_and_disconnect_share_one_signal`
+startup. That test passed immediately in isolation, and the complete debug rerun and
+release passed. No Rust source or dependency changed in M17.5; no behavior fix or
+test weakening was applied. Default ignored tests are reported, not claimed as run;
+the required real-process M17.4 acceptance was explicitly enabled. No requested
+verification category was skipped.
+
+Closure-commit checks: one direct Runtime and one separate Workbench Babashka smoke
+passed against real processes with finite cleanup; fmt, all 80 relative Markdown
+file targets and 7 heading fragments, and diff check passed. This final task changed
+acceptance/status documentation only; the accepted implementation and fixtures were
+not altered and the full workspace was not redundantly rerun.
 
 ## Accepted M17.1 contract freeze
 
@@ -77,8 +142,8 @@ The proposed contract freezes:
 External re-review accepted this contract. M17.2 implements the private typed
 dispatcher under the freeze and is externally accepted. M17.3 is also externally
 accepted. Their narrow consolidated remediation and the M17.4 acceptance evidence
-are independently re-reviewed and ACCEPTED. M17.5 is AUTHORIZED / READY TO START /
-NOT IMPLEMENTED after the consolidated acceptance commit.
+are independently re-reviewed and ACCEPTED. M17.5 is also externally ACCEPTED with
+no blockers; M17 is CLOSED.
 
 ## Accepted M17.2 implementation
 
@@ -247,8 +312,9 @@ real-process B4 acceptance 1 passed; ownership/source-bound checks 2 passed;
 `git diff --check` PASS. All runs had zero failures. The M17.4 filter overlaps the
 adapter and real-process selections; these are per-command counts, not distinct totals.
 
-Verdict: **M17.4 ACCEPTED; consolidated M17.1-M17.4 ACCEPTED**. M17.5 becomes
-**AUTHORIZED / READY TO START / NOT IMPLEMENTED** after this acceptance commit.
+Verdict at the M17.4 gate: **M17.4 ACCEPTED; consolidated M17.1-M17.4 ACCEPTED**.
+That acceptance commit authorized M17.5, which was then unimplemented; its subsequent
+acceptance and M17 closure are recorded in the current state above.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -1136,8 +1202,9 @@ the verification run rather than frozen in this coordination note.
 The final consolidated external review found no blockers: M16 READY TO CLOSE. M17.1
 is an accepted documentation-only contract and ownership freeze. M17.2 is externally
 accepted. M17.3, M17.4, and consolidated M17.1-M17.4 review are ACCEPTED following
-independent closure of B1-B5. M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED
-after the acceptance commit; later milestones remain unauthorized.
+independent closure of B1-B5. M17.5 is ACCEPTED and M17 is CLOSED. The next authorized
+phase is PRE-RELEASE CLEANUP AND DOCUMENTATION; Arduino/Clojure integration remains
+post-preview practical work.
 
 
 ## Accepted M14 consolidated invariants

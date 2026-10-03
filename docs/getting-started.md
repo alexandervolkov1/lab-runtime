@@ -245,6 +245,14 @@ cursors, and exact limits. Closing this socket does not shut down Runtime. See t
 [Application API reference](api/README.md) before adding subscriptions or
 mutations; clients must not blindly retry mutations.
 
+## Optional external language smoke
+
+With Babashka installed, follow the [minimal Babashka acceptance](../clients/babashka-smoke/README.md)
+to run hello plus a safe query against a real virtual Runtime. Its separate Workbench
+smoke uses the [opt-in Workbench API](workbench-api.md) for client/presentation work.
+These examples are not an SDK; full Arduino + Clojure + Clay integration is later
+post-preview work. Babashka is not required to build or run the Rust applications.
+
 ## Diagnostics
 
 The default diagnostic level is `INFO`. On Windows, bounded best-effort logs are

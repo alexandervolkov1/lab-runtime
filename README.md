@@ -11,6 +11,12 @@ deduplication, and retained operation outcomes. Workbench connects through the s
 language-neutral Application API available to other clients and provides live plots,
 typed operator workflows, and manual recovery/reconciliation.
 
+External clients can use the direct Runtime API or the separate opt-in
+[Workbench presentation/client API](docs/workbench-api.md). Workbench's bounded
+IPv4-loopback TCP/NDJSON adapter shares its existing single Runtime client worker;
+it does not introduce another experiment owner. The [Babashka smoke](clients/babashka-smoke/README.md)
+demonstrates both boundaries without a client SDK or a production language dependency.
+
 ## Why two processes?
 
 ```text

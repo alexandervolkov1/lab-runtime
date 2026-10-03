@@ -83,8 +83,8 @@ the M17.2 private single-owner Workbench dispatcher and presentation revision pa
 after its focused blockers were remediated. External re-review accepted the bounded
 opt-in IPv4-loopback TCP/NDJSON Workbench adapter and all bounded-network remediation
 as M17.3. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED after remediation
-and independent closure of consolidated blockers B1-B5. M17.5 becomes AUTHORIZED /
-READY TO START / NOT IMPLEMENTED after the acceptance commit.
+and independent closure of consolidated blockers B1-B5. External review accepted
+M17.5 with no blockers; M17.1-M17.5 are ACCEPTED and M17 is CLOSED.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -181,8 +181,9 @@ the proposed separate direct Runtime and Workbench-owned client surfaces in
 freeze. M17.2 is externally accepted as a transport-independent dispatcher with no
 external listener or framing. M17.3 and M17.4 are externally accepted, including
 the independently re-reviewed B1-B5 remediation. Consolidated M17.1-M17.4 review is
-ACCEPTED. M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance
-commit.
+ACCEPTED. M17.5 optional Babashka boundary evidence and focused documentation are
+ACCEPTED with no blockers. M17 is CLOSED. The next authorized phase is PRE-RELEASE
+CLEANUP AND DOCUMENTATION, not Arduino/Clojure integration; it is not started here.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific

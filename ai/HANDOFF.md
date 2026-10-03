@@ -76,8 +76,8 @@ focused blockers were remediated. External re-review accepted the bounded opt-in
 IPv4-loopback TCP/NDJSON Workbench adapter and all bounded-network remediation as
 M17.3. Consolidated audit blockers B1-B5 were remediated and independently closed by
 Astra with no new blockers. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED.
-M17.5 becomes AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance
-commit. The external adapter
+External review accepted M17.5 with no blockers. M17.1-M17.5 are ACCEPTED and M17
+is CLOSED. The external adapter
 submits lab operations through
 `WorkbenchDispatcher::dispatch()`, never through the internal GUI/operator
 `WorkbenchDispatcher::client()` accessor.
@@ -216,8 +216,15 @@ the final consolidated external review found no blockers and recorded M16 READY 
 M17.1, M17.2, M17.3, M17.4, and consolidated M17.1-M17.4 review are ACCEPTED.
 The original consolidated B1-B5 findings and accepted remediation are recorded in
 `WORK.md`. The Workbench-only remediation does not alter Runtime or M16 semantics.
-M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance commit;
-later implementation remains unauthorized.
+M17.5 is ACCEPTED with no blockers; M17 is CLOSED. Optional Babashka fixtures in
+`clients/babashka-smoke` exercise direct
+Runtime hello/query and the separately required Workbench language-neutral scenario.
+The real-browser regression still targets Runtime WebSocket directly. Focused public
+docs distinguish both surfaces; no Rust source or dependency changes are included.
+See `WORK.md` for evidence, including the preserved transient SQLite verification
+note. The next authorized phase is PRE-RELEASE CLEANUP AND DOCUMENTATION; it is not
+started by this closure task. Arduino/Clojure/Clay integration remains post-preview
+practical work. Release publication is not authorized.
 
 ## Later practical validation
 

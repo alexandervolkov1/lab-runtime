@@ -66,8 +66,8 @@ contract and ownership freeze. External re-review accepted the transport-indepen
 M17.2 dispatcher after its focused remediation. External re-review accepted the
 bounded IPv4-loopback TCP/NDJSON adapter and all bounded-network remediation as
 M17.3. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED after remediation and
-independent closure of consolidated blockers B1-B5. M17.5 becomes AUTHORIZED /
-READY TO START / NOT IMPLEMENTED after the acceptance commit.
+independent closure of consolidated blockers B1-B5. M17.5 is externally ACCEPTED
+with no blockers; M17.1-M17.5 are ACCEPTED and M17 is CLOSED.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -350,8 +350,11 @@ GUI / external Workbench calls -> one Workbench dispatcher
   lifetime acceptance plus narrow consolidated Workbench remediation. ACCEPTED;
   consolidated M17.1-M17.4 review ACCEPTED after independent B1-B5 closure.
 - **M17.5:** complete minimal language-boundary smoke, documentation and consolidated
-  external review without creating a client SDK or adding Steel. AUTHORIZED /
-  READY TO START / NOT IMPLEMENTED after the M17.4 acceptance commit.
+  external review without creating a client SDK or adding Steel. ACCEPTED with no
+  blockers. M17 is CLOSED.
+
+Next authorized phase: PRE-RELEASE CLEANUP AND DOCUMENTATION, unstarted by this closure
+task. Full Arduino + Clojure + Clay integration remains post-preview practical work.
 
 M17 may not create a second Runtime operation/session/subscription implementation or
 move presentation authority into Runtime. Steel, GUI features, remote access and a

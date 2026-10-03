@@ -38,6 +38,12 @@ remain transport-specific and need not produce an Application error envelope.
 Native Workbench is one TCP client. The API is also intended for advanced external
 clients; it is not private Workbench protocol.
 
+Workbench also offers a separate opt-in [presentation/client API](../workbench-api.md).
+Its external callers share the existing Workbench worker and do not select Runtime
+mutation identities. Direct Application clients still use the scope/sequence contract
+below. The optional [Babashka smoke](../../clients/babashka-smoke/README.md) is
+acceptance/example code, not a supported client SDK.
+
 ## Version and first request
 
 The current identifiers are:

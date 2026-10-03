@@ -86,6 +86,13 @@ authoritative operation/projection evidence.
 Native Workbench uses TCP/NDJSON today. Other clients may use either supported
 transport.
 
+The optional [Workbench external API](workbench-api.md) is a separate numeric
+IPv4-loopback TCP/NDJSON endpoint. One `WorkbenchDispatcher` serializes GUI and
+external presentation changes and sends all external lab work through the existing
+single `ClientHandle`. External `call_id` is connection correlation, never Runtime
+mutation identity. No second Runtime session, sequencer, subscription, recovery
+engine, or presentation owner is introduced. Direct Runtime clients remain independent.
+
 Workbench connection recovery preserves process ownership. An explicit Disconnect
 does not reconnect automatically. An unexpected continuity loss may start one
 bounded retained-scope reattach episode, but transport recovery never automatically

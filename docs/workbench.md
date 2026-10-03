@@ -4,6 +4,10 @@ This guide applies to the native `lab-workbench` in the current repository/v0.1
 product. Workbench connects to Application protocol v1 but exposes a deliberately
 smaller, typed operator surface than the complete Application API.
 
+For external programs, the opt-in [Workbench TCP/NDJSON API](workbench-api.md) exposes
+the accepted 15-operation presentation/client surface through the same owner. Its
+`call_id` correlation and recovery semantics are distinct from direct Runtime access.
+
 ## What Workbench is
 
 `lab-runtime.exe` and `lab-workbench.exe` are separate processes with different
