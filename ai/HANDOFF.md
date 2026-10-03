@@ -74,7 +74,10 @@ the private typed single-owner dispatcher and presentation revision path without
 external listener or framing. External re-review accepted M17.2 after its three
 focused blockers were remediated. External re-review accepted the bounded opt-in
 IPv4-loopback TCP/NDJSON Workbench adapter and all bounded-network remediation as
-M17.3. M17.4 is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The external adapter
+M17.3. Consolidated audit blockers B1-B5 were remediated and independently closed by
+Astra with no new blockers. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED.
+M17.5 becomes AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance
+commit. The external adapter
 submits lab operations through
 `WorkbenchDispatcher::dispatch()`, never through the internal GUI/operator
 `WorkbenchDispatcher::client()` accessor.
@@ -210,8 +213,11 @@ externally accepted at `799e7f969393b960ae54409f90842ff2ab1b84cf`. M16.6 fault/b
 acceptance is externally accepted at `6021586096453fa03bdbcc28ef740b660f32eeb5`.
 M16 fast/simple/declarative instrument onboarding is complete and externally accepted;
 the final consolidated external review found no blockers and recorded M16 READY TO CLOSE.
-M17.1, M17.2, and M17.3 are ACCEPTED. M17.4 is AUTHORIZED / READY TO START / NOT
-IMPLEMENTED. M17.5 and later implementation remain unauthorized and unstarted.
+M17.1, M17.2, M17.3, M17.4, and consolidated M17.1-M17.4 review are ACCEPTED.
+The original consolidated B1-B5 findings and accepted remediation are recorded in
+`WORK.md`. The Workbench-only remediation does not alter Runtime or M16 semantics.
+M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance commit;
+later implementation remains unauthorized.
 
 ## Later practical validation
 

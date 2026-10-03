@@ -5,7 +5,7 @@ use super::{
     types::{
         COMMAND_QUEUE, ClientCommand, ClientUpdate, CommandSendError, ConnectionState, EventCursor,
         HelloState, KnownAdmission, MAX_IN_FLIGHT, MutationIdentity, QuarantinedRecoveryRecord,
-        RecoveryQuarantineReason, RecoveryRecord, ReplyKind, UPDATE_QUEUE,
+        RecoveryQuarantineReason, RecoveryRecord, ReplyKind, UPDATE_QUEUE, WorkerControlQuery,
     },
 };
 use crate::recovery::{RecoveryJournal, load_journal, retire_journal, save_journal};
@@ -674,7 +674,7 @@ impl Worker {
                 };
                 self.queue_query(
                     command_id,
-                    "unsubscribe".into(),
+                    WorkerControlQuery::Unsubscribe.operation().into(),
                     json!({"subscription":token}),
                     Purpose::Unsubscribe,
                 );
@@ -1042,7 +1042,7 @@ impl Worker {
         }
         self.queue_request(
             command_id,
-            "operation_status".into(),
+            WorkerControlQuery::OperationStatus.operation().into(),
             json!({"request_id":identity.to_json()}),
             None,
             Purpose::OperationStatus,
@@ -1081,7 +1081,7 @@ impl Worker {
         self.event_cursor = Some(after.clone());
         let queued = self.queue_query(
             command_id,
-            "subscribe".into(),
+            WorkerControlQuery::Subscribe.operation().into(),
             json!({"after":after.to_json(),"filter":filter}),
             purpose,
         );

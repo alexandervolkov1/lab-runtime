@@ -11,7 +11,7 @@ use crate::{
         types::{
             ClientUpdate, CommandSendError, ConnectionState, HelloState, KnownAdmission,
             MutationIdentity, QuarantinedRecoveryRecord, RecoveryQuarantineReason, RecoveryRecord,
-            ReplyKind,
+            ReplyKind, WorkerControlQuery,
         },
     },
     model::{Freshness, UiCommand, UiCommandError, WorkbenchModel, apply_ui_command},
@@ -1242,6 +1242,12 @@ fn validate_lab_args(op: &str, args: &Value, mutation: bool) -> Result<(), Workb
             "Runtime mutation identity is worker-owned",
         ));
     }
+    if !mutation && WorkerControlQuery::from_operation(op).is_some() {
+        return Err(WorkbenchDispatchError::new(
+            WorkbenchErrorCode::InvalidArgs,
+            "Runtime query operation is owned by the Workbench worker",
+        ));
+    }
     Ok(())
 }
 
@@ -1410,7 +1416,10 @@ mod tests {
     use super::*;
     use crate::{
         client::types::EventCursor,
-        presentation::{AxisOptions, TraceStyle},
+        presentation::{
+            AxisOptions, MAX_PLOTS, MAX_STRING_BYTES, MAX_TRACES_PER_PLOT, PRESENTATION_FILE_BYTES,
+            TraceStyle,
+        },
     };
     use std::cell::{Cell, RefCell};
 
@@ -1520,6 +1529,80 @@ mod tests {
             },
             display_unit: None,
         }
+    }
+
+    fn exact_bound_document() -> PresentationDocument {
+        let mut document = PresentationDocument::empty("boundary-document");
+        document.plots = (0..MAX_PLOTS)
+            .map(|plot_index| Plot {
+                id: format!("plot-{plot_index}"),
+                title: "p".to_owned(),
+                time_window_seconds: 1.0,
+                axes: AxisOptions::default(),
+                traces: (0..MAX_TRACES_PER_PLOT)
+                    .map(|trace_index| {
+                        let boundary =
+                            plot_index + 1 == MAX_PLOTS && trace_index + 1 == MAX_TRACES_PER_PLOT;
+                        Trace {
+                            id: if boundary {
+                                "boundary-trace".to_owned()
+                            } else {
+                                format!("trace-{plot_index}-{trace_index}")
+                            },
+                            source: RuntimeRef::Signal {
+                                instrument: "i".to_owned(),
+                                parameter: "s".to_owned(),
+                            },
+                            display_label: if boundary { "z" } else { "t" }.to_owned(),
+                            visible: true,
+                            style: TraceStyle {
+                                color: "c".to_owned(),
+                                width: 1.0,
+                            },
+                            display_unit: Some("u".to_owned()),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let current = serde_json::to_vec_pretty(&document).unwrap().len();
+        assert!(current < PRESENTATION_FILE_BYTES);
+        let mut remaining = PRESENTATION_FILE_BYTES - current;
+        let fill = |value: &mut String, remaining: &mut usize| {
+            let added = (*remaining).min(MAX_STRING_BYTES - value.len());
+            value.extend(std::iter::repeat_n('x', added));
+            *remaining -= added;
+        };
+        for plot in &mut document.plots {
+            fill(&mut plot.title, &mut remaining);
+            for trace in &mut plot.traces {
+                if trace.id != "boundary-trace" {
+                    fill(&mut trace.display_label, &mut remaining);
+                }
+                fill(&mut trace.style.color, &mut remaining);
+                fill(
+                    trace.display_unit.as_mut().expect("unit is present"),
+                    &mut remaining,
+                );
+                if let RuntimeRef::Signal {
+                    instrument,
+                    parameter,
+                } = &mut trace.source
+                {
+                    fill(instrument, &mut remaining);
+                    fill(parameter, &mut remaining);
+                }
+            }
+        }
+        assert_eq!(remaining, 0);
+        assert_eq!(
+            serde_json::to_vec_pretty(&document).unwrap().len(),
+            PRESENTATION_FILE_BYTES
+        );
+        document.validate().unwrap();
+        document.validate_serialized_size().unwrap();
+        document
     }
 
     fn record(seq: u64) -> RecoveryRecord {
@@ -1838,6 +1921,56 @@ mod tests {
     }
 
     #[test]
+    fn active_presentation_never_publishes_beyond_the_frozen_byte_bound() {
+        let document = exact_bound_document();
+        let mut dispatcher = WorkbenchDispatcher::new_with_id(
+            WorkbenchModel::new(document),
+            FakeClient::default(),
+            "0123456789abcdef0123456789abcdef".to_owned(),
+        );
+
+        let accepted = dispatcher
+            .dispatch(
+                origin("within-bound"),
+                WorkbenchRequest::UiRenameItem {
+                    expected: dispatcher.presentation_expectation(),
+                    item_id: "boundary-trace".to_owned(),
+                    label: "q".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(accepted.events.len(), 1);
+        assert_eq!(dispatcher.presentation_revision(), 2);
+        assert_eq!(
+            serde_json::to_vec_pretty(&dispatcher.presentation)
+                .unwrap()
+                .len(),
+            PRESENTATION_FILE_BYTES
+        );
+
+        let before = dispatcher.presentation.clone();
+        let rejected = dispatcher.dispatch(
+            origin("over-bound"),
+            WorkbenchRequest::UiRenameItem {
+                expected: dispatcher.presentation_expectation(),
+                item_id: "boundary-trace".to_owned(),
+                label: "qq".to_owned(),
+            },
+        );
+        assert_eq!(
+            rejected.unwrap_err().code,
+            WorkbenchErrorCode::InvalidPresentation
+        );
+        assert_eq!(dispatcher.presentation, before);
+        assert_eq!(dispatcher.presentation_revision(), 2);
+
+        let snapshot = dispatcher
+            .dispatch(origin("snapshot"), WorkbenchRequest::PresentationGet)
+            .unwrap();
+        assert!(serde_json::to_vec(&snapshot.result).unwrap().len() < 2_097_152);
+    }
+
+    #[test]
     fn gui_and_typed_calls_mutate_the_same_presentation_owner() {
         let mut dispatcher = dispatcher();
         let gui = dispatcher
@@ -1929,6 +2062,59 @@ mod tests {
         assert_eq!(
             caller_identity.unwrap_err().code,
             WorkbenchErrorCode::InvalidArgs
+        );
+    }
+
+    #[test]
+    fn ordinary_lab_query_cannot_bypass_worker_owned_control_paths() {
+        let mut dispatcher = dispatcher();
+        ready(&mut dispatcher);
+
+        for operation in WorkerControlQuery::ALL.map(WorkerControlQuery::operation) {
+            let rejected = dispatcher.dispatch(
+                origin(operation),
+                WorkbenchRequest::LabQuery {
+                    op: operation.to_owned(),
+                    args: json!({}),
+                },
+            );
+            assert_eq!(rejected.unwrap_err().code, WorkbenchErrorCode::InvalidArgs);
+        }
+        assert!(dispatcher.client().unwrap().submitted.borrow().is_empty());
+
+        let opaque_args = json!({"future_runtime_field":{"nested":true}});
+        dispatcher
+            .dispatch(
+                origin("opaque"),
+                WorkbenchRequest::LabQuery {
+                    op: "future_runtime_query".to_owned(),
+                    args: opaque_args.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            dispatcher.client().unwrap().submitted.borrow().as_slice(),
+            &[Submitted::Query(
+                "future_runtime_query".to_owned(),
+                opaque_args.clone()
+            )]
+        );
+
+        dispatcher
+            .dispatch(
+                origin("explicit-shutdown"),
+                WorkbenchRequest::LabMutation {
+                    op: "runtime_shutdown".to_owned(),
+                    args: json!({}),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            dispatcher.client().unwrap().submitted.borrow().last(),
+            Some(&Submitted::Mutation(
+                "runtime_shutdown".to_owned(),
+                json!({})
+            ))
         );
     }
 

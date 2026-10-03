@@ -62,6 +62,9 @@ pub(crate) fn apply_ui_command(
     candidate
         .validate()
         .map_err(UiCommandError::InvalidCandidate)?;
+    candidate
+        .validate_serialized_size()
+        .map_err(UiCommandError::InvalidCandidate)?;
     *document = candidate;
     Ok(())
 }

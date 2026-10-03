@@ -9,7 +9,9 @@ M17.1 external review: ACCEPTED
 M17.1 status: ACCEPTED
 M17.2 implementation: ACCEPTED
 M17.3 implementation: ACCEPTED
-M17.4 implementation: AUTHORIZED / READY TO START / NOT IMPLEMENTED
+M17.4 implementation: ACCEPTED
+Consolidated M17.1-M17.4 review: ACCEPTED (B1-B5 remediated and independently closed)
+M17.5: AUTHORIZED / READY TO START / NOT IMPLEMENTED after the M17.4 acceptance commit
 ```
 
 This document freezes the proposed M17 external boundary before implementation. It
@@ -1083,5 +1085,7 @@ remediated contract with no remaining blockers.
 M17.1: ACCEPTED
 M17.2: ACCEPTED
 M17.3: ACCEPTED
-M17.4: AUTHORIZED / READY TO START / NOT IMPLEMENTED
+M17.4: ACCEPTED
+Consolidated M17.1-M17.4 review: ACCEPTED (B1-B5 remediated and independently closed)
+M17.5: AUTHORIZED / READY TO START / NOT IMPLEMENTED after the M17.4 acceptance commit
 ```

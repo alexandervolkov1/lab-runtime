@@ -22,6 +22,17 @@ mod contract_tests {
     }
 
     #[test]
+    fn worker_control_query_classification_is_canonical_and_frozen() {
+        assert_eq!(
+            types::WorkerControlQuery::ALL.map(types::WorkerControlQuery::operation),
+            ["operation_status", "subscribe", "unsubscribe"]
+        );
+        for operation in ["reference", "recording_status", "future_runtime_query"] {
+            assert_eq!(types::WorkerControlQuery::from_operation(operation), None);
+        }
+    }
+
+    #[test]
     fn command_mailbox_rejects_the_thirty_third_item_without_blocking() {
         let (sender, _receiver) = sync_channel(types::COMMAND_QUEUE);
         for value in 0..types::COMMAND_QUEUE {

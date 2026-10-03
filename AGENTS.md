@@ -112,8 +112,12 @@ External re-review accepted the documentation-only M17.1 contract and ownership
 freeze in `ai/M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. The M17.2
 single-owner Workbench dispatcher and presentation revision path is externally
 accepted. The bounded opt-in IPv4-loopback TCP/NDJSON Workbench adapter and its
-bounded-network remediation are externally accepted as M17.3. M17.4 ownership,
-recovery, fault, and parity acceptance is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+bounded-network remediation are externally accepted as M17.3. Narrow consolidated
+remediation across the accepted M17.2/M17.3 Workbench boundary and the M17.4 evidence
+is ACCEPTED after Astra independently closed consolidated audit blockers B1-B5 with
+no new blockers. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED. M17.5 becomes
+AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance commit; this task
+does not implement it. Detailed authorization remains in `ai/WORK.md`.
 The external adapter submits lab query, mutation, and status calls only through
 `WorkbenchDispatcher::dispatch()`; `WorkbenchDispatcher::client()` remains solely
 for accepted internal GUI/operator workflows.

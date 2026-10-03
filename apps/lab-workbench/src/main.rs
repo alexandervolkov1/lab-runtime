@@ -159,7 +159,26 @@ mod operator_boundary_tests {
         assert!(!external_production.contains("apply_ui_command"));
         assert!(!external_production.contains("PresentationDocument"));
         assert!(!external_production.contains("WebSocket"));
-        assert!(external_production.contains("dispatcher.dispatch("));
+        assert_eq!(
+            external_production.matches("dispatcher.dispatch(").count(),
+            1
+        );
+        for prohibited in [
+            "ClientHandle::spawn",
+            ".query(",
+            ".mutation(",
+            ".operation_status(",
+            ".retry_mutation(",
+            "RecoveryJournal",
+            "runtime_shutdown",
+            "subscribe",
+            "replay",
+        ] {
+            assert!(
+                !external_production.contains(prohibited),
+                "external adapter contains prohibited owner/behavior seam {prohibited}"
+            );
+        }
         for prohibited in [
             "runtime_shutdown",
             "emulator_publish",
@@ -214,6 +233,8 @@ mod runtime_acceptance {
             ClientHandle, ClientUpdate,
             types::{ConnectionState, EventCursor, MutationIdentity, ReplyKind},
         },
+        dispatcher::WorkbenchDispatcher,
+        external::{PreparedEndpoint, WorkbenchEndpoint},
         gui::rebuild::RebuildCoordinator,
         model::{
             ExactRetryWorkflow, Freshness, OperatorIntent, OperatorWorkflow, OperatorWorkflowState,
@@ -222,14 +243,26 @@ mod runtime_acceptance {
         presentation::{PresentationDocument, RuntimeRef},
         recovery::load_journal,
     };
+    use lab_runtime::{
+        host::HostCore,
+        recorder::{
+            RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, WriterBarrier,
+        },
+        server,
+        service::{ServiceHost, ServiceOptions},
+    };
     use serde_json::{Value, json};
     use std::{
         env, fs,
         io::{BufRead, BufReader, Read, Write},
-        net::{SocketAddr, TcpListener},
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
         path::PathBuf,
         process::{Child, Command, ExitStatus, Stdio},
-        sync::mpsc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc,
+        },
         thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
@@ -366,6 +399,54 @@ mod runtime_acceptance {
         )
     }
 
+    fn start_runtime_with_held_recording_start() -> (RuntimeChild, SocketAddr, TcpStream) {
+        const CHILD_MODE: &str = "LAB_M17_OVERLAP_RUNTIME_CHILD";
+        const CHILD_DATABASE: &str = "LAB_M17_OVERLAP_RUNTIME_DATABASE";
+        const TEST_NAME: &str = "runtime_acceptance::m17_4_overlap_runtime_child";
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let database = env::temp_dir().join(format!(
+            "lab-workbench-m17-overlap-{}-{suffix}.sqlite",
+            std::process::id()
+        ));
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args(["--ignored", "--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_MODE, "1")
+            .env(CHILD_DATABASE, &database)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start deterministic real-Runtime overlap fixture");
+        let stdout = child.stdout.take().expect("overlap fixture stdout");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Some(ready) = line.strip_prefix("M17_OVERLAP_RUNTIME_READY ") {
+                    let _ = sender.send(ready.to_owned());
+                    break;
+                }
+            }
+        });
+        let ready = receiver
+            .recv_timeout(ACCEPTANCE_TIMEOUT)
+            .expect("deterministic Runtime overlap fixture readiness deadline");
+        let mut fields = ready.split_whitespace();
+        let runtime_address: SocketAddr = fields.next().unwrap().parse().unwrap();
+        let release_address: SocketAddr = fields.next().unwrap().parse().unwrap();
+        assert!(fields.next().is_none());
+        let release = TcpStream::connect(release_address).expect("connect overlap barrier control");
+        (
+            RuntimeChild(child, Some(database)),
+            runtime_address,
+            release,
+        )
+    }
+
     fn start_runtime_with_args(
         arguments: &[&str],
         recorder_path: Option<PathBuf>,
@@ -399,6 +480,73 @@ mod runtime_acceptance {
             RuntimeChild(child, recorder_path),
             std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         )
+    }
+
+    #[test]
+    #[ignore = "M17.4 deterministic real-Runtime overlap fixture child"]
+    fn m17_4_overlap_runtime_child() {
+        const CHILD_MODE: &str = "LAB_M17_OVERLAP_RUNTIME_CHILD";
+        const CHILD_DATABASE: &str = "LAB_M17_OVERLAP_RUNTIME_DATABASE";
+        if env::var_os(CHILD_MODE).is_none() {
+            return;
+        }
+
+        let database = PathBuf::from(env::var_os(CHILD_DATABASE).unwrap());
+        let barrier = WriterBarrier::held_start();
+        let worker = RecorderWorker::open_with_barrier(
+            &database,
+            RecorderLimits::default(),
+            barrier.clone(),
+        )
+        .unwrap();
+        let mut host = HostCore::virtual_demo().unwrap();
+        host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+            .unwrap();
+        let options =
+            ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"])
+                .unwrap();
+        let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+        let clock = service.clock_copy();
+        let activation_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        while service
+            .owner()
+            .recording_status()
+            .is_none_or(|status| status.activation_root.is_none())
+        {
+            assert!(
+                Instant::now() < activation_deadline,
+                "overlap fixture Recorder activation did not commit"
+            );
+            service.owner_mut().service(&clock).unwrap();
+            thread::yield_now();
+        }
+        assert_eq!(
+            service.owner().recording_status().unwrap().state,
+            RecordingState::Idle
+        );
+
+        let release_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let release_address = release_listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let release_stop = Arc::clone(&stop);
+        let release_thread = thread::spawn(move || {
+            let (mut control, _) = release_listener.accept().unwrap();
+            control.set_read_timeout(Some(ACCEPTANCE_TIMEOUT)).unwrap();
+            let mut signal = [0_u8; 1];
+            control.read_exact(&mut signal).unwrap();
+            assert_eq!(signal, [b'R']);
+            barrier.release();
+            while control.read(&mut signal).is_ok_and(|read| read != 0) {}
+            release_stop.store(true, Ordering::Release);
+        });
+        println!(
+            "M17_OVERLAP_RUNTIME_READY {} {}",
+            service.bound_address(),
+            release_address
+        );
+        std::io::stdout().flush().unwrap();
+        server::run(service, stop).unwrap();
+        release_thread.join().unwrap();
     }
 
     fn wait_for(client: &ClientHandle, predicate: impl Fn(&ClientUpdate) -> bool) -> ClientUpdate {
@@ -452,6 +600,646 @@ mod runtime_acceptance {
                 return update;
             }
         }
+    }
+
+    struct ExternalAcceptanceCaller {
+        stream: TcpStream,
+        input: Vec<u8>,
+        frames: std::collections::VecDeque<Value>,
+        last_call_id: String,
+    }
+
+    impl ExternalAcceptanceCaller {
+        fn connect(address: SocketAddrV4) -> Self {
+            let stream = TcpStream::connect(address).expect("connect Workbench endpoint");
+            stream.set_nonblocking(true).unwrap();
+            Self {
+                stream,
+                input: Vec::new(),
+                frames: std::collections::VecDeque::new(),
+                last_call_id: String::new(),
+            }
+        }
+
+        fn send(&mut self, call_id: &str, op: &str, args: Value) {
+            self.last_call_id = call_id.to_owned();
+            let mut frame = serde_json::to_vec(&json!({
+                "v":1,"type":"request","call_id":call_id,"op":op,"args":args
+            }))
+            .unwrap();
+            frame.push(b'\n');
+            self.stream.write_all(&frame).unwrap();
+        }
+
+        fn receive_available(&mut self, context: &str) {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match self.stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        self.input.extend_from_slice(&buffer[..read]);
+                        while let Some(newline) = self.input.iter().position(|byte| *byte == b'\n')
+                        {
+                            let line = self.input.drain(..=newline).collect::<Vec<_>>();
+                            self.frames.push_back(
+                                serde_json::from_slice(&line[..line.len() - 1]).unwrap(),
+                            );
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!(
+                        "Workbench endpoint read failed during {context} after {}: {error}",
+                        self.last_call_id
+                    ),
+                }
+            }
+        }
+
+        fn take(&mut self, predicate: impl Fn(&Value) -> bool) -> Option<Value> {
+            let index = self.frames.iter().position(predicate)?;
+            self.frames.remove(index)
+        }
+    }
+
+    fn pump_external_owner(
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<ClientHandle>,
+        rebuild: &mut RebuildCoordinator,
+    ) {
+        endpoint.service_owner(dispatcher);
+        let update = {
+            let client = dispatcher.client().expect("Runtime client remains owned");
+            client.try_recv().ok()
+        };
+        if let Some(update) = update {
+            let events = dispatcher.apply_client_update(update.clone());
+            endpoint.route_events(dispatcher, events);
+            dispatcher.advance_rebuild(rebuild, &update);
+            if let Some(event) = dispatcher.finish_model_turn() {
+                endpoint.route_events(dispatcher, [event]);
+            }
+        }
+        endpoint.service_owner(dispatcher);
+        // The production GUI naturally yields between frames. Give the fixed
+        // network thread the same scheduling opportunity without using this
+        // delay as the acceptance predicate.
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    fn wait_external_frame(
+        caller: &mut ExternalAcceptanceCaller,
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<ClientHandle>,
+        rebuild: &mut RebuildCoordinator,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        loop {
+            pump_external_owner(endpoint, dispatcher, rebuild);
+            caller.receive_available("frame wait");
+            if let Some(frame) = caller.take(&predicate) {
+                return frame;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Workbench external frame deadline; queued={:?}",
+                caller.frames
+            );
+            thread::yield_now();
+        }
+    }
+
+    fn wait_external_fresh(
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<ClientHandle>,
+        rebuild: &mut RebuildCoordinator,
+    ) {
+        let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        while dispatcher.observations.freshness != Freshness::Fresh {
+            pump_external_owner(endpoint, dispatcher, rebuild);
+            assert!(Instant::now() < deadline, "Workbench rebuild deadline");
+            thread::yield_now();
+        }
+    }
+
+    fn wait_external_local_frame_without_client_updates(
+        caller: &mut ExternalAcceptanceCaller,
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<ClientHandle>,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        loop {
+            endpoint.service_owner(dispatcher);
+            caller.receive_available("local frame without Runtime updates");
+            if let Some(frame) = caller.take(&predicate) {
+                return frame;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "local Workbench frame deadline; queued={:?}",
+                caller.frames
+            );
+            thread::yield_now();
+        }
+    }
+
+    fn external_query(
+        caller: &mut ExternalAcceptanceCaller,
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<ClientHandle>,
+        rebuild: &mut RebuildCoordinator,
+        call_id: &str,
+        op: &str,
+        args: Value,
+    ) -> Value {
+        caller.send(call_id, "lab_query", json!({"op":op,"args":args}));
+        let submitted = wait_external_frame(caller, endpoint, dispatcher, rebuild, |frame| {
+            frame["call_id"] == call_id && frame["type"] == "result"
+        });
+        assert_eq!(submitted["result"]["state"], "submitted");
+        wait_external_frame(caller, endpoint, dispatcher, rebuild, |frame| {
+            frame["event"] == "lab_update"
+                && frame["data"]["call_id"] == call_id
+                && frame["data"]["kind"] == "result"
+        })["data"]["runtime"]["result"]
+            .clone()
+    }
+
+    #[test]
+    #[ignore = "M17.4 real Runtime/Workbench endpoint ownership, identity, presentation and lifetime acceptance"]
+    fn m17_4_real_runtime_external_endpoint_preserves_owner_and_process_boundaries() {
+        let (mut runtime, runtime_address, mut overlap_release) =
+            start_runtime_with_held_recording_start();
+        let client = ClientHandle::spawn(runtime_address).unwrap();
+        client.connect(None).unwrap();
+        let model = WorkbenchModel::new(PresentationDocument::empty("m17-4-acceptance"));
+        let mut dispatcher = WorkbenchDispatcher::new(model, client);
+        let mut rebuild = RebuildCoordinator::default();
+        let prepared = PreparedEndpoint::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint_address = prepared.address();
+        let endpoint_wakes = Arc::new(AtomicUsize::new(0));
+        let counted_wakes = Arc::clone(&endpoint_wakes);
+        let mut endpoint = WorkbenchEndpoint::start(
+            prepared,
+            Arc::new(move || {
+                counted_wakes.fetch_add(1, Ordering::Relaxed);
+            }),
+        )
+        .unwrap();
+        wait_external_fresh(&mut endpoint, &mut dispatcher, &mut rebuild);
+
+        let mut first = ExternalAcceptanceCaller::connect(endpoint_address);
+        let mut second = ExternalAcceptanceCaller::connect(endpoint_address);
+        for (caller, call_id) in [(&mut first, "hello-a"), (&mut second, "hello-b")] {
+            caller.send(call_id, "hello", json!({}));
+            let hello = wait_external_frame(
+                caller,
+                &mut endpoint,
+                &mut dispatcher,
+                &mut rebuild,
+                |frame| frame["call_id"] == call_id,
+            );
+            assert_eq!(hello["type"], "result");
+        }
+        let workbench_id = dispatcher.presentation_expectation().workbench_id;
+
+        let direct = ClientHandle::spawn(runtime_address).unwrap();
+        direct.connect(None).unwrap();
+        wait_for(&direct, |update| matches!(update, ClientUpdate::Hello(_)));
+        direct.query("reference", json!({"reference":"1"})).unwrap();
+        let direct_reference = reply_result(wait_for(&direct, |update| {
+            matches!(update, ClientUpdate::Reply { op, kind: ReplyKind::Result, .. }
+                if op == "reference")
+        }));
+        assert_eq!(direct_reference["reference"], "1");
+        direct.shutdown().unwrap();
+
+        first.send(
+            "reference-before",
+            "lab_query",
+            json!({"op":"reference","args":{"reference":"1"}}),
+        );
+        second.send(
+            "recording-before",
+            "lab_query",
+            json!({"op":"recording_status","args":{}}),
+        );
+        let reference_before = {
+            let submitted = wait_external_frame(
+                &mut first,
+                &mut endpoint,
+                &mut dispatcher,
+                &mut rebuild,
+                |frame| frame["call_id"] == "reference-before",
+            );
+            assert_eq!(submitted["result"]["state"], "submitted");
+            wait_external_frame(
+                &mut first,
+                &mut endpoint,
+                &mut dispatcher,
+                &mut rebuild,
+                |frame| {
+                    frame["event"] == "lab_update" && frame["data"]["call_id"] == "reference-before"
+                },
+            )["data"]["runtime"]["result"]
+                .clone()
+        };
+        let recording_before = {
+            let submitted = wait_external_frame(
+                &mut second,
+                &mut endpoint,
+                &mut dispatcher,
+                &mut rebuild,
+                |frame| frame["call_id"] == "recording-before",
+            );
+            assert_eq!(submitted["result"]["state"], "submitted");
+            wait_external_frame(
+                &mut second,
+                &mut endpoint,
+                &mut dispatcher,
+                &mut rebuild,
+                |frame| {
+                    frame["event"] == "lab_update" && frame["data"]["call_id"] == "recording-before"
+                },
+            )["data"]["runtime"]["result"]
+                .clone()
+        };
+
+        first.send(
+            "plot",
+            "ui_add_plot",
+            json!({"expected":{"workbench_id":workbench_id,"revision":"1"},
+                "plot":{"id":"external","title":"External","time_window_seconds":60.0,
+                    "axes":{"y_min":null,"y_max":null},"traces":[]}}),
+        );
+        let plot = wait_external_frame(
+            &mut first,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            |frame| frame["call_id"] == "plot",
+        );
+        assert_eq!(plot["result"]["presentation_revision"], "2");
+        let reference_after = external_query(
+            &mut first,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            "reference-after",
+            "reference",
+            json!({"reference":"1"}),
+        );
+        let recording_after = external_query(
+            &mut second,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            "recording-after",
+            "recording_status",
+            json!({}),
+        );
+        for field in [
+            "reference",
+            "kind",
+            "revision",
+            "target",
+            "rate",
+            "unit",
+            "configurable",
+            "status",
+        ] {
+            assert_eq!(
+                reference_after[field], reference_before[field],
+                "UI-only work changed Runtime Reference authority field {field}"
+            );
+        }
+        assert_eq!(recording_after, recording_before);
+
+        let reference_mutation_args = json!({
+            "reference":"1",
+            "expected_revision":reference_after["revision"],
+            "target":reference_after["target"].as_f64().unwrap() + 0.125,
+            "rate":2.0
+        });
+        assert_eq!(recording_before["state"], "idle");
+        let recording_mutation_args = json!({"label":"M17.4 deterministic concurrent mutation"});
+        for args in [&reference_mutation_args, &recording_mutation_args] {
+            assert!(args.get("scope").is_none());
+            assert!(args.get("seq").is_none());
+        }
+        first.send(
+            "mutation-a",
+            "lab_mutation",
+            json!({"op":"recording_start","args":recording_mutation_args}),
+        );
+        let first_submitted = wait_external_frame(
+            &mut first,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            |frame| frame["call_id"] == "mutation-a" && frame["type"] == "result",
+        );
+        assert_eq!(first_submitted["result"]["state"], "submitted");
+        // Admit B into the real endpoint mailbox before observing A's acceptance,
+        // but do not service that mailbox yet. This lets the serialized owner apply
+        // A's accepted update and then dispatch B in the same test thread, within
+        // the worker's next command-before-read turn.
+        endpoint_wakes.store(0, Ordering::Relaxed);
+        second.send(
+            "mutation-b",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":reference_mutation_args}),
+        );
+        let admission_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        while endpoint_wakes.load(Ordering::Relaxed) == 0 {
+            assert!(
+                Instant::now() < admission_deadline,
+                "mutation B did not reach the endpoint owner mailbox"
+            );
+            thread::yield_now();
+        }
+
+        let first_command_id = first_submitted["result"]["command_id"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let accepted_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        let first_identity = loop {
+            let update = dispatcher
+                .client()
+                .expect("single Runtime client remains owned")
+                .recv_timeout(accepted_deadline.saturating_duration_since(Instant::now()))
+                .expect("mutation A accepted before deadline");
+            let accepted = matches!(
+                &update,
+                ClientUpdate::Reply {
+                    command_id,
+                    kind: ReplyKind::MutationAccepted,
+                    ..
+                } if *command_id == first_command_id
+            );
+            let identity = match &update {
+                ClientUpdate::Reply {
+                    command_id,
+                    kind: ReplyKind::MutationAccepted,
+                    envelope,
+                    ..
+                } if *command_id == first_command_id => Some(envelope["request_id"].clone()),
+                _ => None,
+            };
+            let events = dispatcher.apply_client_update(update.clone());
+            endpoint.route_events(&mut dispatcher, events);
+            dispatcher.advance_rebuild(&mut rebuild, &update);
+            if let Some(event) = dispatcher.finish_model_turn() {
+                endpoint.route_events(&mut dispatcher, [event]);
+            }
+            if accepted {
+                break identity.expect("accepted identity");
+            }
+        };
+        assert!(dispatcher.recovery.mutations.iter().any(|record| {
+            record.op == "recording_start"
+                && record.args == recording_mutation_args
+                && record.admission == super::client::types::KnownAdmission::Accepted
+        }));
+
+        assert_eq!(endpoint.service_owner(&mut dispatcher), 1);
+        let first_accepted = wait_external_local_frame_without_client_updates(
+            &mut first,
+            &mut endpoint,
+            &mut dispatcher,
+            |frame| {
+                frame["event"] == "lab_update"
+                    && frame["data"]["call_id"] == "mutation-a"
+                    && frame["data"]["kind"] == "mutation_accepted"
+            },
+        );
+        assert_eq!(
+            first_accepted["data"]["runtime"]["request_id"],
+            first_identity
+        );
+        let second_submitted = wait_external_local_frame_without_client_updates(
+            &mut second,
+            &mut endpoint,
+            &mut dispatcher,
+            |frame| frame["call_id"] == "mutation-b" && frame["type"] == "result",
+        );
+        assert_eq!(second_submitted["result"]["state"], "submitted");
+        assert!(dispatcher.recovery.mutations.iter().any(|record| {
+            record.op == "recording_start"
+                && record.args == recording_mutation_args
+                && record.admission == super::client::types::KnownAdmission::Accepted
+        }));
+        let second_command_id = second_submitted["result"]["command_id"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let second_acceptance_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        let second_identity = loop {
+            let update = dispatcher
+                .client()
+                .expect("single Runtime client remains owned")
+                .recv_timeout(second_acceptance_deadline.saturating_duration_since(Instant::now()))
+                .expect("mutation B acceptance before deadline");
+            let first_terminal = matches!(
+                &update,
+                ClientUpdate::Reply {
+                    command_id,
+                    kind: ReplyKind::MutationCompleted
+                        | ReplyKind::MutationFailed
+                        | ReplyKind::PublicError,
+                    ..
+                } if *command_id == first_command_id
+            ) || matches!(
+                &update,
+                ClientUpdate::LocalRejected { command_id, .. }
+                    if *command_id == first_command_id
+            );
+            assert!(
+                !first_terminal,
+                "mutation A became terminal to the worker before mutation B was Runtime-accepted: {update:?}"
+            );
+            let second_accepted = match &update {
+                ClientUpdate::Reply {
+                    command_id,
+                    kind: ReplyKind::MutationAccepted,
+                    envelope,
+                    ..
+                } if *command_id == second_command_id => Some(envelope["request_id"].clone()),
+                _ => None,
+            };
+            let events = dispatcher.apply_client_update(update.clone());
+            endpoint.route_events(&mut dispatcher, events);
+            dispatcher.advance_rebuild(&mut rebuild, &update);
+            if let Some(event) = dispatcher.finish_model_turn() {
+                endpoint.route_events(&mut dispatcher, [event]);
+            }
+            if let Some(identity) = second_accepted {
+                break identity;
+            }
+        };
+        overlap_release
+            .write_all(b"R")
+            .expect("release deterministic Recorder barrier after B acceptance");
+        let second_accepted = wait_external_frame(
+            &mut second,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            |frame| {
+                frame["event"] == "lab_update"
+                    && frame["data"]["call_id"] == "mutation-b"
+                    && frame["data"]["kind"] == "mutation_accepted"
+            },
+        );
+        assert_eq!(
+            second_accepted["data"]["runtime"]["request_id"],
+            second_identity
+        );
+        for (caller, call_id) in [(&mut first, "mutation-a"), (&mut second, "mutation-b")] {
+            let terminal = wait_external_frame(
+                caller,
+                &mut endpoint,
+                &mut dispatcher,
+                &mut rebuild,
+                |frame| {
+                    frame["event"] == "lab_update"
+                        && frame["data"]["call_id"] == call_id
+                        && matches!(
+                            frame["data"]["kind"].as_str(),
+                            Some("mutation_completed" | "mutation_failed" | "public_error")
+                        )
+                },
+            );
+            assert_eq!(
+                terminal["data"]["kind"], "mutation_completed",
+                "{terminal:?}"
+            );
+        }
+        assert_eq!(first_identity["scope"], second_identity["scope"]);
+        let first_sequence = first_identity["seq"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let second_sequence = second_identity["seq"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert_eq!(second_sequence, first_sequence + 1);
+
+        let latest = external_query(
+            &mut first,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            "reference-latest",
+            "reference",
+            json!({"reference":"1"}),
+        );
+        let caller_loss_target = latest["target"].as_f64().unwrap() + 0.125;
+        let caller_loss_revision = latest["revision"].as_str().unwrap().parse::<u64>().unwrap() + 1;
+        let caller_loss_args = json!({
+            "reference":"1",
+            "expected_revision":latest["revision"],
+            "target":caller_loss_target,
+            "rate":2.0
+        });
+        second.send(
+            "caller-loss",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":caller_loss_args}),
+        );
+        let submitted = wait_external_frame(
+            &mut second,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            |frame| frame["call_id"] == "caller-loss",
+        );
+        assert_eq!(submitted["result"]["state"], "submitted");
+        assert!(
+            !dispatcher.recovery.mutations.iter().any(|record| {
+                record.op == "reference_retune"
+                    && record.args == caller_loss_args
+                    && record.admission == super::client::types::KnownAdmission::Completed
+            }),
+            "caller must detach before Workbench observes terminal recovery evidence"
+        );
+        drop(second);
+        let progress_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        while !dispatcher.recovery.mutations.iter().any(|record| {
+            record.op == "reference_retune"
+                && record.args == caller_loss_args
+                && record.admission == super::client::types::KnownAdmission::Completed
+        }) {
+            pump_external_owner(&mut endpoint, &mut dispatcher, &mut rebuild);
+            assert!(
+                Instant::now() < progress_deadline,
+                "detached mutation did not reach authoritative completion evidence"
+            );
+            thread::yield_now();
+        }
+        assert!(runtime.0.try_wait().unwrap().is_none());
+        let continued_reference = external_query(
+            &mut first,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            "reference-after-caller-loss",
+            "reference",
+            json!({"reference":"1"}),
+        );
+        assert_eq!(
+            continued_reference["revision"],
+            caller_loss_revision.to_string()
+        );
+        assert_eq!(continued_reference["target"], caller_loss_target);
+        assert!(runtime.0.try_wait().unwrap().is_none());
+
+        let mut survivor = ExternalAcceptanceCaller::connect(endpoint_address);
+        survivor.send("survivor-hello", "hello", json!({}));
+        let survivor_hello = wait_external_frame(
+            &mut survivor,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            |frame| frame["call_id"] == "survivor-hello",
+        );
+        assert_eq!(survivor_hello["type"], "result");
+
+        let _ = runtime.terminate();
+        let disconnect_deadline = Instant::now() + ACCEPTANCE_TIMEOUT;
+        while dispatcher.connection != ConnectionState::Disconnected {
+            pump_external_owner(&mut endpoint, &mut dispatcher, &mut rebuild);
+            survivor.receive_available("Runtime disconnect observation");
+            assert!(
+                Instant::now() < disconnect_deadline,
+                "Runtime disconnect observation deadline"
+            );
+            thread::yield_now();
+        }
+        assert_ne!(dispatcher.observations.freshness, Freshness::Fresh);
+        survivor.send("presentation-after-runtime", "presentation_get", json!({}));
+        let presentation = wait_external_frame(
+            &mut survivor,
+            &mut endpoint,
+            &mut dispatcher,
+            &mut rebuild,
+            |frame| frame["call_id"] == "presentation-after-runtime",
+        );
+        assert_eq!(presentation["result"]["presentation_revision"], "2");
+        assert_eq!(
+            presentation["result"]["document"]["plots"][0]["id"],
+            "external"
+        );
+
+        endpoint.shutdown(&mut dispatcher);
+        dispatcher.take_client().unwrap().shutdown().unwrap();
     }
 
     #[test]

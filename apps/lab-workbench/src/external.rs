@@ -163,7 +163,7 @@ struct RecoveryExpectedWire {
 struct RecoveryGetWire {
     kind: String,
     index: String,
-    expected: Option<RecoveryExpectedWire>,
+    expected: Value,
 }
 
 #[derive(Deserialize)]
@@ -349,17 +349,17 @@ fn decode_request(body: &[u8]) -> Result<DecodedRequest, DecodeError> {
                 _ => return invalid_args(call_id),
             };
             let index = canonical_u64(&args.index).map_err(|_| invalid_args_value(&call_id))?;
-            let expected = args
-                .expected
-                .map(|expected| {
-                    Ok::<RecoveryExpectation, ()>(RecoveryExpectation {
-                        workbench_id: expected.workbench_id,
-                        recovery_generation: canonical_u64(&expected.recovery_generation)
-                            .map_err(|_| ())?,
-                    })
+            let expected = if args.expected.is_null() {
+                None
+            } else {
+                let expected: RecoveryExpectedWire = serde_json::from_value(args.expected)
+                    .map_err(|_| invalid_args_value(&call_id))?;
+                Some(RecoveryExpectation {
+                    workbench_id: expected.workbench_id,
+                    recovery_generation: canonical_u64(&expected.recovery_generation)
+                        .map_err(|_| invalid_args_value(&call_id))?,
                 })
-                .transpose()
-                .map_err(|_| invalid_args_value(&call_id))?;
+            };
             WorkbenchRequest::RecoveryGet(RecoveryGetArgs {
                 kind,
                 index,
@@ -1219,6 +1219,7 @@ pub(crate) struct WorkbenchEndpoint {
     shared: Arc<Mutex<SharedState>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    owner_wake: Arc<dyn Fn() + Send + Sync>,
     pending: VecDeque<OwnerRequest>,
     fairness_cursor: u64,
 }
@@ -1234,6 +1235,7 @@ impl WorkbenchEndpoint {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_shared = Arc::clone(&shared);
         let worker_stop = Arc::clone(&stop);
+        let owner_wake = Arc::clone(&wake);
         let worker = thread::Builder::new()
             .name("lab-workbench-external".into())
             .spawn(move || {
@@ -1252,6 +1254,7 @@ impl WorkbenchEndpoint {
             shared,
             stop,
             worker: Some(worker),
+            owner_wake,
             pending: VecDeque::with_capacity(OWNER_MAILBOX_MESSAGES),
             fairness_cursor: 0,
         })
@@ -1308,6 +1311,19 @@ impl WorkbenchEndpoint {
             serviced += 1;
         }
         self.service_detaches(dispatcher);
+        // Input admission charges this counter before publishing to `request_rx`.
+        // Reading it after the bounded dispatch turn therefore also covers work
+        // that arrived after the initial channel drain. An admission that races
+        // after this check supplies its own network-thread wake.
+        let admitted_owner_work_remains = self
+            .shared
+            .lock()
+            .expect("external admission lock")
+            .network_to_owner_messages
+            != 0;
+        if !self.pending.is_empty() || admitted_owner_work_remains {
+            (self.owner_wake)();
+        }
         serviced
     }
 
@@ -2087,13 +2103,16 @@ mod tests {
     use crate::{
         client::{
             ClientUpdate,
-            types::{CommandSendError, EventCursor, HelloState, ReplyKind},
+            types::{
+                CommandSendError, ConnectionState, EventCursor, HelloState, KnownAdmission,
+                QuarantinedRecoveryRecord, RecoveryQuarantineReason, RecoveryRecord, ReplyKind,
+            },
         },
         dispatcher::WorkbenchLimits,
         model::WorkbenchModel,
         presentation::PresentationDocument,
     };
-    use std::{cell::RefCell, net::Ipv4Addr};
+    use std::{cell::RefCell, net::Ipv4Addr, sync::atomic::AtomicUsize};
 
     #[derive(Default)]
     struct FakeClient {
@@ -2282,6 +2301,74 @@ mod tests {
         let args_unknown = envelope("x", "hello", json!({"extra":1}));
         assert_eq!(
             decode_request(&args_unknown).unwrap_err().code,
+            WireErrorCode::InvalidArgs
+        );
+    }
+
+    #[test]
+    fn recovery_get_expected_is_required_but_explicitly_nullable() {
+        let missing = envelope(
+            "missing",
+            "recovery_get",
+            json!({
+                "kind":"active","index":"0"
+            }),
+        );
+        assert_eq!(
+            decode_request(&missing).unwrap_err().code,
+            WireErrorCode::InvalidArgs
+        );
+
+        let explicit_null = decode_request(&envelope(
+            "null",
+            "recovery_get",
+            json!({"kind":"active","index":"0","expected":null}),
+        ))
+        .unwrap();
+        assert!(matches!(
+            explicit_null.request,
+            WorkbenchRequest::RecoveryGet(RecoveryGetArgs { expected: None, .. })
+        ));
+
+        let expected = decode_request(&envelope(
+            "object",
+            "recovery_get",
+            json!({
+                "kind":"quarantined",
+                "index":"1",
+                "expected":{
+                    "workbench_id":"0123456789abcdef0123456789abcdef",
+                    "recovery_generation":"7"
+                }
+            }),
+        ))
+        .unwrap();
+        assert!(matches!(
+            expected.request,
+            WorkbenchRequest::RecoveryGet(RecoveryGetArgs {
+                expected: Some(RecoveryExpectation {
+                    recovery_generation: 7,
+                    ..
+                }),
+                ..
+            })
+        ));
+
+        let nested_unknown = envelope(
+            "unknown",
+            "recovery_get",
+            json!({
+                "kind":"active",
+                "index":"0",
+                "expected":{
+                    "workbench_id":"0123456789abcdef0123456789abcdef",
+                    "recovery_generation":"1",
+                    "extra":true
+                }
+            }),
+        );
+        assert_eq!(
+            decode_request(&nested_unknown).unwrap_err().code,
             WireErrorCode::InvalidArgs
         );
     }
@@ -2512,6 +2599,23 @@ mod tests {
         }
         assert!(coalesced.len() < SOCKET_BYTES_PER_TURN);
         peer.write_all(&coalesced).unwrap();
+
+        let readiness_deadline = Instant::now() + CLIENT_DEADLINE;
+        let mut ready = [0_u8; 1];
+        loop {
+            match connection.stream.peek(&mut ready) {
+                Ok(1..) => break,
+                Ok(0) => panic!("coalesced test peer closed before readiness"),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < readiness_deadline,
+                        "coalesced frames did not become readable"
+                    );
+                    thread::yield_now();
+                }
+                Err(error) => panic!("coalesced frame readiness failed: {error}"),
+            }
+        }
 
         assert!(!read_caller(
             &mut connection,
@@ -3007,12 +3111,17 @@ mod tests {
                 lab: false,
             });
         }
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted_wakes = Arc::clone(&wakes);
         let mut endpoint = WorkbenchEndpoint {
             request_rx,
             output_tx,
             shared,
             stop: Arc::new(AtomicBool::new(false)),
             worker: None,
+            owner_wake: Arc::new(move || {
+                counted_wakes.fetch_add(1, Ordering::Relaxed);
+            }),
             pending,
             fairness_cursor: 0,
         };
@@ -3029,6 +3138,172 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(remaining.contains(&CallerId(1)));
         assert!(remaining.contains(&CallerId(5)));
+        assert_eq!(wakes.swap(0, Ordering::Relaxed), 1);
+
+        assert_eq!(endpoint.service_owner(&mut dispatcher), 2);
+        assert!(endpoint.pending.is_empty());
+        assert_eq!(wakes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn same_caller_pending_burst_reschedules_each_bounded_owner_turn() {
+        let (_request_tx, request_rx) = sync_channel(OWNER_MAILBOX_MESSAGES);
+        let (output_tx, _output_rx) = sync_channel(OWNER_MAILBOX_MESSAGES);
+        let shared = Arc::new(Mutex::new(SharedState::default()));
+        assert!(shared.lock().unwrap().register(CallerId(1)));
+        let pending = (0..3)
+            .map(|index| OwnerRequest {
+                caller_id: CallerId(1),
+                call_id: format!("same-{index}"),
+                request: WorkbenchRequest::ClientStatus,
+                frame_bytes: 1,
+                lab: false,
+            })
+            .collect();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted_wakes = Arc::clone(&wakes);
+        let mut endpoint = WorkbenchEndpoint {
+            request_rx,
+            output_tx,
+            shared,
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            owner_wake: Arc::new(move || {
+                counted_wakes.fetch_add(1, Ordering::Relaxed);
+            }),
+            pending,
+            fairness_cursor: 0,
+        };
+        let mut dispatcher = dispatcher();
+
+        for remaining in [2, 1] {
+            assert_eq!(endpoint.service_owner(&mut dispatcher), 1);
+            assert_eq!(endpoint.pending.len(), remaining);
+            assert_eq!(wakes.swap(0, Ordering::Relaxed), 1);
+        }
+        assert_eq!(endpoint.service_owner(&mut dispatcher), 1);
+        assert!(endpoint.pending.is_empty());
+        assert_eq!(wakes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn request_admitted_during_dispatch_reschedules_after_the_initial_drain() {
+        type DuringDispatchInjection = (
+            SyncSender<OwnerRequest>,
+            Arc<Mutex<SharedState>>,
+            OwnerRequest,
+        );
+
+        struct DuringDispatchClient {
+            injection: RefCell<Option<DuringDispatchInjection>>,
+        }
+
+        impl LabClient for DuringDispatchClient {
+            fn query(&self, _op: &str, _args: Value) -> Result<u64, CommandSendError> {
+                let (request_tx, shared, request) = self
+                    .injection
+                    .borrow_mut()
+                    .take()
+                    .expect("the final dispatch injects exactly one admitted request");
+                assert!(
+                    shared
+                        .lock()
+                        .unwrap()
+                        .reserve_input(request.caller_id, request.frame_bytes)
+                );
+                request_tx
+                    .try_send(request)
+                    .expect("bounded owner channel has room for injected request");
+                // Deliberately omit the network wake: this models a wake that was
+                // coalesced with the owner turn currently in progress.
+                Ok(1)
+            }
+
+            fn mutation(&self, _op: &str, _args: Value) -> Result<u64, CommandSendError> {
+                unreachable!("the progress regression submits only a query")
+            }
+
+            fn operation_status(
+                &self,
+                _identity: MutationIdentity,
+            ) -> Result<u64, CommandSendError> {
+                unreachable!("the progress regression submits no status request")
+            }
+        }
+
+        let (request_tx, request_rx) = sync_channel(OWNER_MAILBOX_MESSAGES);
+        let (output_tx, _output_rx) = sync_channel(OWNER_MAILBOX_MESSAGES);
+        let shared = Arc::new(Mutex::new(SharedState::default()));
+        for caller in [CallerId(1), CallerId(2)] {
+            assert!(shared.lock().unwrap().register(caller));
+        }
+        assert!(shared.lock().unwrap().reserve_input(CallerId(1), 1));
+        let injected = OwnerRequest {
+            caller_id: CallerId(2),
+            call_id: "during-dispatch".into(),
+            request: WorkbenchRequest::ClientStatus,
+            frame_bytes: 1,
+            lab: false,
+        };
+        let client = DuringDispatchClient {
+            injection: RefCell::new(Some((request_tx, Arc::clone(&shared), injected))),
+        };
+        let mut dispatcher = WorkbenchDispatcher::new(
+            WorkbenchModel::new(PresentationDocument::empty("main")),
+            client,
+        );
+        dispatcher.apply_client_update(ClientUpdate::Hello(HelloState {
+            boot_id: "0123456789abcdef0123456789abcdef".into(),
+            scope: "scope".into(),
+            next_seq: 1,
+            operations: vec!["reference".into()],
+            capabilities: json!([]),
+            limits: json!({}),
+            event_oldest: EventCursor {
+                boot_id: "0123456789abcdef0123456789abcdef".into(),
+                seq: 0,
+            },
+            event_latest: EventCursor {
+                boot_id: "0123456789abcdef0123456789abcdef".into(),
+                seq: 0,
+            },
+        }));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted_wakes = Arc::clone(&wakes);
+        let mut endpoint = WorkbenchEndpoint {
+            request_rx,
+            output_tx,
+            shared: Arc::clone(&shared),
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            owner_wake: Arc::new(move || {
+                counted_wakes.fetch_add(1, Ordering::Relaxed);
+            }),
+            pending: VecDeque::from([OwnerRequest {
+                caller_id: CallerId(1),
+                call_id: "initial".into(),
+                request: WorkbenchRequest::LabQuery {
+                    op: "reference".into(),
+                    args: json!({"reference":"1"}),
+                },
+                frame_bytes: 1,
+                lab: true,
+            }]),
+            fairness_cursor: 0,
+        };
+
+        assert_eq!(endpoint.service_owner(&mut dispatcher), 1);
+        assert!(endpoint.pending.is_empty());
+        assert_eq!(shared.lock().unwrap().network_to_owner_messages, 1);
+        assert_eq!(wakes.swap(0, Ordering::Relaxed), 1);
+
+        assert_eq!(endpoint.service_owner(&mut dispatcher), 1);
+        assert!(endpoint.pending.is_empty());
+        assert_eq!(shared.lock().unwrap().network_to_owner_messages, 0);
+        assert_eq!(wakes.load(Ordering::Relaxed), 0);
+
+        assert_eq!(endpoint.service_owner(&mut dispatcher), 0);
+        assert_eq!(wakes.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -3090,6 +3365,106 @@ mod tests {
         let endpoint = WorkbenchEndpoint::start(prepared, Arc::new(|| {})).unwrap();
         let stream = TcpStream::connect(address).unwrap();
         (endpoint, stream, dispatcher())
+    }
+
+    struct AcceptanceCaller {
+        stream: TcpStream,
+        input: Vec<u8>,
+        frames: VecDeque<Value>,
+    }
+
+    impl AcceptanceCaller {
+        fn connect(address: SocketAddrV4) -> Self {
+            let stream = TcpStream::connect(address).unwrap();
+            stream.set_nonblocking(true).unwrap();
+            Self {
+                stream,
+                input: Vec::new(),
+                frames: VecDeque::new(),
+            }
+        }
+
+        fn send(&mut self, call_id: &str, op: &str, args: Value) {
+            let mut frame = envelope(call_id, op, args);
+            frame.push(b'\n');
+            self.stream.write_all(&frame).unwrap();
+        }
+
+        fn receive_available(&mut self) -> bool {
+            let mut progressed = false;
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match self.stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        progressed = true;
+                        self.input.extend_from_slice(&buffer[..read]);
+                        while let Some(newline) = self.input.iter().position(|byte| *byte == b'\n')
+                        {
+                            let line = self.input.drain(..=newline).collect::<Vec<_>>();
+                            self.frames.push_back(
+                                serde_json::from_slice(&line[..line.len() - 1]).unwrap(),
+                            );
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("acceptance caller read failed: {error}"),
+                }
+            }
+            progressed
+        }
+
+        fn take(&mut self, predicate: impl Fn(&Value) -> bool) -> Option<Value> {
+            let index = self.frames.iter().position(predicate)?;
+            self.frames.remove(index)
+        }
+    }
+
+    fn wait_for_frame(
+        caller: &mut AcceptanceCaller,
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<FakeClient>,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            endpoint.service_owner(dispatcher);
+            caller.receive_available();
+            if let Some(frame) = caller.take(&predicate) {
+                return frame;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for acceptance frame; queued={:?}",
+                caller.frames
+            );
+            thread::yield_now();
+        }
+    }
+
+    fn complete_acceptance_hello(
+        caller: &mut AcceptanceCaller,
+        endpoint: &mut WorkbenchEndpoint,
+        dispatcher: &mut WorkbenchDispatcher<FakeClient>,
+        call_id: &str,
+    ) -> Value {
+        caller.send(call_id, "hello", json!({}));
+        wait_for_frame(caller, endpoint, dispatcher, |frame| {
+            frame["call_id"] == call_id && frame["type"] == "result"
+        })
+    }
+
+    fn recovery_record(seq: u64, admission: KnownAdmission) -> RecoveryRecord {
+        RecoveryRecord {
+            boot_id: "0123456789abcdef0123456789abcdef".into(),
+            identity: MutationIdentity {
+                scope: "scope".into(),
+                seq,
+            },
+            op: "reference_retune".into(),
+            args: json!({"reference":"1","target":2.0,"rate":1.0}),
+            admission,
+        }
     }
 
     #[test]
@@ -3268,6 +3643,614 @@ mod tests {
             .unwrap();
         let status = read_frame_with_pump(&mut healthy, &mut endpoint, &mut dispatcher);
         assert_eq!(status["type"], "result");
+        endpoint.shutdown(&mut dispatcher);
+    }
+
+    #[test]
+    fn m17_4_multi_caller_mixed_workload_uses_one_dispatch_lane() {
+        let prepared = PreparedEndpoint::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = prepared.address();
+        let mut endpoint = WorkbenchEndpoint::start(prepared, Arc::new(|| {})).unwrap();
+        let mut dispatcher = dispatcher();
+        let mut callers = (0..4)
+            .map(|_| AcceptanceCaller::connect(address))
+            .collect::<Vec<_>>();
+        for (index, caller) in callers.iter_mut().enumerate() {
+            caller.send(&format!("hello-{index}"), "hello", json!({}));
+        }
+        let mut hello = None;
+        for (index, caller) in callers.iter_mut().enumerate() {
+            let call_id = format!("hello-{index}");
+            let frame = wait_for_frame(caller, &mut endpoint, &mut dispatcher, |frame| {
+                frame["call_id"] == call_id && frame["type"] == "result"
+            });
+            hello.get_or_insert(frame);
+        }
+        let workbench_id = hello.unwrap()["result"]["workbench_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        callers[0].send(
+            "query",
+            "lab_query",
+            json!({"op":"reference","args":{"reference":"1"}}),
+        );
+        callers[1].send(
+            "mutation",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":{"reference":"1","target":2.0,"rate":1.0}}),
+        );
+        callers[2].send(
+            "plot",
+            "ui_add_plot",
+            json!({
+                "expected":{"workbench_id":workbench_id,"revision":"1"},
+                "plot":{"id":"plot","title":"Plot","time_window_seconds":60.0,
+                    "axes":{"y_min":null,"y_max":null},"traces":[]}
+            }),
+        );
+        callers[3].send("status", "client_status", json!({}));
+
+        for (index, call_id) in ["query", "mutation", "plot", "status"]
+            .into_iter()
+            .enumerate()
+        {
+            let frame = wait_for_frame(
+                &mut callers[index],
+                &mut endpoint,
+                &mut dispatcher,
+                |frame| frame["call_id"] == call_id,
+            );
+            assert_eq!(frame["type"], "result", "{frame:?}");
+        }
+        assert_eq!(
+            dispatcher.client().unwrap().submitted.borrow().as_slice(),
+            &["query:reference", "mutation:reference_retune"]
+        );
+        assert_eq!(dispatcher.presentation_revision(), 2);
+
+        let query_events = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: 1,
+            msg_id: "query-message".into(),
+            op: "reference".into(),
+            kind: ReplyKind::Result,
+            envelope: json!({"type":"result","result":{"reference":"1"}}),
+            recovery: None,
+        });
+        endpoint.route_events(&mut dispatcher, query_events);
+        let mutation_accepted = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: 2,
+            msg_id: "mutation-message".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::MutationAccepted,
+            envelope: json!({"type":"operation_accepted","request_id":{"scope":"scope","seq":"1"}}),
+            recovery: None,
+        });
+        endpoint.route_events(&mut dispatcher, mutation_accepted);
+        let query = wait_for_frame(&mut callers[0], &mut endpoint, &mut dispatcher, |frame| {
+            frame["event"] == "lab_update" && frame["data"]["call_id"] == "query"
+        });
+        assert_eq!(query["data"]["kind"], "result");
+        let accepted = wait_for_frame(&mut callers[1], &mut endpoint, &mut dispatcher, |frame| {
+            frame["event"] == "lab_update" && frame["data"]["call_id"] == "mutation"
+        });
+        assert_eq!(accepted["data"]["kind"], "mutation_accepted");
+
+        let state_events =
+            dispatcher.apply_client_update(ClientUpdate::State(ConnectionState::Disconnected));
+        endpoint.route_events(&mut dispatcher, state_events);
+        for caller in &mut callers {
+            let state = wait_for_frame(caller, &mut endpoint, &mut dispatcher, |frame| {
+                frame["event"] == "client_state"
+            });
+            assert_eq!(state["data"]["connection"], "disconnected");
+        }
+
+        drop(callers.remove(2));
+        let completed = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: 2,
+            msg_id: "mutation-message".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::MutationCompleted,
+            envelope: json!({"type":"operation_completed","request_id":{"scope":"scope","seq":"1"}}),
+            recovery: None,
+        });
+        endpoint.route_events(&mut dispatcher, completed);
+        let terminal = wait_for_frame(&mut callers[1], &mut endpoint, &mut dispatcher, |frame| {
+            frame["event"] == "lab_update" && frame["data"]["kind"] == "mutation_completed"
+        });
+        assert_eq!(terminal["data"]["call_id"], "mutation");
+        callers[2].send("still-healthy", "presentation_get", json!({}));
+        let healthy = wait_for_frame(&mut callers[2], &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "still-healthy"
+        });
+        assert_eq!(healthy["result"]["presentation_revision"], "2");
+        endpoint.shutdown(&mut dispatcher);
+    }
+
+    #[test]
+    fn m17_4_all_ui_operations_are_runtime_silent_and_atomic_across_disconnect() {
+        let prepared = PreparedEndpoint::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = prepared.address();
+        let mut endpoint = WorkbenchEndpoint::start(prepared, Arc::new(|| {})).unwrap();
+        let mut dispatcher = dispatcher();
+        let mut caller = AcceptanceCaller::connect(address);
+        let hello = complete_acceptance_hello(&mut caller, &mut endpoint, &mut dispatcher, "hello");
+        let workbench_id = hello["result"]["workbench_id"].as_str().unwrap();
+        let operations = [
+            (
+                "add-plot",
+                "ui_add_plot",
+                json!({"plot":{"id":"plot","title":"Plot","time_window_seconds":60.0,
+                    "axes":{"y_min":null,"y_max":null},"traces":[]}}),
+            ),
+            (
+                "window",
+                "ui_set_time_window",
+                json!({"plot_id":"plot","seconds":120.0}),
+            ),
+            (
+                "add-trace",
+                "ui_add_trace",
+                json!({"plot_id":"plot","trace":{"id":"trace",
+                    "source":{"kind":"reference","reference":"1"},"display_label":"Trace",
+                    "visible":true,"style":{"color":"cyan","width":1.0},"display_unit":null}}),
+            ),
+            (
+                "visibility",
+                "ui_set_trace_visibility",
+                json!({"plot_id":"plot","trace_id":"trace","visible":false}),
+            ),
+            (
+                "rename",
+                "ui_rename_item",
+                json!({"item_id":"plot","label":"Renamed"}),
+            ),
+            (
+                "source",
+                "ui_set_trace_source",
+                json!({"plot_id":"plot","trace_id":"trace",
+                    "source":{"kind":"reference","reference":"2"}}),
+            ),
+            (
+                "remove-trace",
+                "ui_remove_trace",
+                json!({"plot_id":"plot","trace_id":"trace"}),
+            ),
+            ("remove-plot", "ui_remove_plot", json!({"plot_id":"plot"})),
+        ];
+        for (index, (call_id, operation, fields)) in operations.into_iter().enumerate() {
+            let mut args = fields.as_object().unwrap().clone();
+            args.insert(
+                "expected".into(),
+                json!({"workbench_id":workbench_id,"revision":(index + 1).to_string()}),
+            );
+            caller.send(call_id, operation, Value::Object(args));
+            let result = wait_for_frame(&mut caller, &mut endpoint, &mut dispatcher, |frame| {
+                frame["call_id"] == call_id
+            });
+            assert_eq!(
+                result["result"]["presentation_revision"],
+                (index + 2).to_string()
+            );
+        }
+        assert_eq!(dispatcher.presentation_revision(), 9);
+        assert!(dispatcher.client().unwrap().submitted.borrow().is_empty());
+
+        caller.send(
+            "disconnect-race",
+            "ui_add_plot",
+            json!({"expected":{"workbench_id":workbench_id,"revision":"9"},
+                "plot":{"id":"disconnect-race","title":"Disconnect race","time_window_seconds":60.0,
+                    "axes":{"y_min":null,"y_max":null},"traces":[]}}),
+        );
+        drop(caller);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            endpoint.service_owner(&mut dispatcher);
+            if endpoint.shared.lock().unwrap().callers.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "disconnected presentation caller was not fully detached"
+            );
+            thread::yield_now();
+        }
+        let mut observer = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut observer,
+            &mut endpoint,
+            &mut dispatcher,
+            "observer-hello",
+        );
+        observer.send("presentation", "presentation_get", json!({}));
+        let presentation = wait_for_frame(&mut observer, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "presentation"
+        });
+        let observed_revision = presentation["result"]["presentation_revision"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let plots = &presentation["result"]["document"]["plots"];
+        match observed_revision {
+            9 => assert_eq!(plots, &json!([]), "unadmitted request changed the document"),
+            10 => assert_eq!(
+                plots,
+                &json!([{
+                    "id":"disconnect-race",
+                    "title":"Disconnect race",
+                    "time_window_seconds":60.0,
+                    "axes":{"y_min":null,"y_max":null},
+                    "traces":[]
+                }]),
+                "admitted request was not committed atomically"
+            ),
+            revision => panic!("caller death produced an invalid presentation revision {revision}"),
+        }
+        assert_eq!(dispatcher.presentation_revision(), observed_revision);
+        assert!(dispatcher.client().unwrap().submitted.borrow().is_empty());
+        endpoint.shutdown(&mut dispatcher);
+    }
+
+    #[test]
+    fn m17_4_recovery_generation_restart_quarantine_and_reconnect_are_exact() {
+        let prepared = PreparedEndpoint::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = prepared.address();
+        let mut endpoint = WorkbenchEndpoint::start(prepared, Arc::new(|| {})).unwrap();
+        let mut dispatcher = dispatcher();
+        let mut caller = AcceptanceCaller::connect(address);
+        let hello = complete_acceptance_hello(&mut caller, &mut endpoint, &mut dispatcher, "hello");
+        let workbench_id = hello["result"]["workbench_id"].as_str().unwrap().to_owned();
+
+        let pending = recovery_record(7, KnownAdmission::Pending);
+        let quarantined = QuarantinedRecoveryRecord {
+            record: RecoveryRecord {
+                boot_id: "fedcba9876543210fedcba9876543210".into(),
+                identity: MutationIdentity {
+                    scope: "old-scope".into(),
+                    seq: 3,
+                },
+                op: "reference_retune".into(),
+                args: json!({"reference":"1","target":1.0,"rate":1.0}),
+                admission: KnownAdmission::Ambiguous,
+            },
+            reason: RecoveryQuarantineReason::InstanceChanged,
+        };
+        let changed = dispatcher.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![pending.clone()],
+            quarantined: vec![quarantined.clone()],
+        });
+        endpoint.route_events(&mut dispatcher, changed);
+        assert_eq!(dispatcher.recovery_generation(), 2);
+
+        caller.send(
+            "active-first",
+            "recovery_get",
+            json!({"kind":"active","index":"0","expected":null}),
+        );
+        let active = wait_for_frame(&mut caller, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "active-first"
+        });
+        assert_eq!(active["result"]["state"], "record");
+        assert_eq!(active["result"]["recovery_generation"], "2");
+        assert_eq!(
+            active["result"]["counts"],
+            json!({"active":"1","quarantined":"1"})
+        );
+
+        let accepted = recovery_record(7, KnownAdmission::Accepted);
+        let changed = dispatcher.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![accepted],
+            quarantined: vec![quarantined],
+        });
+        endpoint.route_events(&mut dispatcher, changed);
+        assert_eq!(dispatcher.recovery_generation(), 3);
+        caller.send(
+            "stale-enumeration",
+            "recovery_get",
+            json!({"kind":"active","index":"0","expected":{
+                "workbench_id":workbench_id,"recovery_generation":"2"}}),
+        );
+        let restart = wait_for_frame(&mut caller, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "stale-enumeration"
+        });
+        assert_eq!(restart["result"]["state"], "restart");
+        assert_eq!(restart["result"]["recovery_generation"], "3");
+
+        caller.send(
+            "wrong-status",
+            "lab_operation_status",
+            json!({"target":{"workbench_id":workbench_id,"recovery_generation":"3",
+                "boot_id":"fedcba9876543210fedcba9876543210",
+                "request_id":{"scope":"scope","seq":"7"}}}),
+        );
+        let rejected = wait_for_frame(&mut caller, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "wrong-status"
+        });
+        assert_eq!(rejected["error"]["code"], "recovery_unavailable");
+        assert!(dispatcher.client().unwrap().submitted.borrow().is_empty());
+
+        drop(caller);
+        let detach_deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < detach_deadline {
+            endpoint.service_owner(&mut dispatcher);
+            thread::yield_now();
+        }
+        let mut reconnected = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut reconnected,
+            &mut endpoint,
+            &mut dispatcher,
+            "active-first",
+        );
+        reconnected.send("active-first", "client_status", json!({}));
+        let reused = wait_for_frame(&mut reconnected, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "active-first" && frame["type"] == "result"
+        });
+        assert_eq!(reused["result"]["recovery"]["recovery_generation"], "3");
+        endpoint.shutdown(&mut dispatcher);
+    }
+
+    #[test]
+    fn m17_4_continuity_loss_keeps_ambiguity_without_retry_or_local_rejection() {
+        let prepared = PreparedEndpoint::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = prepared.address();
+        let mut endpoint = WorkbenchEndpoint::start(prepared, Arc::new(|| {})).unwrap();
+        let mut dispatcher = dispatcher();
+        let mut caller = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(&mut caller, &mut endpoint, &mut dispatcher, "hello");
+        caller.send(
+            "mutation",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":{"reference":"1","target":2.0,"rate":1.0}}),
+        );
+        let submitted = wait_for_frame(&mut caller, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "mutation"
+        });
+        assert_eq!(submitted["result"]["state"], "submitted");
+        assert_eq!(
+            dispatcher.client().unwrap().submitted.borrow().as_slice(),
+            &["mutation:reference_retune"]
+        );
+
+        let ambiguous = recovery_record(1, KnownAdmission::Ambiguous);
+        let recovery = dispatcher.apply_client_update(ClientUpdate::RecoveryProjection {
+            active: vec![ambiguous],
+            quarantined: Vec::new(),
+        });
+        endpoint.route_events(&mut dispatcher, recovery);
+        let continuity = dispatcher.apply_client_update(ClientUpdate::ResnapshotRequired {
+            reason: "test continuity loss".into(),
+            envelope: None,
+            connection_lost: true,
+        });
+        endpoint.route_events(&mut dispatcher, continuity);
+        let notice = wait_for_frame(&mut caller, &mut endpoint, &mut dispatcher, |frame| {
+            frame["event"] == "client_notice" && frame["data"]["kind"] == "resnapshot_required"
+        });
+        assert_eq!(notice["data"]["detail"], "test continuity loss");
+        caller.receive_available();
+        assert!(!caller.frames.iter().any(|frame| {
+            frame["event"] == "lab_update" && frame["data"]["kind"] == "local_rejected"
+        }));
+        assert_eq!(
+            dispatcher.client().unwrap().submitted.borrow().as_slice(),
+            &["mutation:reference_retune"]
+        );
+
+        drop(caller);
+        let detach_deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < detach_deadline {
+            endpoint.service_owner(&mut dispatcher);
+            thread::yield_now();
+        }
+        let terminal = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: 1,
+            msg_id: "mutation-message".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::MutationCompleted,
+            envelope: json!({"type":"operation_completed","request_id":{"scope":"scope","seq":"1"}}),
+            recovery: Some(recovery_record(1, KnownAdmission::Completed)),
+        });
+        assert!(
+            terminal.is_empty(),
+            "detached caller must not retain correlation"
+        );
+        assert_eq!(
+            dispatcher.client().unwrap().submitted.borrow().as_slice(),
+            &["mutation:reference_retune"]
+        );
+
+        let mut observer = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut observer,
+            &mut endpoint,
+            &mut dispatcher,
+            "observer-hello",
+        );
+        observer.send(
+            "recovery",
+            "recovery_get",
+            json!({"kind":"active","index":"0","expected":null}),
+        );
+        let evidence = wait_for_frame(&mut observer, &mut endpoint, &mut dispatcher, |frame| {
+            frame["call_id"] == "recovery"
+        });
+        assert_eq!(evidence["result"]["record"]["admission"], "ambiguous");
+        endpoint.shutdown(&mut dispatcher);
+    }
+
+    #[test]
+    fn m17_4_caller_loss_at_admission_accepted_and_terminal_stages_is_local_only() {
+        let prepared = PreparedEndpoint::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = prepared.address();
+        let mut endpoint = WorkbenchEndpoint::start(prepared, Arc::new(|| {})).unwrap();
+        let mut dispatcher = dispatcher();
+
+        // Stage A: socket death races admission. Either zero or one admission is
+        // valid; a second submission, status request, or retry is never valid.
+        let mut before_admission = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut before_admission,
+            &mut endpoint,
+            &mut dispatcher,
+            "before-hello",
+        );
+        before_admission.send(
+            "before-admission",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":{"reference":"1","target":2.0,"rate":1.0}}),
+        );
+        drop(before_admission);
+        let settle = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < settle {
+            endpoint.service_owner(&mut dispatcher);
+            thread::yield_now();
+        }
+        let stage_a_commands = dispatcher.client().unwrap().submitted.borrow().len();
+        assert!(stage_a_commands <= 1);
+
+        // Stage B: local submission is visible, but no Runtime admission
+        // evidence has arrived when the caller dies.
+        let mut after_submission = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut after_submission,
+            &mut endpoint,
+            &mut dispatcher,
+            "submitted-hello",
+        );
+        after_submission.send(
+            "submitted",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":{"reference":"1","target":2.5,"rate":1.0}}),
+        );
+        let submitted = wait_for_frame(
+            &mut after_submission,
+            &mut endpoint,
+            &mut dispatcher,
+            |frame| frame["call_id"] == "submitted",
+        );
+        assert_eq!(submitted["result"]["state"], "submitted");
+        drop(after_submission);
+        let detach = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < detach {
+            endpoint.service_owner(&mut dispatcher);
+            thread::yield_now();
+        }
+
+        // Stage C: Runtime acceptance is observed, then the caller dies. The
+        // terminal worker evidence has no route, but work is neither cancelled
+        // nor resubmitted.
+        let mut after_acceptance = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut after_acceptance,
+            &mut endpoint,
+            &mut dispatcher,
+            "accepted-hello",
+        );
+        after_acceptance.send(
+            "accepted",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":{"reference":"1","target":3.0,"rate":1.0}}),
+        );
+        let submitted = wait_for_frame(
+            &mut after_acceptance,
+            &mut endpoint,
+            &mut dispatcher,
+            |frame| frame["call_id"] == "accepted",
+        );
+        let accepted_command = submitted["result"]["command_id"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let accepted = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: accepted_command,
+            msg_id: "accepted-message".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::MutationAccepted,
+            envelope: json!({"type":"operation","state":"accepted",
+                "request_id":{"scope":"scope","seq":"2"}}),
+            recovery: Some(recovery_record(2, KnownAdmission::Accepted)),
+        });
+        endpoint.route_events(&mut dispatcher, accepted);
+        let accepted = wait_for_frame(
+            &mut after_acceptance,
+            &mut endpoint,
+            &mut dispatcher,
+            |frame| frame["data"]["kind"] == "mutation_accepted",
+        );
+        assert_eq!(accepted["data"]["call_id"], "accepted");
+        drop(after_acceptance);
+        let detach = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < detach {
+            endpoint.service_owner(&mut dispatcher);
+            thread::yield_now();
+        }
+        let terminal = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: accepted_command,
+            msg_id: "accepted-message".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::MutationCompleted,
+            envelope: json!({"type":"operation","state":"completed",
+                "request_id":{"scope":"scope","seq":"2"}}),
+            recovery: Some(recovery_record(2, KnownAdmission::Completed)),
+        });
+        assert!(terminal.is_empty());
+
+        // Stage D: terminal delivery may already be queued/current when the
+        // socket dies. Detach releases only wire correlation.
+        let mut terminal_delivery = AcceptanceCaller::connect(address);
+        complete_acceptance_hello(
+            &mut terminal_delivery,
+            &mut endpoint,
+            &mut dispatcher,
+            "terminal-hello",
+        );
+        terminal_delivery.send(
+            "terminal",
+            "lab_mutation",
+            json!({"op":"reference_retune","args":{"reference":"1","target":4.0,"rate":1.0}}),
+        );
+        let submitted = wait_for_frame(
+            &mut terminal_delivery,
+            &mut endpoint,
+            &mut dispatcher,
+            |frame| frame["call_id"] == "terminal",
+        );
+        let terminal_command = submitted["result"]["command_id"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let terminal = dispatcher.apply_client_update(ClientUpdate::Reply {
+            command_id: terminal_command,
+            msg_id: "terminal-message".into(),
+            op: "reference_retune".into(),
+            kind: ReplyKind::MutationCompleted,
+            envelope: json!({"type":"operation","state":"completed",
+                "request_id":{"scope":"scope","seq":"3"}}),
+            recovery: Some(recovery_record(3, KnownAdmission::Completed)),
+        });
+        endpoint.route_events(&mut dispatcher, terminal);
+        drop(terminal_delivery);
+        let detach = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < detach {
+            endpoint.service_owner(&mut dispatcher);
+            thread::yield_now();
+        }
+
+        let commands = dispatcher.client().unwrap().submitted.borrow();
+        assert_eq!(commands.len(), stage_a_commands + 3);
+        assert!(
+            commands
+                .iter()
+                .all(|command| command == "mutation:reference_retune")
+        );
+        drop(commands);
         endpoint.shutdown(&mut dispatcher);
     }
 

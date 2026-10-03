@@ -148,6 +148,33 @@ pub(crate) enum ClientCommand {
     ShutdownWorker,
 }
 
+/// Runtime query operations whose connection-local semantics are owned by the
+/// single Workbench worker instead of the ordinary laboratory-query lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkerControlQuery {
+    OperationStatus,
+    Subscribe,
+    Unsubscribe,
+}
+
+impl WorkerControlQuery {
+    pub(crate) const ALL: [Self; 3] = [Self::OperationStatus, Self::Subscribe, Self::Unsubscribe];
+
+    pub(crate) const fn operation(self) -> &'static str {
+        match self {
+            Self::OperationStatus => "operation_status",
+            Self::Subscribe => "subscribe",
+            Self::Unsubscribe => "unsubscribe",
+        }
+    }
+
+    pub(crate) fn from_operation(operation: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.operation() == operation)
+    }
+}
+
 impl ClientCommand {
     pub(crate) fn command_id(&self) -> u64 {
         match self {

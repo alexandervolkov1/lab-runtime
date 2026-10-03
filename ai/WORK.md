@@ -1,4 +1,4 @@
-# Current work — M17.4 ownership/recovery/fault/parity acceptance
+# Current work — M17.1-M17.4 accepted; M17.5 ready to start
 
 ## Canonical current state
 
@@ -22,12 +22,15 @@ presentation revision path under that freeze. Its focused external-review blocke
 are remediated, and external re-review accepted M17.2 with no remaining correctness
 or ownership blocker. External re-review accepted the bounded opt-in IPv4-loopback
 TCP/NDJSON Workbench adapter and all bounded-network remediation as M17.3, with no
-remaining blocker. M17.4 ownership/recovery/fault/parity acceptance is AUTHORIZED /
-READY TO START / NOT IMPLEMENTED.
+remaining blocker. A later consolidated audit found five narrow cross-boundary
+blockers B1-B5. All five were remediated and independently re-reviewed by Astra:
+ALL B1-B5 CLOSED, with no new blockers. M17.1, M17.2, M17.3, and M17.4 are ACCEPTED;
+consolidated M17.1-M17.4 review is ACCEPTED.
 
 Arduino and full Clojure/Babashka validation remain later work. M17.5 may add only
 the minimal language-boundary smoke evidence frozen by the M17.1 acceptance matrix;
-it is not part of the current phase.
+M17.5 becomes AUTHORIZED / READY TO START / NOT IMPLEMENTED upon the commit recording
+this consolidated acceptance. This acceptance/commit task does not implement M17.5.
 
 Current clean baseline commits:
 
@@ -38,9 +41,10 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Allowed: M17.4 ownership, recovery, fault, transport-parity, M16-regression, and
-  process-lifetime acceptance work under the accepted M17.1-M17.3 boundaries.
-- Not authorized: M17.5 or later implementation, Runtime operation/capability
+- Allowed now: record consolidated acceptance and commit M17.4 plus B1-B5 remediation.
+  After that commit, M17.5 minimal language-boundary smoke, documentation and final
+  review are authorized under the frozen acceptance matrix; implementation is unstarted.
+- Not authorized: later implementation beyond M17.5, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.
 - M17.3 guardrail: external adapter lab query, mutation, and status requests must
@@ -72,8 +76,9 @@ The proposed contract freezes:
 
 External re-review accepted this contract. M17.2 implements the private typed
 dispatcher under the freeze and is externally accepted. M17.3 is also externally
-accepted. M17.4 is authorized and ready to start but is not implemented by this status
-update.
+accepted. Their narrow consolidated remediation and the M17.4 acceptance evidence
+are independently re-reviewed and ACCEPTED. M17.5 is AUTHORIZED / READY TO START /
+NOT IMPLEMENTED after the consolidated acceptance commit.
 
 ## Accepted M17.2 implementation
 
@@ -155,6 +160,95 @@ WebSocket transport (`13 passed`), focused M16 regressions (8 Core, 24 Runtime, 
 Workbench), formatting, warnings-denied all-target/all-feature workspace Clippy,
 frozen registry/client-bound checks, and diff checking pass. External re-review
 accepted this implementation and all remediation with no remaining blockers.
+
+## Accepted M17.4 acceptance and consolidated remediation
+
+M17.4 adds test-only executable acceptance over the accepted dispatcher and bounded
+TCP/NDJSON adapter. Four simultaneous real endpoint callers exercise mixed query,
+mutation, presentation, status and broadcast traffic through one dispatcher. Focused
+caller-loss scenarios cover the pre-admission race, post-submission loss,
+post-`MutationAccepted` loss, terminal-delivery loss, and Runtime continuity loss.
+They prove detach removes only caller-local correlation, creates no retry/status/
+resubmission, and never converts uncertainty into `local_rejected`.
+
+Recovery acceptance exercises changed atomic projections, deterministic
+generation-mismatch restart, retained quarantine, exact status-target rejection, and
+fresh connection-local `call_id` state after reconnect. Presentation acceptance drives
+all eight `ui_*` operations through the live endpoint, proves revision-atomic later
+observation across caller death using a valid current-revision mutation, and proves
+the only outcomes are no admission or one complete atomic commit with one revision
+increment. It also proves the Runtime client receives no UI command.
+The ownership/source-bound test additionally forbids direct adapter query, mutation,
+status, retry, subscription, replay, shutdown, `ClientHandle` spawn/access, and direct
+presentation mutation seams.
+
+One ignored real-process acceptance runs two external callers against a real Runtime
+and Recorder through the actual Workbench endpoint. Its test-only child Runtime uses
+the existing trusted Recorder `WriterBarrier` to hold `recording_start` at a
+deterministic accepted-but-nonterminal interval. After A's real
+`MutationAccepted`, caller B enters the same dispatcher and `ClientHandle`; the test
+then consumes worker updates in order and fails if any A terminal precedes B's real
+`MutationAccepted`. Only after B is accepted does the test release the barrier. Both
+mutations complete and receive one worker-owned scope with consecutive Runtime
+sequence values. Caller-loss
+evidence now requires a matching terminal `Completed` recovery record after detach
+and an authoritative Reference query proving the expected revision/target, while the
+Runtime process remains alive and without retry, status polling, resubmission, or a
+second mutation. The test also compares exact Runtime Reference and Recorder status
+snapshots across UI-only work, proves a separate direct Runtime client remains usable
+concurrently, and proves a newly connected healthy caller retains presentation access
+and observes non-Fresh state after the Runtime process dies. The accepted existing
+real-process suite continues to cover Runtime restart/quarantine, retained-scope
+reattach, Workbench process death, recovery journal preservation, Exact Retry, and the
+full rebuild barrier.
+
+Consolidated remediation adds one canonical three-operation worker-control query
+classification, rejects those operations from ordinary `lab_query`, enforces the
+existing 1-MiB canonical presentation bound before atomic publication, reschedules a
+bounded owner turn whenever either local pending work or the authoritative
+network-to-owner admission count remains nonzero, and requires an explicit nullable
+`recovery_get.expected` field. A deterministic regression injects channel work during
+the final dispatch after the initial drain and proves exactly one follow-up wake and
+no idle repaint loop. The coalesced-frame test now waits for socket readiness under
+the existing deadline. These changes are confined to Workbench; the real-Runtime
+acceptance adds only a test-only workspace path dependency and no production
+dependency, operation, listener, Runtime client, registry, sequencer, recovery owner,
+or Runtime/M16 semantic change.
+
+The consolidated audit originally blocked acceptance on B1-B5. Astra's independent
+targeted re-review closed every blocker with no new blockers:
+
+- B1: one canonical `WorkerControlQuery` classification owns `operation_status`,
+  `subscribe`, and `unsubscribe`; ordinary `lab_query` rejects them before submission.
+  Dedicated status fencing remains exact, ordinary Runtime queries remain opaque,
+  and explicit `runtime_shutdown` through `lab_mutation` remains permitted.
+- B2: active presentation and persistence share the canonical 1,048,576-byte
+  serialized-size validator. Over-bound candidates leave document/revision unchanged
+  and emit no presentation change; exact-bound candidates remain valid.
+- B3: pending requests plus authoritative network-to-owner admission accounting
+  reschedule bounded owner turns, including during-turn/coalesced-wake arrivals.
+  Four-caller/one-request-per-caller fairness and all capacities remain unchanged.
+- B4: the trusted Recorder `WriterBarrier` holds Runtime-accepted mutation A
+  nonterminal until B, from another external caller through the same worker, receives
+  `MutationAccepted`. Ordered updates prove overlap; both complete with one scope and
+  consecutive sequence values. The `lab-runtime` dependency remains test-only.
+- B5: `recovery_get.expected` is required but nullable; omission is rejected, while
+  explicit null and the strict expectation object preserve frozen generation semantics.
+
+Non-blocking test-hardening note: the initial submitted-result helper can theoretically
+consume A's acceptance before the dedicated acceptance wait, causing a false timeout
+under unusual scheduling. It cannot produce false overlap evidence and is not a
+release blocker. No behavior change is included for this note.
+
+Acceptance-commit verification: formatting PASS; dispatcher 16 passed; adapter 36
+passed; client 69 passed; presentation 5 passed; M17.4 filter with ignored tests
+enabled 7 passed (six acceptance tests plus the child-fixture entry); separate
+real-process B4 acceptance 1 passed; ownership/source-bound checks 2 passed;
+`git diff --check` PASS. All runs had zero failures. The M17.4 filter overlaps the
+adapter and real-process selections; these are per-command counts, not distinct totals.
+
+Verdict: **M17.4 ACCEPTED; consolidated M17.1-M17.4 ACCEPTED**. M17.5 becomes
+**AUTHORIZED / READY TO START / NOT IMPLEMENTED** after this acceptance commit.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -1041,8 +1135,9 @@ the verification run rather than frozen in this coordination note.
 
 The final consolidated external review found no blockers: M16 READY TO CLOSE. M17.1
 is an accepted documentation-only contract and ownership freeze. M17.2 is externally
-accepted. M17.3 is externally accepted. M17.4 is AUTHORIZED / READY TO START / NOT
-IMPLEMENTED; M17.5 and later implementation remain unauthorized.
+accepted. M17.3, M17.4, and consolidated M17.1-M17.4 review are ACCEPTED following
+independent closure of B1-B5. M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED
+after the acceptance commit; later milestones remain unauthorized.
 
 
 ## Accepted M14 consolidated invariants

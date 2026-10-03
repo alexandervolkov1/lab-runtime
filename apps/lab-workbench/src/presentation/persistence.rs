@@ -38,6 +38,9 @@ pub(crate) fn load_presentation(
     candidate
         .validate()
         .map_err(PresentationLoadError::Validation)?;
+    candidate
+        .validate_serialized_size()
+        .map_err(PresentationLoadError::Validation)?;
     Ok(candidate)
 }
 
@@ -49,13 +52,11 @@ pub(crate) fn save_presentation(
     candidate
         .validate()
         .map_err(PresentationLoadError::Validation)?;
+    candidate
+        .validate_serialized_size()
+        .map_err(PresentationLoadError::Validation)?;
     let bytes = serde_json::to_vec_pretty(candidate)
         .map_err(|error| PresentationLoadError::Json(error.to_string()))?;
-    if bytes.len() > PRESENTATION_FILE_BYTES {
-        return Err(PresentationLoadError::Validation(
-            super::document::DocumentError::Limit("file_bytes"),
-        ));
-    }
     write_replace(path, &bytes).map_err(PresentationLoadError::Io)
 }
 

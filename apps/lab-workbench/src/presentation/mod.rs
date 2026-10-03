@@ -10,7 +10,8 @@ mod persistence;
 mod reference;
 
 pub(crate) use document::{
-    AxisOptions, Control, ControlKind, DocumentError, Panel, PanelKind, Plot, PresentationDocument,
+    AxisOptions, Control, ControlKind, DocumentError, MAX_PLOTS, MAX_STRING_BYTES,
+    MAX_TRACES_PER_PLOT, PRESENTATION_FILE_BYTES, Panel, PanelKind, Plot, PresentationDocument,
     PresentationTab, PresentationWindow, Trace, TraceStyle,
 };
 pub(crate) use persistence::{

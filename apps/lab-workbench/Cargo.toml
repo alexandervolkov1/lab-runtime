@@ -15,5 +15,8 @@ serde_json = "1"
 [target.'cfg(windows)'.dependencies]
 win-desktop-utils = { version = "=0.5.7", default-features = false, features = ["instance"] }
 
+[dev-dependencies]
+lab-runtime = { path = "../lab-runtime" }
+
 [lints]
 workspace = true

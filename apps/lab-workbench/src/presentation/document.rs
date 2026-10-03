@@ -179,6 +179,16 @@ impl PresentationDocument {
         Ok(())
     }
 
+    /// Enforces the canonical pretty-JSON byte bound used by persistence and
+    /// by the active presentation owner.
+    pub(crate) fn validate_serialized_size(&self) -> Result<(), DocumentError> {
+        let bytes = serde_json::to_vec_pretty(self).map_err(|_| DocumentError::Serialization)?;
+        if bytes.len() > PRESENTATION_FILE_BYTES {
+            return Err(DocumentError::Limit("file_bytes"));
+        }
+        Ok(())
+    }
+
     /// Iterates over every Runtime reference without resolving it.
     pub(crate) fn runtime_refs(&self) -> impl Iterator<Item = &RuntimeRef> {
         self.plots
@@ -365,6 +375,8 @@ pub(crate) enum DocumentError {
     InvalidNumber(&'static str),
     /// A Runtime reference was structurally invalid.
     InvalidRuntimeRef,
+    /// A structurally valid document could not be encoded canonically.
+    Serialization,
 }
 
 impl std::fmt::Display for DocumentError {
@@ -384,6 +396,7 @@ impl std::fmt::Display for DocumentError {
             Self::InvalidString => formatter.write_str("invalid presentation string"),
             Self::InvalidNumber(name) => write!(formatter, "invalid presentation number: {name}"),
             Self::InvalidRuntimeRef => formatter.write_str("invalid Runtime reference"),
+            Self::Serialization => formatter.write_str("presentation serialization failed"),
         }
     }
 }

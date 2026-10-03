@@ -82,7 +82,9 @@ documentation-only M17.1 contract and ownership freeze. External re-review accep
 the M17.2 private single-owner Workbench dispatcher and presentation revision path
 after its focused blockers were remediated. External re-review accepted the bounded
 opt-in IPv4-loopback TCP/NDJSON Workbench adapter and all bounded-network remediation
-as M17.3. M17.4 is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+as M17.3. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED after remediation
+and independent closure of consolidated blockers B1-B5. M17.5 becomes AUTHORIZED /
+READY TO START / NOT IMPLEMENTED after the acceptance commit.
 
 Functionally complete means accepted v0.1 Runtime behavior is implemented and known
 preview-blocking correctness, safety and durability defects are closed. Remaining
@@ -177,8 +179,10 @@ external review found no blockers and recorded M16 READY TO CLOSE. M17.1 now fre
 the proposed separate direct Runtime and Workbench-owned client surfaces in
 `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md`. External re-review accepted the
 freeze. M17.2 is externally accepted as a transport-independent dispatcher with no
-external listener or framing. M17.3 is externally accepted. M17.4 is authorized and
-ready to start but is not implemented.
+external listener or framing. M17.3 and M17.4 are externally accepted, including
+the independently re-reviewed B1-B5 remediation. Consolidated M17.1-M17.4 review is
+ACCEPTED. M17.5 is AUTHORIZED / READY TO START / NOT IMPLEMENTED after the acceptance
+commit.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific
