@@ -1,0 +1,31 @@
+schema_version = 1
+
+[runtime]
+key = "minimal-virtual"
+display_name = "Minimal virtual laboratory"
+
+[server]
+host = "127.0.0.1"
+port = 0
+
+[recording]
+enabled = true
+path = "history.sqlite"
+policy = "required"
+
+[[instruments]]
+id = 1
+key = "temperature"
+kind = "virtual_measurement"
+display_name = "Virtual temperature"
+history_capacity = 64
+base_temperature = 20.0
+poll_period_ms = 100
+
+[[references]]
+id = 1
+key = "temperature-setpoint"
+kind = "fixed"
+value = 20.0
+unit_id = "degC"
+unit_symbol = "°C"

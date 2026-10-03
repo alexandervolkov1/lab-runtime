@@ -385,6 +385,8 @@ the same language-neutral Application semantics.
 
 ## Related documentation
 
+- [Configuration and deployment](configuration.md) — exact Runtime and Workbench
+  startup options, deployment TOML, paths, and validation.
 - [Getting started](getting-started.md) — run the virtual profile and complete a
   first Reference and Recorder workflow.
 - [System architecture](architecture.md) — Runtime/Workbench authority and process

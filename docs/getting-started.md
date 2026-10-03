@@ -15,6 +15,15 @@ Rust. Building from source requires Rust 1.95 with Cargo. Run package commands f
 the extracted package root or source commands from the repository root. Runtime
 listeners are loopback-only; this guide does not configure remote access.
 
+The recommended progression is:
+
+1. start the built-in virtual Runtime;
+2. start Workbench and wait for Fresh;
+3. perform a hello/query through the direct Runtime API;
+4. start the minimal deployment TOML;
+5. inspect and operate the Runtime-owned Recorder;
+6. continue with the [Configuration Guide](configuration.md).
+
 ## Build
 
 `lab-runtime.exe` and `lab-workbench.exe` are already present in an extracted
@@ -216,11 +225,15 @@ and Runtime shutdown is not the normal way to close the GUI.
 
 ## Configuration-based startup
 
-The repository also includes a declarative virtual composition. Resolve the path and
-start it with the strict configuration form:
+The repository and package include a minimal declarative virtual composition. Copy it
+to a user-writable directory so its relative Recorder path has an obvious home:
 
 ```powershell
-$config = [IO.Path]::GetFullPath((Join-Path $PWD "examples/runtime.virtual.toml"))
+$run = [IO.Path]::GetFullPath((Join-Path $PWD "minimal-run"))
+New-Item -ItemType Directory -Force $run | Out-Null
+Copy-Item ./examples/runtime.minimal.toml (Join-Path $run "runtime.toml")
+$config = Join-Path $run "runtime.toml"
+
 cargo run -p lab-runtime --locked -- --serve --config $config
 ```
 
@@ -231,8 +244,16 @@ The extracted-package equivalent is:
 ```
 
 The configuration is bounded, parsed, cross-validated, and frozen before activation.
-Review its local listener and Recorder paths before use. Do not use a physical example
-unless you intentionally want to open its configured hardware resource.
+It asks the OS for a free port and creates `$run\history.sqlite`. Read the selected
+port from the readiness line before starting Workbench. Review every physical
+deployment before use; a file containing serial resources may open its configured
+hardware after validation.
+
+The fuller [`runtime.virtual.toml`](../examples/runtime.virtual.toml) example adds a
+virtual thermal plant, ramp Reference, safe profile, and PID controller. The
+[Configuration Guide](configuration.md) is the canonical reference for both examples,
+all Runtime and Workbench CLI options, path resolution, deployment fields, limits,
+and failure behavior.
 
 ## Advanced: a minimal Application API client
 
@@ -292,6 +313,7 @@ are not experiment history. See
 
 ## Next steps
 
+- [Configuration and deployment](configuration.md)
 - [Workbench user guide](workbench.md)
 - [Runtime architecture and concepts](architecture.md)
 - [Application API reference](api/README.md)

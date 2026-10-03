@@ -116,6 +116,23 @@ mod operator_boundary_tests {
     use super::arguments_from;
 
     #[test]
+    fn documented_workbench_cli_options_are_accepted_by_the_real_parser() {
+        assert!(
+            arguments_from([
+                "--connect".to_owned(),
+                "127.0.0.1:7420".to_owned(),
+                "--scope".to_owned(),
+                "retained-scope".to_owned(),
+                "--workspace".to_owned(),
+                "workspace".to_owned(),
+                "--workbench-listen".to_owned(),
+                "127.0.0.1:0".to_owned(),
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn ordinary_gui_source_has_no_raw_or_prohibited_application_mutations() {
         let source = include_str!("gui/app.rs");
         let dispatcher = include_str!("dispatcher.rs");

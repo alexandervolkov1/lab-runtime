@@ -183,8 +183,8 @@ external listener or framing. M17.3 and M17.4 are externally accepted, including
 the independently re-reviewed B1-B5 remediation. Consolidated M17.1-M17.4 review is
 ACCEPTED. M17.5 optional Babashka boundary evidence and focused documentation are
 ACCEPTED with no blockers. M17 is CLOSED. PRE-RELEASE CLEANUP AND DOCUMENTATION is
-now in progress: PR-CLEAN-1 and PKG-1 are ACCEPTED, while DOC-1 Configuration is
-AUTHORIZED / READY TO START / NOT IMPLEMENTED. The unresolved 15-package
+now in progress: PR-CLEAN-1, PKG-1, and DOC-1 Configuration are ACCEPTED. DOC-2
+SimpleDevice is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The unresolved 15-package
 license-text/legal review remains a release blocker. Arduino/Clojure integration and
 release publication remain unauthorized.
 

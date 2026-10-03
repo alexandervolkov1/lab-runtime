@@ -9,6 +9,31 @@ use lab_runtime::host::HostCore;
 use lab_runtime::service::{ServiceHost, ServiceOptions};
 
 #[test]
+fn documented_runtime_cli_forms_are_accepted_by_the_real_parser() {
+    assert!(ServiceOptions::parse(&["--serve", "--config", "runtime.toml"]).is_ok());
+    let recorder = std::env::temp_dir().join("runtime-cli-form.sqlite");
+    let recorder = recorder.to_str().unwrap();
+    assert!(
+        ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            recorder,
+            "--record-policy",
+            "best-effort",
+            "--ws-port",
+            "0",
+            "--ws-origin",
+            "http://127.0.0.1:3000",
+        ])
+        .is_ok()
+    );
+}
+
+#[test]
 fn trusted_virtual_profile_is_safe_and_ready_without_auto_start() {
     let host = HostCore::virtual_demo().unwrap();
     let QueryResult::Controller(controller) =

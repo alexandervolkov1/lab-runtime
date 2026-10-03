@@ -44,9 +44,18 @@ ACCEPTED PKG-1. Its combined Runtime + Workbench Windows normal dependency inven
 contains all 160 current third-party dependencies exactly once, reports zero missing
 Cargo license-metadata entries, and explicitly retains 15 packages without a matching
 standalone top-level license/notice file for final release/legal review. That review
-remains a RELEASE BLOCKER. DOC-1 Configuration is AUTHORIZED / READY TO START / NOT
-IMPLEMENTED. The preview is not published or release-ready; SimpleDevice and
-full-driver documentation remain separate incomplete work.
+remains a RELEASE BLOCKER. DOC-1 Configuration is ACCEPTED. DOC-2 SimpleDevice is
+AUTHORIZED / READY TO START / NOT IMPLEMENTED. The preview is not published or
+release-ready; full-driver documentation remains separate incomplete work.
+
+DOC-1 adds the source-derived public Configuration Guide, a minimal validated virtual
+deployment with a relative Recorder path, parser-execution checks for every documented
+Runtime/Workbench CLI form, and extracted-package coverage for both the guide and
+example. CLI option completeness was manually reviewed against both procedural parsers;
+the tests do not claim automatic equality with future parser additions. The guide
+documents the independent CLI, deployment, live Runtime, Workbench workspace, and
+diagnostics domains without inventing a universal overlay. No production Rust behavior
+changed.
 
 Current clean baseline commits:
 
@@ -59,7 +68,7 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Allowed now: DOC-1 Configuration. PRE-RELEASE CLEANUP AND DOCUMENTATION remains in
+- Allowed now: DOC-2 SimpleDevice. PRE-RELEASE CLEANUP AND DOCUMENTATION remains in
   progress. Release publication is not authorized, and the unresolved 15-package
   license-text/legal review remains a release blocker.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability

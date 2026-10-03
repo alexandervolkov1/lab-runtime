@@ -216,12 +216,14 @@ function Test-ExtractedPackage([string]$archivePath) {
         $packageRoot = Join-Path $temporaryRoot $packageName
         $runtimeExecutable = Join-Path $packageRoot 'lab-runtime.exe'
         $workbenchExecutable = Join-Path $packageRoot 'lab-workbench.exe'
-        $starter = Join-Path $packageRoot 'examples\runtime.virtual.toml'
+        $starter = Join-Path $packageRoot 'examples\runtime.minimal.toml'
+        $fullVirtual = Join-Path $packageRoot 'examples\runtime.virtual.toml'
         $babashkaExample = Join-Path $packageRoot 'clients\babashka-smoke\README.md'
         if (-not (Test-Path -LiteralPath $runtimeExecutable -PathType Leaf) -or
             -not (Test-Path -LiteralPath $workbenchExecutable -PathType Leaf) -or
             -not (Test-Path -LiteralPath $babashkaExample -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $starter -PathType Leaf)) {
+            -not (Test-Path -LiteralPath $starter -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $fullVirtual -PathType Leaf)) {
             throw 'extracted product binary, client example, or safe starter is missing'
         }
 
@@ -239,6 +241,8 @@ function Test-ExtractedPackage([string]$archivePath) {
 
         $executionRoot = Join-Path $temporaryRoot 'run'
         [System.IO.Directory]::CreateDirectory($executionRoot) | Out-Null
+        $deploymentPath = Join-Path $executionRoot 'runtime.toml'
+        Copy-Item -LiteralPath $starter -Destination $deploymentPath
         $runtimeProcess = $null
         $workbenchProcess = $null
         $runtimeConnection = $null
@@ -253,10 +257,7 @@ function Test-ExtractedPackage([string]$archivePath) {
             $runtimeStart.RedirectStandardError = $true
             foreach ($argument in @(
                 '--serve',
-                '--profile', 'virtual-demo',
-                '--port', '0',
-                '--record-db', (Join-Path $executionRoot 'smoke.sqlite'),
-                '--record-policy', 'required'
+                '--config', $deploymentPath
             )) {
                 [void]$runtimeStart.ArgumentList.Add($argument)
             }
@@ -271,6 +272,9 @@ function Test-ExtractedPackage([string]$archivePath) {
             $readiness = Read-JsonLine $runtimeProcess.StandardOutput 'Runtime readiness'
             if ($readiness.state -ne 'ready' -or [int]$readiness.port -lt 1) {
                 throw "unexpected extracted Runtime readiness: $($readiness | ConvertTo-Json -Compress)"
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $executionRoot 'history.sqlite') -PathType Leaf)) {
+                throw 'documented relative Recorder path did not resolve beside deployment'
             }
 
             $runtimeConnection = New-NdjsonClient ([int]$readiness.port)
@@ -290,7 +294,8 @@ function Test-ExtractedPackage([string]$archivePath) {
             )
             $reference = Read-JsonLine $runtimeConnection.Reader 'Runtime reference query'
             if ($reference.type -ne 'result' -or $reference.result.reference -ne '1' -or
-                -not $reference.result.revision -or $null -eq $reference.result.target) {
+                $reference.result.kind -ne 'fixed' -or -not $reference.result.revision -or
+                $null -eq $reference.result.value) {
                 throw 'extracted Runtime reference query failed'
             }
 
@@ -472,6 +477,7 @@ try {
         'README.md',
         'LICENSE',
         'docs\getting-started.md',
+        'docs\configuration.md',
         'docs\architecture.md',
         'docs\application-api.md',
         'docs\recorder-sqlite.md',
@@ -484,6 +490,7 @@ try {
         'docs\api\operations.md',
         'docs\api\events-mutations-and-recovery.md',
         'docs\api\errors-and-limits.md',
+        'examples\runtime.minimal.toml',
         'examples\runtime.virtual.toml',
         'clients\babashka-smoke\README.md',
         'clients\babashka-smoke\run-smoke.ps1',

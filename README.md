@@ -123,6 +123,10 @@ Follow [Getting started](docs/getting-started.md) for the complete virtual-demo
 workflow, including a Reference retune, Recorder start/stop, reconnect behavior, port
 selection, and a small API-client example.
 
+For exact startup flags, deployment TOML fields, path bases, listener policy,
+Workbench workspace behavior, and validation failures, use the
+[Configuration Guide](docs/configuration.md).
+
 ## Process lifetime and recovery
 
 - Explicit Workbench **Disconnect** performs no automatic reconnect. A later Connect
@@ -139,6 +143,7 @@ selection, and a small API-client example.
 ## Documentation
 
 - [Getting started with Runtime and Workbench](docs/getting-started.md)
+- [Configuration and deployment](docs/configuration.md)
 - [Workbench user guide](docs/workbench.md)
 - [Runtime architecture and concepts](docs/architecture.md)
 - [Application API reference](docs/api/README.md)

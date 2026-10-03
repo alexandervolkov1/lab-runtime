@@ -287,6 +287,7 @@ fn c1_repository_example_deployments_parse_with_the_production_loader() {
         std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples"))
             .unwrap();
     for name in [
+        "runtime.minimal.toml",
         "runtime.virtual.toml",
         "runtime.metakon-read-only.toml",
         "runtime.metakon-513-com5.toml",
