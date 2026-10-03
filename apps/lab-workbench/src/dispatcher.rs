@@ -487,6 +487,19 @@ pub(crate) struct RoutedWorkbenchEvent {
     pub(crate) event: WorkbenchEvent,
 }
 
+impl RoutedWorkbenchEvent {
+    /// Returns the caller correlation and terminal status for one routed lab update.
+    pub(crate) fn lab_correlation(&self) -> Option<(&str, bool)> {
+        let WorkbenchEvent::LabUpdate(update) = &self.event else {
+            return None;
+        };
+        Some((
+            &update.call_id,
+            update.kind != LabUpdateKind::MutationAccepted,
+        ))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DispatchOutcome {
     pub(crate) result: WorkbenchResult,

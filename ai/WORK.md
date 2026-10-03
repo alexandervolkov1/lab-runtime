@@ -1,4 +1,4 @@
-# Current work — M17.3 bounded external adapter ready to start
+# Current work — M17.4 ownership/recovery/fault/parity acceptance
 
 ## Canonical current state
 
@@ -20,7 +20,10 @@ revision precheck, ownership model, bounds and acceptance matrix. M17.1 is ACCEP
 M17.2 implements the transport-independent single-owner Workbench dispatcher and
 presentation revision path under that freeze. Its focused external-review blockers
 are remediated, and external re-review accepted M17.2 with no remaining correctness
-or ownership blocker. M17.3 is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+or ownership blocker. External re-review accepted the bounded opt-in IPv4-loopback
+TCP/NDJSON Workbench adapter and all bounded-network remediation as M17.3, with no
+remaining blocker. M17.4 ownership/recovery/fault/parity acceptance is AUTHORIZED /
+READY TO START / NOT IMPLEMENTED.
 
 Arduino and full Clojure/Babashka validation remain later work. M17.5 may add only
 the minimal language-boundary smoke evidence frozen by the M17.1 acceptance matrix;
@@ -35,9 +38,9 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Allowed next slice: M17.3 bounded external Workbench adapter under the accepted
-  M17.1 contract and accepted M17.2 dispatcher.
-- Not authorized: M17.4 or later implementation, Runtime operation/capability
+- Allowed: M17.4 ownership, recovery, fault, transport-parity, M16-regression, and
+  process-lifetime acceptance work under the accepted M17.1-M17.3 boundaries.
+- Not authorized: M17.5 or later implementation, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.
 - M17.3 guardrail: external adapter lab query, mutation, and status requests must
@@ -68,8 +71,9 @@ The proposed contract freezes:
   fault/parity acceptance, and M17.5 language smoke/consolidated review slices.
 
 External re-review accepted this contract. M17.2 implements the private typed
-dispatcher under the freeze and is externally accepted. M17.3 is separately
-authorized and ready to start.
+dispatcher under the freeze and is externally accepted. M17.3 is also externally
+accepted. M17.4 is authorized and ready to start but is not implemented by this status
+update.
 
 ## Accepted M17.2 implementation
 
@@ -106,6 +110,51 @@ passes `175 passed; 9 ignored; 0 failed`; all nine ignored process acceptances p
 when run explicitly. Focused M16 regression passes 8 Core, 25 Runtime, and 1 Workbench
 tests, and the complete debug and release workspace suites pass with zero failures.
 Formatting and full workspace all-target/all-feature warnings-denied Clippy pass.
+
+## Accepted M17.3 implementation
+
+The opt-in `--workbench-listen 127.0.0.1:PORT` endpoint accepts only a numeric
+IPv4-loopback address and is disabled when the option is absent. After the fixed
+endpoint worker starts, Workbench prints one bounded JSON readiness field containing
+the actual bound address. One nonblocking network thread owns at most eight sockets;
+it creates no `ClientHandle`, Runtime session, sequencer, recovery owner, subscription,
+or per-caller task.
+
+The adapter implements strict UTF-8 LF/CRLF NDJSON, duplicate-key rejection, complete
+bounded JSON validation, exact operation decoding, and the frozen count plus byte
+credits. A 32-message/16-MiB bounded mailbox carries typed requests to the existing
+GUI-thread dispatcher owner. The owner considers at most four distinct callers and
+one request from each per turn. Every external lab operation enters
+`WorkbenchDispatcher::dispatch()`; the adapter never uses `client()`.
+
+Per-caller output includes the current write. A terminal local result/error or final
+`lab_update` retains its `call_id` through queued, current, and partial-write states
+and releases it only after the full frame write. Submitted and `mutation_accepted`
+lab frames are nonterminal. Detach removes only caller correlation through
+`detach_caller`; admitted work and recovery evidence remain. Clean Workbench shutdown
+stops acceptance, gives queued output at most 200 ms, closes the endpoint, and then
+uses the existing finite Runtime-client shutdown.
+
+Bounded-network remediation extends a live call's connection-local hold across every
+queued/current/partial `duplicate_call_id` frame and releases it only after the last
+related write. Every unavailable `call_id`, including one whose terminal error is queued
+or partially written, now occupies the single frozen 8-per-caller/32-global reserved-ID
+pool. Correlation-capacity exhaustion therefore detaches that caller instead of creating
+an uncounted rejection ID; admission pressure after a successful reservation still
+returns bounded `busy` when output capacity permits. Incremental frame ingestion searches
+for LF before applying the per-frame limit, so a maximum valid frame followed by bytes of
+another frame is accepted without aggregating their sizes. The advertised physical frame
+bound includes LF and, for CRLF, includes both CR and LF.
+
+Focused adapter tests pass `28 passed; 0 failed`; accepted M17.2 dispatcher tests pass
+`14 passed; 0 failed`; and the two ownership/source-bound tests pass. The complete
+Workbench debug and release suites each pass `204 passed; 9 ignored; 0 failed`, and
+all nine ignored real-Runtime Workbench acceptances pass explicitly. The complete
+workspace debug and release suites, Runtime TCP/WebSocket parity (`10 passed`) and
+WebSocket transport (`13 passed`), focused M16 regressions (8 Core, 24 Runtime, and 1
+Workbench), formatting, warnings-denied all-target/all-feature workspace Clippy,
+frozen registry/client-bound checks, and diff checking pass. External re-review
+accepted this implementation and all remediation with no remaining blockers.
 
 The accepted M12.2 implementation commit is
 `0e1bcb228f068eb1fcec6116eebc64f3352e520d`.
@@ -992,8 +1041,8 @@ the verification run rather than frozen in this coordination note.
 
 The final consolidated external review found no blockers: M16 READY TO CLOSE. M17.1
 is an accepted documentation-only contract and ownership freeze. M17.2 is externally
-accepted. M17.3 is AUTHORIZED / READY TO START / NOT IMPLEMENTED; M17.4 and later
-implementation remain unauthorized.
+accepted. M17.3 is externally accepted. M17.4 is AUTHORIZED / READY TO START / NOT
+IMPLEMENTED; M17.5 and later implementation remain unauthorized.
 
 
 ## Accepted M14 consolidated invariants

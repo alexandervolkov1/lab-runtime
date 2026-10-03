@@ -63,8 +63,9 @@ reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are co
 Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
 cleanup and concluded READY TO START M17. External re-review accepted the M17.1
 contract and ownership freeze. External re-review accepted the transport-independent
-M17.2 dispatcher after focused remediation. M17.3 is AUTHORIZED / READY TO START /
-NOT IMPLEMENTED.
+M17.2 dispatcher after focused remediation. External re-review accepted the bounded
+IPv4-loopback TCP/NDJSON adapter and all bounded-network remediation as M17.3. M17.4
+is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 
 The consolidated M12 source, bounds, security, parity and real-browser evidence is
 recorded in `M12_CONSOLIDATED_EXTERNAL_REVIEW.md` and is accepted. The read-only
@@ -177,8 +178,8 @@ a distinct bounded Workbench-owned client/presentation surface. One Workbench
 dispatcher must share the existing single `ClientHandle`; it cannot add another
 Runtime session store, mutation sequencer, recovery engine or subscription system.
 The M17.1 contract in `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` is
-externally accepted. M17.2 is also externally accepted. M17.3 is AUTHORIZED / READY
-TO START / NOT IMPLEMENTED.
+externally accepted. M17.2 and M17.3 are also externally accepted. M17.4 is
+AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 
 ## End-to-end integration validation
 
@@ -202,7 +203,8 @@ M15.5–M15.8 now. M16.7 is accepted under the
 frozen minimal unknown-device acceptance; M16 consolidated review recorded M16 READY
 TO CLOSE. M17.1 is externally accepted. M17.2 is implemented under
 `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` and externally accepted after
-focused remediation. M17.3 is authorized and ready to start but remains unimplemented.
+focused remediation. M17.3 is externally accepted. M17.4 is AUTHORIZED / READY TO
+START / NOT IMPLEMENTED.
 
 ## Final release gate
 

@@ -5,6 +5,7 @@ use crate::{
     client::ClientHandle,
     client::types::{ConnectionState, KnownAdmission, RecoveryQuarantineReason},
     dispatcher::WorkbenchDispatcher,
+    external::{PreparedEndpoint, WorkbenchEndpoint},
     model::{
         ControllerLifecycleIntent, EXACT_RETRY_WARNING, ExactRetryState, ExactRetryWorkflow,
         Freshness, OperatorIntent, OperatorWarning, OperatorWorkflow, OperatorWorkflowState,
@@ -52,6 +53,7 @@ pub(crate) struct WorkbenchApp {
     _ownership: WorkspaceOwnership,
     smoke: Option<SmokeRun>,
     kill_probe: Option<KillProbe>,
+    endpoint: Option<WorkbenchEndpoint>,
 }
 
 impl WorkbenchApp {
@@ -64,15 +66,23 @@ impl WorkbenchApp {
         presentation: PresentationDocument,
         presentation_problem: Option<String>,
         ownership: WorkspaceOwnership,
+        endpoint: Option<PreparedEndpoint>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let repaint = context.egui_ctx.clone();
-        let wake = Arc::new(move || repaint.request_repaint());
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || repaint.request_repaint());
         let client = ClientHandle::spawn_with_recovery_journal_and_wake(
             address,
             Some(journal_path),
-            Some(wake),
+            Some(Arc::clone(&wake)),
         )?;
         client.connect(desired_scope)?;
+        let endpoint_readiness = endpoint.as_ref().map(PreparedEndpoint::readiness_line);
+        let endpoint = endpoint
+            .map(|endpoint| WorkbenchEndpoint::start(endpoint, Arc::clone(&wake)))
+            .transpose()?;
+        if let Some(readiness) = endpoint_readiness {
+            println!("{readiness}");
+        }
         let smoke = std::env::var_os("LAB_WORKBENCH_GUI_SMOKE_RESULT")
             .map(PathBuf::from)
             .map(SmokeRun::new);
@@ -100,6 +110,7 @@ impl WorkbenchApp {
             _ownership: ownership,
             smoke,
             kill_probe,
+            endpoint,
         })
     }
 
@@ -116,13 +127,20 @@ impl WorkbenchApp {
             )
         };
         for update in updates {
-            self.model.apply_client_update(update.clone());
+            let events = self.model.apply_client_update(update.clone());
+            if let Some(endpoint) = &mut self.endpoint {
+                endpoint.route_events(&mut self.model, events);
+            }
             self.recovery_status.after_update(&update);
             self.exact_retry
                 .after_update(&update, &self.model, &self.recovery_status);
             self.operator.after_update(&update);
             self.model.advance_rebuild(&mut self.rebuild, &update);
-            let _ = self.model.finish_model_turn();
+            if let Some(event) = self.model.finish_model_turn()
+                && let Some(endpoint) = &mut self.endpoint
+            {
+                endpoint.route_events(&mut self.model, [event]);
+            }
         }
         self.ensure_selection_and_default_plot();
         count
@@ -159,8 +177,13 @@ impl WorkbenchApp {
                     display_unit: None,
                 }],
             };
-            if let Err(error) = self.model.apply_gui_ui(UiCommand::AddPlot { plot }) {
-                self.model.set_client_error(error.to_string());
+            match self.model.apply_gui_ui(UiCommand::AddPlot { plot }) {
+                Ok(outcome) => {
+                    if let Some(endpoint) = &mut self.endpoint {
+                        endpoint.route_events(&mut self.model, outcome.events);
+                    }
+                }
+                Err(error) => self.model.set_client_error(error.to_string()),
             }
         }
     }
@@ -1231,6 +1254,9 @@ impl WorkbenchApp {
     }
 
     fn shutdown_client(&mut self) {
+        if let Some(mut endpoint) = self.endpoint.take() {
+            endpoint.shutdown(&mut self.model);
+        }
         if let Some(client) = self.model.take_client()
             && let Err(error) = client.shutdown()
         {
@@ -1242,6 +1268,9 @@ impl WorkbenchApp {
 impl eframe::App for WorkbenchApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_updates();
+        if let Some(endpoint) = &mut self.endpoint {
+            endpoint.service_owner(&mut self.model);
+        }
         self.drive_smoke(context);
         self.drive_kill_probe(context);
     }

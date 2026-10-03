@@ -2,6 +2,7 @@
 
 mod client;
 mod dispatcher;
+mod external;
 mod gui;
 mod model;
 mod ownership;
@@ -12,23 +13,35 @@ mod recovery;
 mod storage;
 
 use presentation::default_presentation_path;
-use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
+use std::{
+    net::{SocketAddr, SocketAddrV4},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 fn usage() {
-    eprintln!("usage: lab-workbench --connect 127.0.0.1:PORT [--scope SCOPE] [--workspace PATH]");
+    eprintln!(
+        "usage: lab-workbench --connect 127.0.0.1:PORT [--scope SCOPE] [--workspace PATH] [--workbench-listen 127.0.0.1:PORT]"
+    );
 }
 
 struct Arguments {
     address: SocketAddr,
     scope: Option<String>,
     workspace: Option<PathBuf>,
+    workbench_listen: Option<SocketAddrV4>,
 }
 
 fn arguments() -> Result<Arguments, &'static str> {
-    let mut args = std::env::args().skip(1);
+    arguments_from(std::env::args().skip(1))
+}
+
+fn arguments_from(args: impl IntoIterator<Item = String>) -> Result<Arguments, &'static str> {
+    let mut args = args.into_iter();
     let mut address = None;
     let mut scope = None;
     let mut workspace = None;
+    let mut workbench_listen = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--connect" if address.is_none() => {
@@ -47,6 +60,17 @@ fn arguments() -> Result<Arguments, &'static str> {
                     args.next().ok_or("--workspace needs a path")?,
                 ));
             }
+            "--workbench-listen" if workbench_listen.is_none() => {
+                let parsed = args
+                    .next()
+                    .ok_or("--workbench-listen needs an address")?
+                    .parse::<SocketAddrV4>()
+                    .map_err(|_| "--workbench-listen needs a numeric IPv4 socket address")?;
+                if !parsed.ip().is_loopback() {
+                    return Err("--workbench-listen requires IPv4 loopback");
+                }
+                workbench_listen = Some(parsed);
+            }
             _ => return Err("unknown or duplicate argument"),
         }
     }
@@ -54,6 +78,7 @@ fn arguments() -> Result<Arguments, &'static str> {
         address: address.ok_or("--connect is required")?,
         scope,
         workspace,
+        workbench_listen,
     })
 }
 
@@ -71,6 +96,7 @@ fn run() -> Result<(), String> {
         address: arguments.address,
         scope: arguments.scope,
         workspace,
+        workbench_listen: arguments.workbench_listen,
     })
 }
 
@@ -87,10 +113,13 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod operator_boundary_tests {
+    use super::arguments_from;
+
     #[test]
     fn ordinary_gui_source_has_no_raw_or_prohibited_application_mutations() {
         let source = include_str!("gui/app.rs");
         let dispatcher = include_str!("dispatcher.rs");
+        let external = include_str!("external.rs");
         assert!(!source.contains(".mutation("));
         assert!(!source.contains(".retry_mutation("));
         assert!(!source.contains(".apply_ui_command("));
@@ -119,6 +148,18 @@ mod operator_boundary_tests {
             1,
             "only ClientUpdate::LocalRejected may produce a local-rejected lab update"
         );
+        let external_production = external
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("external adapter has production source");
+        assert!(!external_production.contains("ClientHandle"));
+        assert!(!external_production.contains(".client()"));
+        assert!(!external_production.contains("RejectionCorrelation"));
+        assert!(!external_production.contains("rejections:"));
+        assert!(!external_production.contains("apply_ui_command"));
+        assert!(!external_production.contains("PresentationDocument"));
+        assert!(!external_production.contains("WebSocket"));
+        assert!(external_production.contains("dispatcher.dispatch("));
         for prohibited in [
             "runtime_shutdown",
             "emulator_publish",
@@ -132,6 +173,36 @@ mod operator_boundary_tests {
                 !source.contains(prohibited),
                 "ordinary GUI contains prohibited operation {prohibited}"
             );
+        }
+    }
+
+    #[test]
+    fn external_endpoint_is_disabled_by_default_and_requires_numeric_ipv4_loopback() {
+        let base = vec!["--connect".to_owned(), "127.0.0.1:9000".to_owned()];
+        assert!(
+            arguments_from(base.clone())
+                .unwrap()
+                .workbench_listen
+                .is_none()
+        );
+
+        let mut enabled = base.clone();
+        enabled.extend(["--workbench-listen".to_owned(), "127.0.0.1:0".to_owned()]);
+        let parsed = arguments_from(enabled).unwrap();
+        assert_eq!(
+            parsed.workbench_listen.unwrap().ip().octets(),
+            [127, 0, 0, 1]
+        );
+
+        for rejected in [
+            "0.0.0.0:0",
+            "192.0.2.1:9000",
+            "localhost:9000",
+            "[::1]:9000",
+        ] {
+            let mut args = base.clone();
+            args.extend(["--workbench-listen".to_owned(), rejected.to_owned()]);
+            assert!(arguments_from(args).is_err(), "accepted {rejected}");
         }
     }
 }

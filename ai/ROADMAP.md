@@ -63,8 +63,9 @@ reconnect/restart behavior, Recorder/provenance, and Workbench acceptance are co
 Final external review result: M16 READY TO CLOSE. The pre-M17 audit found no required
 cleanup and concluded READY TO START M17. External re-review accepted the M17.1
 contract and ownership freeze. External re-review accepted the transport-independent
-M17.2 dispatcher after its focused remediation. M17.3 is AUTHORIZED / READY TO START /
-NOT IMPLEMENTED.
+M17.2 dispatcher after its focused remediation. External re-review accepted the
+bounded IPv4-loopback TCP/NDJSON adapter and all bounded-network remediation as
+M17.3. M17.4 is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 
 The accepted headless Runtime core is implemented and technically hardened for a
 developer preview. Remaining work concerns reference material, practical integration
@@ -340,11 +341,11 @@ GUI / external Workbench calls -> one Workbench dispatcher
 - **M17.2:** implement the single-owner Workbench dispatcher and presentation
   revision path. ACCEPTED after focused remediation and external re-review.
 - **M17.3:** add the bounded opt-in loopback Workbench adapter through that dispatcher.
-  AUTHORIZED / READY TO START / NOT IMPLEMENTED. External lab operations must enter
-  through `WorkbenchDispatcher::dispatch()` and must not use its internal
-  GUI/operator `WorkbenchDispatcher::client()` accessor.
+  ACCEPTED after bounded-network remediation and external re-review. External lab
+  operations enter through `WorkbenchDispatcher::dispatch()` and do not use its
+  internal GUI/operator `WorkbenchDispatcher::client()` accessor.
 - **M17.4:** complete concurrency, recovery, fault, transport-parity, M16 and process
-  lifetime acceptance.
+  lifetime acceptance. AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 - **M17.5:** complete minimal language-boundary smoke, documentation and consolidated
   external review without creating a client SDK or adding Steel.
 
