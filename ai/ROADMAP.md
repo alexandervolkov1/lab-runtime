@@ -353,8 +353,11 @@ GUI / external Workbench calls -> one Workbench dispatcher
   external review without creating a client SDK or adding Steel. ACCEPTED with no
   blockers. M17 is CLOSED.
 
-Next authorized phase: PRE-RELEASE CLEANUP AND DOCUMENTATION, unstarted by this closure
-task. Full Arduino + Clojure + Clay integration remains post-preview practical work.
+Current phase: PRE-RELEASE CLEANUP AND DOCUMENTATION. PR-CLEAN-1 and PKG-1 are
+ACCEPTED. DOC-1 Configuration is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+The unresolved 15-package license-text/legal review remains a release blocker;
+preview.2 is not release-ready and no release is published. Full Arduino + Clojure
++ Clay integration remains post-preview practical work.
 
 M17 may not create a second Runtime operation/session/subscription implementation or
 move presentation authority into Runtime. Steel, GUI features, remote access and a

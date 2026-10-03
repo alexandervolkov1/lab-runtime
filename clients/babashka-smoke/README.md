@@ -6,12 +6,22 @@ builds and production executables do not depend on it. Tested with Babashka 1.13
 The scripts use its included Cheshire JSON parser and Java TCP streams, with no Rust
 crate access, dependencies to install, recovery, mutation retry, or subscriptions.
 
+From an extracted preview package, with `bb` on PATH, the runner automatically uses
+the release executables at the package root:
+
+```powershell
+./clients/babashka-smoke/run-smoke.ps1 -Repeat 3
+```
+
 From the repository root, with `bb` on PATH and PowerShell 7 on Windows:
 
 ```powershell
 cargo build -p lab-runtime -p lab-workbench --locked
 ./clients/babashka-smoke/run-smoke.ps1 -Repeat 3
 ```
+
+For another layout, pass `-RuntimeExe` and `-WorkbenchExe` explicitly. The runner
+never downloads or builds either product executable.
 
 The runner starts the actual `lab-runtime.exe --serve --profile virtual-demo --port 0`,
 reads its bound port, and starts the native Workbench with a temporary workspace and

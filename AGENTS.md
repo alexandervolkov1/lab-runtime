@@ -117,9 +117,11 @@ remediation across the accepted M17.2/M17.3 Workbench boundary and the M17.4 evi
 is ACCEPTED after Astra independently closed consolidated audit blockers B1-B5 with
 no new blockers. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED at
 `e79ae8243bc49f59692c7ff435c15b2d30d4c248`. External review accepted M17.5 with no
-blockers. M17.1-M17.5 are ACCEPTED; M17 is CLOSED. The next authorized phase is
-PRE-RELEASE CLEANUP AND DOCUMENTATION, not Arduino/Clojure integration. This closure
-task does not begin the next phase.
+blockers. M17.1-M17.5 are ACCEPTED; M17 is CLOSED. PRE-RELEASE CLEANUP AND
+DOCUMENTATION is in progress: PR-CLEAN-1 and PKG-1 are ACCEPTED, and DOC-1
+Configuration is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The unresolved
+15-package license-text/legal review remains a release blocker. Arduino/Clojure
+integration and release publication remain unauthorized.
 Detailed authorization remains in `ai/WORK.md`.
 The external adapter submits lab query, mutation, and status calls only through
 `WorkbenchDispatcher::dispatch()`; `WorkbenchDispatcher::client()` remains solely

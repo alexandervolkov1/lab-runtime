@@ -87,6 +87,18 @@ External review accepted M11 at
 developer-preview-blocking correctness, safety or durability defect. This is not a
 production-certification claim.
 
+PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress. PR-CLEAN-1 is complete at
+`6097ba99f0028b627a56752d712cab5cf50e9969`. PKG-1 is ACCEPTED: its versioned
+portable archive contains both product executables, the explicit public documentation
+and optional client-example set, the safe virtual configuration, deterministic
+inventory/checksum/provenance, and combined dependency notices. Its extracted-tree
+link/fragment checks and Runtime/Workbench process smoke pass outside the repository.
+Its combined Runtime + Workbench normal dependency inventory represents all 160
+current third-party dependencies exactly once and reports zero missing Cargo
+license-metadata entries. Fifteen packages remain explicitly unresolved for final
+license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration is
+AUTHORIZED / READY TO START / NOT IMPLEMENTED. No release has been published.
+
 ## Accepted boundaries
 
 - Runtime remains the sole authoritative mutable experiment owner.
@@ -136,9 +148,11 @@ and bounds, schema v1, logging bounds, and controller lifecycle.
 
 ## Current local artifact
 
-The Windows x86_64 developer-preview package is reproducibly built by
-`scripts/package-developer-preview.ps1`. Generated `dist/` artifacts are ignored by
-Git and are not published automatically.
+The Windows x86_64 preview package is reproducibly built with an explicit version,
+for example `scripts/package-developer-preview.ps1 -PreviewVersion
+v0.1.0-preview.2`. Generated `dist/` artifacts are ignored by Git and are not
+published automatically. PKG-1 is externally accepted; the unresolved 15-package
+license-text/legal review still blocks release publication.
 
 The first preview is published at
 `https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1`.
@@ -222,9 +236,10 @@ Runtime hello/query and the separately required Workbench language-neutral scena
 The real-browser regression still targets Runtime WebSocket directly. Focused public
 docs distinguish both surfaces; no Rust source or dependency changes are included.
 See `WORK.md` for evidence, including the preserved transient SQLite verification
-note. The next authorized phase is PRE-RELEASE CLEANUP AND DOCUMENTATION; it is not
-started by this closure task. Arduino/Clojure/Clay integration remains post-preview
-practical work. Release publication is not authorized.
+note. PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress with PR-CLEAN-1 complete
+and PKG-1 accepted. DOC-1 Configuration is authorized but not implemented.
+Arduino/Clojure/Clay integration remains post-preview practical work. Release
+publication is not authorized.
 
 ## Later practical validation
 

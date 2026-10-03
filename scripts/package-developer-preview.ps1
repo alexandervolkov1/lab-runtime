@@ -1,12 +1,15 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+-preview\.[1-9][0-9]*$')]
+    [string]$PreviewVersion,
     [switch]$AllowDirty
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$packageName = 'lab-runtime-developer-preview-windows-x86_64'
+$packageName = "lab-runtime-$PreviewVersion-windows-x86_64"
 $targetTriple = 'x86_64-pc-windows-msvc'
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -40,31 +43,165 @@ function Copy-ApprovedFile([string]$relativeSource, [string]$relativeDestination
     Copy-Item -LiteralPath $source -Destination $destination
 }
 
+function Get-MarkdownHeadingIds([string]$path) {
+    $ids = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $occurrences = @{}
+    $insideFence = $false
+    foreach ($line in Get-Content -LiteralPath $path) {
+        if ($line -match '^\s*(```|~~~)') {
+            $insideFence = -not $insideFence
+            continue
+        }
+        if ($insideFence -or $line -notmatch '^\s{0,3}#{1,6}\s+(?<heading>.+?)\s*#*\s*$') {
+            continue
+        }
+        $heading = $Matches.heading
+        $heading = [regex]::Replace($heading, '\[([^\]]+)\]\([^)]+\)', '$1')
+        $heading = $heading.Replace('`', '')
+        $id = $heading.ToLowerInvariant()
+        $id = [regex]::Replace($id, '[^\p{L}\p{Nd}\s_-]', '')
+        $id = [regex]::Replace($id.Trim(), '\s+', '-')
+        if (-not $id) {
+            continue
+        }
+        $count = if ($occurrences.ContainsKey($id)) { [int]$occurrences[$id] } else { 0 }
+        $occurrences[$id] = $count + 1
+        if ($count -gt 0) {
+            $id = "$id-$count"
+        }
+        [void]$ids.Add($id)
+    }
+    return ,$ids
+}
+
 function Test-MarkdownLinks([string]$packageRoot) {
     $broken = [System.Collections.Generic.List[string]]::new()
+    $external = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $packagePrefix = $packageRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) +
+        [System.IO.Path]::DirectorySeparatorChar
     foreach ($file in Get-ChildItem -LiteralPath $packageRoot -Recurse -Filter '*.md' -File) {
         $text = Get-Content -LiteralPath $file.FullName -Raw
         foreach ($match in [regex]::Matches($text, '(?<!\!)\[[^\]]*\]\(([^)]+)\)')) {
             $target = $match.Groups[1].Value.Trim().Trim('<', '>')
-            if ($target -match '^(https?://|mailto:|#)') {
+            if ($target -match '^(https?://|mailto:)') {
+                [void]$external.Add($target)
                 continue
             }
-            $target = ($target -split '#')[0]
-            if (-not $target) {
+            $parts = $target -split '#', 2
+            $relativeTarget = $parts[0]
+            $fragment = if ($parts.Count -eq 2) {
+                [uri]::UnescapeDataString($parts[1])
+            } else {
+                $null
+            }
+            $resolved = if ($relativeTarget) {
+                [System.IO.Path]::GetFullPath(
+                    (Join-Path $file.DirectoryName ([uri]::UnescapeDataString($relativeTarget)))
+                )
+            } else {
+                $file.FullName
+            }
+            if ($resolved -ne $packageRoot -and
+                -not $resolved.StartsWith(
+                    $packagePrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                $relativeFile = $file.FullName.Substring($packageRoot.Length + 1)
+                $broken.Add("$relativeFile -> $target (escapes package)")
                 continue
             }
-            $resolved = [System.IO.Path]::GetFullPath(
-                (Join-Path $file.DirectoryName ([uri]::UnescapeDataString($target)))
-            )
             if (-not (Test-Path -LiteralPath $resolved)) {
                 $relativeFile = $file.FullName.Substring($packageRoot.Length + 1)
                 $broken.Add("$relativeFile -> $target")
+                continue
+            }
+            if ($fragment) {
+                if (-not (Test-Path -LiteralPath $resolved -PathType Leaf) -or
+                    [System.IO.Path]::GetExtension($resolved) -ne '.md') {
+                    $relativeFile = $file.FullName.Substring($packageRoot.Length + 1)
+                    $broken.Add("$relativeFile -> $target (fragment target is not Markdown)")
+                    continue
+                }
+                $headingIds = Get-MarkdownHeadingIds $resolved
+                if (-not $headingIds.Contains($fragment)) {
+                    $relativeFile = $file.FullName.Substring($packageRoot.Length + 1)
+                    $broken.Add("$relativeFile -> $target (heading not found)")
+                }
             }
         }
     }
     if ($broken.Count -gt 0) {
         throw "broken package Markdown links: $($broken -join '; ')"
     }
+    Write-Host (
+        'Package Markdown: relative targets and heading fragments passed; ' +
+        "$($external.Count) unique external link(s) skipped"
+    )
+}
+
+function Read-JsonLine(
+    [System.IO.StreamReader]$reader,
+    [string]$description,
+    [int]$timeoutMilliseconds = 10000
+) {
+    $task = $reader.ReadLineAsync()
+    if (-not $task.Wait($timeoutMilliseconds)) {
+        throw "$description timed out"
+    }
+    if ([string]::IsNullOrWhiteSpace($task.Result)) {
+        throw "$description returned no data"
+    }
+    return $task.Result | ConvertFrom-Json
+}
+
+function New-NdjsonClient([int]$port) {
+    $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port)
+    $stream = $client.GetStream()
+    $stream.ReadTimeout = 10000
+    $stream.WriteTimeout = 10000
+    $reader = [System.IO.StreamReader]::new(
+        $stream,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $writer = [System.IO.StreamWriter]::new(
+        $stream,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $writer.NewLine = [System.Environment]::NewLine
+    $writer.AutoFlush = $true
+    return [PSCustomObject]@{
+        Client = $client
+        Reader = $reader
+        Writer = $writer
+    }
+}
+
+function Send-WorkbenchRequest(
+    $connection,
+    [string]$callId,
+    [string]$operation,
+    [hashtable]$arguments
+) {
+    $request = @{
+        v = 1
+        type = 'request'
+        call_id = $callId
+        op = $operation
+        args = $arguments
+    } | ConvertTo-Json -Compress -Depth 16
+    $connection.Writer.WriteLine($request)
+    foreach ($frame in 1..64) {
+        $response = Read-JsonLine $connection.Reader "Workbench $operation response"
+        if ($response.PSObject.Properties.Name -contains 'call_id' -and
+            $response.call_id -eq $callId) {
+            return $response
+        }
+    }
+    throw "Workbench $operation response exceeded the frame budget"
 }
 
 function Test-ExtractedPackage([string]$archivePath) {
@@ -77,11 +214,15 @@ function Test-ExtractedPackage([string]$archivePath) {
     try {
         Expand-Archive -LiteralPath $archivePath -DestinationPath $temporaryRoot
         $packageRoot = Join-Path $temporaryRoot $packageName
-        $executable = Join-Path $packageRoot 'lab-runtime.exe'
+        $runtimeExecutable = Join-Path $packageRoot 'lab-runtime.exe'
+        $workbenchExecutable = Join-Path $packageRoot 'lab-workbench.exe'
         $starter = Join-Path $packageRoot 'examples\runtime.virtual.toml'
-        if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or
+        $babashkaExample = Join-Path $packageRoot 'clients\babashka-smoke\README.md'
+        if (-not (Test-Path -LiteralPath $runtimeExecutable -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $workbenchExecutable -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $babashkaExample -PathType Leaf) -or
             -not (Test-Path -LiteralPath $starter -PathType Leaf)) {
-            throw 'extracted executable or safe starter configuration is missing'
+            throw 'extracted product binary, client example, or safe starter is missing'
         }
 
         $expectedFiles = @(Get-Content (Join-Path $packageRoot 'PACKAGE-CONTENTS.txt') |
@@ -96,86 +237,184 @@ function Test-ExtractedPackage([string]$archivePath) {
         }
         Test-MarkdownLinks $packageRoot
 
-        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = $executable
-        $startInfo.Arguments = '--serve --config .\examples\runtime.virtual.toml'
-        $startInfo.WorkingDirectory = $packageRoot
-        $startInfo.UseShellExecute = $false
-        $startInfo.CreateNoWindow = $true
-        $startInfo.RedirectStandardOutput = $true
-        $startInfo.RedirectStandardError = $true
-        $startInfo.EnvironmentVariables['LAB_RUNTIME_LOG_DIRECTORY'] =
-            (Join-Path $temporaryRoot 'logs')
-        $process = [System.Diagnostics.Process]::new()
-        $process.StartInfo = $startInfo
-        if (-not $process.Start()) {
-            throw 'extracted preview process did not start'
-        }
+        $executionRoot = Join-Path $temporaryRoot 'run'
+        [System.IO.Directory]::CreateDirectory($executionRoot) | Out-Null
+        $runtimeProcess = $null
+        $workbenchProcess = $null
+        $runtimeConnection = $null
+        $workbenchConnection = $null
         try {
-            $readinessTask = $process.StandardOutput.ReadLineAsync()
-            if (-not $readinessTask.Wait(10000)) {
-                throw 'extracted preview readiness timed out'
+            $runtimeStart = [System.Diagnostics.ProcessStartInfo]::new()
+            $runtimeStart.FileName = $runtimeExecutable
+            $runtimeStart.WorkingDirectory = $executionRoot
+            $runtimeStart.UseShellExecute = $false
+            $runtimeStart.CreateNoWindow = $true
+            $runtimeStart.RedirectStandardOutput = $true
+            $runtimeStart.RedirectStandardError = $true
+            foreach ($argument in @(
+                '--serve',
+                '--profile', 'virtual-demo',
+                '--port', '0',
+                '--record-db', (Join-Path $executionRoot 'smoke.sqlite'),
+                '--record-policy', 'required'
+            )) {
+                [void]$runtimeStart.ArgumentList.Add($argument)
             }
-            $readiness = $readinessTask.Result | ConvertFrom-Json
-            if ($readiness.state -ne 'ready') {
-                throw "unexpected extracted preview readiness: $($readinessTask.Result)"
+            $runtimeStart.EnvironmentVariables['LAB_RUNTIME_LOG_DIRECTORY'] =
+                (Join-Path $executionRoot 'logs')
+            $runtimeProcess = [System.Diagnostics.Process]::new()
+            $runtimeProcess.StartInfo = $runtimeStart
+            if (-not $runtimeProcess.Start()) {
+                throw 'extracted Runtime process did not start'
+            }
+            $runtimeErrorTask = $runtimeProcess.StandardError.ReadToEndAsync()
+            $readiness = Read-JsonLine $runtimeProcess.StandardOutput 'Runtime readiness'
+            if ($readiness.state -ne 'ready' -or [int]$readiness.port -lt 1) {
+                throw "unexpected extracted Runtime readiness: $($readiness | ConvertTo-Json -Compress)"
             }
 
-            $client = [System.Net.Sockets.TcpClient]::new(
-                '127.0.0.1', [int]$readiness.port
+            $runtimeConnection = New-NdjsonClient ([int]$readiness.port)
+            $runtimeConnection.Writer.WriteLine(
+                '{"v":1,"msg_id":"preview-smoke-hello","op":"hello","args":{"scope":null}}'
             )
-            try {
-                $stream = $client.GetStream()
-                $stream.ReadTimeout = 10000
-                $stream.WriteTimeout = 10000
-                $reader = [System.IO.StreamReader]::new(
-                    $stream, [System.Text.UTF8Encoding]::new($false)
-                )
-                $writer = [System.IO.StreamWriter]::new(
-                    $stream, [System.Text.UTF8Encoding]::new($false)
-                )
-                $writer.NewLine = "`n"
-                $writer.AutoFlush = $true
-                $writer.WriteLine(
-                    '{"v":1,"msg_id":"preview-smoke-hello","op":"hello","args":{"scope":null}}'
-                )
-                $hello = $reader.ReadLine() | ConvertFrom-Json
-                if ($hello.type -ne 'result') {
-                    throw 'extracted preview hello failed'
+            $hello = Read-JsonLine $runtimeConnection.Reader 'Runtime hello'
+            if ($hello.v -ne 1 -or $hello.msg_id -ne 'preview-smoke-hello' -or
+                $hello.type -ne 'result' -or
+                $hello.result.protocol.id -ne 'lab-runtime.application' -or
+                $hello.result.protocol.version -ne 1 -or
+                -not $hello.result.scope -or -not $hello.result.next_seq) {
+                throw 'extracted Runtime hello failed'
+            }
+            $runtimeConnection.Writer.WriteLine(
+                '{"v":1,"msg_id":"preview-smoke-reference","op":"reference","args":{"reference":"1"}}'
+            )
+            $reference = Read-JsonLine $runtimeConnection.Reader 'Runtime reference query'
+            if ($reference.type -ne 'result' -or $reference.result.reference -ne '1' -or
+                -not $reference.result.revision -or $null -eq $reference.result.target) {
+                throw 'extracted Runtime reference query failed'
+            }
+
+            $workbenchStart = [System.Diagnostics.ProcessStartInfo]::new()
+            $workbenchStart.FileName = $workbenchExecutable
+            $workbenchStart.WorkingDirectory = $executionRoot
+            $workbenchStart.UseShellExecute = $false
+            $workbenchStart.CreateNoWindow = $true
+            $workbenchStart.RedirectStandardOutput = $true
+            $workbenchStart.RedirectStandardError = $true
+            foreach ($argument in @(
+                '--connect', "127.0.0.1:$($readiness.port)",
+                '--workspace', (Join-Path $executionRoot 'workspace'),
+                '--workbench-listen', '127.0.0.1:0'
+            )) {
+                [void]$workbenchStart.ArgumentList.Add($argument)
+            }
+            $workbenchProcess = [System.Diagnostics.Process]::new()
+            $workbenchProcess.StartInfo = $workbenchStart
+            if (-not $workbenchProcess.Start()) {
+                throw 'extracted Workbench process did not start'
+            }
+            $workbenchErrorTask = $workbenchProcess.StandardError.ReadToEndAsync()
+            $workbenchReadiness = Read-JsonLine $workbenchProcess.StandardOutput 'Workbench endpoint readiness'
+            $endpoint = [System.Net.IPEndPoint]::Parse(
+                [string]$workbenchReadiness.workbench_endpoint
+            )
+            if ($endpoint.Address.ToString() -ne '127.0.0.1' -or $endpoint.Port -lt 1) {
+                throw 'extracted Workbench published an unexpected endpoint'
+            }
+
+            $workbenchConnection = New-NdjsonClient $endpoint.Port
+            $workbenchHello = Send-WorkbenchRequest $workbenchConnection 'package-hello' 'hello' @{}
+            if ($workbenchHello.type -ne 'result' -or
+                $workbenchHello.result.protocol.id -ne 'lab-runtime.workbench' -or
+                $workbenchHello.result.protocol.version -ne 1) {
+                throw 'extracted Workbench hello failed'
+            }
+            $workbenchReady = $false
+            foreach ($attempt in 0..99) {
+                $status = Send-WorkbenchRequest $workbenchConnection "package-status-$attempt" 'client_status' @{}
+                if ($status.type -ne 'result') {
+                    throw 'extracted Workbench status failed'
                 }
-                $shutdown = @{
-                    v = 1
-                    msg_id = 'preview-smoke-shutdown'
-                    op = 'runtime_shutdown'
-                    request_id = @{
-                        scope = $hello.result.scope
-                        seq = $hello.result.next_seq
-                    }
-                    args = @{}
-                } | ConvertTo-Json -Compress -Depth 5
-                $writer.WriteLine($shutdown)
-                $accepted = $reader.ReadLine() | ConvertFrom-Json
-                $terminal = $reader.ReadLine() | ConvertFrom-Json
-                if ($accepted.state -ne 'accepted' -or $terminal.state -ne 'completed') {
-                    throw "extracted preview shutdown failed: $($accepted.state)/$($terminal.state)"
+                if ($status.result.runtime_client.connection -eq 'ready') {
+                    $workbenchReady = $true
+                    break
                 }
+                Start-Sleep -Milliseconds 20
             }
-            finally {
-                $client.Dispose()
+            if (-not $workbenchReady) {
+                throw 'extracted Workbench did not connect to Runtime'
             }
-            if (-not $process.WaitForExit(10000)) {
-                throw 'extracted preview process exit timed out'
+
+            $closeRequested = $workbenchProcess.CloseMainWindow()
+            if (-not $closeRequested -or -not $workbenchProcess.WaitForExit(5000)) {
+                if (-not $workbenchProcess.HasExited) {
+                    $workbenchProcess.Kill($true)
+                }
+                if (-not $workbenchProcess.WaitForExit(5000)) {
+                    throw 'extracted Workbench cleanup timed out'
+                }
+                $workbenchStop = 'bounded process termination'
+            } else {
+                $workbenchStop = 'native window close'
             }
-            if ($process.ExitCode -ne 0) {
-                throw "extracted preview exited $($process.ExitCode): $($process.StandardError.ReadToEnd())"
+            [void]$workbenchErrorTask.GetAwaiter().GetResult()
+            $workbenchProcess.Dispose()
+            $workbenchProcess = $null
+            if ($runtimeProcess.HasExited) {
+                throw 'stopping extracted Workbench also stopped Runtime'
             }
+
+            $shutdown = @{
+                v = 1
+                msg_id = 'preview-smoke-shutdown'
+                op = 'runtime_shutdown'
+                request_id = @{
+                    scope = $hello.result.scope
+                    seq = $hello.result.next_seq
+                }
+                args = @{}
+            } | ConvertTo-Json -Compress -Depth 5
+            $runtimeConnection.Writer.WriteLine($shutdown)
+            $accepted = Read-JsonLine $runtimeConnection.Reader 'Runtime shutdown acceptance'
+            $terminal = Read-JsonLine $runtimeConnection.Reader 'Runtime shutdown completion'
+            if ($accepted.state -ne 'accepted' -or $terminal.state -ne 'completed') {
+                throw "extracted Runtime shutdown failed: $($accepted.state)/$($terminal.state)"
+            }
+            if (-not $runtimeProcess.WaitForExit(10000)) {
+                throw 'extracted Runtime process exit timed out'
+            }
+            $runtimeError = $runtimeErrorTask.GetAwaiter().GetResult()
+            if ($runtimeProcess.ExitCode -ne 0) {
+                throw "extracted Runtime exited $($runtimeProcess.ExitCode): $runtimeError"
+            }
+            $runtimeProcess.Dispose()
+            $runtimeProcess = $null
+            Write-Host (
+                'Extracted smoke: Runtime hello/reference, Workbench hello/connect, ' +
+                "Workbench stop via $workbenchStop, Runtime explicit shutdown passed"
+            )
         }
         finally {
-            if (-not $process.HasExited) {
-                $process.Kill()
-                $process.WaitForExit()
+            if ($null -ne $workbenchConnection) {
+                $workbenchConnection.Client.Dispose()
             }
-            $process.Dispose()
+            if ($null -ne $runtimeConnection) {
+                $runtimeConnection.Client.Dispose()
+            }
+            if ($null -ne $workbenchProcess) {
+                if (-not $workbenchProcess.HasExited) {
+                    $workbenchProcess.Kill($true)
+                    [void]$workbenchProcess.WaitForExit(5000)
+                }
+                $workbenchProcess.Dispose()
+            }
+            if ($null -ne $runtimeProcess) {
+                if (-not $runtimeProcess.HasExited) {
+                    $runtimeProcess.Kill($true)
+                    [void]$runtimeProcess.WaitForExit(5000)
+                }
+                $runtimeProcess.Dispose()
+            }
         }
     }
     finally {
@@ -207,9 +446,12 @@ try {
     & cargo build --workspace --release --locked
     Assert-Success 'release build'
 
-    $binaryPath = Join-Path $repositoryRoot 'target\release\lab-runtime.exe'
-    if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
-        throw "release binary is missing: $binaryPath"
+    $runtimeBinary = Join-Path $repositoryRoot 'target\release\lab-runtime.exe'
+    $workbenchBinary = Join-Path $repositoryRoot 'target\release\lab-workbench.exe'
+    foreach ($binary in @($runtimeBinary, $workbenchBinary)) {
+        if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "required release binary is missing: $binary"
+        }
     }
 
     Assert-ChildPath $stageRoot $distRoot
@@ -224,32 +466,67 @@ try {
     }
     [System.IO.Directory]::CreateDirectory($stageRoot) | Out-Null
 
-    Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $stageRoot 'lab-runtime.exe')
-    Copy-ApprovedFile 'README.md' 'README.md'
-    Copy-ApprovedFile 'LICENSE' 'LICENSE'
-    Copy-ApprovedFile 'docs\getting-started.md' 'docs\getting-started.md'
-    Copy-ApprovedFile 'docs\architecture.md' 'docs\architecture.md'
-    Copy-ApprovedFile 'docs\application-api.md' 'docs\application-api.md'
-    Copy-ApprovedFile 'docs\recorder-sqlite.md' 'docs\recorder-sqlite.md'
-    Copy-ApprovedFile 'docs\safety-and-failures.md' 'docs\safety-and-failures.md'
-    Copy-ApprovedFile 'docs\extending-runtime.md' 'docs\extending-runtime.md'
-    Copy-ApprovedFile 'examples\runtime.virtual.toml' 'examples\runtime.virtual.toml'
+    Copy-Item -LiteralPath $runtimeBinary -Destination (Join-Path $stageRoot 'lab-runtime.exe')
+    Copy-Item -LiteralPath $workbenchBinary -Destination (Join-Path $stageRoot 'lab-workbench.exe')
+    $publicFiles = @(
+        'README.md',
+        'LICENSE',
+        'docs\getting-started.md',
+        'docs\architecture.md',
+        'docs\application-api.md',
+        'docs\recorder-sqlite.md',
+        'docs\safety-and-failures.md',
+        'docs\extending-runtime.md',
+        'docs\workbench.md',
+        'docs\workbench-api.md',
+        'docs\api\README.md',
+        'docs\api\protocol-and-sessions.md',
+        'docs\api\operations.md',
+        'docs\api\events-mutations-and-recovery.md',
+        'docs\api\errors-and-limits.md',
+        'examples\runtime.virtual.toml',
+        'clients\babashka-smoke\README.md',
+        'clients\babashka-smoke\run-smoke.ps1',
+        'clients\babashka-smoke\runtime.clj',
+        'clients\babashka-smoke\workbench.clj',
+        'clients\clojurescript-smoke\README.md',
+        'clients\clojurescript-smoke\run-smoke.ps1',
+        'clients\clojurescript-smoke\src\lab_runtime_smoke\core.cljs'
+    )
+    foreach ($relativePath in $publicFiles) {
+        Copy-ApprovedFile $relativePath $relativePath
+    }
 
     $metadata = (& cargo metadata --format-version 1 --locked | ConvertFrom-Json)
     Assert-Success 'Cargo metadata'
     $runtimePackage = $metadata.packages |
         Where-Object { $_.name -eq 'lab-runtime' -and -not $_.source } |
         Select-Object -First 1
-    if (-not $runtimePackage) {
-        throw 'lab-runtime workspace package metadata is missing'
+    $workbenchPackage = $metadata.packages |
+        Where-Object { $_.name -eq 'lab-workbench' -and -not $_.source } |
+        Select-Object -First 1
+    if (-not $runtimePackage -or -not $workbenchPackage) {
+        throw 'product workspace package metadata is missing'
+    }
+    $releaseBaseVersion = ($PreviewVersion.Substring(1) -split '-', 2)[0]
+    if ($runtimePackage.version -ne $releaseBaseVersion -or
+        $workbenchPackage.version -ne $releaseBaseVersion) {
+        throw (
+            "preview $PreviewVersion must use Cargo package version $releaseBaseVersion; " +
+            "found Runtime $($runtimePackage.version), Workbench $($workbenchPackage.version)"
+        )
     }
     $commit = (& git rev-parse HEAD).Trim()
     Assert-Success 'Git revision lookup'
+    $sourceState = if ($dirty) { 'dirty' } else { 'clean' }
     $buildIdentity = @(
-        'lab-runtime developer preview'
-        "package-version=$($runtimePackage.version)"
+        'lab-runtime portable preview package'
+        "preview-version=$PreviewVersion"
+        "cargo-package-version=$($runtimePackage.version)"
+        'products=lab-runtime.exe,lab-workbench.exe'
         "target=$targetTriple"
         "git-commit=$commit"
+        "git-tree=$sourceState"
         'protocol=lab-runtime.application/1'
         'application-api=0.1-pre'
         'project-license=MIT'
@@ -261,35 +538,78 @@ try {
         $utf8NoBom
     )
 
-    $treeLines = & cargo tree -p lab-runtime --target $targetTriple --edges normal `
-        --prefix none --format '{p}|{l}' --locked
+    $treeLines = & cargo tree -p lab-runtime -p lab-workbench --target $targetTriple --edges normal --prefix none --format '{p}|{l}' --locked
     Assert-Success 'Windows dependency inventory'
     $dependencyEntries = @{}
     foreach ($line in $treeLines) {
-        if ($line -notmatch '^(?<name>[A-Za-z0-9_-]+) v(?<version>\S+?)(?: \([^)]*\))?\|(?<license>.+)$') {
+        if ([string]::IsNullOrWhiteSpace($line)) {
             continue
+        }
+        if ($line -notmatch '^(?<name>[A-Za-z0-9_-]+) v(?<version>\S+?)(?: \([^)]*\))?\|.*$') {
+            throw "cannot parse Cargo dependency inventory line: $line"
         }
         $name = $Matches.name
         $version = $Matches.version
-        $license = $Matches.license.Trim().Replace(' (*)', '')
-        if (-not $license) {
+        $workspacePackages = @($metadata.packages |
+            Where-Object {
+                $_.name -eq $name -and
+                $_.version -eq $version -and
+                -not $_.source
+            })
+        $externalPackages = @($metadata.packages |
+            Where-Object {
+                $_.name -eq $name -and
+                $_.version -eq $version -and
+                $_.source
+            })
+        if ($workspacePackages.Count -gt 0 -and $externalPackages.Count -eq 0) {
             continue
         }
-        $dependencyEntries["$name|$version"] = [PSCustomObject]@{
+        if ($externalPackages.Count -ne 1) {
+            throw (
+                "Cargo dependency inventory identity is missing or ambiguous: " +
+                "$name $version ($($externalPackages.Count) external metadata matches)"
+            )
+        }
+        $package = $externalPackages[0]
+        $license = if ([string]::IsNullOrWhiteSpace([string]$package.license)) {
+            '[missing Cargo license metadata]'
+        } else {
+            [string]$package.license
+        }
+        $dependencyEntries[$package.id] = [PSCustomObject]@{
             Name = $name
             Version = $version
             License = $license
+            Package = $package
         }
     }
     $dependencies = @($dependencyEntries.Values | Sort-Object Name, Version)
+    $missingLicenseMetadata = @($dependencies |
+        Where-Object { $_.License -eq '[missing Cargo license metadata]' })
     $notice = [System.Collections.Generic.List[string]]::new()
     $notice.Add('THIRD-PARTY DEPENDENCY NOTICES')
     $notice.Add('')
-    $notice.Add('Generated from Cargo.lock and the Windows x86_64 normal dependency graph.')
-    $notice.Add('SPDX expressions below come from upstream Cargo package metadata.')
-    $notice.Add('Corresponding upstream license files are included under licenses/.')
-    $notice.Add('lab-runtime itself is licensed under MIT; see LICENSE at the package root.')
+    $notice.Add('Generated from Cargo.lock and the Windows x86_64 normal dependency graphs')
+    $notice.Add('for lab-runtime.exe and lab-workbench.exe.')
+    $notice.Add('The inventory covers every unique normal third-party dependency in those graphs.')
+    $notice.Add('License expressions are copied from Cargo package metadata without interpretation.')
+    $notice.Add('Copies of matching standalone top-level upstream license/notice files found by')
+    $notice.Add('this packaging audit are included under licenses/.')
+    $notice.Add('Absence from licenses/ does not assert that upstream provides no license text;')
+    $notice.Add('unresolved entries are listed below for release/legal review.')
+    $notice.Add('The lab-runtime workspace is licensed under MIT; see LICENSE at the package root.')
     $notice.Add('This file covers third-party dependencies and does not replace that project license.')
+    $notice.Add('')
+    $notice.Add("Third-party dependency count: $($dependencies.Count)")
+    $notice.Add("Dependencies with missing Cargo license metadata: $($missingLicenseMetadata.Count)")
+    if ($missingLicenseMetadata.Count -gt 0) {
+        foreach ($dependency in $missingLicenseMetadata) {
+            $notice.Add("- $($dependency.Name) $($dependency.Version)")
+        }
+    }
+    $notice.Add('')
+    $notice.Add('DEPENDENCY INVENTORY')
     $notice.Add('')
     foreach ($dependency in $dependencies) {
         $notice.Add("$($dependency.Name) $($dependency.Version) -- $($dependency.License)")
@@ -297,17 +617,7 @@ try {
 
     $missingLicenses = [System.Collections.Generic.List[string]]::new()
     foreach ($dependency in $dependencies) {
-        $package = $metadata.packages |
-            Where-Object {
-                $_.name -eq $dependency.Name -and
-                $_.version -eq $dependency.Version -and
-                $_.source
-            } |
-            Select-Object -First 1
-        if (-not $package) {
-            $missingLicenses.Add("$($dependency.Name) $($dependency.Version)")
-            continue
-        }
+        $package = $dependency.Package
         $packageDirectory = Split-Path -Parent $package.manifest_path
         $licenseFiles = @(Get-ChildItem -LiteralPath $packageDirectory -File |
             Where-Object {
@@ -327,11 +637,15 @@ try {
     }
     if ($missingLicenses.Count -gt 0) {
         $notice.Add('')
-        $notice.Add('No standalone upstream license file was present in the downloaded crate for:')
+        $notice.Add(
+            'No matching standalone top-level license/notice file was found by the package audit for:'
+        )
         foreach ($missing in $missingLicenses) {
             $notice.Add("- $missing")
         }
-        $notice.Add('Consult that crate package metadata/source before external redistribution.')
+        $notice.Add(
+            'These entries remain unresolved for release/legal review before external redistribution.'
+        )
     }
     [System.IO.File]::WriteAllLines(
         (Join-Path $stageRoot 'THIRD-PARTY-NOTICES.txt'),
@@ -421,7 +735,14 @@ try {
     Write-Host "Preview directory: $stageRoot"
     Write-Host "Preview ZIP:       $zipPath"
     Write-Host "SHA-256:           $hash"
-    Write-Host 'Extracted smoke:   ready, hello, clean shutdown, link check passed'
+    Write-Host 'Package contents:'
+    foreach ($relativePath in Get-Content -LiteralPath $contentManifestPath) {
+        Write-Host "  $relativePath"
+    }
+    Write-Host (
+        'Extracted smoke:   Runtime hello/reference, Workbench connect/lifetime, ' +
+        'finite cleanup, and Markdown target/fragment checks passed'
+    )
 }
 finally {
     Pop-Location

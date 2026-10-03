@@ -57,7 +57,29 @@ See the [Application API reference](docs/api/README.md) for the complete surface
 Declarative SimpleDevice onboarding and its lifecycle boundaries are described in
 the [extension guide](docs/extending-runtime.md).
 
-## Build and run
+## Run the portable Windows package
+
+The portable preview archive contains both release executables. After extraction,
+start Runtime from the package root:
+
+```powershell
+$db = [IO.Path]::GetFullPath((Join-Path $PWD "demo.sqlite"))
+./lab-runtime.exe --serve --profile virtual-demo --port 7420 `
+  --record-db $db --record-policy required
+```
+
+Then start Workbench in another terminal:
+
+```powershell
+$workspace = [IO.Path]::GetFullPath((Join-Path $PWD ".workbench-demo"))
+./lab-workbench.exe --connect 127.0.0.1:7420 --workspace $workspace
+```
+
+Neither command needs the source repository. The package also includes the public
+documentation, the safe virtual configuration, and optional language-boundary
+examples described below.
+
+## Build and run from source
 
 Building the complete workspace, including Workbench, requires Rust 1.95 and Cargo.
 Workbench is native to Windows today; the commands below use PowerShell.
@@ -141,8 +163,9 @@ selection, and a small API-client example.
   and fail-closed.
 
 The published [v0.1.0-preview.1](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1)
-Windows package contains the headless Runtime. Build the current repository to use
-the native Workbench described here.
+Windows package is the earlier Runtime-only preview. Current packaging produces a
+portable Windows archive containing both Runtime and Workbench; creating a package
+does not publish or tag a release.
 
 ## Safety posture
 

@@ -7,14 +7,18 @@ workflow, and optionally records the run. The virtual profile opens no serial ha
 ## Prerequisites
 
 - Windows for the native Workbench;
-- Rust 1.95 with Cargo;
 - PowerShell;
 - a free local TCP port (the primary example uses `7420`).
 
-Run all repository commands from the repository root. Runtime listeners are
-loopback-only; this guide does not configure remote access.
+An extracted preview package already contains both executables and does not require
+Rust. Building from source requires Rust 1.95 with Cargo. Run package commands from
+the extracted package root or source commands from the repository root. Runtime
+listeners are loopback-only; this guide does not configure remote access.
 
 ## Build
+
+`lab-runtime.exe` and `lab-workbench.exe` are already present in an extracted
+package, so package users skip this step.
 
 ```powershell
 cargo build --workspace --locked
@@ -39,6 +43,13 @@ cargo run -p lab-runtime --locked -- `
   --port 7420 `
   --record-db $db `
   --record-policy required
+```
+
+From an extracted package, the equivalent command is:
+
+```powershell
+./lab-runtime.exe --serve --profile virtual-demo --port 7420 `
+  --record-db $db --record-policy required
 ```
 
 Port `7420` must be free. The profile contains a virtual thermal plant, Reference 1,
@@ -86,6 +97,12 @@ $workspace = [IO.Path]::GetFullPath((Join-Path $PWD ".workbench-demo"))
 cargo run -p lab-workbench --locked -- `
   --connect 127.0.0.1:7420 `
   --workspace $workspace
+```
+
+From an extracted package, use:
+
+```powershell
+./lab-workbench.exe --connect 127.0.0.1:7420 --workspace $workspace
 ```
 
 If Runtime selected another port, replace `7420`. Workbench acquires exclusive
@@ -205,6 +222,12 @@ start it with the strict configuration form:
 ```powershell
 $config = [IO.Path]::GetFullPath((Join-Path $PWD "examples/runtime.virtual.toml"))
 cargo run -p lab-runtime --locked -- --serve --config $config
+```
+
+The extracted-package equivalent is:
+
+```powershell
+./lab-runtime.exe --serve --config $config
 ```
 
 The configuration is bounded, parsed, cross-validated, and frozen before activation.

@@ -28,6 +28,15 @@ cargo build -p lab-runtime --locked
 ./clients/clojurescript-smoke/run-smoke.ps1
 ```
 
+From an extracted preview package, supply the packaged release executable explicitly:
+
+```powershell
+./clients/clojurescript-smoke/run-smoke.ps1 -RuntimeExe ./lab-runtime.exe
+```
+
+This optional browser smoke still requires the Java, Clojure, Python, and browser
+tools listed above; none are Runtime or Workbench production dependencies.
+
 The runner requires `127.0.0.1:9000` to be free, compiles into a unique directory
 under the system temporary directory, starts Runtime with the exact allowed Origin
 `http://127.0.0.1:9000`, parses readiness, starts the HTTP server, drives a real

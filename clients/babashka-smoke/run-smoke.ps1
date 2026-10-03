@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([ValidateRange(1, 10)][int]$Repeat = 3)
+param(
+    [ValidateRange(1, 10)][int]$Repeat = 3,
+    [string]$RuntimeExe,
+    [string]$WorkbenchExe
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -10,8 +14,27 @@ New-Item -ItemType Directory -Path $temporary | Out-Null
 $runtime = $null
 $workbench = $null
 
+function Resolve-SmokeExecutable(
+    [string]$Explicit,
+    [string]$PackageName,
+    [string]$DevelopmentPath
+) {
+    $candidate = if (-not [string]::IsNullOrWhiteSpace($Explicit)) {
+        [IO.Path]::GetFullPath($Explicit)
+    } elseif (Test-Path -LiteralPath (Join-Path $repo $PackageName) -PathType Leaf) {
+        Join-Path $repo $PackageName
+    } else {
+        Join-Path $repo $DevelopmentPath
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "Required executable is missing: $candidate"
+    }
+    return [IO.Path]::GetFullPath($candidate)
+}
+
 function Start-Fixture([string]$Executable, [string[]]$Arguments, [string]$Name) {
     $info = [Diagnostics.ProcessStartInfo]::new($Executable)
+    $info.WorkingDirectory = $temporary
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
@@ -52,12 +75,14 @@ function Invoke-Smoke([string]$Script, [int]$Port, [int]$Run) {
 }
 
 try {
-    $runtime = Start-Fixture (Join-Path $repo 'target/debug/lab-runtime.exe') @(
+    $runtimePath = Resolve-SmokeExecutable $RuntimeExe 'lab-runtime.exe' 'target/debug/lab-runtime.exe'
+    $workbenchPath = Resolve-SmokeExecutable $WorkbenchExe 'lab-workbench.exe' 'target/debug/lab-workbench.exe'
+    $runtime = Start-Fixture $runtimePath @(
         '--serve', '--profile', 'virtual-demo', '--port', '0'
     ) 'runtime'
     $ready = Read-Ready $runtime
     if ($ready.port -lt 1) { throw 'Runtime omitted bound port' }
-    $workbench = Start-Fixture (Join-Path $repo 'target/debug/lab-workbench.exe') @(
+    $workbench = Start-Fixture $workbenchPath @(
         '--connect', "127.0.0.1:$($ready.port)", '--workspace', (Join-Path $temporary 'workspace'),
         '--workbench-listen', '127.0.0.1:0'
     ) 'workbench'

@@ -183,8 +183,11 @@ The M17.1 contract in `M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md` is
 externally accepted. M17.2, M17.3, M17.4, and consolidated M17.1-M17.4 review are
 ACCEPTED, including the independently re-reviewed B1-B5 Workbench remediation.
 M17.5 is ACCEPTED with no blockers and M17 is CLOSED. Language smoke evidence does
-not authorize release publication. PRE-RELEASE CLEANUP AND DOCUMENTATION is the next
-authorized phase; this closure task does not start it.
+not authorize release publication. PRE-RELEASE CLEANUP AND DOCUMENTATION is in
+progress: PR-CLEAN-1 and PKG-1 are ACCEPTED, and DOC-1 Configuration is AUTHORIZED /
+READY TO START / NOT IMPLEMENTED. The unresolved 15-package license-text/legal review
+remains a release blocker. SimpleDevice/full-driver documentation and release
+publication remain separate later gates.
 
 ## End-to-end integration validation
 

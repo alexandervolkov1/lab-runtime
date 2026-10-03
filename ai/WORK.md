@@ -1,4 +1,4 @@
-# Current work — M17 closed; pre-release cleanup and documentation next
+# Current work — M17 closed; pre-release cleanup and documentation in progress
 
 ## Canonical current state
 
@@ -33,18 +33,35 @@ The accepted M17.4/consolidated remediation baseline is
 `e79ae8243bc49f59692c7ff435c15b2d30d4c248`. External review accepted M17.5 with no
 blockers. M17.1, M17.2, M17.3, M17.4, and M17.5 are ACCEPTED. M17 is CLOSED.
 
+PRE-RELEASE CLEANUP AND DOCUMENTATION is now in progress. PR-CLEAN-1 removed only
+definite local/generated artifacts and tightened narrow ignore rules; it is complete
+at `6097ba99f0028b627a56752d712cab5cf50e9969`. PKG-1 now packages both accepted
+release executables, the explicit public documentation/client-example allowlist, the
+safe virtual configuration, deterministic inventory/checksum/provenance and combined
+third-party dependency notices. Extracted-package Markdown target/fragment validation
+and real Runtime/Workbench process smoke pass outside the repository. External review
+ACCEPTED PKG-1. Its combined Runtime + Workbench Windows normal dependency inventory
+contains all 160 current third-party dependencies exactly once, reports zero missing
+Cargo license-metadata entries, and explicitly retains 15 packages without a matching
+standalone top-level license/notice file for final release/legal review. That review
+remains a RELEASE BLOCKER. DOC-1 Configuration is AUTHORIZED / READY TO START / NOT
+IMPLEMENTED. The preview is not published or release-ready; SimpleDevice and
+full-driver documentation remain separate incomplete work.
+
 Current clean baseline commits:
 
 - M16 completion: `48a22f34d23053eb2c1d6752663701872b6fa6d3`
 - C1/C2 cleanup: `5768fc58aafec51f089d7bfece1ffea17f595fd4`
 - C3 test-infrastructure cleanup: `0e6f97f5c1bbf4f70540e5708e236055e6ab7547`
 - Pre-M17 coordination baseline: `229fb7d0eadab970249cb088aefae7e30914e6aa`
+- M17 closure: `b8267eb1759f0017c0bc8ac90caaec5ae6023a4e`
+- PR-CLEAN-1: `6097ba99f0028b627a56752d712cab5cf50e9969`
 
 Current authorization boundary:
 
-- Allowed now: record final acceptance and commit the accepted M17.5 change set.
-  The next authorized phase is PRE-RELEASE CLEANUP AND DOCUMENTATION; it is not
-  started by this closure task. Release publication is not authorized.
+- Allowed now: DOC-1 Configuration. PRE-RELEASE CLEANUP AND DOCUMENTATION remains in
+  progress. Release publication is not authorized, and the unresolved 15-package
+  license-text/legal review remains a release blocker.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.

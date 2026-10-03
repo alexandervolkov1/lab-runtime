@@ -47,6 +47,12 @@ cargo run -p lab-workbench --locked -- `
   --workspace $workspace
 ```
 
+From an extracted preview package, run the packaged executable instead:
+
+```powershell
+./lab-workbench.exe --connect 127.0.0.1:7420 --workspace $workspace
+```
+
 `--connect` is required and accepts a numeric socket address. `--workspace` is
 optional; when omitted, Workbench uses its Windows user-data location. An optional
 `--scope` value requests that retained Application scope.

@@ -21,6 +21,13 @@ cargo run -p lab-workbench --locked -- --connect 127.0.0.1:7420 `
   --workspace .workbench-demo --workbench-listen 127.0.0.1:7421
 ```
 
+From an extracted preview package:
+
+```powershell
+./lab-workbench.exe --connect 127.0.0.1:7420 `
+  --workspace .workbench-demo --workbench-listen 127.0.0.1:7421
+```
+
 The endpoint is disabled unless requested. Only numeric IPv4 loopback is accepted;
 hostnames, wildcard, non-loopback and IPv6 binds are rejected. Port `0` selects an
 ephemeral port. Read the actual address from stdout's `workbench_endpoint` readiness
@@ -48,9 +55,9 @@ Exactly 15 operations exist:
 - `ui_add_plot`, `ui_remove_plot`, `ui_add_trace`, `ui_remove_trace`,
   `ui_set_trace_visibility`, `ui_set_time_window`, `ui_rename_item`, `ui_set_trace_source`.
 
-The [frozen contract](../ai/M17_1_EXTERNAL_CLIENT_CONTRACT_OWNERSHIP_FREEZE.md)
-defines exact per-operation arguments/results and source DTOs; this guide does not
-create another registry. Normal Runtime operation/argument JSON is forwarded unchanged.
+The accepted frozen M17 contract defines exact per-operation arguments/results and
+source DTOs; this guide summarizes that source-bound contract and does not create
+another registry. Normal Runtime operation/argument JSON is forwarded unchanged.
 Worker-owned `operation_status`, `subscribe`, and `unsubscribe` cannot be ordinary
 `lab_query` operations. Use the fenced `lab_operation_status` operation for status.
 Explicit `runtime_shutdown` via `lab_mutation` remains a Runtime mutation; closing
