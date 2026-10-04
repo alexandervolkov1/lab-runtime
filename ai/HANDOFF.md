@@ -98,9 +98,10 @@ current third-party dependencies exactly once and reports zero missing Cargo
 license-metadata entries. Fifteen packages remain explicitly unresolved for final
 license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration and
 DOC-2 SimpleDevice are ACCEPTED at
-`1b1f0171cda2849188163794937203fe0c9d4262`. DOC-3 Full native driver is ACCEPTED.
-DOC-4 Runtime / Workbench API completion is AUTHORIZED / READY TO START / NOT
-IMPLEMENTED. No release has been published. DOC-1's source-derived guide and minimal
+`1b1f0171cda2849188163794937203fe0c9d4262`. DOC-3 Full native driver and DOC-4
+Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery / faults
+is AUTHORIZED / READY TO START / NOT IMPLEMENTED. No release
+has been published. DOC-1's source-derived guide and minimal
 virtual deployment cover the
 actual independent Runtime CLI, deployment, live Runtime, Workbench workspace, and
 diagnostic domains. Focused tests execute every documented CLI form through the real
@@ -246,9 +247,10 @@ The real-browser regression still targets Runtime WebSocket directly. Focused pu
 docs distinguish both surfaces; no Rust source or dependency changes are included.
 See `WORK.md` for evidence, including the preserved transient SQLite verification
 note. PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress with PR-CLEAN-1, PKG-1,
-and DOC-1 Configuration accepted. DOC-2 SimpleDevice and DOC-3 Full native driver are
-ACCEPTED. DOC-4 Runtime / Workbench API completion is AUTHORIZED / READY TO START /
-NOT IMPLEMENTED. Arduino/Clojure/Clay integration remains post-preview practical work.
+and DOC-1 Configuration accepted. DOC-2 SimpleDevice, DOC-3 Full native driver, and
+DOC-4 Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery /
+faults is AUTHORIZED / READY TO START / NOT IMPLEMENTED. Arduino/Clojure/Clay integration
+remains post-preview practical work.
 Release publication is not authorized.
 
 ## Later practical validation

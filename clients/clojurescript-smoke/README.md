@@ -4,6 +4,11 @@ This deliberately small external client proves that compiled ClojureScript runni
 in a real browser can use the existing loopback WebSocket Application endpoint. It
 is acceptance infrastructure, not a client SDK or GUI.
 
+The canonical protocol specification is the
+[Runtime Application API](../../docs/api/README.md). This smoke exercises that direct
+Runtime surface; it does not implement or specify the separate
+[Workbench API](../../docs/workbench-api.md).
+
 The source uses only `js/WebSocket`, `js/Promise`, bounded timers, JSON and minimal
 DOM text output. It performs hello, query, subscription, mutation lifecycle,
 disconnect, retained-scope reattach, operation reconciliation, exact dedup retry,

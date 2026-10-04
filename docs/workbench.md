@@ -7,6 +7,8 @@ smaller, typed operator surface than the complete Application API.
 For external programs, the opt-in [Workbench TCP/NDJSON API](workbench-api.md) exposes
 the accepted 15-operation presentation/client surface through the same owner. Its
 `call_id` correlation and recovery semantics are distinct from direct Runtime access.
+That API page is the canonical wire reference; this page remains the native operator
+guide.
 
 ## What Workbench is
 
@@ -393,6 +395,8 @@ the same language-neutral Application semantics.
   lifetime.
 - [Application API reference](api/README.md) — full operation, session, event,
   mutation, error, and limit semantics.
+- [Workbench external API](workbench-api.md) — exact 15-operation wire surface,
+  correlation, presentation revision, recovery generation, errors, and bounds.
 - [Recorder and SQLite](recorder-sqlite.md) — durable recording behavior.
 - [Safety and failure behavior](safety-and-failures.md) — output certainty and
   fail-closed behavior.

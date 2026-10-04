@@ -22,6 +22,27 @@ Requests use strict field allowlists and reject duplicate JSON keys. IDs and u64
 counters are canonical decimal strings where documented; callers must not send them
 as precision-losing JSON numbers.
 
+### TCP/NDJSON
+
+TCP accepts UTF-8 JSON followed by LF. CRLF is equivalent, but both bytes count
+toward the 16,384-byte physical-frame limit. Therefore the largest JSON body is
+16,383 bytes with LF and 16,382 bytes with CRLF. A read boundary has no protocol
+meaning; the adapter accumulates one bounded frame through its terminating LF.
+Partial input, queued output, and hello have a two-second monotonic deadline.
+
+### WebSocket/JSON
+
+The optional listener is numeric loopback only. It accepts exactly path
+`/application/v1`, subprotocol `lab-runtime.application.v1`, one configured exact
+non-`null` Origin, and one Application object per UTF-8 text message. Binary messages,
+extensions, the wrong Host/path/subprotocol/Origin, and oversized messages are
+rejected at the transport boundary. A text body may be at most 16,383 bytes. Once
+decoded, operation and session behavior is the same as TCP.
+
+Transport rejection, EOF, WebSocket close, or a socket timeout is not an Application
+mutation result. It can leave a submitted mutation unresolved from the caller's
+perspective.
+
 ## Request envelopes
 
 Query:
@@ -196,3 +217,25 @@ This is not a cross-process exactly-once guarantee.
 
 See [Operations](operations.md), [Events and recovery](events-mutations-and-recovery.md),
 and [Errors and limits](errors-and-limits.md).
+
+## Direct Runtime transcript
+
+This compact virtual-demo exchange uses placeholders for Runtime-issued values. Each
+line sent or received over TCP is one JSON object followed by LF.
+
+```json
+{"v":1,"msg_id":"h1","op":"hello","args":{"scope":null}}
+{"v":1,"msg_id":"h1","type":"result","result":{"boot_id":"<boot>","v":1,"protocol":{"id":"lab-runtime.application","version":1},"application":{"api_version":"0.1-pre","package_version":"0.1.0"},"scope":"<scope>","next_seq":"1","state":"ready","capabilities":[{"name":"<advertised>","version":1,"stability":"stable"}],"operations":["<advertised operation names>"],"limits":{"<advertised>":"<bounds>"},"event_oldest":{"boot_id":"<boot>","seq":"0"},"event_latest":{"boot_id":"<boot>","seq":"<event-seq>"}}}
+{"v":1,"msg_id":"q1","op":"reference","args":{"reference":"1"}}
+{"v":1,"msg_id":"q1","type":"result","result":{"reference":"1","kind":"ramp","value":0.0,"target":1.0,"rate":0.1,"revision":"<revision>","status":"valid","configurable":true,"last_at":"<monotonic-ns>","last_evaluated_at_ns":"<monotonic-ns>","unit":{"id":"<unit-id>","symbol":"<unit>"}}}
+{"v":1,"msg_id":"m1","op":"reference_retune","request_id":{"scope":"<scope>","seq":"1"},"args":{"reference":"1","expected_revision":"<revision>","target":42.0,"rate":2.0}}
+{"v":1,"msg_id":"m1","type":"operation","request_id":{"scope":"<scope>","seq":"1"},"state":"accepted"}
+{"v":1,"msg_id":"m1","type":"operation","request_id":{"scope":"<scope>","seq":"1"},"state":"completed","result":{"reference":"1","revision":"<new-revision>","value":"<number>","target":42.0,"rate":2.0,"committed_at":"<monotonic-ns>"}}
+{"v":1,"msg_id":"s1","op":"operation_status","args":{"request_id":{"scope":"<scope>","seq":"1"}}}
+{"v":1,"msg_id":"s1","type":"result","result":{"state":"completed","result":{"<same retained terminal result>":"<value>"}}}
+```
+
+The hello result is composition-dependent; clients consume its full `operations`,
+`capabilities`, and `limits` values rather than the illustrative placeholders. A
+plain socket close ends only this client connection. `runtime_shutdown` is a separate
+explicit mutation and is not part of ordinary disconnect.

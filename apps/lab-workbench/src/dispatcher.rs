@@ -1723,6 +1723,26 @@ mod tests {
     }
 
     #[test]
+    fn public_workbench_operation_table_matches_the_source_inventory() {
+        let documentation = include_str!("../../../docs/workbench-api.md");
+        let operation_section = documentation
+            .split_once("## Operations")
+            .expect("Workbench operation table heading")
+            .1
+            .split_once("## Hello")
+            .expect("Workbench hello heading after operation table")
+            .0;
+        let documented = operation_section
+            .lines()
+            .filter_map(|line| {
+                let first = line.trim_matches('|').split('|').next()?.trim();
+                first.starts_with('`').then(|| first.trim_matches('`'))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(documented, WORKBENCH_OPERATIONS);
+    }
+
+    #[test]
     fn local_projection_results_use_the_frozen_counter_and_dto_shapes() {
         let mut dispatcher = dispatcher();
         ready(&mut dispatcher);

@@ -69,6 +69,8 @@ workbench.clj -> Workbench TCP API -> existing single ClientHandle -> Runtime
 ```
 
 The separate [browser smoke](../clojurescript-smoke/README.md) remains the real-browser
-Runtime WebSocket regression. See the [Workbench API guide](../../docs/workbench-api.md)
-for ownership, bounds, and correlation semantics. Full Arduino + Clojure + Clay
-integration is post-preview practical work, outside this smoke.
+Runtime WebSocket regression. See the canonical
+[Runtime Application API](../../docs/api/README.md) and
+[Workbench API](../../docs/workbench-api.md) for the two surfaces; this README and
+the scripts are not competing protocol specifications. Full Arduino + Clojure +
+Clay integration is post-preview practical work, outside this smoke.

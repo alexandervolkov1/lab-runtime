@@ -149,7 +149,8 @@ terminal Completed/Failed outcome, physical-state proof, or blind-retry permissi
 | Field or derived bound | Current value | Meaning |
 |---|---:|---|
 | `frame_bytes` | 16,384 | complete NDJSON frame including LF |
-| Application JSON body | 16,383 | transport-neutral body / WebSocket text payload |
+| Application JSON body | 16,383 | transport-neutral body / WebSocket text payload; TCP LF maximum |
+| TCP JSON body with CRLF | 16,382 | CR and LF both consume the physical-frame limit |
 | `json_depth` | 16 | nested object/array depth |
 | `json_values` | 1,024 | lexical values/members per message |
 | `json_string_bytes` | 512 | each UTF-8 string/key |
@@ -192,9 +193,10 @@ terminal Completed/Failed outcome, physical-state proof, or blind-retry permissi
 | `emulator.metadata_bytes` | 0 | caller metadata unsupported |
 | `emulator.pending_per_scope` | 8 | pending virtual mutations/scope |
 
-The 16,383-byte body limit is `frame_bytes - 1`; it applies directly to
-transport-neutral Application JSON and WebSocket text. TCP additionally requires LF,
-so a 16,384-byte complete NDJSON frame is the exact maximum.
+The 16,383-byte transport-neutral body limit is `frame_bytes - 1` and applies
+directly to WebSocket text. TCP requires LF, so JSON plus LF may total 16,384 bytes.
+CRLF is accepted equivalently, but the optional CR is inside the physical-frame
+accounting; JSON plus CRLF may also total no more than 16,384 bytes.
 
 Other connection-local lifetimes in production source are:
 

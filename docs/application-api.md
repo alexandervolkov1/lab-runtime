@@ -18,6 +18,17 @@ surface, not another Runtime Application implementation. See the optional
 [Babashka wire smoke](../clients/babashka-smoke/README.md) for direct Runtime access
 and a separate minimal Workbench example.
 
+```text
+direct client -> Runtime API -> authoritative Runtime
+
+external client -> Workbench API -> Workbench dispatcher
+                -> existing Runtime client -> Runtime
+```
+
+A client that does not need Workbench presentation or client-recovery semantics
+should normally use the Runtime API directly. Workbench is neither a transparent
+Runtime proxy nor a Runtime event relay.
+
 The authoritative registry contains 43 operations (22 queries and 21 mutations) and
 26 structured capabilities. Clients must begin with `hello` and use the operations,
 capabilities, limits, scope, next sequence, and event cursors returned by that Runtime

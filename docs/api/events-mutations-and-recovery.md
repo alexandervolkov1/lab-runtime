@@ -88,14 +88,25 @@ Runtime decodes a mutation into a normalized typed value before admission. For a
 consecutive identity, SessionStore reserves the exact payload and returns:
 
 ```text
-accepted -> completed(result)
-         -> failed(public error, optional bounded result)
+request
+  |
+  v
+accepted  ---- transport may be lost ----> client uncertainty
+  |
+  +----> completed(result)
+  |
+  `----> failed(public error, optional bounded result)
 ```
 
 `accepted` is authoritative admission evidence. It is not terminal completion and
 does not by itself describe physical effect. `completed` means that operation's
 defined domain action reached its authoritative terminal result. `failed` is a
 terminal operation outcome, not a fabricated projection or physical state.
+
+Transport continuity and operation state are independent. A disconnect before the
+caller reads `accepted` does not prove non-admission. A disconnect after `accepted`
+does not cancel admitted work. Runtime may retain a terminal result after the socket
+has gone away; recovery uses the exact scope/sequence evidence below.
 
 The `operation_status` query accepts an exact `request_id` in the currently
 attached scope and returns:

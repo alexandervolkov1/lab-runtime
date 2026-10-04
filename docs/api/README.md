@@ -6,6 +6,22 @@ The Application API is the supported language-neutral boundary for observing and
 operating Runtime. It exposes laboratory semantics without exposing Rust internals,
 transport handles, SQLite internals, or GUI presentation state.
 
+There are two separate external surfaces:
+
+```text
+direct automation
+    client -> Runtime API -> Runtime
+
+presentation-aware automation
+    client -> Workbench API -> dispatcher
+           -> existing Runtime client -> Runtime
+```
+
+Runtime remains the experiment authority in both paths. Workbench additionally owns
+presentation revision and client-local recovery, but it is not a second Runtime, a
+second mutation sequencer, or a transparent arbitrary-operation proxy. Use Runtime
+directly when Workbench presentation semantics are unnecessary.
+
 ## Reference map
 
 - [Protocol and sessions](protocol-and-sessions.md): transports, envelopes, hello,
@@ -34,6 +50,10 @@ reaches the common Application JSON codec, they share DTOs, operations, sessions
 deduplication, events, outcomes, and semantic public-error mappings. TCP framing and
 HTTP/WebSocket Upgrade, binary/control-message, UTF-8, and protocol-close failures
 remain transport-specific and need not produce an Application error envelope.
+
+Losing transport continuity is not a Runtime operation outcome. Only an Application
+`operation` envelope or a later exact `operation_status` result supplies operation
+state. A closed socket cannot be translated into Completed or Failed.
 
 Native Workbench is one TCP client. The API is also intended for advanced external
 clients; it is not private Workbench protocol.
@@ -78,8 +98,8 @@ execution, reports `accepted`, and later retains `completed` or `failed` within
 fixed limits. `msg_id` and `request_id` are different identity domains.
 
 Mutation retry is never automatic protocol behavior. Exact resubmission, when a
-client deliberately chooses it, uses the same request ID, operation, and normalized
-typed arguments.
+client deliberately chooses it, uses the same Runtime `request_id` (`{scope,seq}`),
+operation, and normalized typed arguments.
 
 ## Events and snapshots
 

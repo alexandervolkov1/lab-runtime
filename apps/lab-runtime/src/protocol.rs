@@ -831,6 +831,82 @@ mod tests {
     }
 
     #[test]
+    fn public_operation_and_capability_tables_are_exact_registry_projections() {
+        let documentation = include_str!("../../../docs/api/operations.md");
+        let operation_section = documentation
+            .split_once("## Complete operation registry")
+            .expect("operation table heading")
+            .1
+            .split_once("## Argument shapes")
+            .expect("argument heading after operation table")
+            .0;
+        let documented_operations = operation_section
+            .lines()
+            .filter_map(|line| {
+                let cells = line
+                    .trim_matches('|')
+                    .split('|')
+                    .map(str::trim)
+                    .collect::<Vec<_>>();
+                if cells.len() != 6 || !matches!(cells[1], "Query" | "Mutation") {
+                    return None;
+                }
+                let arguments = cells[2]
+                    .split('`')
+                    .enumerate()
+                    .filter_map(|(index, part)| (index % 2 == 1).then_some(part))
+                    .collect::<Vec<_>>();
+                Some((cells[0].trim_matches('`'), cells[1], arguments, cells[4]))
+            })
+            .collect::<Vec<_>>();
+        let source_operations = OPERATIONS
+            .iter()
+            .map(|operation| {
+                (
+                    operation.name,
+                    match operation.kind {
+                        OperationKind::Query => "Query",
+                        OperationKind::Mutation => "Mutation",
+                    },
+                    operation.argument_fields.to_vec(),
+                    match operation.availability {
+                        Availability::Always => "Always",
+                        Availability::Recorder => "Recorder",
+                        Availability::Configuration => "Configuration",
+                        Availability::SimpleDeviceProvisioning => "SimpleDeviceProvisioning",
+                        Availability::ResourceReconnect => "ResourceReconnect",
+                        Availability::EmulatorPublication => "EmulatorPublication",
+                        Availability::VirtualModelLifecycle => "VirtualModelLifecycle",
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(documented_operations, source_operations);
+
+        let capability_section = documentation
+            .split_once("## Capabilities")
+            .expect("capability table heading")
+            .1;
+        let documented_capabilities = capability_section
+            .lines()
+            .filter_map(|line| {
+                let cells = line
+                    .trim_matches('|')
+                    .split('|')
+                    .map(str::trim)
+                    .collect::<Vec<_>>();
+                (cells.len() == 2 && cells[0].starts_with('`'))
+                    .then(|| (cells[0].trim_matches('`'), cells[1].trim_matches('`')))
+            })
+            .collect::<Vec<_>>();
+        let source_capabilities = CAPABILITIES
+            .iter()
+            .map(|capability| (capability.name, capability.operation))
+            .collect::<Vec<_>>();
+        assert_eq!(documented_capabilities, source_capabilities);
+    }
+
+    #[test]
     fn declarations_and_errors_fit_their_published_bounds() {
         assert!(OPERATIONS.len() <= 64);
         assert!(OPERATIONS.iter().all(|operation| {
