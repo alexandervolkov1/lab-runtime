@@ -187,9 +187,10 @@ not authorize release publication. PRE-RELEASE CLEANUP AND DOCUMENTATION is COMP
 ACCEPTED: PR-CLEAN-1, PKG-1, DOC-1 Configuration, DOC-2 SimpleDevice, DOC-3 Full
 native driver, DOC-4 Runtime / Workbench API completion, and DOC-5 Recorder / recovery /
 faults and DOC-6 Final navigation / diagrams / rendering are ACCEPTED. The FINAL
-FRESH-USER / PACKAGE AUDIT is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The PREVIEW.2
+TECHNICAL / PACKAGE RELEASE GATE is READY.
 The unresolved 15-package license-text/legal review remains a release blocker, and
-release publication remains a separate later gate.
+release publication is NOT AUTHORIZED and remains a separate later gate.
 
 ## End-to-end integration validation
 

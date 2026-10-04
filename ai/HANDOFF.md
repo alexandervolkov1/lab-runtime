@@ -101,8 +101,9 @@ DOC-2 SimpleDevice are ACCEPTED at
 `1b1f0171cda2849188163794937203fe0c9d4262`. DOC-3 Full native driver and DOC-4
 Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery / faults
 is ACCEPTED. DOC-6 Final navigation / diagrams / rendering is ACCEPTED. The FINAL
-FRESH-USER / PACKAGE AUDIT is AUTHORIZED / READY TO START / NOT IMPLEMENTED. No release
-has been published. DOC-1's source-derived guide and minimal
+FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The PREVIEW.2
+TECHNICAL / PACKAGE RELEASE GATE is READY. Release publication is BLOCKED / NOT
+AUTHORIZED, and no release has been published. DOC-1's source-derived guide and minimal
 virtual deployment cover the
 actual independent Runtime CLI, deployment, live Runtime, Workbench workspace, and
 diagnostic domains. Focused tests execute every documented CLI form through the real
@@ -251,10 +252,11 @@ note. PRE-RELEASE CLEANUP AND DOCUMENTATION is COMPLETE / ACCEPTED with PR-CLEAN
 and DOC-1 Configuration accepted. DOC-2 SimpleDevice, DOC-3 Full native driver, and
 DOC-4 Runtime / Workbench API completion and DOC-5 Recorder / recovery / faults are
 ACCEPTED. DOC-6 Final navigation / diagrams / rendering is ACCEPTED. The FINAL
-FRESH-USER / PACKAGE AUDIT is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The PREVIEW.2
+TECHNICAL / PACKAGE RELEASE GATE is READY.
 Arduino/Clojure/Clay integration
 remains post-preview practical work.
-Release publication is not authorized.
+Release publication is NOT AUTHORIZED.
 
 ## Later practical validation
 

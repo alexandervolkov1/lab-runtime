@@ -111,11 +111,11 @@ Use your edited copy with the real COM port. Successful composition prints one l
 {"boot_id":"<32 lowercase hex characters>","port":<port>,"state":"ready"}
 ```
 
-Readiness proves that the deployment was loaded, its configured resource opened, and
-the loopback API is listening. An initial transport/open failure aborts startup without
-a readiness line. Readiness still does not fabricate a measurement; after startup,
-resource loss makes the instrument unavailable until the current binding produces
-valid evidence.
+Readiness proves that the deployment was validated and activated and that the loopback
+API is listening. It does **not** prove that the serial port opened or that a current
+measurement exists. SimpleDevice opens and uses the port asynchronously; an unavailable
+port or failed transaction leaves the measurement unavailable until the current binding
+produces valid evidence. Structural preparation failures can still prevent readiness.
 
 ### 6. Discover and describe the signal
 

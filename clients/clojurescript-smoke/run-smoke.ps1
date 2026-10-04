@@ -74,6 +74,31 @@ function Resolve-Browser {
     throw 'No installed Chrome or Edge browser was found.'
 }
 
+function Resolve-RuntimeCommit {
+    param([string]$Root)
+
+    $buildMetadata = Join-Path $Root 'BUILD.txt'
+    if (Test-Path -LiteralPath $buildMetadata) {
+        $commitLine = Get-Content -LiteralPath $buildMetadata |
+            Where-Object { $_ -match '^git-commit=' } |
+            Select-Object -First 1
+        if ($commitLine -notmatch '^git-commit=([0-9a-f]{40})$') {
+            throw "BUILD.txt does not contain a valid git-commit entry: $buildMetadata"
+        }
+        return $Matches[1]
+    }
+
+    $commit = (& git -C $Root rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+        throw "Could not determine the Runtime commit from BUILD.txt or Git: $Root"
+    }
+    $commit = $commit.Trim()
+    if ($commit -notmatch '^[0-9a-f]{40}$') {
+        throw "Git returned an invalid Runtime commit: $commit"
+    }
+    return $commit
+}
+
 function Wait-DevToolsPort {
     param(
         [string]$Profile,
@@ -309,7 +334,7 @@ try {
     }
 
     $javaVersion = (& java -version 2>&1 | Select-Object -First 1).ToString()
-    $runtimeCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+    $runtimeCommit = Resolve-RuntimeCommit -Root $repoRoot
     $evidence = [ordered]@{
         status = 'PASS'
         runtime_commit = $runtimeCommit

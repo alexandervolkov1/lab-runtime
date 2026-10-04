@@ -356,10 +356,10 @@ GUI / external Workbench calls -> one Workbench dispatcher
 PRE-RELEASE CLEANUP AND DOCUMENTATION is COMPLETE / ACCEPTED. PR-CLEAN-1, PKG-1, DOC-1
 Configuration, DOC-2 SimpleDevice, DOC-3 Full native driver, and DOC-4 Runtime /
 Workbench API completion, DOC-5 Recorder / recovery / faults, and DOC-6 Final navigation /
-diagrams / rendering are ACCEPTED. The FINAL FRESH-USER / PACKAGE AUDIT is AUTHORIZED /
-READY TO START / NOT IMPLEMENTED.
+diagrams / rendering are ACCEPTED. The FINAL FRESH-USER / PACKAGE AUDIT and FINAL AUDIT
+REMEDIATION are ACCEPTED. The PREVIEW.2 TECHNICAL / PACKAGE RELEASE GATE is READY.
 The unresolved 15-package license-text/legal review remains a release blocker;
-preview.2 is not release-ready and no release is published. Full Arduino + Clojure
+release publication is NOT AUTHORIZED and no release is published. Full Arduino + Clojure
 + Clay integration remains post-preview practical work.
 
 M17 may not create a second Runtime operation/session/subscription implementation or
