@@ -50,8 +50,9 @@ DOC-4 reconciles the distinct
 direct Runtime and Workbench API references against the source-owned 43-operation /
 26-capability Runtime registry and frozen 15-operation Workbench dispatcher, adds
 source-bound table checks, and changes no production protocol behavior. DOC-5
-Recorder / recovery / faults is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The
-preview is not published or release-ready.
+Recorder / recovery / faults is ACCEPTED. DOC-6 Final navigation / diagrams /
+rendering is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The preview is not
+published or release-ready.
 
 DOC-1 adds the source-derived public Configuration Guide, a minimal validated virtual
 deployment with a relative Recorder path, parser-execution checks for every documented
@@ -92,10 +93,9 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Allowed now: DOC-5 Recorder / recovery / faults. PRE-RELEASE CLEANUP AND
+- Allowed now: DOC-6 Final navigation / diagrams / rendering. PRE-RELEASE CLEANUP AND
   DOCUMENTATION remains in progress. Release publication is not authorized, and the
-  unresolved 15-package
-  license-text/legal review remains a release blocker.
+  unresolved 15-package license-text/legal review remains a release blocker.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.

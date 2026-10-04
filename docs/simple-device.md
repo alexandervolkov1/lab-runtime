@@ -416,6 +416,9 @@ and audit history.
 Clients and scripts consume these Runtime-owned facts; they do not create or rewrite
 provenance. See [Recorder and SQLite](recorder-sqlite.md) for storage and run behavior.
 
+For reconnect incidents, ambiguous post-send outcomes, and the no-blind-retry
+decision model, see [Recovery and fault handling](recovery-and-faults.md).
+
 ## Limits
 
 | Item | Bound |

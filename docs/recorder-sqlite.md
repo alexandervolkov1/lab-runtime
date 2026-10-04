@@ -1,5 +1,239 @@
 # Recorder and SQLite archive reference
 
+Runtime owns Recorder. Clients request lifecycle changes and bounded history reads;
+they do not write the database, allocate run identities, construct provenance, or
+decide that pending ingress is durable.
+
+```text
+Runtime facts -> Recorder admission -> SQLite archive
+                                      -> history API -> clients
+```
+
+This page is the canonical archive and Recorder guide. For incident handling,
+continuity loss, and retry decisions, use
+[Recovery and fault handling](recovery-and-faults.md).
+
+## Recorder modes and policy
+
+Recorder configuration has one disabled state and two enabled policies:
+
+| Mode | Startup/open | Runtime failure after attachment |
+|---|---|---|
+| disabled | No database is opened. `recording_status` reports `unconfigured`; Recorder-dependent operations/capabilities are unavailable. | There is no Recorder coverage. Unrelated non-Recorder Runtime behavior remains available. |
+| `required` | The local archive must open and validate before listener readiness. Open failure aborts startup. | Recorder failure is sticky and invokes the central fail-closed recording-failure path: ordinary critical control loses authority and safe/fault work remains visible. |
+| `best_effort` | The same open/validation requirement applies; it is not startup fallback. | Recorder becomes visibly `failed`, closes ordinary fact admission, and preserves truthful committed-prefix/coverage evidence. Unrelated valid native acquisition/control is not stopped solely by storage failure. |
+
+Both enabled modes reject false durable acknowledgement. `best_effort` does not hide
+errors, and `required` does not redefine every unrelated subsystem failure as process
+exit. The policy is fixed by trusted startup composition and is not hot-reloaded.
+
+## Database, boot, run, and operation identities
+
+Do not call these all sessions:
+
+| Identity | Owner and lifetime | Meaning |
+|---|---|---|
+| `database_id` | Recorder archive; stable for that database | 32-character lowercase hexadecimal archive identity |
+| `boot_id` | Runtime process | 16-byte process identity, also exposed by Application hello |
+| `(boot_id,run_no)` | Runtime Recorder lifecycle | one recorded run; `run_no` is generated within the boot |
+| `(boot_id,interval_no)` | Runtime Recorder lifecycle | one coverage interval within a run |
+| signal/instrument IDs | Runtime composition | stable semantic source identity within the configured topology |
+| generation / mapping or configuration revision | Runtime composition lifecycle | fences evidence across reconnect/rebind/reconfiguration |
+| Runtime `{scope,seq}` | Runtime SessionStore | authoritative mutation/recovery identity; independent of run number |
+
+The human label supplied to `recording_start` is not identity. Clients copy returned
+IDs exactly and use decimal strings where the Application protocol requires them.
+
+## Virtual Recorder tutorial
+
+This tutorial uses only the safe `virtual-demo` composition. Start Runtime from the
+source tree:
+
+```powershell
+$db = [IO.Path]::GetFullPath((Join-Path $PWD "recorder-tutorial.sqlite"))
+cargo run -p lab-runtime --locked -- `
+  --serve --profile virtual-demo --port 7420 `
+  --record-db $db --record-policy required
+```
+
+From an extracted preview package, replace the `cargo run ... --` prefix with
+`./lab-runtime.exe`. The database path must be local and absolute. Wait for Runtime's
+readiness line before connecting.
+
+The following PowerShell client performs hello, starts a run, records an annotation,
+stops and seals the exact run, lists archived runs through the public history API,
+and requests clean Runtime shutdown. It consumes both the immediate `accepted` and
+terminal operation envelopes; it never assumes that one line is the whole mutation.
+
+```powershell
+$tcp = [Net.Sockets.TcpClient]::new("127.0.0.1", 7420)
+$stream = $tcp.GetStream()
+$reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false))
+$writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
+$writer.NewLine = "`n"
+$writer.AutoFlush = $true
+
+function Send-Json([hashtable]$message) {
+  $writer.WriteLine(($message | ConvertTo-Json -Compress -Depth 20))
+}
+function Read-Json { $reader.ReadLine() | ConvertFrom-Json }
+function Read-Terminal {
+  $accepted = Read-Json
+  if ($accepted.type -ne "operation" -or $accepted.state -ne "accepted") {
+    throw "mutation was not accepted: $($accepted | ConvertTo-Json -Compress)"
+  }
+  $terminal = Read-Json
+  if ($terminal.type -ne "operation" -or
+      $terminal.state -notin @("completed", "failed")) {
+    throw "terminal operation result missing"
+  }
+  if ($terminal.state -eq "failed") {
+    throw "operation failed: $($terminal.code)"
+  }
+  return $terminal
+}
+
+Send-Json @{v=1; msg_id="hello"; op="hello"; args=@{scope=$null}}
+$hello = Read-Json
+$scope = $hello.result.scope
+
+Send-Json @{v=1; msg_id="status-before"; op="recording_status"; args=@{}}
+$before = Read-Json
+$databaseId = $before.result.database_id
+
+Send-Json @{v=1; msg_id="start"; op="recording_start"
+  request_id=@{scope=$scope; seq="1"}; args=@{label="virtual tutorial"}}
+$started = Read-Terminal
+$runId = $started.result.run_id
+
+Send-Json @{v=1; msg_id="note"; op="experiment_annotate"
+  request_id=@{scope=$scope; seq="2"}
+  args=@{name="operator_note"; data=@{text="virtual tutorial marker"}}}
+$annotation = Read-Terminal
+# annotation.result.durability is "pending"; stop supplies the drain/seal barrier.
+
+Send-Json @{v=1; msg_id="stop"; op="recording_stop"
+  request_id=@{scope=$scope; seq="3"}; args=@{run_id=$runId}}
+$stopped = Read-Terminal
+
+Send-Json @{v=1; msg_id="status-after"; op="recording_status"; args=@{}}
+$after = Read-Json
+if ($after.result.state -ne "idle") { throw "Recorder did not become idle" }
+
+Send-Json @{v=1; msg_id="runs"; op="history_read"
+  request_id=@{scope=$scope; seq="4"}
+  args=@{mode="runs"; database_id=$databaseId; max_records=32; cursor=$null}}
+$history = Read-Terminal
+$pageToken = $history.result.page_token
+Send-Json @{v=1; msg_id="page"; op="history_page"
+  args=@{page_token=$pageToken}}
+$page = Read-Json
+$page.result.runs | Format-Table
+Send-Json @{v=1; msg_id="release"; op="history_release"
+  args=@{page_token=$pageToken}}
+$null = Read-Json
+
+Send-Json @{v=1; msg_id="shutdown"; op="runtime_shutdown"
+  request_id=@{scope=$scope; seq="5"}; args=@{}}
+$shutdown = Read-Terminal
+$tcp.Dispose()
+```
+
+The start terminal result reports that the start/provenance transaction committed
+and fact admission opened. The annotation terminal result proves bounded FIFO
+admission only (`durability:"pending"`). The stop terminal result is the barrier that
+proves accepted facts drained and the run/interval seal transaction committed. The
+history page comes from the frozen committed archive view, not direct SQL.
+
+## What is durable?
+
+The implementation distinguishes these boundaries:
+
+| Evidence | What it proves |
+|---|---|
+| Runtime mutation `accepted` | SessionStore admitted exact mutation identity/payload; not Recorder completion. |
+| Recorder ingress admission | A bounded fact/group entered Recorder FIFO credit; SQLite may still be pending. |
+| `persisted_through_seq` | Highest Recorder record sequence committed and receipted by the owner. |
+| completed `recording_start` | Run, interval, activation/provenance, and start transaction committed before ordinary fact admission opened. |
+| completed annotation with `durability:"pending"` | Annotation was admitted with a record sequence; use later checkpoint/stop evidence for durability. |
+| completed `recording_stop` | Accepted facts drained FIFO; interval/run were sealed and committed. Writer and boot remain open. |
+| completed `history_read` | A bounded archive job completed and froze one connection-local page token. |
+| `history_page` row | Data was read from the committed archive snapshot represented by that retained page. |
+| clean Recorder close | terminal boot seal committed, worker closed, no outstanding records, and no Recorder error. |
+
+Activation/provenance is committed before an enabled Recorder reaches ordinary
+recording availability. Observations, operation/controller/reference/output/runtime
+facts, annotations, and gaps enter bounded causal groups. A group is atomic at the
+SQLite transaction boundary. Never infer rows beyond the last receipted checkpoint
+after failure.
+
+## Provenance
+
+Recorder preserves enough source identity to interpret evidence in the topology that
+produced it. Depending on the active composition, this includes Runtime build and
+boot, frozen configuration/artifact content and hashes, instrument/parameter and
+resource identities, device address/channel, units/ranges, binding generation,
+mapping/configuration revision, observations and their lineage, and distinct output
+proposal/send/ACK/readback/failure evidence.
+
+Reconnect or reconfiguration creates new generation/revision evidence. Historical
+rows retain their original identities; Recorder never rewrites them as current.
+SimpleDevice provenance is explained in [SimpleDevice](simple-device.md#recorder-and-provenance),
+and native integrations in the
+[native driver guide](developer/full-driver-tutorial.md#step-11-recorder-provenance).
+
+## SQLite ownership and supported access
+
+One Recorder storage thread exclusively owns the live SQLite connection and all
+blocking SQL. Runtime owners use bounded nonblocking admission and receipt polling.
+Version-one archives use WAL and `synchronous=FULL`, but those settings do not turn an
+unreceipted fact into a durability promise.
+
+Use a local filesystem path. Startup validates archive identity/schema/indexes and
+fails rather than migrating or silently replacing an incompatible/corrupt archive.
+Runtime does not expose schema migration as a public operation.
+
+The stable product boundary is the Application history API, not SQL tables. Do not
+write the live database with external tools. Offline read-only inspection is useful
+for diagnostics/export only: stop Runtime cleanly or work from a consistent copy that
+includes the SQLite/WAL state. No online backup workflow is currently promised.
+
+## History API model
+
+`history_read` is a mutation because it schedules bounded archive work and needs an
+admitted operation outcome. It has two modes:
+
+- `runs`: archive run discovery, at most 32 summaries per page;
+- `measurements`: one archive boot/run/signal and half-open publication-time range,
+  at most 128 raw measurement rows per page.
+
+The flow is:
+
+```text
+history_read -> accepted -> completed(page_token)
+             -> history_page -> history_release
+```
+
+One connection can hold at most one pending history job and one completed retained
+page. Across Runtime there are at most eight history jobs/pages and eight retained
+continuation cursors. Jobs have a two-second Application deadline. Pages expire after
+five seconds; continuation cursors after thirty seconds. A page is at most 8 KiB.
+
+`page_token` retrieves/releases the already completed immutable page. `next_cursor`
+selects the following archive page and is supplied to a new `history_read` mutation.
+Tokens/cursors are bound to connection, scope where applicable, archive, mode/filter,
+and expiry. Disconnect cancels/fences pending work and removes pages/cursors; they do
+not survive reconnect. A disconnected admitted history operation is retained as
+failed with `client_disconnected`, while a late worker result is prevented from
+entering a reused client slot.
+
+Important failures include `history_busy`, `history_timeout`,
+`history_database_unknown`, `history_archive_mismatch`, `history_cursor_mismatch`,
+`history_cursor_expired`, `history_page_expired`, `history_page_oversize`, and
+`history_token_exhausted`. These affect history selection, not experiment state.
+See [operations](api/operations.md) for exact argument shapes and
+[errors and limits](api/errors-and-limits.md) for public categories.
+
 ## Three separate contracts
 
 ```text

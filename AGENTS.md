@@ -120,8 +120,8 @@ no new blockers. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED at
 blockers. M17.1-M17.5 are ACCEPTED; M17 is CLOSED. PRE-RELEASE CLEANUP AND
 DOCUMENTATION is in progress: PR-CLEAN-1, PKG-1, DOC-1 Configuration, and DOC-2
 SimpleDevice, DOC-3 Full native driver, and DOC-4 Runtime / Workbench API completion
-are ACCEPTED. DOC-5 Recorder / recovery / faults is AUTHORIZED / READY TO START / NOT
-IMPLEMENTED. The unresolved
+are ACCEPTED. DOC-5 Recorder / recovery / faults is ACCEPTED. DOC-6 Final navigation /
+diagrams / rendering is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The unresolved
 15-package license-text/legal review remains a release blocker. Arduino/Clojure
 integration and release publication remain unauthorized.
 Detailed authorization remains in `ai/WORK.md`.

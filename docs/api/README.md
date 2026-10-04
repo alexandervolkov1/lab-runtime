@@ -33,6 +33,8 @@ directly when Workbench presentation semantics are unnecessary.
 - [Errors and limits](errors-and-limits.md): stable public errors and canonical bounds.
 - [System architecture](../architecture.md): Runtime/Workbench ownership and process
   lifetime.
+- [Recovery and fault handling](../recovery-and-faults.md): operator/client decision
+  trees for continuity loss, uncertainty, reconnect, and Recorder faults.
 - [Extending Runtime](../extending-runtime.md): native and declarative instrument
   onboarding boundaries.
 
@@ -133,4 +135,6 @@ evidence.
 
 For Recorder durability and output evidence, see
 [Recorder and SQLite](../recorder-sqlite.md) and
-[Safety and failure behavior](../safety-and-failures.md).
+[Safety and failure behavior](../safety-and-failures.md). For practical decisions
+after continuity loss, see
+[Recovery and fault handling](../recovery-and-faults.md).

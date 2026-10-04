@@ -284,6 +284,10 @@ through its own explicit process lifecycle.
 
 ## Recovery and reconciliation
 
+For a cross-surface incident decision tree, including Pending versus Ambiguous,
+Runtime restart, output uncertainty, and retry/resync choices, see
+[Recovery and fault handling](recovery-and-faults.md#workbench-recovery).
+
 The **Recovery / reconciliation** section presents bounded, exact client evidence for
 mutations whose lifecycle matters across connection loss or process restart:
 
@@ -398,5 +402,7 @@ the same language-neutral Application semantics.
 - [Workbench external API](workbench-api.md) — exact 15-operation wire surface,
   correlation, presentation revision, recovery generation, errors, and bounds.
 - [Recorder and SQLite](recorder-sqlite.md) — durable recording behavior.
+- [Recovery and fault handling](recovery-and-faults.md) — continuity loss,
+  uncertainty, reconnect, and retry decisions.
 - [Safety and failure behavior](safety-and-failures.md) — output certainty and
   fail-closed behavior.

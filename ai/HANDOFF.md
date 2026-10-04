@@ -100,7 +100,8 @@ license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration
 DOC-2 SimpleDevice are ACCEPTED at
 `1b1f0171cda2849188163794937203fe0c9d4262`. DOC-3 Full native driver and DOC-4
 Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery / faults
-is AUTHORIZED / READY TO START / NOT IMPLEMENTED. No release
+is ACCEPTED. DOC-6 Final navigation / diagrams / rendering is AUTHORIZED / READY TO
+START / NOT IMPLEMENTED. No release
 has been published. DOC-1's source-derived guide and minimal
 virtual deployment cover the
 actual independent Runtime CLI, deployment, live Runtime, Workbench workspace, and
@@ -248,8 +249,9 @@ docs distinguish both surfaces; no Rust source or dependency changes are include
 See `WORK.md` for evidence, including the preserved transient SQLite verification
 note. PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress with PR-CLEAN-1, PKG-1,
 and DOC-1 Configuration accepted. DOC-2 SimpleDevice, DOC-3 Full native driver, and
-DOC-4 Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery /
-faults is AUTHORIZED / READY TO START / NOT IMPLEMENTED. Arduino/Clojure/Clay integration
+DOC-4 Runtime / Workbench API completion and DOC-5 Recorder / recovery / faults are
+ACCEPTED. DOC-6 Final navigation / diagrams / rendering is AUTHORIZED / READY TO
+START / NOT IMPLEMENTED. Arduino/Clojure/Clay integration
 remains post-preview practical work.
 Release publication is not authorized.
 

@@ -184,8 +184,9 @@ the independently re-reviewed B1-B5 remediation. Consolidated M17.1-M17.4 review
 ACCEPTED. M17.5 optional Babashka boundary evidence and focused documentation are
 ACCEPTED with no blockers. M17 is CLOSED. PRE-RELEASE CLEANUP AND DOCUMENTATION is
 now in progress: PR-CLEAN-1, PKG-1, DOC-1 Configuration, DOC-2 SimpleDevice, DOC-3
-Full native driver, and DOC-4 Runtime / Workbench API completion are ACCEPTED. DOC-5
-Recorder / recovery / faults is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+Full native driver, DOC-4 Runtime / Workbench API completion, and DOC-5 Recorder /
+recovery / faults are ACCEPTED. DOC-6 Final navigation / diagrams / rendering is
+AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 The unresolved 15-package license-text/legal review remains a release blocker.
 Arduino/Clojure integration and release publication remain unauthorized.
 

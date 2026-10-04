@@ -499,6 +499,7 @@ try {
         'docs\architecture.md',
         'docs\application-api.md',
         'docs\recorder-sqlite.md',
+        'docs\recovery-and-faults.md',
         'docs\safety-and-failures.md',
         'docs\extending-runtime.md',
         'docs\workbench.md',

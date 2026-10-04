@@ -3,6 +3,10 @@
 This is a developer-preview operational reference, not hardware certification.
 Source and deterministic tests define the exact implementation.
 
+This page is authoritative for output certainty and fail-closed safety behavior.
+For client/operator recovery decisions, process loss, and incident playbooks, see
+[Recovery and fault handling](recovery-and-faults.md).
+
 ## Guarantee vocabulary
 
 - **GUARANTEED**: an explicit software/process invariant with deterministic
@@ -129,6 +133,8 @@ process-local and bounded. After a subscription gap or process-instance change:
 4. create a fresh subscription from a valid cursor.
 
 Do not bridge a reported gap by assuming missing events were contiguous or harmless.
+The [recovery guide](recovery-and-faults.md#direct-runtime-mutation-recovery)
+distinguishes projection rebuild, status, exact resubmission, and operator action.
 
 ## Diagnostic logging
 

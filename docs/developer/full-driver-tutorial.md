@@ -524,6 +524,8 @@ For a new native driver, preserve at least:
 
 See [Recorder and SQLite](../recorder-sqlite.md) for the storage contract. Clients and
 scripts consume Runtime semantics; they do not own scientific provenance.
+For operator-facing retry, reconnect, and ambiguity decisions, see
+[Recovery and fault handling](../recovery-and-faults.md).
 
 ## Step 12: failure cleanup
 

@@ -156,6 +156,7 @@ Workbench workspace behavior, and validation failures, use the
 - [Workbench external API](docs/workbench-api.md)
 - [Optional Babashka boundary examples](clients/babashka-smoke/README.md)
 - [Recorder and SQLite archive](docs/recorder-sqlite.md)
+- [Recovery and fault handling](docs/recovery-and-faults.md)
 - [Safety and failure behavior](docs/safety-and-failures.md)
 - [Extending the Runtime](docs/extending-runtime.md)
 

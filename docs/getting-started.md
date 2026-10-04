@@ -181,6 +181,9 @@ Recorder is Runtime-owned. Closing Workbench does not stop an active Runtime or 
 Recorder shutdown. See [Recorder and SQLite](recorder-sqlite.md) for durability,
 archive, and sealing semantics.
 
+For a copyable direct-API start/annotation/stop/history workflow, continue with the
+[virtual Recorder tutorial](recorder-sqlite.md#virtual-recorder-tutorial).
+
 ## Disconnect and reconnect
 
 The **Disconnect** button is an explicit client action:
@@ -321,5 +324,6 @@ are not experiment history. See
 - [Runtime architecture and concepts](architecture.md)
 - [Application API reference](api/README.md)
 - [Recorder and SQLite](recorder-sqlite.md)
+- [Recovery and fault handling](recovery-and-faults.md)
 - [Safety and failure behavior](safety-and-failures.md)
 - [Extending the Runtime](extending-runtime.md)

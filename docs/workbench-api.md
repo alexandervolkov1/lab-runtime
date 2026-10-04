@@ -451,6 +451,9 @@ admitted work, retry/status/resubmit it, roll back presentation, alter another
 caller, or synthesize Runtime shutdown. A presentation edit is either not admitted
 or committed atomically exactly once; caller death cannot roll it back.
 
+The operator/client decision model for lost continuity and quarantined evidence is
+in [Recovery and fault handling](recovery-and-faults.md#workbench-recovery).
+
 On clean Workbench shutdown, the endpoint first stops accepting callers, attempts
 bounded terminal delivery for at most 200 ms, and closes. Workbench then uses its
 existing finite Runtime-client shutdown. Neither path sends `runtime_shutdown`.
