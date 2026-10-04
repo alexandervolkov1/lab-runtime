@@ -38,7 +38,7 @@ The implementation must:
 
 ## Add a declarative SimpleDevice
 
-For a bounded device whose protocol fits the accepted declarative schema, use the
+For a bounded device whose protocol fits the current declarative schema, use the
 Application candidate path rather than adding a device-specific Runtime,
 Application, Recorder, or Workbench branch:
 
@@ -142,7 +142,7 @@ Arduino integration itself is outside this preview reference.
 
 ## Physical output extension
 
-A writable adapter must not expose a raw generic write capability. The only accepted
+A writable adapter must not expose a raw generic write capability. The supported
 path is:
 
 ```text

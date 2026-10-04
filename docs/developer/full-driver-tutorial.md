@@ -813,5 +813,5 @@ release build.
 Concrete Core registration commands, host composition types, scheduler structures,
 resource executor details, and Recorder activation records are current internal Rust
 interfaces. They are documented here to guide contributors, not promised as a stable
-external SDK. A future refactor may move those seams while preserving the authority,
+external SDK. Those seams may move while preserving the authority,
 evidence, boundedness, and lifecycle invariants in this guide.

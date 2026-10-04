@@ -1,26 +1,20 @@
 # System architecture
 
-Applicable to Application protocol v1 and the current repository/v0.1 product.
+Applies to Application protocol v1 and the v0.1 product.
 
 `lab-runtime` separates authoritative experiment ownership from operator
 presentation:
 
 ```text
-physical and virtual instruments
-             |
-          lab-core
-             |
-   HostCore / ServiceHost
-             |
-        Application
-             |
-transport-neutral Application JSON
-        /             \
- TCP/NDJSON       loopback WebSocket/JSON
-        \             /
-             clients
-                |
-        lab-workbench.exe
+instruments and resources
+           |
+        Runtime
+  (experiment authority)
+           |
+    Application API
+       /        \
+  Workbench   direct clients
+ (presentation)
 ```
 
 ```text
@@ -29,7 +23,7 @@ Workbench owns presentation semantics.
 
 Workbench lifetime != Runtime lifetime.
 GUI lifetime != experiment lifetime.
-future automation lifetime != experiment lifetime.
+external automation lifetime != experiment lifetime.
 ```
 
 Closing, crashing, or disconnecting a client does not shut down Runtime, stop the
@@ -231,5 +225,5 @@ Runtime shutdown is a bounded progression through authority revocation, safety,
 transport retirement, Recorder sealing/flushing, and worker cleanup. A shutdown
 request is not proof that every resource is already closed or physically safe.
 
-Future external clients or automation must use the same language-neutral Application
-semantics. Their lifetime remains independent of experiment lifetime.
+External clients and automation use the same language-neutral Application semantics.
+Their lifetime remains independent of experiment lifetime.

@@ -1,7 +1,7 @@
 # Application API reference
 
-This compatibility page preserves existing links. The canonical reference for
-Application protocol v1 and the current repository/v0.1 product is now:
+The Runtime Application API reference is split into focused pages for Application
+protocol v1 and the v0.1 product:
 
 - [Application API overview](api/README.md)
 - [Protocol, envelopes, hello, and sessions](api/protocol-and-sessions.md)
@@ -16,14 +16,8 @@ TCP/NDJSON and optional loopback WebSocket/JSON; native Workbench uses TCP.
 The [Workbench external API](workbench-api.md) is a distinct presentation/client
 surface, not another Runtime Application implementation. See the optional
 [Babashka wire smoke](../clients/babashka-smoke/README.md) for direct Runtime access
-and a separate minimal Workbench example.
-
-```text
-direct client -> Runtime API -> authoritative Runtime
-
-external client -> Workbench API -> Workbench dispatcher
-                -> existing Runtime client -> Runtime
-```
+and a separate minimal Workbench example. The
+[Application API overview](api/README.md) diagrams the two external paths.
 
 A client that does not need Workbench presentation or client-recovery semantics
 should normally use the Runtime API directly. Workbench is neither a transparent

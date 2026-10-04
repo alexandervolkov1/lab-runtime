@@ -1,11 +1,11 @@
 # Workbench user guide
 
-This guide applies to the native `lab-workbench` in the current repository/v0.1
-product. Workbench connects to Application protocol v1 but exposes a deliberately
+This guide applies to the native `lab-workbench` in the v0.1 product. Workbench
+connects to Application protocol v1 but exposes a deliberately
 smaller, typed operator surface than the complete Application API.
 
 For external programs, the opt-in [Workbench TCP/NDJSON API](workbench-api.md) exposes
-the accepted 15-operation presentation/client surface through the same owner. Its
+the current 15-operation presentation/client surface through the same owner. Its
 `call_id` correlation and recovery semantics are distinct from direct Runtime access.
 That API page is the canonical wire reference; this page remains the native operator
 guide.
@@ -386,8 +386,8 @@ The current GUI does not provide:
 - an embedded scripting or automation runtime.
 
 The broader API and the narrower typed GUI serve different clients and risk profiles;
-their difference is intentional. Future automation clients or procedures must use
-the same language-neutral Application semantics.
+their difference is intentional. Automation clients and procedures use the same
+language-neutral Application semantics.
 
 ## Related documentation
 

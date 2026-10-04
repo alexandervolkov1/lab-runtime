@@ -1,8 +1,9 @@
-# Minimal Babashka boundary acceptance
+# Minimal Babashka boundary smoke
 
-These two standalone scripts are wire examples and acceptance evidence, not a client
-SDK or the future Clojure client architecture. Babashka is optional tooling; Cargo
-builds and production executables do not depend on it. Tested with Babashka 1.13.220.
+These two standalone scripts are wire examples and boundary-smoke evidence, not a
+client SDK or a supported Clojure client architecture. Babashka is optional tooling;
+Cargo builds and production executables do not depend on it. Tested with Babashka
+1.13.220.
 The scripts use its included Cheshire JSON parser and Java TCP streams, with no Rust
 crate access, dependencies to install, recovery, mutation retry, or subscriptions.
 
@@ -51,7 +52,7 @@ Babashka parses both responses and checks version, correlation, result type,
 protocol identity, Runtime-issued boot/scope/next sequence, advertised `reference`,
 and the Reference ID, decimal revision, and numeric target. It prints the observed
 values, closes the socket, and exits nonzero on errors. No Runtime mutation is sent;
-hello plus a read-only query is the approved safe subset of the M17.1 matrix.
+hello plus a read-only query is the deliberately safe direct Runtime example.
 
 `workbench.clj` separately exercises Workbench hello, bounded `client_status` readiness
 observation, a mediated `reference` query and its correlated `lab_update`, presentation
@@ -64,8 +65,13 @@ not mutation retry or recovery-status polling.
 The surfaces remain distinct:
 
 ```text
-runtime.clj   -> Runtime Application TCP API
-workbench.clj -> Workbench TCP API -> existing single ClientHandle -> Runtime
+runtime.clj
+  -> Runtime Application TCP API
+
+workbench.clj
+  -> Workbench TCP API
+  -> existing single ClientHandle
+  -> Runtime
 ```
 
 The separate [browser smoke](../clojurescript-smoke/README.md) remains the real-browser

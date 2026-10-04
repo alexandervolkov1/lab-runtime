@@ -275,24 +275,49 @@ client. It never synthesizes `runtime_shutdown`; Runtime and its experiment cont
 
 ## Operator playbook
 
-| Situation | Know | Do not assume | Action |
-|---|---|---|---|
-| Runtime socket dropped during a query | No mutation identity was created. | Response delivery or current state. | Reconnect, hello, and repeat the safe query. |
-| Dropped before mutation `accepted` | Admission is unknown. | "Not executed." | Retain exact request; reattach/status, then consider deliberate exact resubmission. |
-| Dropped after `accepted` | Runtime admitted the identity. | Terminal result or current physical state. | Reattach and status the exact identity. |
-| Status `completed` | Retained terminal domain completion. | Current freshness or physical effect. | Consume result; refresh relevant state/evidence. |
-| Status `failed` | Retained terminal domain failure. | No post-send physical effect. | Follow code/result and output evidence. |
-| Status `outcome_unknown` | No retained status evidence. | Admitted, unadmitted, executed, or not executed. | Rebuild and use domain/physical evidence or operator decision. |
-| Runtime restarted | New boot boundary. | Old scope, cursor, authority, or freshness. | New hello; quarantine old evidence; rebuild snapshots/subscription. |
-| `event_gap` | Incremental replay continuity is lost. | Mutation outcome changed. | Resnapshot/rebuild, then resubscribe. |
-| Observation stale/unavailable | No fresh accepted measurement. | Device unchanged. | Diagnose resource; do not run control on stale input. |
-| Required Recorder failed | Critical control is fail-closed; coverage is incomplete/unknown. | Later rows are durable. | Resolve safety, preserve archive/evidence, then restart explicitly. |
-| Best-effort Recorder failed | Experiment may continue; Recorder does not. | Missing data exists elsewhere. | Mark coverage incomplete and repair before a new recording workflow. |
-| Resource reconnected | New binding generation exists after accepted probe. | Old completions or automatic rearm. | Wait for fresh current evidence; recover controller explicitly. |
-| Ambiguous output after send-start | Bytes may have reached device. | Failure or success. | No blind retry; reconcile via readback/device/operator procedure. |
-| Readback mismatch | Observed state differs from required evidence. | ACK proved effect. | Keep authority failed closed and investigate. |
-| Workbench record quarantined | Evidence belongs to another continuity boundary. | Status/retry authority in current session. | Preserve and resolve separately; do not transplant identity. |
-| Presentation `revision_conflict` | Workbench document changed since expected revision. | Runtime mutation failure. | Fetch `presentation_get`, reapply intent to current document if still desired. |
+- **Runtime socket dropped during a query.** Know: no mutation identity was created.
+  Do not assume response delivery or current state. Reconnect, hello, and repeat the
+  safe query.
+- **Dropped before mutation `accepted`.** Admission is unknown; do not assume "not
+  executed." Retain the exact request, reattach/status, then consider deliberate
+  exact resubmission.
+- **Dropped after `accepted`.** Runtime admitted the identity. Do not assume a
+  terminal result or current physical state. Reattach and status that identity.
+- **Status `completed`.** The retained domain operation completed. This does not
+  establish current freshness or physical effect; refresh relevant state/evidence.
+- **Status `failed`.** The retained domain operation failed. This does not exclude a
+  post-send physical effect; follow the code/result and output evidence.
+- **Status `outcome_unknown`.** No retained status evidence exists. Do not infer
+  admission or execution; rebuild and use domain/physical evidence or operator
+  judgment.
+- **Runtime restarted.** A new boot boundary exists. Old scope, cursors, authority,
+  and freshness do not survive; use a new hello, quarantine old evidence, and rebuild
+  snapshots/subscription.
+- **`event_gap`.** Incremental replay continuity is lost, not mutation outcome.
+  Resnapshot/rebuild, then resubscribe.
+- **Observation stale/unavailable.** There is no fresh accepted measurement. Do not
+  assume the device is unchanged; diagnose the resource and do not control from stale
+  input.
+- **Required Recorder failed.** Critical control is fail-closed and coverage is
+  incomplete or unknown. Do not assume later rows are durable. Resolve safety,
+  preserve archive/evidence, then restart explicitly.
+- **Best-effort Recorder failed.** The experiment may continue but Recorder does not.
+  Do not assume missing data exists elsewhere; mark coverage incomplete and repair it
+  before a new recording workflow.
+- **Resource reconnected.** A new binding generation exists after the accepted probe.
+  Old completions and automatic rearm do not follow. Wait for fresh current evidence,
+  then recover the controller explicitly.
+- **Ambiguous output after send-start.** Bytes may have reached the device; neither
+  failure nor success is known. Do not blindly retry. Reconcile through readback,
+  device evidence, or an operator procedure.
+- **Readback mismatch.** Observed state differs from required evidence; ACK did not
+  prove effect. Keep authority failed closed and investigate.
+- **Workbench record quarantined.** The evidence belongs to another continuity
+  boundary and grants no current-session status/retry authority. Preserve and resolve
+  it separately; do not transplant identity.
+- **Presentation `revision_conflict`.** The Workbench document changed since the
+  expected revision; this is not Runtime mutation failure. Fetch `presentation_get`
+  and reapply the intent to the current document if still desired.
 
 ## Retry and resynchronization taxonomy
 
@@ -313,7 +338,7 @@ mutation automatically.
 
 ## Error examples
 
-Runtime synchronous failures use the DOC-4 error envelope. For example:
+Runtime synchronous failures use the public Application error envelope. For example:
 
 ```json
 {"v":1,"msg_id":"start-1","type":"error","accepted":false,"code":"recording_unavailable","category":"recording_unavailable","retryable":true,"resync_required":false,"message":"Required recording service is unavailable."}

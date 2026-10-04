@@ -1,6 +1,6 @@
 # Protocol and sessions
 
-Applicable to Application protocol v1 and the current repository/v0.1 product.
+Applies to Application protocol v1 and the v0.1 product.
 
 ## Transport-independent message model
 
@@ -71,10 +71,12 @@ Mutation:
 
 ```text
 msg_id
-    one connection exchange; may change on an exact resubmission
+  one connection exchange
+  may change on exact resubmission
 
 request_id = {scope, seq}
-    process-local retained mutation identity; does not change on exact resubmission
+  process-local retained mutation identity
+  unchanged on exact resubmission
 ```
 
 ## Response and event envelopes

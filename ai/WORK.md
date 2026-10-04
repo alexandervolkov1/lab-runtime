@@ -1,4 +1,4 @@
-# Current work — M17 closed; pre-release cleanup and documentation in progress
+# Current work — final fresh-user/package audit ready
 
 ## Canonical current state
 
@@ -33,7 +33,7 @@ The accepted M17.4/consolidated remediation baseline is
 `e79ae8243bc49f59692c7ff435c15b2d30d4c248`. External review accepted M17.5 with no
 blockers. M17.1, M17.2, M17.3, M17.4, and M17.5 are ACCEPTED. M17 is CLOSED.
 
-PRE-RELEASE CLEANUP AND DOCUMENTATION is now in progress. PR-CLEAN-1 removed only
+PRE-RELEASE CLEANUP AND DOCUMENTATION is COMPLETE / ACCEPTED. PR-CLEAN-1 removed only
 definite local/generated artifacts and tightened narrow ignore rules; it is complete
 at `6097ba99f0028b627a56752d712cab5cf50e9969`. PKG-1 now packages both accepted
 release executables, the explicit public documentation/client-example allowlist, the
@@ -50,9 +50,9 @@ DOC-4 reconciles the distinct
 direct Runtime and Workbench API references against the source-owned 43-operation /
 26-capability Runtime registry and frozen 15-operation Workbench dispatcher, adds
 source-bound table checks, and changes no production protocol behavior. DOC-5
-Recorder / recovery / faults is ACCEPTED. DOC-6 Final navigation / diagrams /
-rendering is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The preview is not
-published or release-ready.
+Recorder / recovery / faults and DOC-6 Final navigation / diagrams / rendering are
+ACCEPTED. The FINAL FRESH-USER / PACKAGE AUDIT is AUTHORIZED / READY TO START / NOT
+IMPLEMENTED. The preview is not published or release-ready.
 
 DOC-1 adds the source-derived public Configuration Guide, a minimal validated virtual
 deployment with a relative Recorder path, parser-execution checks for every documented
@@ -93,9 +93,9 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
-- Allowed now: DOC-6 Final navigation / diagrams / rendering. PRE-RELEASE CLEANUP AND
-  DOCUMENTATION remains in progress. Release publication is not authorized, and the
-  unresolved 15-package license-text/legal review remains a release blocker.
+- Allowed now: FINAL FRESH-USER / PACKAGE AUDIT. PRE-RELEASE CLEANUP AND DOCUMENTATION
+  is COMPLETE / ACCEPTED. Release publication is not authorized, and the unresolved
+  15-package license-text/legal review remains a release blocker.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.

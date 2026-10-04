@@ -19,9 +19,9 @@ The recommended progression is:
 
 1. start the built-in virtual Runtime;
 2. start Workbench and wait for Fresh;
-3. perform a hello/query through the direct Runtime API;
-4. start the minimal deployment TOML;
-5. inspect and operate the Runtime-owned Recorder;
+3. observe a signal and make one safe virtual Reference change;
+4. inspect and operate the Runtime-owned Recorder;
+5. optionally try the direct Runtime API and minimal deployment TOML;
 6. continue with the [Configuration Guide](configuration.md).
 
 ## Build
@@ -297,8 +297,8 @@ mutations; clients must not blindly retry mutations.
 With Babashka installed, follow the [minimal Babashka acceptance](../clients/babashka-smoke/README.md)
 to run hello plus a safe query against a real virtual Runtime. Its separate Workbench
 smoke uses the [opt-in Workbench API](workbench-api.md) for client/presentation work.
-These examples are not an SDK; full Arduino + Clojure + Clay integration is later
-post-preview work. Babashka is not required to build or run the Rust applications.
+These examples are not an SDK; full Arduino + Clojure + Clay integration is outside
+this preview. Babashka is not required to build or run the Rust applications.
 
 ## Diagnostics
 

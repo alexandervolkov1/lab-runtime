@@ -332,22 +332,23 @@ unique within the boot.
 ```text
 schema_version
 
-runtime_boots 1 ── * clock_anchors
+runtime_boots 1 -- * clock_anchors
       |
-      +── * configurations 1 ── * object_snapshots
-      |            └──────────── provenance_content (content-addressed)
+      +-- * configurations 1 -- * object_snapshots
+      |            |
+      |            +-- provenance_content (content-addressed)
       |
-      +── * runs 1 ── * recording_intervals
+      +-- * runs 1 -- * recording_intervals
       |       |
-      |       +── * records 1 ── 0..1 measurements
-      |                    ├──── 0..1 operation_events
-      |                    ├──── 0..1 controller_events
-      |                    ├──── 0..1 reference_events
-      |                    ├──── 0..1 output_events
-      |                    ├──── 0..1 runtime_events
-      |                    └──── 0..1 gaps
+      |       +-- * records 1 -- 0..1 measurements
+      |                    +-- 0..1 operation_events
+      |                    +-- 0..1 controller_events
+      |                    +-- 0..1 reference_events
+      |                    +-- 0..1 output_events
+      |                    +-- 0..1 runtime_events
+      |                    +-- 0..1 gaps
       |
-      └── 1 durable_checkpoints
+      +-- 1 durable_checkpoints
 ```
 
 `records` is the ordered common envelope. Typed projection tables use the same

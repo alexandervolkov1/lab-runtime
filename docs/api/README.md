@@ -1,6 +1,6 @@
 # Application API
 
-Applicable to Application protocol v1 and the current repository/v0.1 product.
+Applies to Application protocol v1 and the v0.1 product.
 
 The Application API is the supported language-neutral boundary for observing and
 operating Runtime. It exposes laboratory semantics without exposing Rust internals,

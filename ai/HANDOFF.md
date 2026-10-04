@@ -87,7 +87,7 @@ External review accepted M11 at
 developer-preview-blocking correctness, safety or durability defect. This is not a
 production-certification claim.
 
-PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress. PR-CLEAN-1 is complete at
+PRE-RELEASE CLEANUP AND DOCUMENTATION is COMPLETE / ACCEPTED. PR-CLEAN-1 is accepted at
 `6097ba99f0028b627a56752d712cab5cf50e9969`. PKG-1 is ACCEPTED: its versioned
 portable archive contains both product executables, the explicit public documentation
 and optional client-example set, the safe virtual configuration, deterministic
@@ -100,8 +100,8 @@ license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration
 DOC-2 SimpleDevice are ACCEPTED at
 `1b1f0171cda2849188163794937203fe0c9d4262`. DOC-3 Full native driver and DOC-4
 Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery / faults
-is ACCEPTED. DOC-6 Final navigation / diagrams / rendering is AUTHORIZED / READY TO
-START / NOT IMPLEMENTED. No release
+is ACCEPTED. DOC-6 Final navigation / diagrams / rendering is ACCEPTED. The FINAL
+FRESH-USER / PACKAGE AUDIT is AUTHORIZED / READY TO START / NOT IMPLEMENTED. No release
 has been published. DOC-1's source-derived guide and minimal
 virtual deployment cover the
 actual independent Runtime CLI, deployment, live Runtime, Workbench workspace, and
@@ -247,11 +247,12 @@ Runtime hello/query and the separately required Workbench language-neutral scena
 The real-browser regression still targets Runtime WebSocket directly. Focused public
 docs distinguish both surfaces; no Rust source or dependency changes are included.
 See `WORK.md` for evidence, including the preserved transient SQLite verification
-note. PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress with PR-CLEAN-1, PKG-1,
+note. PRE-RELEASE CLEANUP AND DOCUMENTATION is COMPLETE / ACCEPTED with PR-CLEAN-1, PKG-1,
 and DOC-1 Configuration accepted. DOC-2 SimpleDevice, DOC-3 Full native driver, and
 DOC-4 Runtime / Workbench API completion and DOC-5 Recorder / recovery / faults are
-ACCEPTED. DOC-6 Final navigation / diagrams / rendering is AUTHORIZED / READY TO
-START / NOT IMPLEMENTED. Arduino/Clojure/Clay integration
+ACCEPTED. DOC-6 Final navigation / diagrams / rendering is ACCEPTED. The FINAL
+FRESH-USER / PACKAGE AUDIT is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+Arduino/Clojure/Clay integration
 remains post-preview practical work.
 Release publication is not authorized.
 

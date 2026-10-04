@@ -1,6 +1,6 @@
 # Workbench external API
 
-Applicable to Workbench protocol v1 and the current repository/v0.1 product.
+Applies to Workbench protocol v1 and the v0.1 product.
 
 Workbench's optional API exposes presentation and client-state semantics. It is
 separate from the [Runtime Application API](api/README.md), which owns authoritative

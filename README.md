@@ -20,15 +20,14 @@ demonstrates both boundaries without a client SDK or a production language depen
 ## Why two processes?
 
 ```text
-lab-runtime.exe                         lab-workbench.exe
-----------------                         -----------------
-authoritative experiment state    <->   private Rust Application client
-devices, References, controllers        WorkbenchModel
-resources and output authority           PresentationDocument
-Recorder and configuration               native egui GUI
-sessions and operation outcomes          plots and operator/recovery workflows
-
-                     Application API
+lab-runtime.exe
+  owns experiment state and behavior
+  owns devices, control, and Recorder
+          |
+   Application API
+          |
+lab-workbench.exe
+  owns presentation and client state
 ```
 
 Runtime owns experiment semantics. Workbench owns presentation semantics.
@@ -143,22 +142,21 @@ Workbench workspace behavior, and validation failures, use the
   Retry where the retained evidence permits it; mutations are never retried
   automatically.
 
-## Documentation
+## Choose what you want to do
 
-- [Getting started with Runtime and Workbench](docs/getting-started.md)
-- [Configuration and deployment](docs/configuration.md)
-- [SimpleDevice reference](docs/simple-device.md)
-- [SimpleDevice developer tutorial](docs/developer/simple-device-tutorial.md)
-- [Native Rust instrument developer guide](docs/developer/full-driver-tutorial.md)
-- [Workbench user guide](docs/workbench.md)
-- [Runtime architecture and concepts](docs/architecture.md)
-- [Direct Runtime Application API](docs/api/README.md)
-- [Workbench external API](docs/workbench-api.md)
-- [Optional Babashka boundary examples](clients/babashka-smoke/README.md)
-- [Recorder and SQLite archive](docs/recorder-sqlite.md)
-- [Recovery and fault handling](docs/recovery-and-faults.md)
-- [Safety and failure behavior](docs/safety-and-failures.md)
-- [Extending the Runtime](docs/extending-runtime.md)
+| Goal | Start here |
+|---|---|
+| Run the safe virtual system | [Getting started](docs/getting-started.md) |
+| Configure Runtime or Workbench | [Configuration and deployment](docs/configuration.md) |
+| Use the native operator GUI | [Workbench user guide](docs/workbench.md) |
+| Automate Runtime directly | [Runtime Application API](docs/api/README.md) |
+| Automate Workbench presentation | [Workbench external API](docs/workbench-api.md) |
+| Record or query history | [Recorder and SQLite](docs/recorder-sqlite.md) |
+| Recover after faults | [Recovery and fault handling](docs/recovery-and-faults.md) |
+| Understand authority and safety | [Architecture](docs/architecture.md) and [safety](docs/safety-and-failures.md) |
+| Add a simple serial instrument | [SimpleDevice reference](docs/simple-device.md) and [tutorial](docs/developer/simple-device-tutorial.md) |
+| Add a trusted native instrument | [Extension overview](docs/extending-runtime.md) and [native driver guide](docs/developer/full-driver-tutorial.md) |
+| Run optional language examples | [Babashka](clients/babashka-smoke/README.md) and [ClojureScript](clients/clojurescript-smoke/README.md) |
 
 ## Current environment and limitations
 
@@ -171,8 +169,8 @@ Workbench workspace behavior, and validation failures, use the
   qualification.
 - ACK or register readback does not prove physical effect.
 - Not every Application operation is a Workbench GUI workflow.
-- No scripting language or embedded automation runtime is selected for v0.1.
-  Future automation is planned around the language-neutral Application API boundary.
+- No embedded scripting runtime or production client SDK is included in v0.1.
+  External automation uses the language-neutral Application API boundary.
 - Recovery evidence has no Discard/Forget action; invalidated evidence remains visible
   and fail-closed.
 
@@ -186,7 +184,9 @@ does not publish or tag a release.
 Physical output deliberately distinguishes:
 
 ```text
-requested != authorized != send_started != ACK != readback != physical_effect
+requested != authorized != send_started
+send_started != ACK != readback
+readback != physical_effect
 ```
 
 A started write with an ambiguous outcome is not blindly retried. Reconnect and a

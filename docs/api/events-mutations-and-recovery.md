@@ -1,6 +1,6 @@
 # Events, mutations, and recovery semantics
 
-Applicable to Application protocol v1 and the current repository/v0.1 product.
+Applies to Application protocol v1 and the v0.1 product.
 
 This page defines protocol semantics. Operator-facing troubleshooting is deliberately
 outside this reference.

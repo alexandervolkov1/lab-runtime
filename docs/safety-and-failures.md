@@ -1,7 +1,7 @@
 # Safety and failure behavior
 
 This is a developer-preview operational reference, not hardware certification.
-Source and deterministic tests define the exact implementation.
+The implementation and deterministic regression tests define the exact behavior.
 
 This page is authoritative for output certainty and fail-closed safety behavior.
 For client/operator recovery decisions, process loss, and incident playbooks, see
@@ -18,7 +18,9 @@ For client/operator recovery decisions, process loss, and incident playbooks, se
 The evidence boundaries are normative:
 
 ```text
-requested != authorized != send_started != ACK != readback != physical_effect
+requested != authorized != send_started
+send_started != ACK != readback
+readback != physical_effect
 fact admitted != fact durably committed
 archive structurally readable != experiment semantically complete
 process shutdown != proof that hardware physically became safe

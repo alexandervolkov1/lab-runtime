@@ -1,8 +1,8 @@
-# M12.5 browser/ClojureScript smoke
+# Browser/ClojureScript Runtime smoke
 
 This deliberately small external client proves that compiled ClojureScript running
 in a real browser can use the existing loopback WebSocket Application endpoint. It
-is acceptance infrastructure, not a client SDK or GUI.
+is a boundary smoke, not a client SDK or GUI.
 
 The canonical protocol specification is the
 [Runtime Application API](../../docs/api/README.md). This smoke exercises that direct
@@ -11,7 +11,7 @@ Runtime surface; it does not implement or specify the separate
 
 The source uses only `js/WebSocket`, `js/Promise`, bounded timers, JSON and minimal
 DOM text output. It performs hello, query, subscription, mutation lifecycle,
-disconnect, retained-scope reattach, operation reconciliation, exact dedup retry,
+disconnect, retained-scope reattach, operation reconciliation, exact dedup resubmission,
 event replay, unsubscribe and final committed-state query.
 
 ## Requirements

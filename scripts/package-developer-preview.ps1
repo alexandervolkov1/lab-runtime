@@ -76,6 +76,91 @@ function Get-MarkdownHeadingIds([string]$path) {
     return ,$ids
 }
 
+function Test-MarkdownQuality([string]$packageRoot) {
+    $issues = [System.Collections.Generic.List[string]]::new()
+    $markdownFiles = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -Filter '*.md' -File |
+        Where-Object {
+            $relativePath = $_.FullName.Substring($packageRoot.Length + 1)
+            $relativePath -eq 'README.md' -or
+                $relativePath.StartsWith('docs\', [System.StringComparison]::OrdinalIgnoreCase) -or
+                $relativePath.StartsWith(
+                    'clients\',
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )
+        })
+    foreach ($file in $markdownFiles) {
+        $relativeFile = $file.FullName.Substring($packageRoot.Length + 1)
+        $insideFence = $false
+        $fence = ''
+        $language = ''
+        $lineNumber = 0
+        $headings = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+        foreach ($line in Get-Content -LiteralPath $file.FullName) {
+            $lineNumber += 1
+            if ($line -match '[ \t]+$') {
+                $issues.Add("$relativeFile`:$lineNumber has trailing whitespace")
+            }
+            if ($line.Contains("`t")) {
+                $issues.Add("$relativeFile`:$lineNumber contains a tab")
+            }
+
+            if (-not $insideFence) {
+                if ($line -match '^\s*(?<fence>```|~~~)(?<language>.*)$') {
+                    $insideFence = $true
+                    $fence = $Matches.fence
+                    $language = $Matches.language.Trim().ToLowerInvariant()
+                    continue
+                }
+                if ($line -match '^\s{0,3}#{1,6}\s+(?<heading>.+?)\s*#*\s*$') {
+                    $heading = $Matches.heading
+                    $heading = [regex]::Replace($heading, '\[([^\]]+)\]\([^)]+\)', '$1')
+                    $heading = $heading.Replace('`', '')
+                    $headingId = $heading.ToLowerInvariant()
+                    $headingId = [regex]::Replace($headingId, '[^\p{L}\p{Nd}\s_-]', '')
+                    $headingId = [regex]::Replace($headingId.Trim(), '\s+', '-')
+                    if ($headingId -and -not $headings.Add($headingId)) {
+                        $issues.Add(
+                            "$relativeFile`:$lineNumber has duplicate heading id '$headingId'"
+                        )
+                    }
+                }
+                continue
+            }
+
+            if ($line -match ('^\s*' + [regex]::Escape($fence) + '\s*$')) {
+                $insideFence = $false
+                $fence = ''
+                $language = ''
+                continue
+            }
+            if ($language -eq '' -or $language -eq 'text') {
+                if ($line.Length -gt 80) {
+                    $issues.Add(
+                        "$relativeFile`:$lineNumber text diagram exceeds 80 columns"
+                    )
+                }
+                if ($line -match '[^\x00-\x7F]') {
+                    $issues.Add(
+                        "$relativeFile`:$lineNumber text diagram contains non-ASCII characters"
+                    )
+                }
+            }
+        }
+        if ($insideFence) {
+            $issues.Add("$relativeFile has an unclosed Markdown fence")
+        }
+    }
+    if ($issues.Count -gt 0) {
+        throw "package Markdown quality failures: $($issues -join '; ')"
+    }
+    Write-Host (
+        'Package Markdown: structure, whitespace, heading IDs, and text-diagram ' +
+        "quality passed for $($markdownFiles.Count) file(s)"
+    )
+}
+
 function Test-MarkdownLinks([string]$packageRoot) {
     $broken = [System.Collections.Generic.List[string]]::new()
     $external = [System.Collections.Generic.HashSet[string]]::new(
@@ -252,6 +337,7 @@ function Test-ExtractedPackage([string]$archivePath) {
         if (Compare-Object $expectedFiles $actualFiles) {
             throw 'extracted package does not match PACKAGE-CONTENTS.txt'
         }
+        Test-MarkdownQuality $packageRoot
         Test-MarkdownLinks $packageRoot
 
         $executionRoot = Join-Path $temporaryRoot 'run'

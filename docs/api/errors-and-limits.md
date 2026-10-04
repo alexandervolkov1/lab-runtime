@@ -1,6 +1,6 @@
 # Public errors and limits
 
-Applicable to Application protocol v1 and the current repository/v0.1 product.
+Applies to Application protocol v1 and the v0.1 product.
 
 This is the canonical public home for Application error taxonomy and bounds. For a
 running Runtime, values returned in `hello.result.limits` are authoritative for that

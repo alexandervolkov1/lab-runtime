@@ -1,6 +1,6 @@
 # Operations and capabilities
 
-Applicable to Application protocol v1 and the current repository/v0.1 product.
+Applies to Application protocol v1 and the v0.1 product.
 
 The source authority is the single registry in
 `apps/lab-runtime/src/protocol.rs`. It contains exactly 43 unique operations: 22
