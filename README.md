@@ -57,6 +57,8 @@ See the [Application API reference](docs/api/README.md) for the complete surface
 Declarative serial instruments are covered by the
 [SimpleDevice reference](docs/simple-device.md) and
 [step-by-step tutorial](docs/developer/simple-device-tutorial.md).
+Contributors adding a trusted source-integrated physical implementation should use
+the [native Rust instrument guide](docs/developer/full-driver-tutorial.md).
 
 ## Run the portable Windows package
 
@@ -147,6 +149,7 @@ Workbench workspace behavior, and validation failures, use the
 - [Configuration and deployment](docs/configuration.md)
 - [SimpleDevice reference](docs/simple-device.md)
 - [SimpleDevice developer tutorial](docs/developer/simple-device-tutorial.md)
+- [Native Rust instrument developer guide](docs/developer/full-driver-tutorial.md)
 - [Workbench user guide](docs/workbench.md)
 - [Runtime architecture and concepts](docs/architecture.md)
 - [Application API reference](docs/api/README.md)

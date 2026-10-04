@@ -185,7 +185,8 @@ ACCEPTED, including the independently re-reviewed B1-B5 Workbench remediation.
 M17.5 is ACCEPTED with no blockers and M17 is CLOSED. Language smoke evidence does
 not authorize release publication. PRE-RELEASE CLEANUP AND DOCUMENTATION is in
 progress: PR-CLEAN-1, PKG-1, DOC-1 Configuration, and DOC-2 SimpleDevice are
-ACCEPTED. DOC-3 Full native driver is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+ACCEPTED. DOC-3 Full native driver is ACCEPTED. DOC-4 Runtime / Workbench API
+completion is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 The unresolved 15-package license-text/legal review remains a release blocker, and
 release publication remains a separate later gate.
 

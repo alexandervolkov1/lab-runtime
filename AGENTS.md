@@ -119,9 +119,9 @@ no new blockers. M17.4 and consolidated M17.1-M17.4 review are ACCEPTED at
 `e79ae8243bc49f59692c7ff435c15b2d30d4c248`. External review accepted M17.5 with no
 blockers. M17.1-M17.5 are ACCEPTED; M17 is CLOSED. PRE-RELEASE CLEANUP AND
 DOCUMENTATION is in progress: PR-CLEAN-1, PKG-1, DOC-1 Configuration, and DOC-2
-SimpleDevice are ACCEPTED. DOC-3 Full native driver is AUTHORIZED / READY TO START /
-NOT IMPLEMENTED. The unresolved 15-package license-text/legal review remains a
-release blocker. Arduino/Clojure
+SimpleDevice and DOC-3 Full native driver are ACCEPTED. DOC-4 Runtime / Workbench API
+completion is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The unresolved
+15-package license-text/legal review remains a release blocker. Arduino/Clojure
 integration and release publication remain unauthorized.
 Detailed authorization remains in `ai/WORK.md`.
 The external adapter submits lab query, mutation, and status calls only through

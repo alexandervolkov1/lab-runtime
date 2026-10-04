@@ -45,8 +45,9 @@ contains all 160 current third-party dependencies exactly once, reports zero mis
 Cargo license-metadata entries, and explicitly retains 15 packages without a matching
 standalone top-level license/notice file for final release/legal review. That review
 remains a RELEASE BLOCKER. DOC-1 Configuration and DOC-2 SimpleDevice are ACCEPTED.
-DOC-3 Full native driver is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The
-preview is not published or release-ready.
+DOC-3 Full native driver is ACCEPTED. DOC-4 Runtime / Workbench API completion is
+AUTHORIZED / READY TO START / NOT IMPLEMENTED. The preview is not published or
+release-ready.
 
 DOC-1 adds the source-derived public Configuration Guide, a minimal validated virtual
 deployment with a relative Recorder path, parser-execution checks for every documented
@@ -64,6 +65,15 @@ implementation; package validation includes the docs and byte-identical examples
 No SimpleDevice, Runtime, output-safety, Recorder, or Workbench production behavior
 changed.
 
+External review ACCEPTED DOC-3 and its canonical trusted native Rust instrument
+guide. It documents the
+actual compile-time, non-plugin integration model through the current Metakon path,
+including strict configuration/artifact freezing, Runtime-owned transport,
+descriptors, read and output evidence, reconnect fencing, startup versus live
+publication, Recorder provenance, bounded cleanup, shutdown, testing, and separate
+physical qualification. It changes no Rust production behavior and introduces no
+driver SDK or registry.
+
 Current clean baseline commits:
 
 - M16 completion: `48a22f34d23053eb2c1d6752663701872b6fa6d3`
@@ -74,12 +84,13 @@ Current clean baseline commits:
 - PR-CLEAN-1: `6097ba99f0028b627a56752d712cab5cf50e9969`
 - PKG-1: `3a74ce154672e8cefc478682b7443b169c7bdebc`
 - DOC-1 Configuration: `91fc3d7f33fa6c4bf9e68f0230a708951afcb102`
+- DOC-2 SimpleDevice: `1b1f0171cda2849188163794937203fe0c9d4262`
 
 Current authorization boundary:
 
-- Allowed now: DOC-3 Full native driver. PRE-RELEASE CLEANUP AND DOCUMENTATION
-  remains in progress. Release publication is not authorized, and the unresolved
-  15-package license-text/legal review remains a release blocker.
+- Allowed now: DOC-4 Runtime / Workbench API completion. PRE-RELEASE CLEANUP AND
+  DOCUMENTATION remains in progress. Release publication is not authorized, and the
+  unresolved 15-package license-text/legal review remains a release blocker.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.

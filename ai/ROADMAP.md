@@ -355,7 +355,8 @@ GUI / external Workbench calls -> one Workbench dispatcher
 
 Current phase: PRE-RELEASE CLEANUP AND DOCUMENTATION. PR-CLEAN-1, PKG-1, DOC-1
 Configuration, and DOC-2 SimpleDevice are ACCEPTED. DOC-3 Full native driver is
-AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+ACCEPTED. DOC-4 Runtime / Workbench API completion is AUTHORIZED / READY TO START /
+NOT IMPLEMENTED.
 The unresolved 15-package license-text/legal review remains a release blocker;
 preview.2 is not release-ready and no release is published. Full Arduino + Clojure
 + Clay integration remains post-preview practical work.

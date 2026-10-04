@@ -305,8 +305,10 @@ transaction_timeout_ms = 1000
 against the configured instrument and controller bindings.
 
 Metakon is the current source-integrated native physical implementation, not a
-dynamic driver plugin. See [Extending the Runtime](extending-runtime.md#add-a-physical-instrument)
-for its developer boundary.
+dynamic driver plugin. See the
+[native Rust instrument guide](developer/full-driver-tutorial.md) for its complete
+developer boundary and [Extending the Runtime](extending-runtime.md) for the
+extension overview.
 
 ### SimpleDevice instance
 
@@ -712,4 +714,6 @@ that error code.
 - [SimpleDevice](simple-device.md) is the declarative device reference, with a
   [step-by-step tutorial](developer/simple-device-tutorial.md).
 - [Extending the Runtime](extending-runtime.md) describes current source-level
-  native extension seams. The full-native-driver tutorial remains later work.
+  extension seams; the
+  [native Rust instrument guide](developer/full-driver-tutorial.md) gives the full
+  trusted physical-integration workflow.

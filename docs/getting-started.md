@@ -316,6 +316,7 @@ are not experiment history. See
 - [Configuration and deployment](configuration.md)
 - [SimpleDevice reference](simple-device.md)
 - [Build a SimpleDevice instrument](developer/simple-device-tutorial.md)
+- [Add a trusted native Rust instrument](developer/full-driver-tutorial.md)
 - [Workbench user guide](workbench.md)
 - [Runtime architecture and concepts](architecture.md)
 - [Application API reference](api/README.md)

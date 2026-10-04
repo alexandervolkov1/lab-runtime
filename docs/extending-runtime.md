@@ -80,6 +80,11 @@ Use this trusted native Rust path only when SimpleDevice's bounded grammar is no
 enough. Metakon is the current physical reference implementation. Its extension path
 is explicit rather than hidden behind a universal protocol trait:
 
+Follow the canonical
+[native Rust instrument guide](developer/full-driver-tutorial.md) for the complete
+source map, implementation sequence, safety obligations, test matrix, and physical
+qualification boundary. The summary below is a routing overview.
+
 | Concern | Existing reference source |
 |---|---|
 | semantic instrument/parameter descriptors and binding | `crates/lab-core/src/instrument.rs` |

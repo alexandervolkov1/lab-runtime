@@ -27,8 +27,10 @@ Use a trusted native Rust integration when the protocol needs a state machine,
 variable-length or delimiter-driven parsing, arbitrary text-number parsing,
 unsupported binary framing/checksums, a custom transport, multiple coupled outputs,
 device-specific recovery, or unusual scheduling. There is currently no dynamic
-driver plugin API. See [Extending the Runtime](extending-runtime.md#add-a-physical-instrument)
-for the source-level native path.
+driver plugin API. Use the
+[native Rust instrument guide](developer/full-driver-tutorial.md) for the trusted
+source-level path, or see [Extending the Runtime](extending-runtime.md) for the
+extension overview.
 
 ## Mental model
 
