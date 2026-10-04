@@ -358,9 +358,12 @@ Configuration, DOC-2 SimpleDevice, DOC-3 Full native driver, and DOC-4 Runtime /
 Workbench API completion, DOC-5 Recorder / recovery / faults, and DOC-6 Final navigation /
 diagrams / rendering are ACCEPTED. The FINAL FRESH-USER / PACKAGE AUDIT and FINAL AUDIT
 REMEDIATION are ACCEPTED. The PREVIEW.2 TECHNICAL / PACKAGE RELEASE GATE is READY.
-The unresolved 15-package license-text/legal review remains a release blocker;
-release publication is NOT AUTHORIZED and no release is published. Full Arduino + Clojure
-+ Clay integration remains post-preview practical work.
+LICENSE-1 exact-version license-text evidence for the 15 formerly unresolved
+package/version pairs is ACCEPTED. LICENSE-TEXT EVIDENCE is COMPLETE / READY FOR LEGAL
+SIGN-OFF, and no package-specific license-text search remains unresolved. This is not
+legal approval: FORMAL LEGAL SIGN-OFF remains the release gate; release publication is
+BLOCKED / NOT AUTHORIZED and no release is published. Full Arduino + Clojure + Clay
+integration remains post-preview practical work.
 
 M17 may not create a second Runtime operation/session/subscription implementation or
 move presentation authority into Runtime. Steel, GUI features, remote access and a

@@ -703,6 +703,165 @@ try {
     $dependencies = @($dependencyEntries.Values | Sort-Object Name, Version)
     $missingLicenseMetadata = @($dependencies |
         Where-Object { $_.License -eq '[missing Cargo license metadata]' })
+
+    $supplementalEvidenceRoot = Join-Path $repositoryRoot 'third-party-licenses'
+    $supplementalEvidenceSources = @{
+        'accesskit-a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969' = [PSCustomObject]@{
+            Source = 'https://github.com/AccessKit/accesskit/tree/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969'
+            Hashes = [ordered]@{
+                'AUTHORS' = '3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502'
+                'LICENSE-APACHE' = '62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a'
+                'LICENSE-MIT' = '23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3'
+                'LICENSE.chromium' = '845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308'
+            }
+        }
+        'accesskit-1bbcf100942bac96c2c3a4a91cb67b0b20201a24' = [PSCustomObject]@{
+            Source = 'https://github.com/AccessKit/accesskit/tree/1bbcf100942bac96c2c3a4a91cb67b0b20201a24'
+            Hashes = [ordered]@{
+                'AUTHORS' = '3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502'
+                'LICENSE-APACHE' = '62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a'
+                'LICENSE-MIT' = '23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3'
+                'LICENSE.chromium' = '845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308'
+            }
+        }
+        'clipboard-win-3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342' = [PSCustomObject]@{
+            Source = 'https://github.com/DoumanAsh/clipboard-win/tree/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342'
+            Hashes = [ordered]@{
+                'LICENSE' = 'c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566'
+            }
+        }
+        'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef' = [PSCustomObject]@{
+            Source = 'https://github.com/emilk/egui/tree/49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Hashes = [ordered]@{
+                'LICENSE-APACHE' = '8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90'
+                'LICENSE-MIT' = '95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c'
+                'epaint_default_fonts-0.36.2\emoji-icon-font-mit-license.txt' = 'b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1'
+                'epaint_default_fonts-0.36.2\Hack-Regular.txt' = '47c0cccbeec7e8614548cc485588b28149e7874188df5f41b36efebcee285c87'
+                'epaint_default_fonts-0.36.2\OFL.txt' = '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2'
+                'epaint_default_fonts-0.36.2\UFL.txt' = '2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002'
+            }
+        }
+        'egui_plot-c31b61732c1acb58268bb26c786e7664797602bd' = [PSCustomObject]@{
+            Source = 'https://github.com/emilk/egui_plot/tree/c31b61732c1acb58268bb26c786e7664797602bd'
+            Hashes = [ordered]@{
+                'LICENSE-APACHE' = '8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90'
+                'LICENSE-MIT' = '23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3'
+            }
+        }
+        'profiling-8271551172eb6fa4cba47369aedd93790c623df9' = [PSCustomObject]@{
+            Source = 'https://github.com/aclysma/profiling/tree/8271551172eb6fa4cba47369aedd93790c623df9'
+            Hashes = [ordered]@{
+                'LICENSE-APACHE' = '10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551'
+                'LICENSE-MIT' = 'c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333'
+            }
+        }
+    }
+    foreach ($sourceKey in @($supplementalEvidenceSources.Keys | Sort-Object)) {
+        $source = $supplementalEvidenceSources[$sourceKey]
+        $sourceDirectory = Join-Path $supplementalEvidenceRoot $sourceKey
+        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
+            throw "supplemental license evidence directory is missing: $sourceDirectory"
+        }
+        $actualFiles = @(Get-ChildItem -LiteralPath $sourceDirectory -Recurse -File |
+            ForEach-Object {
+                $_.FullName.Substring($sourceDirectory.Length + 1)
+            })
+        $expectedFiles = @($source.Hashes.Keys)
+        $difference = @(Compare-Object $expectedFiles $actualFiles)
+        if ($difference.Count -ne 0) {
+            throw "supplemental license evidence inventory changed: $sourceKey"
+        }
+        foreach ($relativePath in $expectedFiles) {
+            $evidencePath = Join-Path $sourceDirectory $relativePath
+            $actualHash = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $source.Hashes[$relativePath]) {
+                throw "supplemental license evidence hash mismatch: $sourceKey/$relativePath"
+            }
+        }
+    }
+
+    $dualLicenseFiles = [ordered]@{
+        'LICENSE-APACHE' = 'LICENSE-APACHE'
+        'LICENSE-MIT' = 'LICENSE-MIT'
+    }
+    $accessKitFiles = [ordered]@{
+        'AUTHORS' = 'AUTHORS'
+        'LICENSE-APACHE' = 'LICENSE-APACHE'
+        'LICENSE-MIT' = 'LICENSE-MIT'
+        'LICENSE.chromium' = 'LICENSE.chromium'
+    }
+    $packageLicenseEvidence = [ordered]@{
+        'accesskit@0.24.1' = [PSCustomObject]@{
+            SourceKey = 'accesskit-a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969'
+            Files = $accessKitFiles
+        }
+        'accesskit_consumer@0.35.0' = [PSCustomObject]@{
+            SourceKey = 'accesskit-1bbcf100942bac96c2c3a4a91cb67b0b20201a24'
+            Files = $accessKitFiles
+        }
+        'accesskit_windows@0.32.1' = [PSCustomObject]@{
+            SourceKey = 'accesskit-1bbcf100942bac96c2c3a4a91cb67b0b20201a24'
+            Files = $accessKitFiles
+        }
+        'accesskit_winit@0.32.2' = [PSCustomObject]@{
+            SourceKey = 'accesskit-1bbcf100942bac96c2c3a4a91cb67b0b20201a24'
+            Files = [ordered]@{
+                'AUTHORS' = 'AUTHORS'
+                'LICENSE-APACHE' = 'LICENSE-APACHE'
+            }
+        }
+        'clipboard-win@5.4.1' = [PSCustomObject]@{
+            SourceKey = 'clipboard-win-3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342'
+            Files = [ordered]@{ 'LICENSE' = 'LICENSE' }
+        }
+        'ecolor@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'eframe@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'egui@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'egui_glow@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'egui_plot@0.37.0' = [PSCustomObject]@{
+            SourceKey = 'egui_plot-c31b61732c1acb58268bb26c786e7664797602bd'
+            Files = $dualLicenseFiles
+        }
+        'egui-winit@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'emath@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'epaint@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = $dualLicenseFiles
+        }
+        'epaint_default_fonts@0.36.2' = [PSCustomObject]@{
+            SourceKey = 'egui-49682f8baa058bf49e011035cfbd6e825f88a5ef'
+            Files = [ordered]@{
+                'LICENSE-APACHE' = 'LICENSE-APACHE'
+                'LICENSE-MIT' = 'LICENSE-MIT'
+                'epaint_default_fonts-0.36.2\emoji-icon-font-mit-license.txt' = 'fonts\emoji-icon-font-mit-license.txt'
+                'epaint_default_fonts-0.36.2\Hack-Regular.txt' = 'fonts\Hack-Regular.txt'
+                'epaint_default_fonts-0.36.2\OFL.txt' = 'fonts\OFL.txt'
+                'epaint_default_fonts-0.36.2\UFL.txt' = 'fonts\UFL.txt'
+            }
+        }
+        'profiling@1.0.18' = [PSCustomObject]@{
+            SourceKey = 'profiling-8271551172eb6fa4cba47369aedd93790c623df9'
+            Files = $dualLicenseFiles
+        }
+    }
     $notice = [System.Collections.Generic.List[string]]::new()
     $notice.Add('THIRD-PARTY DEPENDENCY NOTICES')
     $notice.Add('')
@@ -710,10 +869,11 @@ try {
     $notice.Add('for lab-runtime.exe and lab-workbench.exe.')
     $notice.Add('The inventory covers every unique normal third-party dependency in those graphs.')
     $notice.Add('License expressions are copied from Cargo package metadata without interpretation.')
-    $notice.Add('Copies of matching standalone top-level upstream license/notice files found by')
-    $notice.Add('this packaging audit are included under licenses/.')
+    $notice.Add('Copies of matching upstream license/notice files found by this packaging audit')
+    $notice.Add('or recorded by exact-version evidence review are included under licenses/.')
     $notice.Add('Absence from licenses/ does not assert that upstream provides no license text;')
-    $notice.Add('unresolved entries are listed below for release/legal review.')
+    $notice.Add('any unresolved entries are listed below for release/legal review.')
+    $notice.Add('This evidence inventory does not make a legal-compliance determination.')
     $notice.Add('The lab-runtime workspace is licensed under MIT; see LICENSE at the package root.')
     $notice.Add('This file covers third-party dependencies and does not replace that project license.')
     $notice.Add('')
@@ -732,9 +892,46 @@ try {
     }
 
     $missingLicenses = [System.Collections.Generic.List[string]]::new()
+    $supplementalEntries = [System.Collections.Generic.List[object]]::new()
+    $usedSupplementalKeys = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($dependency in $dependencies) {
         $package = $dependency.Package
         $packageDirectory = Split-Path -Parent $package.manifest_path
+        $packageKey = "$($dependency.Name)@$($dependency.Version)"
+        $supplemental = $packageLicenseEvidence[$packageKey]
+        if ($null -ne $supplemental) {
+            $source = $supplementalEvidenceSources[$supplemental.SourceKey]
+            $sourceDirectory = Join-Path $supplementalEvidenceRoot $supplemental.SourceKey
+            $licenseDestination = Join-Path $stageRoot `
+                ("licenses\{0}-{1}" -f $dependency.Name, $dependency.Version)
+            [System.IO.Directory]::CreateDirectory($licenseDestination) | Out-Null
+            $packagedFiles = [System.Collections.Generic.List[string]]::new()
+            foreach ($sourceRelative in @($supplemental.Files.Keys | Sort-Object)) {
+                $destinationRelative = $supplemental.Files[$sourceRelative]
+                $destinationPath = Join-Path $licenseDestination $destinationRelative
+                Assert-ChildPath $destinationPath $licenseDestination
+                [System.IO.Directory]::CreateDirectory(
+                    (Split-Path -Parent $destinationPath)
+                ) | Out-Null
+                Copy-Item `
+                    -LiteralPath (Join-Path $sourceDirectory $sourceRelative) `
+                    -Destination $destinationPath
+                $packagedFiles.Add(
+                    ("licenses/{0}-{1}/{2}" -f `
+                        $dependency.Name,
+                        $dependency.Version,
+                        $destinationRelative.Replace('\', '/'))
+                )
+            }
+            [void]$usedSupplementalKeys.Add($packageKey)
+            $supplementalEntries.Add([PSCustomObject]@{
+                Name = $dependency.Name
+                Version = $dependency.Version
+                Source = $source.Source
+                Files = @($packagedFiles)
+            })
+            continue
+        }
         $licenseFiles = @(Get-ChildItem -LiteralPath $packageDirectory -File |
             Where-Object {
                 $_.Name -match '^(LICENSE|LICENCE|COPYING|NOTICE|UNLICENSE)(\.|-|$)'
@@ -751,6 +948,25 @@ try {
             Copy-Item -LiteralPath $licenseFile.FullName -Destination $licenseDestination
         }
     }
+    $unusedSupplementalKeys = @($packageLicenseEvidence.Keys |
+        Where-Object { -not $usedSupplementalKeys.Contains($_) })
+    if ($unusedSupplementalKeys.Count -ne 0) {
+        throw (
+            'supplemental license evidence does not match the packaged dependency graph: ' +
+            ($unusedSupplementalKeys -join ', ')
+        )
+    }
+    $notice.Add('')
+    $notice.Add('EXACT-VERSION SUPPLEMENTAL LICENSE-TEXT EVIDENCE')
+    $notice.Add('')
+    $notice.Add('Applicable upstream license/notice text was located and included for:')
+    foreach ($entry in @($supplementalEntries | Sort-Object Name, Version)) {
+        $notice.Add("- $($entry.Name) $($entry.Version)")
+        $notice.Add("  source: $($entry.Source)")
+        foreach ($file in $entry.Files) {
+            $notice.Add("  file: $file")
+        }
+    }
     if ($missingLicenses.Count -gt 0) {
         $notice.Add('')
         $notice.Add(
@@ -762,6 +978,10 @@ try {
         $notice.Add(
             'These entries remain unresolved for release/legal review before external redistribution.'
         )
+    } else {
+        $notice.Add('')
+        $notice.Add('No dependency remains without included package-audit license/notice text evidence.')
+        $notice.Add('Legal interpretation and release sign-off remain separate review decisions.')
     }
     [System.IO.File]::WriteAllLines(
         (Join-Path $stageRoot 'THIRD-PARTY-NOTICES.txt'),

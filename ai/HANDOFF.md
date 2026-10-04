@@ -95,15 +95,18 @@ inventory/checksum/provenance, and combined dependency notices. Its extracted-tr
 link/fragment checks and Runtime/Workbench process smoke pass outside the repository.
 Its combined Runtime + Workbench normal dependency inventory represents all 160
 current third-party dependencies exactly once and reports zero missing Cargo
-license-metadata entries. Fifteen packages remain explicitly unresolved for final
-license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration and
-DOC-2 SimpleDevice are ACCEPTED at
+license-metadata entries. LICENSE-1 exact-version license-text evidence for the 15
+formerly unresolved package/version pairs is ACCEPTED; no package-specific
+license-text search remains unresolved. LICENSE-TEXT EVIDENCE is COMPLETE / READY FOR
+LEGAL SIGN-OFF, which is evidence status rather than legal approval. DOC-1 Configuration
+and DOC-2 SimpleDevice are ACCEPTED at
 `1b1f0171cda2849188163794937203fe0c9d4262`. DOC-3 Full native driver and DOC-4
 Runtime / Workbench API completion are ACCEPTED. DOC-5 Recorder / recovery / faults
 is ACCEPTED. DOC-6 Final navigation / diagrams / rendering is ACCEPTED. The FINAL
 FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The PREVIEW.2
-TECHNICAL / PACKAGE RELEASE GATE is READY. Release publication is BLOCKED / NOT
-AUTHORIZED, and no release has been published. DOC-1's source-derived guide and minimal
+TECHNICAL / PACKAGE RELEASE GATE is READY. The PREVIEW.2 LICENSE-EVIDENCE GATE is READY
+FOR LEGAL SIGN-OFF. Release publication is BLOCKED / NOT AUTHORIZED pending FORMAL LEGAL
+SIGN-OFF, and no release has been published. DOC-1's source-derived guide and minimal
 virtual deployment cover the
 actual independent Runtime CLI, deployment, live Runtime, Workbench workspace, and
 diagnostic domains. Focused tests execute every documented CLI form through the real
@@ -163,8 +166,9 @@ and bounds, schema v1, logging bounds, and controller lifecycle.
 The Windows x86_64 preview package is reproducibly built with an explicit version,
 for example `scripts/package-developer-preview.ps1 -PreviewVersion
 v0.1.0-preview.2`. Generated `dist/` artifacts are ignored by Git and are not
-published automatically. PKG-1 is externally accepted; the unresolved 15-package
-license-text/legal review still blocks release publication.
+published automatically. PKG-1 and LICENSE-1 are externally accepted. Exact-version
+license-text evidence is complete for the 15 formerly unresolved package/version
+pairs; FORMAL LEGAL SIGN-OFF still blocks release publication.
 
 The first preview is published at
 `https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1`.
@@ -256,7 +260,9 @@ FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The PREVIEW
 TECHNICAL / PACKAGE RELEASE GATE is READY.
 Arduino/Clojure/Clay integration
 remains post-preview practical work.
-Release publication is NOT AUTHORIZED.
+LICENSE-1 LICENSE-TEXT EVIDENCE is ACCEPTED and COMPLETE / READY FOR LEGAL SIGN-OFF;
+no package-specific license-text search remains unresolved. Release publication is
+BLOCKED / NOT AUTHORIZED pending FORMAL LEGAL SIGN-OFF.
 
 ## Later practical validation
 

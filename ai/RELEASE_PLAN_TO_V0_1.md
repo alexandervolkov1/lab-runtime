@@ -189,8 +189,11 @@ native driver, DOC-4 Runtime / Workbench API completion, and DOC-5 Recorder / re
 faults and DOC-6 Final navigation / diagrams / rendering are ACCEPTED. The FINAL
 FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The PREVIEW.2
 TECHNICAL / PACKAGE RELEASE GATE is READY.
-The unresolved 15-package license-text/legal review remains a release blocker, and
-release publication is NOT AUTHORIZED and remains a separate later gate.
+LICENSE-1 exact-version license-text evidence for the 15 formerly unresolved
+package/version pairs is ACCEPTED. LICENSE-TEXT EVIDENCE is COMPLETE / READY FOR LEGAL
+SIGN-OFF, and no package-specific license-text search remains unresolved. This is not
+legal approval: FORMAL LEGAL SIGN-OFF remains the release gate. Release publication is
+BLOCKED / NOT AUTHORIZED and remains a separate later action.
 
 ## End-to-end integration validation
 

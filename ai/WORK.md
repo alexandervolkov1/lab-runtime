@@ -41,10 +41,13 @@ safe virtual configuration, deterministic inventory/checksum/provenance and comb
 third-party dependency notices. Extracted-package Markdown target/fragment validation
 and real Runtime/Workbench process smoke pass outside the repository. External review
 ACCEPTED PKG-1. Its combined Runtime + Workbench Windows normal dependency inventory
-contains all 160 current third-party dependencies exactly once, reports zero missing
-Cargo license-metadata entries, and explicitly retains 15 packages without a matching
-standalone top-level license/notice file for final release/legal review. That review
-remains a RELEASE BLOCKER. DOC-1 Configuration and DOC-2 SimpleDevice are ACCEPTED.
+contains all 160 current third-party dependencies exactly once and reports zero missing
+Cargo license-metadata entries. LICENSE-1 exact-version evidence review is ACCEPTED:
+the 15 formerly unresolved package/version pairs now have verified supplemental
+license/notice evidence, and no package-specific license-text search remains unresolved.
+LICENSE-TEXT EVIDENCE is COMPLETE / READY FOR LEGAL SIGN-OFF. This evidence status is
+not legal approval; FORMAL LEGAL SIGN-OFF remains the release gate. DOC-1 Configuration
+and DOC-2 SimpleDevice are ACCEPTED.
 DOC-3 Full native driver and DOC-4 Runtime / Workbench API completion are ACCEPTED.
 DOC-4 reconciles the distinct
 direct Runtime and Workbench API references against the source-owned 43-operation /
@@ -52,8 +55,10 @@ direct Runtime and Workbench API references against the source-owned 43-operatio
 source-bound table checks, and changes no production protocol behavior. DOC-5
 Recorder / recovery / faults and DOC-6 Final navigation / diagrams / rendering are
 ACCEPTED. The FINAL FRESH-USER / PACKAGE AUDIT and its two-file remediation are
-ACCEPTED. The PREVIEW.2 TECHNICAL / PACKAGE RELEASE GATE is READY. Release publication
-is BLOCKED / NOT AUTHORIZED, and the preview is not published.
+ACCEPTED. The PREVIEW.2 TECHNICAL / PACKAGE RELEASE GATE is READY. LICENSE-1 is
+ACCEPTED and the PREVIEW.2 LICENSE-EVIDENCE GATE is READY FOR LEGAL SIGN-OFF. Release
+publication is BLOCKED / NOT AUTHORIZED pending FORMAL LEGAL SIGN-OFF, and the preview
+is not published.
 
 DOC-1 adds the source-derived public Configuration Guide, a minimal validated virtual
 deployment with a relative Recorder path, parser-execution checks for every documented
@@ -96,8 +101,9 @@ Current authorization boundary:
 
 - The FINAL FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The
   PREVIEW.2 TECHNICAL / PACKAGE RELEASE GATE is READY. Release publication is BLOCKED /
-  NOT AUTHORIZED, and the unresolved 15-package license-text/legal review remains a
-  release blocker.
+  NOT AUTHORIZED. LICENSE-1 LICENSE-TEXT EVIDENCE is ACCEPTED and COMPLETE / READY FOR
+  LEGAL SIGN-OFF; no package-specific license-text search remains unresolved. FORMAL
+  LEGAL SIGN-OFF is the remaining release gate and has not occurred.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.
