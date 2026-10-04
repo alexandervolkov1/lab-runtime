@@ -293,6 +293,8 @@ fn c1_repository_example_deployments_parse_with_the_production_loader() {
         "runtime.metakon-513-com5.toml",
         "runtime.metakon-513-m9d-read-preflight.toml",
         "runtime.metakon-513-com5-output.toml",
+        "simple-device/runtime.read-only.toml",
+        "simple-device/runtime.writable.toml",
     ] {
         let deployment = load_runtime_toml(&examples.join(name)).unwrap();
         assert!(!deployment.toml_bytes().is_empty());

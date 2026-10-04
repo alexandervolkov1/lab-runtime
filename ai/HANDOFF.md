@@ -96,9 +96,10 @@ link/fragment checks and Runtime/Workbench process smoke pass outside the reposi
 Its combined Runtime + Workbench normal dependency inventory represents all 160
 current third-party dependencies exactly once and reports zero missing Cargo
 license-metadata entries. Fifteen packages remain explicitly unresolved for final
-license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration is
-ACCEPTED. DOC-2 SimpleDevice is AUTHORIZED / READY TO START / NOT IMPLEMENTED. No
-release has been published. DOC-1's source-derived guide and minimal virtual deployment
+license-text/legal review; that review is a RELEASE BLOCKER. DOC-1 Configuration and
+DOC-2 SimpleDevice are ACCEPTED. DOC-3 Full native driver is AUTHORIZED / READY TO
+START / NOT IMPLEMENTED. No release has been published. DOC-1's source-derived guide
+and minimal virtual deployment
 cover the actual independent Runtime CLI, deployment, live Runtime, Workbench workspace,
 and diagnostic domains. Focused tests execute every documented CLI form through the
 real parsers, but CLI option completeness is manually source-reviewed rather than
@@ -243,8 +244,8 @@ The real-browser regression still targets Runtime WebSocket directly. Focused pu
 docs distinguish both surfaces; no Rust source or dependency changes are included.
 See `WORK.md` for evidence, including the preserved transient SQLite verification
 note. PRE-RELEASE CLEANUP AND DOCUMENTATION is in progress with PR-CLEAN-1, PKG-1,
-and DOC-1 Configuration accepted. DOC-2 SimpleDevice is authorized but not
-implemented.
+and DOC-1 Configuration accepted. DOC-2 SimpleDevice is ACCEPTED. DOC-3 Full native
+driver is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 Arduino/Clojure/Clay integration remains post-preview practical work. Release
 publication is not authorized.
 

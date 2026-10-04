@@ -227,6 +227,21 @@ function Test-ExtractedPackage([string]$archivePath) {
             throw 'extracted product binary, client example, or safe starter is missing'
         }
 
+        foreach ($relativeExample in @(
+            'examples\simple-device\read-only.json',
+            'examples\simple-device\writable.json',
+            'examples\simple-device\runtime.read-only.toml',
+            'examples\simple-device\runtime.writable.toml'
+        )) {
+            $sourceExample = Join-Path $repositoryRoot $relativeExample
+            $packageExample = Join-Path $packageRoot $relativeExample
+            if (-not (Test-Path -LiteralPath $packageExample -PathType Leaf) -or
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceExample).Hash -ne
+                (Get-FileHash -Algorithm SHA256 -LiteralPath $packageExample).Hash) {
+                throw "packaged SimpleDevice example differs from validated source: $relativeExample"
+            }
+        }
+
         $expectedFiles = @(Get-Content (Join-Path $packageRoot 'PACKAGE-CONTENTS.txt') |
             Sort-Object)
         $actualFiles = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File |
@@ -478,6 +493,8 @@ try {
         'LICENSE',
         'docs\getting-started.md',
         'docs\configuration.md',
+        'docs\simple-device.md',
+        'docs\developer\simple-device-tutorial.md',
         'docs\architecture.md',
         'docs\application-api.md',
         'docs\recorder-sqlite.md',
@@ -492,6 +509,10 @@ try {
         'docs\api\errors-and-limits.md',
         'examples\runtime.minimal.toml',
         'examples\runtime.virtual.toml',
+        'examples\simple-device\read-only.json',
+        'examples\simple-device\writable.json',
+        'examples\simple-device\runtime.read-only.toml',
+        'examples\simple-device\runtime.writable.toml',
         'clients\babashka-smoke\README.md',
         'clients\babashka-smoke\run-smoke.ps1',
         'clients\babashka-smoke\runtime.clj',

@@ -54,8 +54,9 @@ stop its Recorder, or roll back an admitted operation.
 The full Application API is broader than the Workbench GUI. Workbench deliberately
 exposes a typed safe operator subset rather than a raw button for every API operation.
 See the [Application API reference](docs/api/README.md) for the complete surface.
-Declarative SimpleDevice onboarding and its lifecycle boundaries are described in
-the [extension guide](docs/extending-runtime.md).
+Declarative serial instruments are covered by the
+[SimpleDevice reference](docs/simple-device.md) and
+[step-by-step tutorial](docs/developer/simple-device-tutorial.md).
 
 ## Run the portable Windows package
 
@@ -144,6 +145,8 @@ Workbench workspace behavior, and validation failures, use the
 
 - [Getting started with Runtime and Workbench](docs/getting-started.md)
 - [Configuration and deployment](docs/configuration.md)
+- [SimpleDevice reference](docs/simple-device.md)
+- [SimpleDevice developer tutorial](docs/developer/simple-device-tutorial.md)
 - [Workbench user guide](docs/workbench.md)
 - [Runtime architecture and concepts](docs/architecture.md)
 - [Application API reference](docs/api/README.md)

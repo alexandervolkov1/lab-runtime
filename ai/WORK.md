@@ -44,9 +44,9 @@ ACCEPTED PKG-1. Its combined Runtime + Workbench Windows normal dependency inven
 contains all 160 current third-party dependencies exactly once, reports zero missing
 Cargo license-metadata entries, and explicitly retains 15 packages without a matching
 standalone top-level license/notice file for final release/legal review. That review
-remains a RELEASE BLOCKER. DOC-1 Configuration is ACCEPTED. DOC-2 SimpleDevice is
-AUTHORIZED / READY TO START / NOT IMPLEMENTED. The preview is not published or
-release-ready; full-driver documentation remains separate incomplete work.
+remains a RELEASE BLOCKER. DOC-1 Configuration and DOC-2 SimpleDevice are ACCEPTED.
+DOC-3 Full native driver is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The
+preview is not published or release-ready.
 
 DOC-1 adds the source-derived public Configuration Guide, a minimal validated virtual
 deployment with a relative Recorder path, parser-execution checks for every documented
@@ -57,6 +57,13 @@ documents the independent CLI, deployment, live Runtime, Workbench workspace, an
 diagnostics domains without inventing a universal overlay. No production Rust behavior
 changed.
 
+DOC-2 adds the canonical public SimpleDevice reference, a step-by-step read-only and
+writable ACK/readback tutorial, and four safe public example files. Production parser,
+compiler, and deployment-loader tests bind the documentation to the accepted M16
+implementation; package validation includes the docs and byte-identical examples.
+No SimpleDevice, Runtime, output-safety, Recorder, or Workbench production behavior
+changed.
+
 Current clean baseline commits:
 
 - M16 completion: `48a22f34d23053eb2c1d6752663701872b6fa6d3`
@@ -65,12 +72,14 @@ Current clean baseline commits:
 - Pre-M17 coordination baseline: `229fb7d0eadab970249cb088aefae7e30914e6aa`
 - M17 closure: `b8267eb1759f0017c0bc8ac90caaec5ae6023a4e`
 - PR-CLEAN-1: `6097ba99f0028b627a56752d712cab5cf50e9969`
+- PKG-1: `3a74ce154672e8cefc478682b7443b169c7bdebc`
+- DOC-1 Configuration: `91fc3d7f33fa6c4bf9e68f0230a708951afcb102`
 
 Current authorization boundary:
 
-- Allowed now: DOC-2 SimpleDevice. PRE-RELEASE CLEANUP AND DOCUMENTATION remains in
-  progress. Release publication is not authorized, and the unresolved 15-package
-  license-text/legal review remains a release blocker.
+- Allowed now: DOC-3 Full native driver. PRE-RELEASE CLEANUP AND DOCUMENTATION
+  remains in progress. Release publication is not authorized, and the unresolved
+  15-package license-text/legal review remains a release blocker.
 - Not authorized: Arduino/Clojure/Clay integration, Runtime operation/capability
   changes, GUI features, Steel, a client SDK, Arduino integration, full
   Clojure/Babashka client work, or broad redesign.

@@ -334,10 +334,11 @@ history capacity is `1..=1024`; `address` and `channel` are `u16`. A deployment 
 at most 32 SimpleDevice instances and 16 distinct definition files. Each raw
 definition is at most 8,192 bytes and is resolved relative to the deployment file.
 
-This guide documents only the deployment binding. The definition grammar, READ,
-WRITE, ACK, READBACK, mapping, and output-safety tutorial remain separate
-SimpleDevice documentation work. The current lifecycle and safety boundary is
-summarized in [Extending the Runtime](extending-runtime.md#add-a-declarative-simpledevice).
+The [SimpleDevice reference](simple-device.md) defines the exact JSON grammar,
+READ, WRITE, ACK, READBACK, bounds, mapping, and output-safety semantics. Follow the
+[SimpleDevice tutorial](developer/simple-device-tutorial.md) for validated read-only
+and writable examples. The lifecycle boundary is also summarized in
+[Extending the Runtime](extending-runtime.md#add-a-declarative-simpledevice).
 
 ### Managed components
 
@@ -708,6 +709,7 @@ that error code.
 - [Application API](api/README.md) defines live query/mutation semantics.
 - [Workbench guide](workbench.md) describes workspace, recovery, and operator flows.
 - [Recorder and SQLite](recorder-sqlite.md) defines storage and durability.
+- [SimpleDevice](simple-device.md) is the declarative device reference, with a
+  [step-by-step tutorial](developer/simple-device-tutorial.md).
 - [Extending the Runtime](extending-runtime.md) describes current source-level
-  extension seams. The dedicated SimpleDevice and full-native-driver tutorials are
-  not yet complete.
+  native extension seams. The full-native-driver tutorial remains later work.

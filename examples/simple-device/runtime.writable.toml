@@ -1,0 +1,52 @@
+schema_version = 1
+
+[runtime]
+key = "simple-writable"
+display_name = "SimpleDevice writable example"
+
+[server]
+host = "127.0.0.1"
+port = 0
+
+[recording]
+enabled = false
+policy = "best_effort"
+
+[[resources]]
+id = 7
+key = "instrument-bus"
+kind = "windows_com"
+port = "COM256"
+baud_rate = 9600
+data_bits = 8
+parity = "none"
+stop_bits = 1
+flow_control = "none"
+read_timeout_ms = 100
+write_timeout_ms = 100
+open_timeout_ms = 500
+recovery_timeout_ms = 500
+
+[[instruments]]
+id = 1001
+key = "output-device"
+kind = "simple_device"
+display_name = "Output device"
+definition = "writable.json"
+resource_id = 7
+address = 1
+channel = 1
+poll_period_ms = 500
+queue_timeout_ms = 250
+transaction_timeout_ms = 500
+history_capacity = 256
+
+[[safe_profiles]]
+instrument_id = 1001
+parameter_id = 2
+min = 0.0
+max = 100.0
+safe_value = 0.0
+max_lease_ms = 2000
+max_proposal_ttl_ms = 200
+required_evidence = "readback"

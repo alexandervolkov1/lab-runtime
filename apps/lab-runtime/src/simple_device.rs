@@ -1619,6 +1619,104 @@ mod tests {
         br#"{"format_version":1,"definition_id":"furnace-output-v1","definition_version":1,"parameters":[{"parameter_id":2,"key":"heater","display_name":"Heater","role":"actuator","access":"read_write","unit_id":"percent","unit_symbol":"%","value_type":"float","engineering_min":0.0,"engineering_max":100.0,"write_effect":"output_affecting","encoding":{"raw":"u16_be","scale":0.1,"offset":0.0},"read":{"request":{"segments":[{"type":"literal","hex":"22"},{"type":"instance_field","field":"address","encoding":"u8"}]},"response":{"exact_length":4,"matches":[{"type":"literal_match","offset":0,"hex":"22"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"}],"extract":{"type":"scalar_extract","offset":2}}},"write":{"request":{"segments":[{"type":"literal","hex":"20"},{"type":"instance_field","field":"address","encoding":"u8"},{"type":"instance_field","field":"channel","encoding":"u8"},{"type":"value_field"},{"type":"checksum","algorithm":"crc16_modbus"}]},"ack":{"exact_length":5,"matches":[{"type":"literal_match","offset":0,"hex":"20"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"},{"type":"literal_match","offset":2,"hex":"00"}],"checksum":{"type":"checksum","offset":3,"algorithm":"crc16_modbus"}},"readback":{"request":{"segments":[{"type":"literal","hex":"21"},{"type":"instance_field","field":"address","encoding":"u8"},{"type":"instance_field","field":"channel","encoding":"u8"}]},"response":{"exact_length":5,"matches":[{"type":"literal_match","offset":0,"hex":"21"},{"type":"instance_match","offset":1,"field":"address","encoding":"u8"}],"extract":{"type":"scalar_extract","offset":3}}}}}]}"#.to_vec()
     }
 
+    #[test]
+    fn public_simple_device_examples_use_the_production_parser_and_compiler() {
+        let read_only = parse_simple_definition(include_bytes!(
+            "../../../examples/simple-device/read-only.json"
+        ))
+        .unwrap();
+        assert_eq!(read_only.definition_id, "generic-temperature-v1");
+        assert_eq!(read_only.definition_version, 1);
+        let read_only = compile_simple_instance(&read_only, InstrumentId::new(1001), 1, 1).unwrap();
+        assert_eq!(read_only.parameters.len(), 1);
+        let measurement = &read_only.parameters[0];
+        assert_eq!(measurement.descriptor.id.get(), 1);
+        assert_eq!(measurement.descriptor.name, "Temperature");
+        assert_eq!(measurement.descriptor.role, ParameterRole::Measurement);
+        assert!(measurement.write.is_none());
+        let read = measurement.read.as_ref().unwrap();
+        assert_eq!(read.request, b"GET\r\n");
+        assert_eq!(read.response.exact_length, 6);
+        assert_eq!(read.response.extract_offset, 2);
+        assert_eq!(read.response.encoding, SimpleScalarEncoding::I16Be);
+        assert_eq!(read.response.scale, 0.01);
+
+        let writable = parse_simple_definition(include_bytes!(
+            "../../../examples/simple-device/writable.json"
+        ))
+        .unwrap();
+        assert_eq!(writable.definition_id, "generic-output-v1");
+        assert_eq!(writable.definition_version, 1);
+        let writable = compile_simple_instance(&writable, InstrumentId::new(1001), 1, 1).unwrap();
+        assert_eq!(writable.parameters.len(), 1);
+        let actuator = &writable.parameters[0];
+        assert_eq!(actuator.descriptor.id.get(), 2);
+        assert_eq!(actuator.descriptor.name, "Output");
+        assert_eq!(actuator.descriptor.role, ParameterRole::Actuator);
+        let read = actuator.read.as_ref().unwrap();
+        assert_eq!(read.request, b"GET\r\n");
+        assert_eq!(read.response.exact_length, 6);
+        assert_eq!(
+            read.response.matches,
+            vec![
+                SimpleResponseMatch {
+                    kind: SimpleResponseMatchKind::Literal,
+                    offset: 0,
+                    expected: b"V=".to_vec(),
+                },
+                SimpleResponseMatch {
+                    kind: SimpleResponseMatchKind::Literal,
+                    offset: 4,
+                    expected: b"\r\n".to_vec(),
+                },
+            ]
+        );
+        assert_eq!(read.response.extract_offset, 2);
+        assert_eq!(read.response.encoding, SimpleScalarEncoding::U16Be);
+        assert_eq!(read.response.scale, 0.1);
+        assert_eq!(read.response.engineering_offset, 0.0);
+        assert_eq!(read.response.checksum, None);
+
+        let write = actuator.write.as_ref().unwrap();
+        let (request, raw) = write.encode(42.0).unwrap();
+        assert_eq!(request, b"SET \x01\xa4\r\n");
+        assert_eq!(raw, [0x01, 0xa4]);
+        assert_eq!(write.ack.exact_length, 4);
+        assert_eq!(
+            write.ack.matches,
+            vec![SimpleResponseMatch {
+                kind: SimpleResponseMatchKind::Literal,
+                offset: 0,
+                expected: b"OK\r\n".to_vec(),
+            }]
+        );
+        assert_eq!(write.ack.checksum, None);
+
+        let readback = write.readback.as_ref().unwrap();
+        assert_eq!(readback.request, b"GET\r\n");
+        assert_eq!(readback.response.exact_length, 6);
+        assert_eq!(
+            readback.response.matches,
+            vec![
+                SimpleResponseMatch {
+                    kind: SimpleResponseMatchKind::Literal,
+                    offset: 0,
+                    expected: b"V=".to_vec(),
+                },
+                SimpleResponseMatch {
+                    kind: SimpleResponseMatchKind::Literal,
+                    offset: 4,
+                    expected: b"\r\n".to_vec(),
+                },
+            ]
+        );
+        assert_eq!(readback.response.extract_offset, 2);
+        assert_eq!(readback.response.encoding, SimpleScalarEncoding::U16Be);
+        assert_eq!(readback.response.scale, 0.1);
+        assert_eq!(readback.response.engineering_offset, 0.0);
+        assert_eq!(readback.response.checksum, None);
+    }
+
     fn controlled_writable_definition() -> Vec<u8> {
         let mut combined: Value = serde_json::from_slice(&definition()).unwrap();
         let writable: Value = serde_json::from_slice(&writable_definition()).unwrap();

@@ -183,10 +183,10 @@ external listener or framing. M17.3 and M17.4 are externally accepted, including
 the independently re-reviewed B1-B5 remediation. Consolidated M17.1-M17.4 review is
 ACCEPTED. M17.5 optional Babashka boundary evidence and focused documentation are
 ACCEPTED with no blockers. M17 is CLOSED. PRE-RELEASE CLEANUP AND DOCUMENTATION is
-now in progress: PR-CLEAN-1, PKG-1, and DOC-1 Configuration are ACCEPTED. DOC-2
-SimpleDevice is AUTHORIZED / READY TO START / NOT IMPLEMENTED. The unresolved 15-package
-license-text/legal review remains a release blocker. Arduino/Clojure integration and
-release publication remain unauthorized.
+now in progress: PR-CLEAN-1, PKG-1, DOC-1 Configuration, and DOC-2 SimpleDevice are
+ACCEPTED. DOC-3 Full native driver is AUTHORIZED / READY TO START / NOT IMPLEMENTED.
+The unresolved 15-package license-text/legal review remains a release blocker.
+Arduino/Clojure integration and release publication remain unauthorized.
 
 M16 targets bounded declarative simple devices that become ordinary Runtime
 Instrument, Signal, and Actuator entities after validation, without device-specific

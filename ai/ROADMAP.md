@@ -353,9 +353,9 @@ GUI / external Workbench calls -> one Workbench dispatcher
   external review without creating a client SDK or adding Steel. ACCEPTED with no
   blockers. M17 is CLOSED.
 
-Current phase: PRE-RELEASE CLEANUP AND DOCUMENTATION. PR-CLEAN-1, PKG-1, and DOC-1
-Configuration are ACCEPTED. DOC-2 SimpleDevice is AUTHORIZED / READY TO START / NOT
-IMPLEMENTED.
+Current phase: PRE-RELEASE CLEANUP AND DOCUMENTATION. PR-CLEAN-1, PKG-1, DOC-1
+Configuration, and DOC-2 SimpleDevice are ACCEPTED. DOC-3 Full native driver is
+AUTHORIZED / READY TO START / NOT IMPLEMENTED.
 The unresolved 15-package license-text/legal review remains a release blocker;
 preview.2 is not release-ready and no release is published. Full Arduino + Clojure
 + Clay integration remains post-preview practical work.

@@ -49,6 +49,11 @@ Application, Recorder, or Workbench branch:
 3. Bind it to an existing eligible resource and, when needed, an existing Reference
    and safe profile.
 
+The complete schema, grammar, limits, and evidence model are in the
+[SimpleDevice reference](simple-device.md). Start with the validated
+[read-only and writable tutorial](developer/simple-device-tutorial.md). This is a
+declarative composition path, not the native Rust extension path below.
+
 The candidate is parsed, cross-referenced, bounded, and prepared before activation.
 Prepared topology performs no physical work and is not publicly discoverable. The
 publication path holds its bounded event capacity before Recorder activation and
@@ -71,8 +76,9 @@ these real paths.
 
 ## Add a physical instrument
 
-Metakon is the current physical reference implementation. Its extension path is
-explicit rather than hidden behind a universal protocol trait:
+Use this trusted native Rust path only when SimpleDevice's bounded grammar is not
+enough. Metakon is the current physical reference implementation. Its extension path
+is explicit rather than hidden behind a universal protocol trait:
 
 | Concern | Existing reference source |
 |---|---|
