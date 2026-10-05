@@ -5,10 +5,10 @@
 //! - [`lab_core::Runtime`] is the sole authoritative mutable experiment owner.
 //! - [`host::HostCore`] owns that Runtime and drives monotonic schedules, events,
 //!   Recorder admission and adapter progress without transferring domain authority.
-//! - [`service::ServiceHost`] owns process startup, loopback readiness, deployment,
+//! - [`service::ServiceHost`] owns process startup, listener readiness, deployment,
 //!   reconnect and finite shutdown around `HostCore`.
 //! - [`application::Application`] owns bounded client/session/delivery state and maps
-//!   the accepted local API to the serialized service owner. A connection never owns
+//!   the accepted API to the serialized service owner. A connection never owns
 //!   experiment lifetime.
 //! - [`recorder::RecorderWorker`] and [`recorder::SqliteStore`] own durable recording
 //!   machinery, not experiment state.

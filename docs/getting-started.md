@@ -13,7 +13,7 @@ workflow, and optionally records the run. The virtual profile opens no serial ha
 An extracted preview package already contains both executables and does not require
 Rust. Building from source requires Rust 1.95 with Cargo. Run package commands from
 the extracted package root or source commands from the repository root. Runtime
-listeners are loopback-only; this guide does not configure remote access.
+TCP defaults to loopback; the primary walkthrough keeps that default.
 
 The recommended progression is:
 
@@ -65,6 +65,20 @@ Port `7420` must be free. The profile contains a virtual thermal plant, Referenc
 a PID controller, and the configured Runtime-owned Recorder. Its measurements are
 virtual observations, not evidence from physical hardware.
 
+Without `--bind`, the TCP Application listener remains on `127.0.0.1`. To accept TCP
+clients through a specific trusted LAN or VPN interface, put its numeric IPv4 address
+before `--port`, for example:
+
+```powershell
+./lab-runtime.exe --serve --profile virtual-demo `
+  --bind 192.168.1.50 --port 8765
+```
+
+`0.0.0.0` is also accepted when explicitly requested. A non-loopback bind adds no
+TLS, authentication, VPN, or firewall configuration, so use it only on a trusted
+network with appropriate host firewall policy. It does not widen the optional
+WebSocket listener, which remains loopback-only.
+
 Running `lab-runtime` without arguments executes a finite demonstration and exits;
 it does not start the Application server.
 
@@ -93,8 +107,8 @@ cargo run -p lab-runtime --locked -- `
 ```
 
 The optional WebSocket listener, when configured, is reported separately in the same
-readiness object. Runtime supports local TCP/NDJSON and optional loopback
-WebSocket/JSON. Native Workbench uses TCP today.
+readiness object. Runtime supports TCP/NDJSON on the selected IPv4 bind and optional
+loopback WebSocket/JSON. Native Workbench uses TCP today.
 
 ## Start Workbench
 

@@ -1,6 +1,6 @@
 //! Process lifecycle around the serialized [`crate::host::HostCore`] owner.
 //!
-//! [`crate::service::ServiceHost`] owns the system clock, loopback listener, deployment lifecycle,
+//! [`crate::service::ServiceHost`] owns the system clock, Application listener, deployment lifecycle,
 //! resource reconnect candidates and finite shutdown coordination. It orchestrates
 //! external workers/adapters and Runtime progress through `HostCore`; it does not own
 //! a second copy of experiment state. Entropy failure, malformed configuration,
@@ -69,19 +69,21 @@ pub struct RecordingOptions {
 /// Strict virtual-only service options; default binary execution remains finite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceOptions {
+    bind: Ipv4Addr,
     port: u16,
     websocket: Option<WebSocketOptions>,
     recording: Option<RecordingOptions>,
     config: Option<PathBuf>,
 }
 impl ServiceOptions {
-    /// Accept the fixed virtual profile, loopback port, and optional local Recorder.
+    /// Accept the fixed virtual profile, TCP address, and optional local Recorder.
     pub fn parse(args: &[&str]) -> Result<Self, String> {
         if args.len() == 3 && args[0] == "--serve" && args[1] == "--config" {
             if args[2].is_empty() {
                 return Err("configuration path must not be empty".into());
             }
             return Ok(Self {
+                bind: Ipv4Addr::LOCALHOST,
                 port: 0,
                 websocket: None,
                 recording: None,
@@ -92,14 +94,30 @@ impl ServiceOptions {
             || args[0] != "--serve"
             || args[1] != "--profile"
             || args[2] != "virtual-demo"
-            || args[3] != "--port"
         {
-            return Err("expected --serve --profile virtual-demo --port <0..65535> [--record-db <absolute-local-path>] [--record-policy required|best-effort] [--ws-port <0..65535> --ws-origin <exact-origin> ...]".into());
+            return Err("expected --serve --profile virtual-demo [--bind <IPv4>] --port <0..65535> [--record-db <absolute-local-path>] [--record-policy required|best-effort] [--ws-port <0..65535> --ws-origin <exact-origin> ...]".into());
         }
-        let port = args[4]
+        let mut index = 3;
+        let bind = if args.get(index) == Some(&"--bind") {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| "bind requires an IPv4 address".to_string())?;
+            index += 2;
+            value
+                .parse::<Ipv4Addr>()
+                .map_err(|_| "bind must be a numeric IPv4 address".to_string())?
+        } else {
+            Ipv4Addr::LOCALHOST
+        };
+        if args.get(index) != Some(&"--port") {
+            return Err("expected --port after profile bind options".into());
+        }
+        let port = args
+            .get(index + 1)
+            .ok_or_else(|| "port requires a value".to_string())?
             .parse::<u16>()
             .map_err(|_| "port must be an integer in 0..65535".to_string())?;
-        let mut index = 5;
+        index += 2;
         let recording = if args.get(index) == Some(&"--record-db") {
             let value = args
                 .get(index + 1)
@@ -158,6 +176,7 @@ impl ServiceOptions {
             Some(WebSocketOptions::new(port, origins).map_err(str::to_owned)?)
         };
         Ok(Self {
+            bind,
             port,
             websocket,
             recording,
@@ -165,7 +184,12 @@ impl ServiceOptions {
         })
     }
 
-    /// Requested loopback TCP port; zero delegates selection to the OS.
+    /// Requested numeric IPv4 address for the TCP Application listener.
+    pub const fn bind_address(&self) -> Ipv4Addr {
+        self.bind
+    }
+
+    /// Requested TCP port; zero delegates selection to the OS.
     pub const fn port(&self) -> u16 {
         self.port
     }
@@ -781,7 +805,7 @@ impl ServiceHost {
         }
     }
 
-    /// Bind a trusted already-safe host fixture on loopback, without changing its
+    /// Bind a trusted already-safe host fixture, without changing its
     /// Core composition. This is local test/deployment wiring, never a wire op.
     pub fn startup_from_trusted_host(
         options: ServiceOptions,
@@ -799,7 +823,8 @@ impl ServiceHost {
             return Err(io::Error::other("fixture safe evidence unavailable").into());
         }
         let clock = SystemClock::new();
-        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, options.port()))?;
+        let listener =
+            TcpListener::bind(SocketAddrV4::new(options.bind_address(), options.port()))?;
         listener.set_nonblocking(true)?;
         let websocket = bind_websocket(options.websocket())?;
         if let Some(recording) = options.recording() {
@@ -852,14 +877,14 @@ impl ServiceHost {
             reconnect_cleanup_service_failure: false,
         })
     }
-    /// Validate identity/profile, then bind only IPv4 loopback in that order.
+    /// Validate identity/profile, then bind the configured IPv4 address in that order.
     pub fn startup(options: ServiceOptions) -> Result<Self, Box<dyn Error>> {
         let configuration_path = options.configuration_path().map(PathBuf::from);
         let loaded = options
             .configuration_path()
             .map(load_runtime_toml)
             .transpose()?;
-        let (port, configured_recording, websocket_options) =
+        let (bind, port, configured_recording, websocket_options) =
             if let Some(deployment) = loaded.as_ref() {
                 let dto = &deployment.effective().dto;
                 let recording = if dto.recording.enabled {
@@ -885,9 +910,10 @@ impl ServiceHost {
                     })
                     .transpose()
                     .map_err(io::Error::other)?;
-                (dto.server.port, recording, websocket)
+                (Ipv4Addr::LOCALHOST, dto.server.port, recording, websocket)
             } else {
                 (
+                    options.bind_address(),
                     options.port(),
                     options.recording().cloned(),
                     options.websocket().cloned(),
@@ -1057,7 +1083,7 @@ impl ServiceHost {
             }
             host.activate_standard_components(clock.now())?;
         }
-        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))?;
+        let listener = TcpListener::bind(SocketAddrV4::new(bind, port))?;
         listener.set_nonblocking(true)?;
         let websocket = bind_websocket(websocket_options.as_ref())?;
         if let Some(recording) = configured_recording.as_ref() {
@@ -1110,7 +1136,7 @@ impl ServiceHost {
         })
     }
 
-    /// OS-selected loopback endpoint; no wildcard or external interface is bound.
+    /// Actual bound TCP Application endpoint.
     pub const fn bound_address(&self) -> SocketAddr {
         self.bound
     }

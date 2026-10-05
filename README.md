@@ -46,7 +46,8 @@ stop its Recorder, or roll back an admitted operation.
   authority;
 - resource reconnect and typed configuration-property updates;
 - Runtime-owned SQLite recording with provenance, gaps, and lifecycle sealing;
-- one local Application API over TCP/NDJSON and optional loopback WebSocket/JSON;
+- one Application API over TCP/NDJSON with a loopback-default IPv4 bind, and optional
+  loopback WebSocket/JSON;
 - a Windows-native Workbench with discovery, measurements, live plots, typed
   Reference/controller/PID/resource/property/Recorder workflows, and manual recovery.
 
@@ -102,6 +103,12 @@ cargo run -p lab-runtime --locked -- `
   --record-db $db `
   --record-policy required
 ```
+
+The TCP listener defaults to `127.0.0.1`. Profile startup may explicitly select a
+numeric LAN/VPN IPv4 address with `--bind ADDRESS` before `--port`; this adds no TLS,
+authentication, VPN, or firewall configuration. The optional WebSocket listener
+remains loopback-only. See the Configuration Guide before exposing Runtime beyond
+localhost.
 
 In a second terminal, start Workbench with its own workspace:
 
@@ -160,8 +167,9 @@ Workbench workspace behavior, and validation failures, use the
 
 ## Current environment and limitations
 
-- Runtime listeners are local/loopback. This project has no remote-network security
-  qualification.
+- Runtime TCP is loopback by default and may be explicitly bound to a trusted LAN/VPN
+  IPv4 address. This project has no remote-network transport-security qualification;
+  `--bind` adds no TLS or authentication. Runtime WebSocket remains loopback-only.
 - Native Workbench currently runs on Windows and currently connects over TCP. Runtime
   may also expose its optional loopback WebSocket transport to other clients.
 - The system is not hard real-time and has not completed exhaustive physical,

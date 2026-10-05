@@ -80,6 +80,7 @@ overridden with profile CLI flags.
 | `--serve` | none | absent | process | yes | Required first token for either server mode. |
 | `--config` | nonempty path | none | deployment startup | yes | Selects strict deployment TOML. It is exclusive with all profile options. |
 | `--profile` | exactly `virtual-demo` | none | compiled profile | yes | Selects the built-in virtual composition. |
+| `--bind` | numeric IPv4 address | `127.0.0.1` | profile TCP listener | yes | Selects the interface address for the Application TCP listener. |
 | `--port` | integer `0..=65535` | none | profile TCP listener | yes | Required with `virtual-demo`; `0` asks the OS for a free port. |
 | `--record-db` | local absolute path | Recorder disabled | profile Recorder | yes | Enables SQLite recording. Relative and UNC/network paths are rejected. |
 | `--record-policy` | `required` or `best-effort` | `required` when `--record-db` is present | profile Recorder | yes | Selects the storage-failure policy. It is valid only after `--record-db`. |
@@ -89,14 +90,16 @@ overridden with profile CLI flags.
 The profile parser is deliberately strict. Its accepted order is:
 
 ```text
---serve --profile virtual-demo --port PORT
+--serve --profile virtual-demo [--bind IPv4] --port PORT
   [--record-db ABSOLUTE_PATH [--record-policy required|best-effort]]
   [--ws-port PORT --ws-origin ORIGIN [--ws-origin ORIGIN ...]]
 ```
 
-There is no `--listen`, hostname, wildcard-bind, config-overlay, or hot-reload CLI
-option. Both Runtime listeners bind numeric IPv4 loopback regardless of the client
-address used to reach them.
+`--bind` affects only the profile TCP/NDJSON Application listener. It accepts a
+numeric IPv4 address, including a configured LAN/VPN address or the explicit wildcard
+`0.0.0.0`; it never discovers an interface automatically. The optional WebSocket
+listener remains IPv4 loopback-only. There is no `--listen`, hostname,
+config-overlay, or hot-reload CLI option.
 
 In deployment mode, `[server]`, `[server.websocket]`, and `[recording]` supply the
 corresponding settings. The only accepted CLI form is exactly:
@@ -666,8 +669,12 @@ hidden topology or pending transport work.
 
 ## Security implications
 
-- Runtime TCP and WebSocket listeners are IPv4 loopback-only. Deployment
-  `server.host` cannot widen that boundary.
+- Profile startup defaults the Runtime TCP listener to `127.0.0.1`. An explicit
+  non-loopback `--bind` is intended only for a trusted LAN or VPN. It adds no TLS,
+  authentication, VPN, firewall rule, or other transport security; `0.0.0.0` exposes
+  the listener on every IPv4 interface permitted by the host network and firewall.
+- Runtime WebSocket and deployment-configured listeners remain IPv4 loopback-only.
+  Deployment `server.host` cannot widen that boundary.
 - The Workbench external endpoint is disabled by default and accepts only numeric
   IPv4 loopback. It has no authentication and must not be forwarded or exposed as a
   remote service.
@@ -686,7 +693,7 @@ hidden topology or pending transport work.
 |---|---|---|
 | usage plus unknown/duplicate argument | Unsupported CLI option, duplicate option, or mixed profile/config forms | Use one exact startup grammar from this guide. |
 | option needs a value | Missing path, port, origin, scope, or address | Supply the value immediately after its option. |
-| invalid port/address | Nonnumeric socket address, invalid `u16`, hostname where numeric address is required, or non-loopback Workbench endpoint | Use `127.0.0.1:PORT`; use port `0` only where documented. |
+| invalid port/address | Invalid numeric IPv4 bind, invalid `u16`, hostname where numeric address is required, or non-loopback Workbench endpoint | Use a numeric IPv4 value for Runtime `--bind`, use `127.0.0.1:PORT` for Workbench endpoints, and use port `0` only where documented. |
 | no readiness; address already in use | Requested TCP or WebSocket port is occupied | Stop the conflicting process, select another configured port, or use `0`. |
 | configuration artifact/read failure | Missing file, wrong current directory, permissions, oversized file, or rejected path traversal | Resolve `--config` with `GetFullPath`, check referenced paths relative to its parent, and use a readable local directory. |
 | invalid TOML | Syntax error, duplicate key, unknown field, wrong type, BOM, or unsupported schema version | Compare with the strict field tables and validate UTF-8 without BOM. |

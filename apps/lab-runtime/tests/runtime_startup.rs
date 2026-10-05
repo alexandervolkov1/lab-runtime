@@ -18,6 +18,8 @@ fn documented_runtime_cli_forms_are_accepted_by_the_real_parser() {
             "--serve",
             "--profile",
             "virtual-demo",
+            "--bind",
+            "192.168.1.50",
             "--port",
             "0",
             "--record-db",
@@ -30,6 +32,70 @@ fn documented_runtime_cli_forms_are_accepted_by_the_real_parser() {
             "http://127.0.0.1:3000",
         ])
         .is_ok()
+    );
+}
+
+#[test]
+fn profile_bind_defaults_to_ipv4_loopback_and_preserves_port_parsing() {
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "8765"]).unwrap();
+    assert_eq!(options.bind_address(), std::net::Ipv4Addr::LOCALHOST);
+    assert_eq!(options.port(), 8765);
+}
+
+#[test]
+fn profile_accepts_explicit_numeric_ipv4_bind_and_rejects_invalid_bind() {
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--bind",
+        "192.168.1.50",
+        "--port",
+        "8765",
+    ])
+    .unwrap();
+    assert_eq!(options.bind_address().to_string(), "192.168.1.50");
+    assert_eq!(options.port(), 8765);
+
+    for bind in ["localhost", "192.168.1.999", "::1"] {
+        assert!(
+            ServiceOptions::parse(&[
+                "--serve",
+                "--profile",
+                "virtual-demo",
+                "--bind",
+                bind,
+                "--port",
+                "8765",
+            ])
+            .is_err(),
+            "invalid IPv4 bind was accepted: {bind}"
+        );
+    }
+}
+
+#[test]
+fn startup_uses_the_explicit_tcp_bind_without_expanding_websocket() {
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--bind",
+        "0.0.0.0",
+        "--port",
+        "0",
+        "--ws-port",
+        "0",
+        "--ws-origin",
+        "http://127.0.0.1:3000",
+    ])
+    .unwrap();
+    let service = ServiceHost::startup(options).unwrap();
+    assert_eq!(service.bound_address().ip().to_string(), "0.0.0.0");
+    assert_eq!(
+        service.websocket_bound_address().unwrap().ip().to_string(),
+        "127.0.0.1"
     );
 }
 
@@ -58,7 +124,7 @@ fn trusted_virtual_profile_is_safe_and_ready_without_auto_start() {
 }
 
 #[test]
-fn service_cli_rejects_unsafe_bind_or_unknown_profile_before_runtime_activation() {
+fn service_cli_rejects_unknown_options_or_profile_before_runtime_activation() {
     assert!(
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).is_ok()
     );
