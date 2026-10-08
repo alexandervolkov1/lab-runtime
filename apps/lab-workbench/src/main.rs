@@ -134,6 +134,15 @@ mod operator_boundary_tests {
 
     #[test]
     fn ordinary_gui_source_has_no_raw_or_prohibited_application_mutations() {
+        fn production_source(source: &str) -> String {
+            let lines: Vec<_> = source.lines().collect();
+            let test_boundary = lines
+                .windows(2)
+                .position(|pair| pair == ["#[cfg(test)]", "mod tests {"])
+                .expect("source has a test module boundary");
+            lines[..test_boundary].join("\n")
+        }
+
         let source = include_str!("gui/app.rs");
         let dispatcher = include_str!("dispatcher.rs");
         let external = include_str!("external.rs");
@@ -154,10 +163,7 @@ mod operator_boundary_tests {
         assert!(!dispatcher.contains("interrupt_pending_lab"));
         assert!(!dispatcher.contains("-> &mut WorkbenchModel"));
         assert!(!dispatcher.contains("Option<(&mut WorkbenchModel"));
-        let production_dispatcher = dispatcher
-            .split("#[cfg(test)]\nmod tests")
-            .next()
-            .expect("dispatcher has production source");
+        let production_dispatcher = production_source(dispatcher);
         assert_eq!(
             production_dispatcher
                 .matches("kind: LabUpdateKind::LocalRejected")
@@ -165,10 +171,16 @@ mod operator_boundary_tests {
             1,
             "only ClientUpdate::LocalRejected may produce a local-rejected lab update"
         );
-        let external_production = external
-            .split("#[cfg(test)]\nmod tests")
-            .next()
-            .expect("external adapter has production source");
+        let external_production = production_source(external);
+        for line_ending in ["\n", "\r\n"] {
+            for (source, expected) in [
+                (dispatcher, &production_dispatcher),
+                (external, &external_production),
+            ] {
+                let variant = source.lines().collect::<Vec<_>>().join(line_ending);
+                assert_eq!(&production_source(&variant), expected);
+            }
+        }
         assert!(!external_production.contains("ClientHandle"));
         assert!(!external_production.contains(".client()"));
         assert!(!external_production.contains("RejectionCorrelation"));

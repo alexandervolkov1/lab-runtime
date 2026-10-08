@@ -24,6 +24,9 @@ use tungstenite::{ClientRequestBuilder, Message, WebSocket, client};
 
 const ORIGIN: &str = "http://127.0.0.1:3000";
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
+// Recorded startup hashes the complete executable for provenance. Large Linux
+// debug test binaries need a startup allowance separate from socket I/O bounds.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 static SERVICE_GATE: Mutex<()> = Mutex::new(());
 
 struct Running {
@@ -66,7 +69,7 @@ impl Running {
             ready_tx.send(addresses).unwrap();
             run(service, flag).unwrap();
         });
-        let (tcp, websocket) = ready_rx.recv_timeout(IO_TIMEOUT).unwrap();
+        let (tcp, websocket) = ready_rx.recv_timeout(STARTUP_TIMEOUT).unwrap();
         Self {
             tcp,
             websocket,
@@ -140,8 +143,12 @@ impl Peer {
     fn write_raw(&mut self, body: &str) {
         match self {
             Self::Tcp(reader) => {
-                reader.get_mut().write_all(body.as_bytes()).unwrap();
-                reader.get_mut().write_all(b"\n").unwrap();
+                // Write one complete frame: separate body/LF writes interact with
+                // Linux delayed ACK/Nagle and needlessly slow this parity fixture.
+                reader
+                    .get_mut()
+                    .write_all(format!("{body}\n").as_bytes())
+                    .unwrap();
             }
             Self::WebSocket(socket) => {
                 socket.write(Message::Text(body.to_owned().into())).unwrap();
@@ -563,16 +570,22 @@ fn event_gap_details_match_across_transports() {
     websocket.write_value(&json!({"v":1,"msg_id":"ws-gap","op":"subscribe","args":args}));
     let tcp_gap = tcp.read_for_msg("tcp-gap");
     let ws_gap = websocket.read_for_msg("ws-gap");
-    assert_eq!(
-        without_msg_id(tcp_gap.clone()),
-        without_msg_id(ws_gap.clone())
-    );
-    assert_eq!(tcp_gap["oldest"], ws_gap["oldest"]);
-    assert_eq!(tcp_gap["latest"], ws_gap["latest"]);
+    // Each query observes its own committed snapshot. Autonomous acquisition can
+    // advance the ring between these requests, especially with Linux TCP timing.
+    // Compare the complete stable error envelope, then check each cursor/ring below.
+    let stable_gap = |gap: Value| {
+        let mut gap = without_msg_id(gap);
+        let fields = gap.as_object_mut().unwrap();
+        fields.remove("oldest");
+        fields.remove("latest");
+        gap
+    };
+    assert_eq!(stable_gap(tcp_gap.clone()), stable_gap(ws_gap.clone()));
     for gap in [tcp_gap, ws_gap] {
         assert_eq!(gap["code"], "event_gap");
         assert_eq!(gap["resync_required"], true);
         assert_eq!(gap["oldest"]["boot_id"], gap["latest"]["boot_id"]);
+        assert_eq!(gap["latest"]["boot_id"], boot_id);
         let oldest = gap["oldest"]["seq"]
             .as_str()
             .unwrap()

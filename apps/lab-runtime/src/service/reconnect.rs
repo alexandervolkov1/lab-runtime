@@ -17,7 +17,7 @@ impl ServiceHost {
         self.reconnect_resource_with_factory(
             resource_id,
             expected_binding_generation,
-            ComTransport::open_windows_with_transient_retry,
+            ComTransport::open_serial_with_transient_retry,
         )
     }
 

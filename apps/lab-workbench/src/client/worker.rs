@@ -3982,7 +3982,7 @@ mod tests {
         client.connect(None).unwrap();
         let _ = worker.service_commands();
         assert_eq!(worker.state, ConnectionState::AwaitingHello);
-        let (opened, _) = listener.accept().unwrap();
+        let opened = accept_nonblocking(&listener);
         assert!(matches!(
             listener.accept(),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock
@@ -4706,6 +4706,12 @@ mod tests {
         wait_for(&client, |update| {
             matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
         });
+        // Disconnected is published before the admission fence is acknowledged.
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while !client.command_admission_open() {
+            assert!(Instant::now() < deadline, "disconnect admission fence");
+            thread::yield_now();
+        }
         client.connect(Some(hello.scope.clone())).unwrap();
         wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
 
@@ -4833,6 +4839,12 @@ mod tests {
         wait_for(&client, |update| {
             matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
         });
+        // Disconnected is published before the admission fence is acknowledged.
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while !client.command_admission_open() {
+            assert!(Instant::now() < deadline, "disconnect admission fence");
+            thread::yield_now();
+        }
         client.connect(Some(hello.scope.clone())).unwrap();
         wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
 
@@ -5052,6 +5064,12 @@ mod tests {
         wait_for(&client, |update| {
             matches!(update, ClientUpdate::State(ConnectionState::Disconnected))
         });
+        // Disconnected is published before the admission fence is acknowledged.
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        while !client.command_admission_open() {
+            assert!(Instant::now() < deadline, "disconnect admission fence");
+            thread::yield_now();
+        }
         let rejected = client.bootstrap_reference("1").unwrap();
         wait_for(&client, |update| {
             matches!(update, ClientUpdate::LocalRejected { command_id, reason }

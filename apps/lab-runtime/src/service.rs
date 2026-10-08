@@ -357,9 +357,9 @@ pub enum ReconnectStage {
     ReplacementSettings,
     /// The bounded replacement worker is being spawned.
     ReplacementWorkerSpawn,
-    /// The worker exists and the actual Windows port open/readback is pending.
+    /// The worker exists and the actual serial port open/readback is pending.
     ActualPortOpening,
-    /// The actual Windows port open/readback failed or timed out.
+    /// The actual serial port open/readback failed or timed out.
     ReplacementPortOpenFailed,
     /// The actual OS port open and configured-settings readback were confirmed.
     ReplacementPortReady,
@@ -610,7 +610,7 @@ impl ApplyPort for LiveApplyPort<'_> {
                     .unwrap_or(0)
                     .checked_add(1)
                     .ok_or(ApplyError::OwnerFailure)?;
-                let adapter = ComTransport::open_windows(
+                let adapter = ComTransport::open_serial(
                     com_settings(resource, generation).map_err(|_| ApplyError::OwnerFailure)?,
                 )
                 .map_err(|_| ApplyError::OwnerFailure)?;
@@ -960,7 +960,7 @@ impl ServiceHost {
                     1,
                 )
                 .map_err(|_| io::Error::other("invalid configured COM settings"))?;
-                let adapter = ComTransport::open_windows(settings)
+                let adapter = ComTransport::open_serial(settings)
                     .map_err(|_| io::Error::other("COM worker could not start"))?;
                 transports.insert(ResourceId::new(resource.id), Box::new(adapter));
             }
@@ -5420,18 +5420,23 @@ unit_symbol="C"
     fn reconnect_retirement_service_failure_is_recorded_without_granting_success() {
         let (mut service, database) = service_with_old_transport(false);
         service.reconnect_cleanup_service_failure = true;
+        let retirement_release = Arc::new(AtomicBool::new(false));
 
-        assert_eq!(
-            service.reconnect_resource_with_factory(7, 1, |settings, _| {
-                ComTransport::with_device_factory(settings, || {
-                    Ok(Box::new(ProbeDevice {
-                        readable: VecDeque::new(),
-                        channel_type: 2,
-                    }))
-                })
-            }),
-            Err(LifecycleOperationError::OwnerFailure)
-        );
+        // A fast worker can retire before cleanup needs a service turn. Hold the
+        // observable retirement boundary so the injected service failure is
+        // exercised regardless of worker scheduling, then release it for shutdown.
+        let result = service.reconnect_resource_with_factory(7, 1, |settings, _| {
+            let mut adapter = ComTransport::with_device_factory(settings, || {
+                Ok(Box::new(ProbeDevice {
+                    readable: VecDeque::new(),
+                    channel_type: 2,
+                }))
+            })?;
+            adapter.hold_retirement_until(retirement_release.clone());
+            Ok(adapter)
+        });
+        retirement_release.store(true, Ordering::Release);
+        assert_eq!(result, Err(LifecycleOperationError::OwnerFailure));
         let diagnostic = service.reconnect_diagnostic().unwrap();
         assert_eq!(diagnostic.stage, ReconnectStage::ProbeFailed);
         assert_eq!(

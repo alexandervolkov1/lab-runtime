@@ -1718,18 +1718,7 @@ fn resolve_artifact(base: &Path, declared: &Path) -> Result<PathBuf, Configurati
 }
 
 fn normalize_port(port: &str) -> Result<String, ConfigurationError> {
-    let port = port.trim();
-    let digits = port
-        .strip_prefix("COM")
-        .or_else(|| port.strip_prefix("com"))
-        .ok_or_else(|| ConfigurationError::invalid("Windows port must be COM<number>"))?;
-    let number = digits
-        .parse::<u16>()
-        .map_err(|_| ConfigurationError::invalid("invalid COM port"))?;
-    if number == 0 {
-        return Err(ConfigurationError::invalid("invalid COM port"));
-    }
-    Ok(format!("COM{number}"))
+    crate::platform::normalize_serial_port(port).map_err(ConfigurationError::invalid)
 }
 
 fn validate_serial(resource: &ResourceDto) -> Result<(), ConfigurationError> {

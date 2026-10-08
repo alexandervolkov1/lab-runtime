@@ -234,7 +234,7 @@ All fields are required.
 | Field | Accepted values |
 |---|---|
 | `kind` | `windows_com_read_only` or `windows_com` |
-| `port` | `COM` followed by a nonzero `u16`; comparison is normalized, so aliases cannot bind the same port twice |
+| `port` | `COM` followed by a nonzero `u16` (normalized); on Linux also an absolute `/dev/...` device path, preserving case |
 | `baud_rate` | `1..=4_000_000` |
 | `data_bits` | `5..=8` |
 | `parity` | `none`, `odd`, or `even` |
@@ -242,6 +242,11 @@ All fields are required.
 | `flow_control` | `none`, `software`, or `hardware` |
 | `read_timeout_ms`, `write_timeout_ms` | `1..=250` |
 | `open_timeout_ms`, `recovery_timeout_ms` | `1..=2000` |
+
+Schema-v1 keeps the same resource kind strings on Linux. See the
+[Linux Runtime guide](linux-runtime.md#serial-deployment) for device-path bounds and
+permissions. Duplicate normalized port strings are rejected; validation does not
+resolve device symlink aliases.
 
 A resource cannot be shared between a SimpleDevice adapter and the native Metakon
 adapter. Declaring a physical resource is an instruction to open real hardware during

@@ -99,6 +99,22 @@ Current clean baseline commits:
 
 Current authorization boundary:
 
+- User-authorized Linux Runtime release implementation is COMPLETE / READY FOR REVIEW on
+  `feature/linux-runtime-release`: audit portability, make minimal shared-source
+  changes, verify Core/Runtime on Linux x86_64, and produce a headless Runtime-only
+  review artifact plus checksums and deployment documentation. Workbench porting,
+  ARM, semantic/API changes, merging and release publication are outside this scope.
+  Ubuntu 24.04 x86_64 under WSL2 passed Core/Runtime debug and release: each
+  614 passed, 2 ignored, 0 failed with serial test execution. Windows Core/Runtime
+  passed 612 tests (2 ignored), and all 15 affected scheduler/parity tests passed
+  again after fixture corrections. Real extracted Linux release process acceptance
+  passed TCP/WebSocket hello/latest, Application shutdown and SIGINT/SIGTERM/SIGHUP
+  with active Recorder sealing and SQLite integrity. The Runtime-only artifact is
+  `dist/lab-runtime-0.1.0-linux-x86_64.tar.gz`, with SHA-256, a separate Runtime-only
+  license companion and build/source provenance. Detailed commands, intermediate
+  failures and risks are recorded in `target/linux-release/REPORT.txt`. These are
+  local review artifacts, not a published release or physical hardware acceptance.
+
 - The FINAL FRESH-USER / PACKAGE AUDIT and FINAL AUDIT REMEDIATION are ACCEPTED. The
   PREVIEW.2 TECHNICAL / PACKAGE RELEASE GATE is READY. Release publication is BLOCKED /
   NOT AUTHORIZED. LICENSE-1 LICENSE-TEXT EVIDENCE is ACCEPTED and COMPLETE / READY FOR
