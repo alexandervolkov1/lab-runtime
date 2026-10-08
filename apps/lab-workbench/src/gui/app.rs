@@ -3,6 +3,7 @@
 use super::rebuild::RebuildCoordinator;
 use crate::{
     client::ClientHandle,
+    client::endpoint::RuntimeEndpoint,
     client::types::{ConnectionState, KnownAdmission, RecoveryQuarantineReason},
     dispatcher::WorkbenchDispatcher,
     external::{PreparedEndpoint, WorkbenchEndpoint},
@@ -22,7 +23,6 @@ use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Line, Plot as EguiPlot, PlotPoints};
 use serde_json::{Value, json};
 use std::{
-    net::SocketAddr,
     path::PathBuf,
     sync::Arc,
     sync::mpsc::TryRecvError,
@@ -33,6 +33,8 @@ pub(crate) const UPDATES_PER_FRAME: usize = 64;
 const SMOKE_DEADLINE: Duration = Duration::from_secs(30);
 
 pub(crate) struct WorkbenchApp {
+    observation_only: bool,
+    runtime_label: String,
     model: WorkbenchDispatcher<ClientHandle>,
     rebuild: RebuildCoordinator,
     operator: OperatorWorkflow,
@@ -60,7 +62,8 @@ impl WorkbenchApp {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         context: &eframe::CreationContext<'_>,
-        address: SocketAddr,
+        address: RuntimeEndpoint,
+        observation_only: bool,
         desired_scope: Option<String>,
         journal_path: PathBuf,
         presentation: PresentationDocument,
@@ -70,8 +73,10 @@ impl WorkbenchApp {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let repaint = context.egui_ctx.clone();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || repaint.request_repaint());
-        let client = ClientHandle::spawn_with_recovery_journal_and_wake(
+        let runtime_label = address.label();
+        let client = ClientHandle::spawn_configured(
             address,
+            observation_only,
             Some(journal_path),
             Some(Arc::clone(&wake)),
         )?;
@@ -90,6 +95,8 @@ impl WorkbenchApp {
             .map(PathBuf::from)
             .map(KillProbe::new);
         Ok(Self {
+            observation_only,
+            runtime_label,
             model: WorkbenchDispatcher::new(WorkbenchModel::new(presentation), client),
             rebuild: RebuildCoordinator::default(),
             operator: OperatorWorkflow::default(),
@@ -225,6 +232,10 @@ impl WorkbenchApp {
     }
 
     fn render_status(&mut self, ui: &mut egui::Ui) {
+        ui.label(format!("Runtime: {}", self.runtime_label));
+        if self.observation_only {
+            ui.colored_label(Color32::YELLOW, "Observation mode: Runtime mutations disabled by local client policy; presentation controls remain available. This is not server authorization.");
+        }
         ui.horizontal_wrapped(|ui| {
             ui.strong("Connection:");
             ui.label(format!("{:?}", self.model.connection));
@@ -376,7 +387,10 @@ impl WorkbenchApp {
             ));
         }
         if ui
-            .add_enabled(availability.exact_retry, egui::Button::new("Exact Retry…"))
+            .add_enabled(
+                !self.observation_only && availability.exact_retry,
+                egui::Button::new("Exact Retry…"),
+            )
             .clicked()
             && let Err(error) =
                 self.exact_retry
@@ -415,7 +429,10 @@ impl WorkbenchApp {
                 }
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(current, egui::Button::new("Confirm Exact Retry"))
+                        .add_enabled(
+                            !self.observation_only && current,
+                            egui::Button::new("Confirm Exact Retry"),
+                        )
                         .clicked()
                         && let Some(client) = self.model.client()
                     {
@@ -494,6 +511,7 @@ impl WorkbenchApp {
     }
 
     fn render_main(&mut self, ui: &mut egui::Ui) {
+        self.render_presentation_plots(ui);
         let Some(selected) = self.selected.clone() else {
             ui.heading("Live signal");
             ui.label("No discovered signal is available.");
@@ -550,6 +568,64 @@ impl WorkbenchApp {
                 observation.as_ref().map(|value| &value.value),
             );
             self.render_recorder_controls(ui);
+        }
+    }
+
+    fn render_presentation_plots(&self, ui: &mut egui::Ui) {
+        // Presentation commands already commit through the one dispatcher. Read
+        // its document and Runtime-owned observations here; never synthesize data.
+        for plot in &self.model.presentation.plots {
+            ui.strong(&plot.title);
+            let mut view = EguiPlot::new(("presentation-plot", &plot.id))
+                .height(160.0)
+                .legend(Default::default());
+            if let Some(minimum) = plot.axes.y_min {
+                view = view.include_y(minimum);
+            }
+            if let Some(maximum) = plot.axes.y_max {
+                view = view.include_y(maximum);
+            }
+            let mut cached = false;
+            view.show(ui, |plot_ui| {
+                for trace in plot.traces.iter().filter(|trace| trace.visible) {
+                    cached |= self
+                        .model
+                        .observations
+                        .entities
+                        .get(&trace.source)
+                        .is_none_or(|observation| observation.freshness != Freshness::Fresh);
+                    let Some(buffer) = self.model.observations.live.get(&trace.source) else {
+                        continue;
+                    };
+                    let newest = buffer
+                        .points()
+                        .back()
+                        .map_or(0.0, |point| point.time_seconds);
+                    let points = buffer
+                        .points()
+                        .iter()
+                        .filter(|point| point.time_seconds >= newest - plot.time_window_seconds)
+                        .map(|point| [point.time_seconds, point.value])
+                        .collect::<Vec<_>>();
+                    let color = match trace.style.color.as_str() {
+                        "cyan" => Color32::from_rgb(0, 200, 220),
+                        "red" => Color32::LIGHT_RED,
+                        "green" => Color32::LIGHT_GREEN,
+                        _ => Color32::from_hex(&trace.style.color).unwrap_or(Color32::LIGHT_BLUE),
+                    };
+                    plot_ui.line(
+                        Line::new(&trace.display_label, PlotPoints::from(points))
+                            .width(trace.style.width as f32)
+                            .color(color),
+                    );
+                }
+            });
+            if cached || self.model.observations.freshness != Freshness::Fresh {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    "Cached plot observations: freshness is not established.",
+                );
+            }
         }
     }
 
@@ -977,7 +1053,8 @@ impl WorkbenchApp {
     }
 
     fn control_enabled(&self, target: &RuntimeRef, operation: &str) -> bool {
-        self.model.connection == ConnectionState::Ready
+        !self.observation_only
+            && self.model.connection == ConnectionState::Ready
             && self.model.observations.freshness == Freshness::Fresh
             && self
                 .model
@@ -1003,6 +1080,11 @@ impl WorkbenchApp {
     }
 
     fn begin_operator(&mut self, intent: OperatorIntent) {
+        if self.observation_only {
+            self.operator_problem =
+                Some("Runtime mutations are disabled in observation mode".into());
+            return;
+        }
         match self.operator.begin(&self.model, intent) {
             Ok(()) => self.operator_problem = None,
             Err(error) => self.operator_problem = Some(error.to_string()),
@@ -1281,7 +1363,9 @@ impl eframe::App for WorkbenchApp {
             .resizable(true)
             .default_size(280.0)
             .show(ui, |ui| self.render_discovery(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.render_main(ui));
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.render_main(ui));
+        });
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
