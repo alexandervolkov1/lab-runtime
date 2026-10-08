@@ -60,6 +60,12 @@ Declarative serial instruments are covered by the
 Contributors adding a trusted source-integrated physical implementation should use
 the [native Rust instrument guide](docs/developer/full-driver-tutorial.md).
 
+## Run the Linux Runtime package
+
+The headless Linux x86_64 package contains `lab-runtime` alone. See the
+[Linux Runtime guide](docs/linux-runtime.md) for extraction, GNU/Linux requirements,
+serial paths, systemd deployment and reproducible packaging commands.
+
 ## Run the portable Windows package
 
 The portable preview archive contains both release executables. After extraction,
@@ -184,8 +190,8 @@ Workbench workspace behavior, and validation failures, use the
 
 The published [v0.1.0-preview.1](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1)
 Windows package is the earlier Runtime-only preview. Current packaging produces a
-portable Windows archive containing both Runtime and Workbench; creating a package
-does not publish or tag a release.
+portable Windows archive containing both Runtime and Workbench, or a headless Linux
+x86_64 Runtime archive; creating a package does not publish or tag a release.
 
 ## Safety posture
 

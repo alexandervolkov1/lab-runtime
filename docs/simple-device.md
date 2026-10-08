@@ -14,7 +14,7 @@ authority.
 
 Use SimpleDevice when all of these are true:
 
-- the device uses an existing bounded Windows COM resource;
+- the device uses the existing bounded serial resource (Windows COM or Linux device path);
 - each transaction is one request and one fixed-length response, at most 64 bytes;
 - request bytes can be built from literals, address/channel fields, one scalar
   output value, and one of the supported checksums;

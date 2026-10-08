@@ -578,6 +578,7 @@ try {
         'README.md',
         'LICENSE',
         'docs\getting-started.md',
+        'docs\linux-runtime.md',
         'docs\configuration.md',
         'docs\simple-device.md',
         'docs\developer\simple-device-tutorial.md',

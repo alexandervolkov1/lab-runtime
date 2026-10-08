@@ -1,4 +1,4 @@
-//! Bounded COM worker implementing the existing M3 byte boundary.
+//! Bounded serial worker implementing the existing M3 byte boundary.
 //!
 //! The Runtime owner calls only nonblocking [`lab_core::transport::ByteTransport`]
 //! attempts. One
@@ -51,7 +51,7 @@ pub enum SerialFlowControl {
     Hardware,
 }
 
-/// Validated immutable settings for one read-only COM worker.
+/// Validated immutable settings for one serial worker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComSettings {
     resource_id: u64,
@@ -247,7 +247,7 @@ pub struct ComSnapshot {
     pub resource_id: u64,
     /// Current binding generation, separate from M3 resource generation.
     pub binding_generation: u64,
-    /// Normalized bound COM name.
+    /// Normalized COM name or validated Linux device path.
     pub port: String,
     /// Current worker/session state.
     pub state: ComState,
@@ -315,11 +315,13 @@ pub struct ComTransport {
     open_confirmed: bool,
     open_attempts: Arc<AtomicUsize>,
     last_open_error: Arc<AtomicU8>,
+    #[cfg(test)]
+    retirement_release: Option<Arc<AtomicBool>>,
 }
 
 impl ComTransport {
     /// Spawn the concrete serialport-backed worker without opening on the owner lane.
-    pub fn open_windows(settings: ComSettings) -> Result<Self, SerialError> {
+    pub fn open_serial(settings: ComSettings) -> Result<Self, SerialError> {
         let worker_settings = settings.clone();
         Self::spawn(settings, move || {
             SerialPortDevice::open(&worker_settings)
@@ -328,7 +330,7 @@ impl ComTransport {
     }
 
     /// Spawn one candidate worker with bounded transient-absence retry.
-    pub(crate) fn open_windows_with_transient_retry(
+    pub(crate) fn open_serial_with_transient_retry(
         settings: ComSettings,
         deadline: Instant,
     ) -> Result<Self, SerialError> {
@@ -365,6 +367,13 @@ impl ComTransport {
         factory: impl FnOnce() -> Result<Box<dyn SerialDevice>, SerialError> + Send + 'static,
     ) -> Result<Self, SerialError> {
         Self::spawn(settings, factory)
+    }
+
+    /// Keep test retirement observably pending until explicitly released.
+    /// Stop intent still reaches the worker; this only holds completion reporting.
+    #[cfg(test)]
+    pub(crate) fn hold_retirement_until(&mut self, release: Arc<AtomicBool>) {
+        self.retirement_release = Some(release);
     }
 
     #[cfg(test)]
@@ -429,6 +438,8 @@ impl ComTransport {
             open_confirmed: false,
             open_attempts,
             last_open_error,
+            #[cfg(test)]
+            retirement_release: None,
         })
     }
 
@@ -613,6 +624,14 @@ impl ByteTransport for ComTransport {
 
     fn try_shutdown(&mut self) -> TransportShutdown {
         self.retire();
+        #[cfg(test)]
+        if self
+            .retirement_release
+            .as_ref()
+            .is_some_and(|release| !release.load(Ordering::Acquire))
+        {
+            return TransportShutdown::Pending;
+        }
         self.drain_completion();
         if self.state != ComState::Closed {
             return TransportShutdown::Pending;
@@ -913,18 +932,7 @@ fn valid_call_timeout(timeout: Duration) -> bool {
 }
 
 fn normalize_port(port: &str) -> Result<String, SerialError> {
-    let trimmed = port.trim();
-    let digits = trimmed
-        .strip_prefix("COM")
-        .or_else(|| trimmed.strip_prefix("com"))
-        .ok_or(SerialError::InvalidSettings)?;
-    let number = digits
-        .parse::<u16>()
-        .map_err(|_| SerialError::InvalidSettings)?;
-    if number == 0 {
-        return Err(SerialError::InvalidSettings);
-    }
-    Ok(format!("COM{number}"))
+    crate::platform::normalize_serial_port(port).map_err(|_| SerialError::InvalidSettings)
 }
 
 #[cfg(test)]

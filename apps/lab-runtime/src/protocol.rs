@@ -805,8 +805,9 @@ mod tests {
 
     #[test]
     fn public_registry_documentation_matches_source_counts_and_simple_device_entries() {
-        let operations = include_str!("../../../docs/api/operations.md");
-        let api_readme = include_str!("../../../docs/api/README.md");
+        // Checkout line endings depend on the host Git configuration.
+        let operations = include_str!("../../../docs/api/operations.md").replace("\r\n", "\n");
+        let api_readme = include_str!("../../../docs/api/README.md").replace("\r\n", "\n");
         let application_api = include_str!("../../../docs/application-api.md");
         let limits = include_str!("../../../docs/api/errors-and-limits.md");
         let operation_count = OPERATIONS.len();

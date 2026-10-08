@@ -6,6 +6,9 @@ workflow, and optionally records the run. The virtual profile opens no serial ha
 
 ## Prerequisites
 
+For the headless Linux x86_64 package, use the [Linux Runtime guide](linux-runtime.md).
+The Runtime + native Workbench walkthrough below uses Windows.
+
 - Windows for the native Workbench;
 - PowerShell;
 - a free local TCP port (the primary example uses `7420`).

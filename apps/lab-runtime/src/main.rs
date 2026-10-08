@@ -70,7 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         let stop = Arc::new(AtomicBool::new(false));
         let callback_flag = stop.clone();
-        // The OS callback only publishes intent; the Runtime owner performs
+        // Ctrl+C (and Linux SIGTERM/SIGHUP) only publishes intent; the Runtime owner performs
         // every safe shutdown step and retains evidence before closing peers.
         ctrlc::set_handler(move || {
             callback_flag.store(true, std::sync::atomic::Ordering::Release)

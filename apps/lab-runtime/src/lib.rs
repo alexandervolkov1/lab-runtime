@@ -51,13 +51,15 @@ pub mod host;
 pub mod managed_executor;
 /// Stable wire-facing discovery and measurement projection builders.
 pub(crate) mod measurements;
+/// Host-platform serial path validation; no device is opened during validation.
+pub(crate) mod platform;
 /// Stable Application-protocol identity, operation registry, and public errors.
 pub mod protocol;
 /// Bounded durable-history storage adapter and host-owned recording ingress.
 pub mod recorder;
 /// Semantic Recorder projections kept independent from its SQLite implementation.
 pub(crate) mod recorder_api;
-/// Bounded worker-backed Windows COM byte adapter, private to trusted host orchestration.
+/// Bounded worker-backed serial byte adapter, private to trusted host orchestration.
 pub(crate) mod serial;
 pub mod server;
 /// Startup ownership, loopback binding and process-local boot identity.

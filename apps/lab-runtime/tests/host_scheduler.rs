@@ -222,9 +222,17 @@ fn actual_owner_thread_progresses_without_any_tcp_client_and_shuts_down_safely()
             );
             thread::sleep(Duration::from_millis(5));
         }
-        service.owner_mut().begin_shutdown(&clock).unwrap();
-        service.owner_mut().service(&clock).unwrap();
-        service.owner().shutdown_status()
+        // Managed worker cleanup is asynchronous; one owner turn is not a
+        // terminal shutdown barrier on every platform or scheduling interleave.
+        service.request_shutdown().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            if let Some(terminal) = service.shutdown_step().unwrap() {
+                break terminal;
+            }
+            assert!(Instant::now() < deadline, "owner shutdown deadline");
+            thread::sleep(Duration::from_millis(1));
+        }
     });
     let addr = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(addr.ip().to_string(), "127.0.0.1");

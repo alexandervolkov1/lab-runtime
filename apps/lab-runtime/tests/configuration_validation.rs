@@ -473,6 +473,35 @@ fn c3_relative_deployment_resolution_does_not_admit_parent_traversal() {
     assert_eq!(reader.reads, 0);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_serial_configuration_validates_device_paths_without_opening_them() {
+    let base = Path::new("/tmp/lab-linux-config");
+    for port in ["/dev/ttyUSB0", "/dev/ttyACM0", "/dev/serial/by-id/USB-Test"] {
+        let config = String::from_utf8(physical_config("metakon.json"))
+            .unwrap()
+            .replace("COM3", port);
+        let mut reader = reader_with_definition(base, "metakon.json", READ_ONLY_DEFINITION);
+        let deployment = parse_runtime_toml(config.as_bytes(), base, &mut reader).unwrap();
+        assert_eq!(deployment.effective().resource_count(), 1);
+        assert_eq!(deployment.toml_bytes(), config.as_bytes());
+        assert_eq!(reader.reads, 1);
+    }
+    for port in [
+        "/dev/../tmp/file",
+        "/dev//ttyUSB0",
+        "/tmp/ttyUSB0",
+        "ttyUSB0",
+    ] {
+        let config = String::from_utf8(physical_config("metakon.json"))
+            .unwrap()
+            .replace("COM3", port);
+        let mut reader = MemoryReader::default();
+        assert!(parse_runtime_toml(config.as_bytes(), base, &mut reader).is_err());
+        assert_eq!(reader.reads, 0);
+    }
+}
+
 #[test]
 fn c4_native_graph_unit_and_output_role_mismatches_reject_before_artifact_reads() {
     let base = Path::new("C:/lab/config");
