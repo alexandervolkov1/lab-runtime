@@ -1,4 +1,37 @@
-# Current work — preview.2 technical/package gate ready
+# Current work — M18 distributed Workbench connectivity
+
+## M18 current authorization (2026-10-08)
+
+The user authorizes M18 transport adapters, observation mode, independent direct
+Clojure/Babashka clients, bounded integration/fault tests and deployment documentation.
+This supersedes the historical pre-M18 restrictions below for that scope only.
+The externally approved instance-change GUI recovery fix is isolated at
+`c87890be2e3cac3a12300a02fa42673743ebe307`. M18 work uses
+`feature/m18-distributed-workbench`; merge, push, tags and release publication are
+not authorized.
+
+The audit and preservation criteria are in `M18_DISTRIBUTED_WORKBENCH.md`.
+Runtime application semantics, operations, DTOs and ownership remain frozen.
+Runtime WebSocket currently binds only loopback and checks an exact loopback Host;
+direct LAN WebSocket requires a separately reviewed Runtime transport-policy change.
+The user explicitly authorizes continuing Workbench WS/WSS and local proxy tests
+while that boundary remains unchanged.
+
+Tuna configuration is read-only during this task. Public mutation E2E is prohibited
+until key-auth is confirmed. The known endpoint is
+`wss://fresh-hedgehog-9022.ru.tuna.am/application/v1`, with loopback upstream 8766
+and an explicit Host rewrite. No secrets belong in repository files or evidence.
+WSL2 and local proxy evidence must not be labelled physical two-machine or real
+Internet/Tuna acceptance. M18 is not accepted or complete at this stage.
+
+Workbench WS/WSS, explicit observation policy and the independent Babashka example
+are implemented for review. Windows workspace Debug/Release gates each pass
+842 tests with 13 ignored; Workbench passes repeated concurrent runs. Actual
+Windows GUI + Arch WSL2 WS and authenticated local WSS proxy validation pass.
+Direct LAN WS and protected real Tuna remain outstanding. Required Recorder failed
+under concurrent clients on the unchanged final Linux Runtime, including a headless
+reproduction; this blocks operational acceptance. Runtime production is unchanged.
+See the M18 record for exact evidence, limits and the next review boundary.
 
 ## Canonical current state
 
