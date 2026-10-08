@@ -2707,6 +2707,120 @@ mod tests {
     }
 
     #[test]
+    fn instance_changed_requires_explicit_new_scope_with_empty_or_nonempty_recovery() {
+        for has_recovery in [false, true] {
+            let path = journal_path("instance-changed-gui");
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            let records = if has_recovery {
+                vec![record.clone()]
+            } else {
+                Vec::new()
+            };
+            save_test_journal(&path, &records);
+            let before = fs::read(&path).unwrap();
+            let (mut worker, updates) = unit_worker_with_journal(path.clone());
+            let mut model = WorkbenchModel::new(PresentationDocument::empty("same-workspace"));
+            model.apply_client_update(ClientUpdate::Hello(hello_state(1)));
+            model.apply_client_update(ClientUpdate::RecoveryProjection {
+                active: records.clone(),
+                quarantined: Vec::new(),
+            });
+            assert!(!model.connection_requires_new_scope());
+            worker.desired_scope = Some("scope".into());
+            worker.pending.insert("1".into(), pending_hello(1));
+
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":"instance_changed"}),
+            );
+            for update in updates.try_iter() {
+                model.apply_client_update(update);
+                if has_recovery {
+                    assert_recovery_evidence_visible(&model, &record);
+                }
+            }
+            assert_eq!(model.connection, ConnectionState::Disconnected);
+            assert!(model.connection_requires_new_scope());
+            assert_eq!(model.recovery.scope.as_deref(), Some("scope"));
+            assert!(model.recovery.mutations.is_empty());
+            assert_eq!(model.recovery.quarantined.len(), usize::from(has_recovery));
+            assert!(worker.desired_scope.is_none());
+            assert!(worker.retry_at.is_none());
+            assert_eq!(worker.reattach, ReattachMode::None);
+            assert!(worker.pending.is_empty());
+            assert!(worker.outgoing.is_empty());
+            assert_eq!(fs::read(&path).unwrap(), before);
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            worker.address = listener.local_addr().unwrap();
+            worker.retry_reattach(Instant::now());
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ));
+            assert!(worker.outgoing.is_empty());
+
+            // The explicit GUI action submits one Connect without the rejected scope.
+            worker.handle_command(ClientCommand::Connect {
+                command_id: 2,
+                scope: None,
+            });
+            let stream = accept_nonblocking(&listener);
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let mut reader = BufReader::new(stream);
+            let deadline = Instant::now() + TEST_TIMEOUT;
+            while !worker.outgoing.is_empty() {
+                assert!(Instant::now() < deadline, "explicit hello write deadline");
+                worker.service_write();
+                thread::yield_now();
+            }
+            let request = read_request(&mut reader);
+            assert_eq!(request["op"], "hello");
+            assert_eq!(request["args"]["scope"], Value::Null);
+            assert!(request.get("request_id").is_none());
+            write_value(
+                reader.get_mut(),
+                &hello_reply_for(&request["msg_id"], "new-boot", "new-scope", 1),
+            );
+            while worker.hello.is_none() {
+                assert!(Instant::now() < deadline, "explicit hello reply deadline");
+                worker.service_read();
+                thread::yield_now();
+            }
+            apply_worker_updates(&updates, &mut model);
+            assert_eq!(model.connection, ConnectionState::Ready);
+            assert_eq!(model.recovery.scope.as_deref(), Some("new-scope"));
+            assert_eq!(model.connection_requires_new_scope(), has_recovery);
+            assert_eq!(model.quarantine_blocks_mutations(), has_recovery);
+            assert!(worker.outgoing.is_empty());
+            if has_recovery {
+                assert_eq!(model.recovery.quarantined[0].record, record);
+                assert_eq!(
+                    model.recovery.quarantined[0].reason,
+                    RecoveryQuarantineReason::InstanceChanged
+                );
+                worker.queue_retry(3, record.identity.clone());
+                worker.queue_mutation(4, "reference_retune".into(), record.args.clone());
+                let seen = updates.try_iter().collect::<Vec<_>>();
+                assert!(seen.iter().any(|update| matches!(
+                    update, ClientUpdate::LocalRejected { command_id: 3, reason }
+                        if reason == "recovery_quarantine_unresolved"
+                )));
+                assert!(seen.iter().any(|update| matches!(
+                    update, ClientUpdate::LocalRejected { command_id: 4, reason }
+                        if reason == "recovery_quarantine_unresolved"
+                )));
+                assert!(worker.outgoing.is_empty());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
     fn manual_new_scope_can_rebuild_observations_but_quarantine_still_blocks_mutation() {
         let path = journal_path("manual-new-scope");
         let record = recovery_record(1, KnownAdmission::Ambiguous);

@@ -196,8 +196,8 @@ impl WorkbenchApp {
                 | ConnectionState::Reattaching
                 | ConnectionState::Ready
         );
-        let quarantined = !self.model.recovery.quarantined.is_empty();
-        let connect_label = if quarantined {
+        let new_scope_required = self.model.connection_requires_new_scope();
+        let connect_label = if new_scope_required {
             "Connect new scope"
         } else {
             "Connect"
@@ -207,7 +207,7 @@ impl WorkbenchApp {
             .clicked()
             && let Some(client) = self.model.client()
         {
-            let scope = (!quarantined)
+            let scope = (!new_scope_required)
                 .then(|| self.model.recovery.scope.clone())
                 .flatten();
             if let Err(error) = client.connect(scope) {

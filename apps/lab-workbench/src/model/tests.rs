@@ -66,6 +66,52 @@ fn result_reply(command_id: u64, op: &str, result: serde_json::Value) -> ClientU
 }
 
 #[test]
+fn only_instance_changed_hello_requires_explicit_new_scope_until_authoritative_hello() {
+    let mut model = WorkbenchModel::new(presentation());
+    model.apply_client_update(ClientUpdate::Hello(hello("old-boot")));
+    let document = model.presentation.clone();
+    for (op, kind, code) in [
+        ("reference", ReplyKind::PublicError, "instance_changed"),
+        ("hello", ReplyKind::PublicError, "scope_in_use"),
+        ("hello", ReplyKind::Result, "instance_changed"),
+        ("hello", ReplyKind::PublicError, "instance_changed"),
+    ] {
+        model.apply_client_update(ClientUpdate::Reply {
+            command_id: 1,
+            msg_id: "1".into(),
+            op: op.into(),
+            kind,
+            envelope: json!({"code":code}),
+            recovery: None,
+        });
+        assert_eq!(
+            model.connection_requires_new_scope(),
+            op == "hello" && kind == ReplyKind::PublicError && code == "instance_changed"
+        );
+    }
+    for state in [
+        ConnectionState::Disconnected,
+        ConnectionState::Connecting,
+        ConnectionState::AwaitingHello,
+        ConnectionState::Ready,
+    ] {
+        model.apply_client_update(ClientUpdate::State(state));
+        assert!(model.connection_requires_new_scope());
+        assert_eq!(model.recovery.scope.as_deref(), Some("scope"));
+    }
+    assert!(model.recovery.mutations.is_empty());
+    assert!(model.recovery.quarantined.is_empty());
+    model.apply_client_update(ClientUpdate::Hello(HelloState {
+        scope: "new-scope".into(),
+        ..hello("new-boot")
+    }));
+    assert!(!model.connection_requires_new_scope());
+    assert_eq!(model.recovery.scope.as_deref(), Some("new-scope"));
+    assert_eq!(model.presentation, document);
+    assert_ne!(model.observations.freshness, Freshness::Fresh);
+}
+
+#[test]
 fn unresolved_references_remain_in_valid_presentation() {
     let mut model = WorkbenchModel::new(presentation());
     model.refresh_unresolved();
