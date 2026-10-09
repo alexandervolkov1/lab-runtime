@@ -324,8 +324,24 @@ impl RecorderWorker {
         if let Some(receipt) = fresh_receipt {
             self.apply_receipt(receipt);
         }
+        // Normal return publishes alive=false before thread completion. Observe
+        // completion first: an older alive=true must not be paired with a newer
+        // finished=true and misclassified as a panic during a successful close.
+        let finished = self._thread.is_finished();
+        // is_finished observes std's released thread-packet reference count
+        // with a relaxed load; acquire that completion before reading alive.
+        std::sync::atomic::fence(Ordering::Acquire);
         let alive = self.alive.load(Ordering::Acquire);
-        let panicked = alive && self._thread.is_finished();
+        #[cfg(test)]
+        if let Some(barrier) = self.finish_after_alive_observation.take() {
+            barrier.release();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !self._thread.is_finished() {
+                assert!(Instant::now() < deadline, "normal close did not finish");
+                thread::yield_now();
+            }
+        }
+        let panicked = alive && finished;
         if panicked {
             // A Rust panic bypasses the worker's final alive/receipt stores.
             // Detect it without joining or claiming that queued facts committed.

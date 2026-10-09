@@ -256,6 +256,8 @@ pub struct RecorderWorker {
     alive: Arc<AtomicBool>,
     /// Dropping this handle detaches rather than waiting for a blocked OS call.
     _thread: thread::JoinHandle<()>,
+    #[cfg(test)]
+    finish_after_alive_observation: Option<WriterBarrier>,
     limits: RecorderLimits,
     charged_records: usize,
     charged_bytes: usize,
@@ -442,6 +444,8 @@ impl RecorderWorker {
             receipt,
             alive,
             _thread: handle,
+            #[cfg(test)]
+            finish_after_alive_observation: None,
             limits,
             charged_records: 0,
             charged_bytes: 0,
@@ -741,6 +745,57 @@ mod receipt_fence_tests {
 #[cfg(test)]
 mod close_receipt_tests {
     use super::*;
+
+    #[test]
+    fn successful_close_between_liveness_observations_is_not_a_worker_panic() {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("lab-m18-close-observation-{suffix}.sqlite"));
+        let barrier = WriterBarrier::held_finish();
+        let mut worker =
+            RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+                .unwrap();
+        worker.request_finish().unwrap();
+        assert!(barrier.wait_until_reached(Duration::from_secs(2)));
+        assert!(worker.alive.load(Ordering::Acquire));
+        // The worker completes a real SQL seal/close after the owner samples
+        // alive, but before the old implementation checks JoinHandle completion.
+        worker.finish_after_alive_observation = Some(barrier);
+        let observed = worker.poll();
+        assert_ne!(
+            observed.state,
+            RecordingState::Failed,
+            "normal completion is not a panic: {observed:?}; sqlite={}",
+            path.display()
+        );
+        let closed = worker.poll();
+        assert_eq!(closed.state, RecordingState::Closed);
+        assert!(closed.terminal_seal_committed && closed.worker_closed);
+        assert!(closed.first_error.is_none());
+        assert_eq!(
+            (
+                closed.outstanding_groups,
+                closed.outstanding_records,
+                closed.outstanding_bytes
+            ),
+            (0, 0, 0)
+        );
+        drop(worker);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row::<String, _, _>("SELECT state FROM runtime_boots", [], |row| row.get(0))
+                .unwrap(),
+            "sealed"
+        );
+        assert_eq!(
+            db.query_row::<String, _, _>("PRAGMA integrity_check", [], |row| row.get(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn closed_worker_rechecks_final_receipt_after_a_stale_owner_clone() {
