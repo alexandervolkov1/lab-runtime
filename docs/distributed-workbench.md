@@ -303,31 +303,18 @@ UI call or Runtime timeout into an automatic mutation retry.
 bb clients/babashka-smoke/distributed.clj ws://127.0.0.1:8766/application/v1 --runtime-only
 ```
 
-## Operational blocker found during M18
+## Recorder operating envelope and qualification
 
-The unchanged final Linux Runtime binary was exercised with required Recorder.
-It failed with `recorder ingress capacity exhausted` on both WSL-mounted NTFS and
-native ext4 while two clients/GUI or a WS subscriber plus mutation were active.
-It failed closed, reported `coverage: gap`, confirmed virtual safe output and exited
-with an incomplete Recorder shutdown rather than claiming successful flush. The
-first failed database passed integrity and foreign-key checks. A separate ext4 run
-without Workbench remained recording for 90 seconds and completed an explicit stop
-and process shutdown successfully. These results do not establish the exact cause
-of the ingress saturation; filesystem choice alone does not explain it.
+The published preview reserves accepted/completion credit before Reference
+admission. Its thirteen-group / 1,545-record / 4 MiB budget is finite, with protected
+Reference headroom but no separately protected reconnect pool. See
+[Recorder ingress settings](recorder-sqlite.md#ingress-and-storage-settings) and
+[receipt/close invariants](recorder-sqlite.md#receipt-credit-and-close-invariants).
+Real storage failure remains fail-closed for Required recording; successful
+transport delivery is not a durability receipt or a successful shutdown flush.
 
-A narrower headless reproduction uses TCP recording_start, one WS subscriber and
-one TCP Reference retune. Recording failed after 68 ms on the unchanged accepted
-Linux executable. A coherent SQLite backup including WAL preserves all 4,795 old
-measurements, two new measurements and a durable gap; integrity and foreign keys
-pass. The terminal retune audit was not admitted, and the failed boot is unsealed.
-The four-group ingress credit and writer's 100 ms fact coalescing window are the
-leading capacity explanation; the rejection's exact receipt interleaving was not
-instrumented. A healthy restart/continued recording result is not claimed.
-
-These are historical failures of the four-group candidate. The accepted Recorder
-implementation reserves accepted/completion credit before Reference admission and
-uses the quantified bounded capacity described in [Recorder ingress settings](recorder-sqlite.md#ingress-and-storage-settings).
-Required Recorder failure rejects subsequent Reference mutations. Current evidence
-and remaining M18 review limits are tracked in the repository review record
-`ai/M18_CONSOLIDATED_REVIEW.md`;
-the earlier transport checks alone did not establish recording acceptance.
+Earlier four-group candidate failures, their retained databases and detailed
+review protocols remain in the published source history. Current capabilities,
+verification boundaries and unresolved WSS/physical-E2E limits are summarized in
+[project status](developer/project-status.md); transport-only smoke is not proof
+of Recorder acceptance or hardware safety.
