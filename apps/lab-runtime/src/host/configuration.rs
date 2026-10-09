@@ -512,10 +512,10 @@ impl HostCore {
             if probe.queued {
                 continue;
             }
-            probe.baseline = match self.runtime.query(Query::GetLatestSignal(SignalId::new(
-                probe.instrument,
-                probe.parameter,
-            )))? {
+            let signal = SignalId::new(probe.instrument, probe.parameter);
+            // Resolve the fallible pure query before owning credit, so a query
+            // rejection cannot strand an untracked probe reservation.
+            let baseline = match self.runtime.query(Query::GetLatestSignal(signal))? {
                 QueryResult::Latest(sample) => sample,
                 _ => {
                     return Err(Error::InvalidConfiguration(
@@ -523,13 +523,46 @@ impl HostCore {
                     ));
                 }
             };
-            self.runtime.command(Command::QueueMetakonRead {
+            let reservation = if self
+                .recording_status
+                .as_ref()
+                .is_some_and(|s| s.state == RecordingState::Recording)
+            {
+                let Some(token) = self
+                    .recorder
+                    .as_mut()
+                    .ok_or(Error::RecordingUnavailable)?
+                    .reserve_fact_group()
+                    .map_err(|_| Error::RecordingUnavailable)?
+                else {
+                    // The serialized reconnect loop services existing work and
+                    // retries admission before its original absolute deadline.
+                    continue;
+                };
+                Some(token)
+            } else {
+                None
+            };
+            probe.baseline = baseline;
+            let queued = self.runtime.command(Command::QueueMetakonRead {
                 instrument: probe.instrument,
                 parameter: probe.parameter,
                 at,
                 queue_ttl: probe.queue_ttl,
                 timeout: probe.timeout,
-            })?;
+            });
+            if let Some(token) = reservation {
+                if queued.is_ok() {
+                    self.probe_fact_reservations.insert(signal, token);
+                } else {
+                    self.recorder
+                        .as_mut()
+                        .unwrap()
+                        .cancel_fact_group(token)
+                        .map_err(|_| Error::RecordingUnavailable)?;
+                }
+            }
+            queued?;
             probe.queued = true;
         }
         let simple = self.simple_device_provenance.keys().any(|instrument| {
@@ -627,6 +660,9 @@ impl HostCore {
                 ))
             })
             .collect::<Result<Vec<_>, Error>>()?;
+        if !self.reserve_rebind_facts()? {
+            return Err(Error::RecordingUnavailable);
+        }
         self.runtime.replace_transport(resource, adapter)?;
         for (instrument, binding) in metakon_replacements {
             self.runtime.command(Command::RebindMetakon {
@@ -675,6 +711,7 @@ impl HostCore {
             }
         }
         self.closed_resources.remove(&resource);
+        self.admit_rebind_facts(at)?;
         self.observe(at, None)
     }
 

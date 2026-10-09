@@ -708,9 +708,15 @@ fn late_finish_commit_is_archived_after_process_flush_timeout_without_revising_t
 fn stop_and_finish_drain_all_four_accepted_groups_with_full_normal_credit() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();
-    let mut worker =
-        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
-            .unwrap();
+    let mut worker = RecorderWorker::open_with_barrier(
+        &path,
+        RecorderLimits {
+            groups: 4,
+            ..RecorderLimits::default()
+        },
+        barrier.clone(),
+    )
+    .unwrap();
     worker.request_start("full credit shutdown").unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     while worker.poll().state != RecordingState::Recording && Instant::now() < deadline {

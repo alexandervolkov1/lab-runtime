@@ -115,6 +115,20 @@ impl HostCore {
         &mut self,
         generation: Option<u64>,
     ) -> Result<(), Error> {
+        // Preserve facts already produced before cancelling unused future slots.
+        self.admit_recording_facts(self.last_now);
+        if let Some(worker) = self.recorder.as_mut() {
+            if let Some(token) = self.rebind_fact_reservation.take() {
+                worker
+                    .cancel_fact_group(token)
+                    .map_err(|_| Error::RecordingUnavailable)?;
+            }
+            for (_, token) in std::mem::take(&mut self.probe_fact_reservations) {
+                worker
+                    .cancel_fact_group(token)
+                    .map_err(|_| Error::RecordingUnavailable)?;
+            }
+        }
         let Some(generation) = generation else {
             return Ok(());
         };
@@ -532,6 +546,10 @@ impl HostCore {
         let at = operation.at;
         let key = (operation.scope.clone(), operation.request_seq);
         let accepted = operation.phase == "accepted";
+        let reference_command = matches!(
+            operation.command,
+            "reference_retune" | "reference_configure"
+        );
         let state = self.recording_status.as_ref().map(|status| status.state);
         if accepted {
             if self.pending_operations.len() >= 64 && !self.pending_operations.contains_key(&key) {
@@ -574,7 +592,13 @@ impl HostCore {
         let lifecycle_terminal = !accepted
             && state == Some(RecordingState::Idle)
             && operation.command == "recording_stop";
-        if in_interval || lifecycle_terminal {
+        let reserved_terminal = !accepted
+            && reference_command
+            && self
+                .recorder
+                .as_ref()
+                .is_some_and(RecorderWorker::has_reference_completion);
+        if in_interval || lifecycle_terminal || reserved_terminal {
             let defer_safe_terminal = !accepted
                 && operation.command == "controller_pause"
                 && self.recorder.as_mut().is_some_and(|worker| {
@@ -587,10 +611,17 @@ impl HostCore {
                 self.poll_recorder(at);
                 return;
             }
-            let admitted = self
-                .recorder
-                .as_mut()
-                .is_some_and(|worker| worker.try_admit_operation(operation).is_ok());
+            let admitted = self.recorder.as_mut().is_some_and(|worker| {
+                if reference_command && worker.has_reference_completion() {
+                    if accepted {
+                        worker.commit_reference_acceptance(operation).is_ok()
+                    } else {
+                        worker.commit_reference_completion(operation).is_ok()
+                    }
+                } else {
+                    worker.try_admit_operation(operation).is_ok()
+                }
+            });
             if admitted && accepted {
                 if let Some(pending) = self.pending_operations.get_mut(&key) {
                     pending.accepted_recorded = true;
@@ -603,6 +634,97 @@ impl HostCore {
             self.pending_operations.remove(&key);
         }
         self.poll_recorder(at);
+    }
+
+    /// Atomically reserve the complete audit budget at the new-identity gate,
+    /// before SessionStore changes sequence or the Reference side effect runs.
+    pub(crate) fn reserve_reference_operation(
+        &mut self,
+        accepted: OperationRecord,
+    ) -> Result<bool, Error> {
+        let at = accepted.at;
+        self.admit_recording_facts(at);
+        if self.pending_operations.len() >= 64
+            && !self
+                .pending_operations
+                .contains_key(&(accepted.scope.clone(), accepted.request_seq))
+        {
+            return Ok(false);
+        }
+        match self.recording_status.as_ref().map(|s| s.state) {
+            Some(RecordingState::Failed | RecordingState::Closed)
+                if self.recording_policy == Some(RecordingPolicy::Required) =>
+            {
+                Err(Error::RecordingUnavailable)
+            }
+            Some(RecordingState::Starting | RecordingState::Stopping) => Ok(false),
+            Some(RecordingState::Recording) => self
+                .recorder
+                .as_mut()
+                .unwrap()
+                .reserve_reference_operation(accepted)
+                .map_err(|_| Error::RecordingUnavailable),
+            // Idle/unconfigured has no active recording obligation. BestEffort
+            // retains explicit Failed status while unrelated native work continues.
+            _ => Ok(true),
+        }
+    }
+
+    /// Verify the pre-admission token immediately before synchronous dispatch.
+    pub(crate) fn prepare_reference_completion(
+        &mut self,
+        scope: &str,
+        seq: u64,
+        command: &'static str,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.prepare_reference_recording(at)?;
+        if !matches!(
+            self.recording_status.as_ref().map(|s| s.state),
+            Some(RecordingState::Starting | RecordingState::Recording)
+        ) {
+            return Ok(());
+        }
+        let reserved = self
+            .recorder
+            .as_mut()
+            .is_some_and(|worker| worker.reference_completion_ready(scope, seq, command));
+        if !reserved && self.recording_policy == Some(RecordingPolicy::Required) {
+            self.runtime.recording_failure(at);
+        }
+        self.prepare_reference_recording(at)?;
+        if reserved {
+            Ok(())
+        } else {
+            Err(Error::RecordingUnavailable)
+        }
+    }
+
+    /// Last receipt/safety boundary before a synchronous Reference effect.
+    /// Facts already produced here precede that effect, so they use ordinary
+    /// ingress, never the reserved single-Reference completion envelope. There
+    /// must be no further HostCore receipt poll between this drain and dispatch:
+    /// a late Required receipt can itself produce Controller/Output safety facts.
+    pub(super) fn prepare_reference_recording(&mut self, at: Duration) -> Result<(), Error> {
+        self.poll_recorder(at);
+        self.admit_recording_facts_inner(at, false);
+        if self.recording_policy == Some(RecordingPolicy::Required)
+            && self.recording_status.as_ref().is_some_and(|status| {
+                matches!(
+                    status.state,
+                    RecordingState::Failed | RecordingState::Closed
+                ) || matches!(
+                    status.state,
+                    RecordingState::Starting | RecordingState::Recording
+                ) && !self.runtime.required_recording_open()
+            })
+        {
+            // Ingress rejection may have latched a worker failure after the
+            // first poll. Publish it before returning the rejected operation.
+            self.poll_recorder(at);
+            return Err(Error::RecordingUnavailable);
+        }
+        Ok(())
     }
 
     /// Admit one informational annotation while the current interval is active.
@@ -950,7 +1072,7 @@ impl HostCore {
         };
         let previous = self.recording_status.clone();
         let prior = previous.as_ref().map(|s| s.state);
-        let status = worker.poll();
+        let mut status = worker.poll();
         let activated =
             prior != Some(RecordingState::Recording) && status.state == RecordingState::Recording;
         if activated {
@@ -978,6 +1100,24 @@ impl HostCore {
         }
         if status.state == RecordingState::Failed {
             self.runtime.disable_recording_facts();
+        }
+        if matches!(
+            status.state,
+            RecordingState::Failed | RecordingState::Closed
+        ) {
+            // Capture is no longer possible. These tokens never entered the
+            // writer FIFO; submitted credit remains owned by SQL receipts.
+            for (_, token) in std::mem::take(&mut self.probe_fact_reservations) {
+                worker
+                    .cancel_fact_group(token)
+                    .expect("owner-held probe reservation");
+            }
+            if let Some(token) = self.rebind_fact_reservation.take() {
+                worker
+                    .cancel_fact_group(token)
+                    .expect("owner-held rebind reservation");
+            }
+            status = worker.poll();
         }
         let recording = status.state == RecordingState::Recording;
         let publish_lifecycle = crate::recorder_api::lifecycle_changed(previous.as_ref(), &status);
@@ -1091,6 +1231,13 @@ impl HostCore {
     }
 
     pub(super) fn admit_recording_facts(&mut self, now: Duration) {
+        self.admit_recording_facts_inner(now, true);
+        // Publish the just-latched gap before the next client Query or snapshot.
+        // BestEffort may keep control running, but coverage must be truthful now.
+        self.poll_recorder(now);
+    }
+
+    fn admit_recording_facts_inner(&mut self, now: Duration, capture_reference: bool) {
         if self.recorder.is_none() {
             return;
         }
@@ -1101,11 +1248,40 @@ impl HostCore {
         let last_accepted = facts
             .last()
             .map(lab_core::recording::RecordingFact::sequence);
-        if let Some(worker) = self.recorder.as_mut() {
-            if !facts.is_empty()
-                && worker.try_admit_at(facts, now).is_err()
-                && self.recording_policy == Some(RecordingPolicy::Required)
+        let mut probe_tokens = Vec::new();
+        for fact in &facts {
+            if let lab_core::recording::RecordingFact::Measurement { sample, .. } = fact
+                && let Some(token) = self.probe_fact_reservations.remove(&sample.signal())
             {
+                probe_tokens.push(token);
+            }
+        }
+        if let Some(worker) = self.recorder.as_mut() {
+            let admitted = if capture_reference && worker.has_reference_completion() {
+                let result = worker.capture_reference_completion(facts, now);
+                // Even a rejected capture consumed the owner's token mapping.
+                // None of these probe envelopes was transferred to the writer.
+                for token in probe_tokens {
+                    worker
+                        .cancel_fact_group(token)
+                        .expect("owner-held probe reservation");
+                }
+                result
+            } else if facts.is_empty() {
+                Ok(())
+            } else if let Some(token) = probe_tokens.pop() {
+                // Results co-published in one Core causal group share one
+                // envelope. Cancel only additional unused reservations.
+                for extra in probe_tokens {
+                    worker
+                        .cancel_fact_group(extra)
+                        .expect("owner-held probe reservation");
+                }
+                worker.admit_reserved_facts(token, facts, now)
+            } else {
+                worker.try_admit_at(facts, now).map(|_| ())
+            };
+            if admitted.is_err() && self.recording_policy == Some(RecordingPolicy::Required) {
                 self.runtime.recording_failure(now);
             }
             if overflow {
@@ -1122,8 +1298,54 @@ impl HostCore {
                 }
             }
         }
-        // Publish the just-latched gap before the next client Query or snapshot.
-        // BestEffort may keep control running, but coverage must be truthful now.
-        self.poll_recorder(now);
+    }
+
+    /// Reserve a separate full causal envelope before the synchronous rebind.
+    pub(crate) fn reserve_rebind_facts(&mut self) -> Result<bool, Error> {
+        self.poll_recorder(self.last_now);
+        if self.recording_policy == Some(RecordingPolicy::Required)
+            && self.recording_status.as_ref().is_some_and(|status| {
+                matches!(
+                    status.state,
+                    RecordingState::Failed | RecordingState::Closed
+                )
+            })
+        {
+            return Err(Error::RecordingUnavailable);
+        }
+        if self.rebind_fact_reservation.is_some() {
+            return Ok(true);
+        }
+        if self
+            .recording_status
+            .as_ref()
+            .is_none_or(|s| s.state != RecordingState::Recording)
+        {
+            return Ok(true);
+        }
+        self.rebind_fact_reservation = self
+            .recorder
+            .as_mut()
+            .unwrap()
+            .reserve_fact_group()
+            .map_err(|_| Error::RecordingUnavailable)?;
+        Ok(self.rebind_fact_reservation.is_some())
+    }
+
+    pub(super) fn admit_rebind_facts(&mut self, at: Duration) -> Result<(), Error> {
+        if let Some(token) = self.rebind_fact_reservation.take() {
+            let facts = self.runtime.take_recording_facts();
+            self.recorder
+                .as_mut()
+                .ok_or(Error::RecordingUnavailable)?
+                .admit_reserved_facts(token, facts, at)
+                .map_err(|_| Error::RecordingUnavailable)?;
+        } else {
+            self.admit_recording_facts(at);
+        }
+        // Apply normal overflow/failure handling even when the reserved group
+        // was transferred; reservation does not enlarge the Core fact outbox.
+        self.admit_recording_facts(at);
+        Ok(())
     }
 }

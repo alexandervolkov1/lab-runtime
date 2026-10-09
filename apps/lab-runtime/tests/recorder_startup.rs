@@ -384,8 +384,10 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
     let options =
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
     let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    // Only the explicit measurement below belongs to this checkpoint test.
+    // Poll receipts without running acquisition: unrelated scheduled facts may
+    // otherwise commit after the baseline but before the injected SQL failure.
     let clock = service.clock_copy();
-    service.owner_mut().service(&clock).unwrap();
     service
         .owner_mut()
         .start_recording("checkpoint status", clock.now())
@@ -393,7 +395,7 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
     let by = Instant::now() + Duration::from_secs(2);
     while service.owner().recording_status().unwrap().state != RecordingState::Recording {
         assert!(Instant::now() < by);
-        service.owner_mut().service(&clock).unwrap();
+        let _ = service.owner_mut().recording_activation_committed();
         std::thread::yield_now();
     }
     let prefix = service
@@ -428,7 +430,7 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
             Instant::now() < by,
             "injected WAL checkpoint failure did not fail closed"
         );
-        service.owner_mut().service(&clock).unwrap();
+        let _ = service.owner_mut().recording_activation_committed();
         std::thread::yield_now();
     }
     let status = service.owner().recording_status().unwrap();

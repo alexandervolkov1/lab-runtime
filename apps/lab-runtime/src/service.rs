@@ -1463,6 +1463,13 @@ history_capacity=8
     }
 
     fn service_with_old_transport(never_finishes: bool) -> (ServiceHost, PathBuf) {
+        service_with_old_transport_and_writer_barrier(never_finishes, None)
+    }
+
+    fn service_with_old_transport_and_writer_barrier(
+        never_finishes: bool,
+        barrier: Option<crate::recorder::WriterBarrier>,
+    ) -> (ServiceHost, PathBuf) {
         let deployment = parse_runtime_toml(CONFIG, Path::new("C:\\m8-test"), &mut Reader)
             .expect("test deployment");
         let shutdown_calls = Arc::new(AtomicUsize::new(0));
@@ -1487,15 +1494,31 @@ history_capacity=8
             std::thread::yield_now();
         }
         let database = temporary_database();
+        if barrier.is_some() {
+            drop(crate::recorder::SqliteStore::open(&database).unwrap());
+            let db = rusqlite::Connection::open(&database).unwrap();
+            db.execute_batch(
+                "CREATE TABLE review_gate(id INTEGER PRIMARY KEY);
+                CREATE TABLE review_fail(gate_id INTEGER REFERENCES review_gate(id)
+                    DEFERRABLE INITIALLY DEFERRED);
+                CREATE TRIGGER review_fail_reference AFTER INSERT ON reference_events
+                    BEGIN INSERT INTO review_fail(gate_id) VALUES(999); END;",
+            )
+            .unwrap();
+        }
         let anchor =
             TimeAnchor::capture(|| clock.now(), || Ok(std::time::SystemTime::now())).unwrap();
-        let recorder = RecorderWorker::open_with_boot_clock(
-            &database,
-            RecorderLimits::default(),
-            &boot_id,
-            anchor,
-            clock,
-        )
+        let recorder = if let Some(barrier) = barrier {
+            RecorderWorker::open_with_barrier(&database, RecorderLimits::default(), barrier)
+        } else {
+            RecorderWorker::open_with_boot_clock(
+                &database,
+                RecorderLimits::default(),
+                &boot_id,
+                anchor,
+                clock,
+            )
+        }
         .unwrap();
         host.attach_recorder(recorder, RecordingPolicy::Required, clock.now())
             .unwrap();
@@ -5362,6 +5385,190 @@ unit_symbol="C"
         let status = shutdown_and_remove(service, database);
         assert!(!status.transports_closed);
         assert!(!status.exit_success);
+    }
+
+    fn review_writer_failure_before_rebind(reserve_before_failure: bool) {
+        use crate::recorder::WriterBarrier;
+        use lab_core::reference::{ReferenceConfig, ReferenceId};
+        let barrier = WriterBarrier::held();
+        struct Release(WriterBarrier);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        let release = Release(barrier.clone());
+        let (mut service, database) =
+            service_with_old_transport_and_writer_barrier(false, Some(barrier));
+        let reference = ReferenceId::new(99);
+        service
+            .host
+            .command(lab_core::Command::RegisterReference(
+                ReferenceConfig::Fixed {
+                    id: reference,
+                    value: 1.0,
+                    unit: lab_core::Unit::CELSIUS,
+                },
+            ))
+            .unwrap();
+        let at = service.clock.now();
+        service
+            .host
+            .start_recording("review reconnect writer failure", at)
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while service.host.recording_status().unwrap().state != RecordingState::Recording {
+            assert!(std::time::Instant::now() < deadline);
+            service.host.poll_recorder_for_test(service.clock.now());
+            std::thread::yield_now();
+        }
+        // A deferred FK fails the real SQL COMMIT, only after the writer barrier
+        // is released. No synthetic HostCore Failed state is assigned.
+        service
+            .host
+            .command(lab_core::Command::EvaluateReference {
+                reference,
+                at: service.clock.now(),
+            })
+            .unwrap();
+        assert!(release.0.wait_until_reached(Duration::from_secs(3)));
+
+        // Execute the real ServiceHost reconnect phases, with a deterministic
+        // writer failure between admission and rebind. Their order is identical
+        // to reconnect_resource_with_factory; no transport or output contract is changed.
+        let active = service.deployment.as_ref().unwrap().active().clone();
+        let pending = service
+            .begin_resource_recorded_lifecycle("reconnect_resource", &active)
+            .unwrap();
+        if reserve_before_failure {
+            assert!(service.host.reserve_rebind_facts().unwrap());
+            service
+                .host
+                .begin_configured_resource_reconnect(ResourceId::new(7))
+                .unwrap();
+            assert!(
+                service
+                    .host
+                    .prepare_configured_transport_replacement(
+                        ResourceId::new(7),
+                        service.clock.now()
+                    )
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            service.host.recording_status().unwrap().state,
+            RecordingState::Recording
+        );
+        assert_eq!(service.host.configured_binding_generation(11), Some(1));
+        release.0.release();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            service.host.poll_recorder_for_test(service.clock.now());
+            let status = service.host.recording_status().unwrap();
+            if status.state == RecordingState::Failed && status.worker_closed {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{status:?}");
+            std::thread::yield_now();
+        }
+        let reservation_after_failure = service.host.reserve_rebind_facts();
+        if !reserve_before_failure {
+            service
+                .host
+                .begin_configured_resource_reconnect(ResourceId::new(7))
+                .unwrap();
+            assert!(
+                service
+                    .host
+                    .prepare_configured_transport_replacement(
+                        ResourceId::new(7),
+                        service.clock.now()
+                    )
+                    .unwrap()
+            );
+        }
+        let rebound = service.host.rebind_configured_transport(
+            ResourceId::new(7),
+            Box::new(OldTransport {
+                shutdown_calls: Arc::new(AtomicUsize::new(0)),
+                never_finishes: false,
+            }),
+            service.clock.now(),
+        );
+        let generation = service.host.configured_binding_generation(11);
+        let finished = service.finish_recorded_lifecycle_detailed(pending);
+        assert!(
+            finished.is_err(),
+            "the late lifecycle fence still rejects success"
+        );
+        assert!(
+            service
+                .host
+                .configured_resource_reconnect_quiesced(ResourceId::new(7))
+        );
+        assert!(
+            service
+                .host
+                .retire_failed_configured_reconnect(ResourceId::new(7), service.clock.now())
+                .unwrap()
+        );
+        service.host.poll_recorder_for_test(service.clock.now());
+        let failed_status = service.host.recording_status().unwrap().clone();
+        assert_eq!(
+            reservation_after_failure,
+            Err(lab_core::Error::RecordingUnavailable)
+        );
+        assert_eq!(
+            (
+                failed_status.outstanding_groups,
+                failed_status.outstanding_records
+            ),
+            (1, 1),
+            "only the submitted, uncommitted fact remains charged; unused lifecycle and fact tokens are cancelled"
+        );
+        drop(service);
+        let db = rusqlite::Connection::open(&database).unwrap();
+        let activations: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE kind='configuration_lifecycle'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let generation_two: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM measurements WHERE generation=?1",
+                [2u64.to_be_bytes().as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((activations, generation_two), (0, 0));
+        assert_eq!(
+            db.query_row::<String, _, _>("PRAGMA integrity_check", [], |r| r.get(0))
+                .unwrap(),
+            "ok"
+        );
+        eprintln!(
+            "review reconnect: reserved_before_failure={reserve_before_failure}, reserve_after={reservation_after_failure:?}, rebind={rebound:?}, generation={generation:?}, lifecycle={finished:?}, recorder={failed_status:?}, sqlite={}",
+            database.display()
+        );
+        assert_eq!(
+            generation,
+            Some(1),
+            "Required Failed must reject before transport replacement and Core generation change"
+        );
+        assert!(rebound.is_err());
+    }
+
+    #[test]
+    fn m18_review_required_writer_failure_before_first_rebind_reservation_blocks_effect() {
+        review_writer_failure_before_rebind(false);
+    }
+
+    #[test]
+    fn m18_review_required_writer_failure_after_rebind_reservation_blocks_effect() {
+        review_writer_failure_before_rebind(true);
     }
 
     #[test]

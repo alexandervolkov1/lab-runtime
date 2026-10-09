@@ -21,9 +21,15 @@ fn temporary_database() -> PathBuf {
 fn exhausted_group_and_history_credits_still_deliver_one_reserved_gap_and_terminal_seal() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();
-    let mut worker =
-        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
-            .unwrap();
+    let mut worker = RecorderWorker::open_with_barrier(
+        &path,
+        RecorderLimits {
+            groups: 4,
+            ..RecorderLimits::default()
+        },
+        barrier.clone(),
+    )
+    .unwrap();
     worker.request_start("reserved fault seal").unwrap();
     await_state(&mut worker, RecordingState::Recording);
     let signal = SignalId::new(InstrumentId::new(185), lab_core::TEMPERATURE);

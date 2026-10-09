@@ -2,6 +2,18 @@
 
 use super::*;
 
+// This is progress of the committed FIFO prefix, not a time-indexed promise that
+// every later-queued submission with an earlier timestamp is durable. Record IDs
+// and cumulative released credits identify the exact prefix. Call only after SQL
+// succeeds; never substitute receipt arrival time or a queued submission's time.
+fn confirm_submission(receipt: &mut Receipt, submitted_at: Duration) {
+    receipt.confirmed_submission = Some(
+        receipt
+            .confirmed_submission
+            .map_or(submitted_at, |confirmed| confirmed.max(submitted_at)),
+    );
+}
+
 // Keep the immutable clock source and each bounded mailbox explicit at the one
 // storage thread boundary; none is shared with the Runtime state owner.
 #[expect(
@@ -74,7 +86,8 @@ pub(super) fn worker_loop(
             && !barrier.is_some_and(|barrier| barrier.0.hold_after_fact_commit)
             && (!barrier.is_some_and(|barrier| barrier.0.hold_terminal_operation)
                 || matches!(message, Message::Operation(ref operation, _, _)
-                    if operation.phase != "accepted"))
+                    if operation.phase != "accepted")
+                || matches!(message, Message::ReferenceCompletion { .. }))
             && let Some(barrier) = barrier
         {
             barrier.await_release();
@@ -85,6 +98,7 @@ pub(super) fn worker_loop(
         {
             store.fail_next_checkpoint_for_testing();
         }
+        let reference_accepted = matches!(message, Message::ReferenceAccepted(..));
         let result = match message {
             Message::Activation {
                 entries,
@@ -166,7 +180,9 @@ pub(super) fn worker_loop(
                 let mut records = batch[0].0.len();
                 let mut accounted_bytes = bytes;
                 let deadline = queued_at + Duration::from_millis(100);
-                while batch.len() < MAX_GROUPS && records < 256 && accounted_bytes < MAX_GROUP_BYTES
+                while batch.len() < MAX_BATCH_GROUPS
+                    && records < 256
+                    && accounted_bytes < MAX_GROUP_BYTES
                 {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
@@ -220,7 +236,11 @@ pub(super) fn worker_loop(
                     expected = next;
                     true
                 });
-                let last_submission = batch.last().expect("nonempty batch").2;
+                let confirmed_submission = batch
+                    .iter()
+                    .map(|group| group.2)
+                    .max()
+                    .expect("nonempty batch");
                 let committed = if aligned {
                     store.append_fact_groups_assigned(&views, batch[0].3)
                 } else {
@@ -238,28 +258,70 @@ pub(super) fn worker_loop(
                     }
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
-                    status.confirmed_submission = Some(last_submission);
+                    confirm_submission(&mut status, confirmed_submission);
                     status.released_records += records;
                     status.released_bytes += accounted_bytes;
                     status.released_groups += batch.len();
                 })
             }
-            Message::Operation(operation, bytes, assigned) => store
+            Message::ReferenceCompletion {
+                fact,
+                captured_at,
+                terminal,
+                bytes,
+                first_record,
+            } => {
+                let records = 1 + usize::from(fact.is_some());
+                store
+                    .append_reference_completion_assigned(
+                        fact.as_deref(),
+                        captured_at,
+                        &terminal,
+                        first_record,
+                    )
+                    .map(|sequence| {
+                        if let Some(barrier) =
+                            barrier.filter(|barrier| barrier.0.hold_after_fact_commit)
+                        {
+                            barrier.await_release();
+                        }
+                        let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                        status.persisted = sequence;
+                        confirm_submission(&mut status, captured_at.max(terminal.at));
+                        status.released_records += records;
+                        status.released_bytes += bytes;
+                        status.released_groups += 1;
+                        status.reference_released.add(reference_completion::Credit {
+                            groups: 1,
+                            records,
+                            bytes,
+                        });
+                    })
+            }
+            Message::Operation(operation, bytes, assigned)
+            | Message::ReferenceAccepted(operation, bytes, assigned) => store
                 .append_operation_assigned(&operation, assigned)
                 .map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
-                    status.confirmed_submission = Some(operation.at);
+                    confirm_submission(&mut status, operation.at);
                     status.released_records += 1;
                     status.released_bytes += bytes;
                     status.released_groups += 1;
+                    if reference_accepted {
+                        status.reference_released.add(reference_completion::Credit {
+                            groups: 1,
+                            records: 1,
+                            bytes,
+                        });
+                    }
                 }),
             Message::Annotation(annotation, bytes, assigned) => store
                 .append_annotation_assigned(&annotation, assigned)
                 .map(|sequence| {
                     let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
                     status.persisted = sequence;
-                    status.confirmed_submission = Some(annotation.at);
+                    confirm_submission(&mut status, annotation.at);
                     status.released_records += 1;
                     status.released_bytes += bytes;
                     status.released_groups += 1;
@@ -274,10 +336,8 @@ pub(super) fn worker_loop(
                 })
             }
             Message::Probe(submitted_at) => store.probe(submitted_at).map(|_| {
-                receipt
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .confirmed_submission = Some(submitted_at);
+                let mut status = receipt.lock().unwrap_or_else(|p| p.into_inner());
+                confirm_submission(&mut status, submitted_at);
             }),
             Message::ClockAnchor(assigned) => TimeAnchor::capture(
                 || source.now(),

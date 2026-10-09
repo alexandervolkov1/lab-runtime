@@ -290,10 +290,34 @@ Neither policy allows a false durable acknowledgement.
 
 ## Ingress and storage settings
 
-Default owner-side ingress credit is 1,024 records, 4 MiB accounted bytes, four
-causal groups, and at most 512 KiB per group. Up to eight durable-history jobs run
-through the same bounded worker boundary. Producers use nonblocking admission;
-SQLite blocking occurs only on the storage thread.
+Default owner-side ingress credit is 1,545 records, 4 MiB accounted bytes, thirteen
+causal groups, and at most 512 KiB per group. The supported budget calculation is
+four acquisition groups, one reconnect's five groups (accepted audit, activation,
+baseline, probe, terminal audit), and two Reference mutations' accepted/completion
+pairs. It assumes that bounded combination of outstanding work; it does not
+guarantee reconnect admission under arbitrary acquisition pressure. Four groups and
+six records are protected for those Reference pairs; ordinary traffic cannot spend
+that credit. Reconnect has no separately protected pool: acquisition and reconnect
+share the remaining nine groups and ordinary record/byte credit. Its activation,
+rebind and probe reservations are incremental, not an atomic five-group admission.
+Their waits retain the existing absolute deadlines; sustained competing acquisition
+can exhaust those deadlines. SQLite still coalesces at most four fact groups per
+transaction.
+
+Before a recorded Reference mutation is accepted, the owner atomically reserves
+its accepted audit and completion budget. Insufficient credit returns `busy` with
+`accepted: false`, without consuming its mutation sequence or changing Reference.
+Wire request sequencing is unchanged. A known identity still resolves through the
+existing identity/status rules. The completion group contains the Reference fact,
+if produced, and its terminal audit. Reservation guarantees bounded admission,
+not successful SQL commit: only a committed receipt advances the durable prefix.
+Required Recorder failure rejects subsequent Reference control; best-effort retains
+its visible failed recording status while permitting otherwise valid control.
+
+Up to eight durable-history jobs run through the same bounded worker boundary.
+Producers use nonblocking admission; SQLite blocking occurs only on the storage
+thread. This finite operating envelope does not cover unlimited arrivals or an
+arbitrarily stalled disk. Ordinary overflow retains the fail-closed/gap policy.
 
 Version-one databases use:
 

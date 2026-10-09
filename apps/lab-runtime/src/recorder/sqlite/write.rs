@@ -4,6 +4,20 @@
 
 use super::*;
 
+// Bounded best-effort diagnostics only; neither elapsed time nor logging success
+// participates in commit, receipt, scheduling or experiment decisions.
+fn commit_recording_transaction(transaction: rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let started = std::time::Instant::now();
+    let result = transaction.commit();
+    tracing::debug!(
+        event = "recorder_sql_commit",
+        elapsed_us = started.elapsed().as_micros() as u64,
+        success = result.is_ok(),
+        "Recorder SQLite COMMIT finished"
+    );
+    result
+}
+
 impl SqliteStore {
     /// Commit a new run and recording interval before accepting its facts.
     pub fn start_run(&mut self, label: &str) -> Result<(), StorageError> {
@@ -188,7 +202,7 @@ impl SqliteStore {
                 u64_blob(final_record).as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.run_no = Some(run_no);
         self.interval_no = Some(interval_no);
         self.next_run_no = following_run;
@@ -232,15 +246,43 @@ impl SqliteStore {
         &mut self,
         groups: &[(&[RecordingFact], Duration)],
     ) -> Result<u64, StorageError> {
+        self.append_groups_with_terminal(groups, None)
+    }
+
+    /// Commit a reserved synchronous Reference completion as one causal group.
+    pub(crate) fn append_reference_completion_assigned(
+        &mut self,
+        fact: Option<&RecordingFact>,
+        captured_at: Duration,
+        terminal: &OperationRecord,
+        first_record: u64,
+    ) -> Result<u64, StorageError> {
+        if self.next_record_sequence.checked_add(1) != Some(first_record)
+            || !terminal.valid()
+            || !matches!(terminal.command, "reference_retune" | "reference_configure")
+            || !matches!(terminal.phase, "completed" | "failed")
+            || fact.is_some_and(|fact| !matches!(fact, RecordingFact::Reference { .. }))
+        {
+            return Err(StorageError("invalid Reference completion group".into()));
+        }
+        let facts = fact.map_or(&[][..], std::slice::from_ref);
+        self.append_groups_with_terminal(&[(facts, captured_at)], Some(terminal))
+    }
+
+    fn append_groups_with_terminal(
+        &mut self,
+        groups: &[(&[RecordingFact], Duration)],
+        terminal: Option<&OperationRecord>,
+    ) -> Result<u64, StorageError> {
         let count = groups
             .iter()
             .try_fold(0usize, |total, (facts, _)| total.checked_add(facts.len()))
             .ok_or_else(|| StorageError("batch count arithmetic exhausted".into()))?;
         if groups.is_empty()
             || groups.len() > 4
-            || count == 0
-            || count > 256
-            || groups.iter().any(|(facts, _)| facts.is_empty())
+            || (count == 0 && terminal.is_none())
+            || count + usize::from(terminal.is_some()) > 256
+            || (terminal.is_none() && groups.iter().any(|(facts, _)| facts.is_empty()))
             || self.run_no.is_none()
         {
             return Err(StorageError("invalid or oversized recording batch".into()));
@@ -481,6 +523,42 @@ impl SqliteStore {
                 }
             }
         }
+        if let Some(operation) = terminal {
+            next_sequence = next_sequence
+                .checked_add(1)
+                .ok_or_else(|| StorageError("operation record identity exhausted".into()))?;
+            let run = self.run_no.map(u64_blob);
+            let interval = self.interval_no.map(u64_blob);
+            let wall = self.boot_anchor.estimate_us(operation.at)?;
+            transaction.execute(
+                "INSERT INTO records(boot_id,record_seq,run_no,interval_no,kind,version,
+                 published_at,captured_at,wall_estimate_us,wall_basis,origin,payload)
+                 VALUES(?1,?2,?3,?4,'operation',1,?5,?5,?6,'boot_anchor','application',?7)",
+                params![
+                    self.boot_id.as_slice(),
+                    u64_blob(next_sequence).as_slice(),
+                    run.as_ref().map(|v| v.as_slice()),
+                    interval.as_ref().map(|v| v.as_slice()),
+                    duration_blob(operation.at)?.as_slice(),
+                    wall,
+                    operation.data.as_bytes()
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO operation_events(boot_id,record_seq,request_scope,request_seq,
+                 phase,command,result,outcome_basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    self.boot_id.as_slice(),
+                    u64_blob(next_sequence).as_slice(),
+                    operation.scope,
+                    operation.request_seq.to_string(),
+                    operation.phase,
+                    operation.command,
+                    operation.data,
+                    operation.outcome_basis
+                ],
+            )?;
+        }
         transaction.execute(
             "UPDATE durable_checkpoints SET commit_no=?2,persisted_through_seq=?3 WHERE boot_id=?1",
             params![
@@ -489,7 +567,7 @@ impl SqliteStore {
                 u64_blob(next_sequence).as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.next_record_sequence = next_sequence;
         self.commit_no = next_commit;
         Ok(next_sequence)
@@ -567,7 +645,7 @@ impl SqliteStore {
                 u64_blob(sequence).as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.next_record_sequence = sequence;
         self.commit_no = commit;
         Ok(sequence)
@@ -654,7 +732,7 @@ impl SqliteStore {
                 u64_blob(record_seq).as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.next_record_sequence = record_seq;
         self.commit_no = commit;
         Ok(record_seq)
@@ -679,7 +757,7 @@ impl SqliteStore {
                 duration_blob(submitted_at)?.as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.commit_no = next_commit;
         Ok(())
     }
@@ -845,7 +923,7 @@ impl SqliteStore {
                 u64_blob(seal_record).as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.next_record_sequence = seal_record;
         self.commit_no = seal_commit;
         if let Some(next_anchor) = next_anchor {
@@ -956,7 +1034,7 @@ impl SqliteStore {
                 record.as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.next_record_sequence = sequence;
         self.commit_no = commit;
         self.run_no = None;
@@ -1094,7 +1172,7 @@ impl SqliteStore {
                 record.as_slice()
             ],
         )?;
-        transaction.commit()?;
+        commit_recording_transaction(transaction)?;
         self.next_record_sequence = next_record;
         self.commit_no = next_commit;
         if let Some(next_anchor) = next_anchor {
