@@ -1,0 +1,57 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$OutputDirectory
+)
+
+# A lightweight projection of the packager's literal public-file inventory.
+# Does not build Rust, run product binaries, change existing archives or delete files.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$destination = [IO.Path]::GetFullPath($OutputDirectory)
+if (Test-Path -LiteralPath $destination) {
+    throw 'Choose a new output directory; existing audit materials are preserved'
+}
+$tokens = $null
+$parseErrors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $PSScriptRoot 'package-developer-preview.ps1'),
+    [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count) { throw 'Packaging script has syntax errors' }
+foreach ($name in @(
+    'Get-MarkdownHeadingIds', 'Test-MarkdownQuality',
+    'Test-MarkdownLinks', 'Test-UserDocumentation'
+)) {
+    $function = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $name
+    }, $true)
+    if (-not $function) { throw "Missing packaging function: $name" }
+    Invoke-Expression $function.Extent.Text
+}
+$inventory = $ast.Find({ param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$publicFiles'
+}, $true)
+if (-not $inventory) { throw 'Missing public-file inventory' }
+$files = @(Invoke-Expression $inventory.Right.Extent.Text)
+$destinationPrefix = $destination.TrimEnd('\') + '\'
+$sourcePrefix = $repositoryRoot.TrimEnd('\') + '\'
+foreach ($relative in $files) {
+    $source = [IO.Path]::GetFullPath((Join-Path $repositoryRoot $relative))
+    $target = [IO.Path]::GetFullPath((Join-Path $destination $relative))
+    if (-not $source.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $target.StartsWith($destinationPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Inventory path escapes its root: $relative"
+    }
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $target))
+    Copy-Item -LiteralPath $source -Destination $target
+    if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $target).Hash) {
+        throw "Package document differs: $relative"
+    }
+}
+Test-UserDocumentation $destination
+Test-MarkdownQuality $destination
+Test-MarkdownLinks $destination
+Write-Output "PASS: $($files.Count) public package inputs; projection retained at $destination"

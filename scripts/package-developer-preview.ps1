@@ -290,6 +290,45 @@ function Send-WorkbenchRequest(
     throw "Workbench $operation response exceeded the frame budget"
 }
 
+function Test-UserDocumentation([string]$packageRoot) {
+    # Keep the first-use route self-contained and separate from integration docs.
+    $userFiles = @(
+        'README.md', 'docs\README.md', 'docs\getting-started.md',
+        'docs\workbench.md', 'docs\recording.md', 'docs\configuration.md',
+        'docs\linux-runtime.md', 'docs\distributed-workbench.md',
+        'docs\troubleshooting.md'
+    )
+    foreach ($relative in $userFiles) {
+        $path = Join-Path $packageRoot $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "missing user manual page: $relative"
+        }
+        $text = Get-Content -LiteralPath $path -Raw
+        if ($text -match '(?i)\b(Clojure(?:Script)?|Babashka|Tuna|M(?:12|13|14|15|16|17|18))\b' -or
+            $text -match '(?im)^\s*cargo\s+(build|run|test|clippy|fmt)\b' -or
+            $text -match '(?i)external review|mutation identity|client worker|SQL receipts') {
+            throw "developer-only material in user manual: $relative"
+        }
+        foreach ($block in [regex]::Matches($text, '(?ms)^```powershell\r?\n(.*?)^```')) {
+            $parseTokens = $null
+            $parseErrors = $null
+            [void][Management.Automation.Language.Parser]::ParseInput(
+                $block.Groups[1].Value, [ref]$parseTokens, [ref]$parseErrors)
+            if ($parseErrors.Count) { throw "invalid PowerShell example: $relative" }
+        }
+    }
+    foreach ($relative in @(
+        'docs\developer\README.md', 'docs\reference\configuration.md',
+        'docs\reference\transports.md', 'examples\runtime.minimal.toml',
+        'examples\runtime.virtual.toml'
+    )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relative) -PathType Leaf)) {
+            throw "missing documented package input: $relative"
+        }
+    }
+    Write-Host 'User manual: required pages, audience separation and PowerShell syntax passed'
+}
+
 function Test-ExtractedPackage([string]$archivePath) {
     $temporaryBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
     $temporaryRoot = [System.IO.Path]::GetFullPath(
@@ -340,6 +379,7 @@ function Test-ExtractedPackage([string]$archivePath) {
         }
         Test-ExtractedLicenseEvidence $packageRoot $releaseLicenseRows
         Test-ReleasePackageHygiene $packageRoot
+        Test-UserDocumentation $packageRoot
         Test-MarkdownQuality $packageRoot
         Test-MarkdownLinks $packageRoot
 
@@ -581,7 +621,10 @@ try {
     $publicFiles = @(
         'README.md',
         'LICENSE',
+        'docs\README.md',
         'docs\getting-started.md',
+        'docs\recording.md',
+        'docs\troubleshooting.md',
         'docs\linux-runtime.md',
         'docs\release-license-evidence.txt',
         'docs\configuration.md',
@@ -589,6 +632,9 @@ try {
         'docs\developer\simple-device-tutorial.md',
         'docs\developer\full-driver-tutorial.md',
         'docs\developer\project-status.md',
+        'docs\developer\README.md',
+        'docs\reference\configuration.md',
+        'docs\reference\transports.md',
         'docs\architecture.md',
         'docs\application-api.md',
         'docs\recorder-sqlite.md',
@@ -1016,6 +1062,7 @@ try {
         ($evidenceManifest | ConvertTo-Json -Depth 8) + "`n", $utf8NoBom)
     Test-ExtractedLicenseEvidence $stageRoot $releaseLicenseRows
     Test-ReleasePackageHygiene $stageRoot
+    Test-UserDocumentation $stageRoot
 
     $contentManifestPath = Join-Path $stageRoot 'PACKAGE-CONTENTS.txt'
     $contentPaths = @(Get-ChildItem -LiteralPath $stageRoot -Recurse -File |
