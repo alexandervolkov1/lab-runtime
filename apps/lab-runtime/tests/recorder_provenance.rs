@@ -71,8 +71,12 @@ fn recording_boundary_and_ordered_revisions_reconstruct_current_config() {
     let by = Instant::now() + Duration::from_secs(2);
     while service.owner().recording_status().unwrap().state != RecordingState::Recording {
         assert!(Instant::now() < by);
-        let clock = service.clock_copy();
-        service.owner_mut().service(&clock).unwrap();
+        // This provenance oracle owns a finite explicit producer sequence.
+        // Observe receipts without introducing unrelated periodic acquisition.
+        service
+            .owner_mut()
+            .recording_activation_committed()
+            .unwrap();
         std::thread::yield_now();
     }
     let retune_at = service.clock().now();
@@ -130,9 +134,19 @@ fn recording_boundary_and_ordered_revisions_reconstruct_current_config() {
         .recording_status()
         .is_some_and(|status| status.outstanding_groups > 1)
     {
-        assert!(Instant::now() < drained_by);
-        let clock = service.clock_copy();
-        service.owner_mut().service(&clock).unwrap();
+        assert!(
+            Instant::now() < drained_by,
+            "{:?}",
+            service.owner().recording_status()
+        );
+        assert_eq!(
+            service.owner().recording_status().unwrap().state,
+            RecordingState::Recording
+        );
+        service
+            .owner_mut()
+            .recording_activation_committed()
+            .unwrap();
         std::thread::yield_now();
     }
     service.request_shutdown().unwrap();
@@ -207,6 +221,11 @@ fn recording_boundary_and_ordered_revisions_reconstruct_current_config() {
     assert!(
         after_revision >= 1,
         "committed revisions must precede dependent measurement"
+    );
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT COUNT(*) FROM gaps", [], |row| row.get(0))
+            .unwrap(),
+        0
     );
     drop(db);
     std::fs::remove_file(path).unwrap();

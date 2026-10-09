@@ -482,12 +482,45 @@ impl Application {
             )];
         }
         let now = service.clock().now();
-        match self.sessions.admit(&scope, rid.seq, payload.clone(), now) {
+        let intent = recorded_intent(&payload);
+        let mut admission_error = None;
+        let admission =
+            self.sessions
+                .admit_with_gate(&scope, rid.seq, payload.clone(), now, || {
+                    let Some((command @ ("reference_retune" | "reference_configure"), data)) =
+                        &intent
+                    else {
+                        return true;
+                    };
+                    match service
+                        .owner_mut()
+                        .reserve_reference_operation(OperationRecord {
+                            scope: scope.clone(),
+                            request_seq: rid.seq,
+                            command,
+                            phase: "accepted",
+                            data: data.clone(),
+                            outcome_basis: "application_admission",
+                            at: now,
+                        }) {
+                        Ok(available) => available,
+                        Err(error) => {
+                            admission_error = Some(error);
+                            false
+                        }
+                    }
+                });
+        match admission {
             Admission::Known(state) => return vec![operation_reply(&msg, &rid, state)],
             Admission::Conflict => return vec![error_reply(&msg, "request_conflict")],
             Admission::Unknown => return vec![error_reply(&msg, "outcome_unknown")],
             Admission::Gap => return vec![error_reply(&msg, "sequence_gap")],
-            Admission::Busy => return vec![error_reply(&msg, "busy")],
+            Admission::Busy => {
+                return vec![error_reply(
+                    &msg,
+                    admission_error.map_or("busy", domain_code),
+                )];
+            }
             Admission::ScopeUnknown => return vec![error_reply(&msg, "scope_unknown")],
             Admission::Accepted => {}
         }
@@ -506,7 +539,7 @@ impl Application {
         ) {
             return replies;
         }
-        if let Some((command, data)) = recorded_intent(&payload) {
+        if let Some((command, data)) = intent {
             service.owner_mut().record_operation(OperationRecord {
                 scope: scope.clone(),
                 request_seq: rid.seq,
@@ -566,6 +599,15 @@ impl Application {
             }
         }
         let recorded_command = recorded_intent(&payload).map(|(command, _)| command);
+        let completion = if let Some(command @ ("reference_retune" | "reference_configure")) =
+            recorded_command
+        {
+            service
+                .owner_mut()
+                .prepare_reference_completion(&scope, rid.seq, command, now)
+        } else {
+            Ok(())
+        };
         let reconnect_resource = match &payload {
             Mutation::ReconnectResource { resource, .. } => Some(*resource),
             _ => None,
@@ -579,20 +621,23 @@ impl Application {
                 | Mutation::ApplyConfiguration { .. }
                 | Mutation::ConfigureProperty { .. }
         );
-        let outcome = dispatch(service, payload, &rid).map_or_else(
-            |error| {
-                let code = domain_code(error);
-                if reconnect_operation && let Some(diagnostic) = service.reconnect_diagnostic() {
-                    OperationState::FailedWithResult {
-                        code: code.into(),
-                        detail: diagnostic.to_json().to_string(),
+        let outcome = completion
+            .and_then(|()| dispatch(service, payload, &rid))
+            .map_or_else(
+                |error| {
+                    let code = domain_code(error);
+                    if reconnect_operation && let Some(diagnostic) = service.reconnect_diagnostic()
+                    {
+                        OperationState::FailedWithResult {
+                            code: code.into(),
+                            detail: diagnostic.to_json().to_string(),
+                        }
+                    } else {
+                        OperationState::Failed(code.into())
                     }
-                } else {
-                    OperationState::Failed(code.into())
-                }
-            },
-            |value| OperationState::Completed(value.to_string()),
-        );
+                },
+                |value| OperationState::Completed(value.to_string()),
+            );
         // The terminal record is committed even if the connection closes before delivery.
         self.sessions
             .complete(&scope, rid.seq, outcome.clone(), service.clock().now())

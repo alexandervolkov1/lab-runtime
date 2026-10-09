@@ -11,12 +11,22 @@ eframe = { version = "=0.36.2", default-features = false, features = ["glow", "d
 egui_plot = { version = "=0.37.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+url = "2"
+hickory-resolver = { version = "=0.25.2", default-features = false, features = ["system-config", "tokio"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
+# Tungstenite traces raw Upgrade bytes, which can contain X-Token credentials.
+log = { version = "0.4", features = ["max_level_info"] }
 
 [target.'cfg(windows)'.dependencies]
 win-desktop-utils = { version = "=0.5.7", default-features = false, features = ["instance"] }
 
 [dev-dependencies]
 lab-runtime = { path = "../lab-runtime" }
+rcgen = "0.14"
 
 [lints]
 workspace = true

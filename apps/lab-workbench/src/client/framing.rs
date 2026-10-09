@@ -143,6 +143,9 @@ pub(crate) struct PendingWrite {
 }
 
 impl PendingWrite {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
         Self {
             bytes,

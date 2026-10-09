@@ -78,9 +78,10 @@ overridden with profile CLI flags.
 | Option | Value | Default | Scope | Restart? | Meaning |
 |---|---|---|---|---|---|
 | `--serve` | none | absent | process | yes | Required first token for either server mode. |
-| `--config` | nonempty path | none | deployment startup | yes | Selects strict deployment TOML. It is exclusive with all profile options. |
+| `--config` | nonempty path | none | deployment startup | yes | Selects strict deployment TOML. Allows only the explicit TCP bind override below; profile options remain exclusive. |
 | `--profile` | exactly `virtual-demo` | none | compiled profile | yes | Selects the built-in virtual composition. |
-| `--bind` | numeric IPv4 address | `127.0.0.1` | profile TCP listener | yes | Selects the interface address for the Application TCP listener. |
+| `--bind` | numeric IPv4 address | `127.0.0.1` | both startup modes | yes | Selects one unicast interface address for the Application TCP listener. Non-loopback requires `--allow-remote-tcp`. |
+| `--allow-remote-tcp` | none | absent | both startup modes | yes | Explicit trust in plaintext TCP on the selected LAN interface; requires `--bind`. |
 | `--port` | integer `0..=65535` | none | profile TCP listener | yes | Required with `virtual-demo`; `0` asks the OS for a free port. |
 | `--record-db` | local absolute path | Recorder disabled | profile Recorder | yes | Enables SQLite recording. Relative and UNC/network paths are rejected. |
 | `--record-policy` | `required` or `best-effort` | `required` when `--record-db` is present | profile Recorder | yes | Selects the storage-failure policy. It is valid only after `--record-db`. |
@@ -90,22 +91,24 @@ overridden with profile CLI flags.
 The profile parser is deliberately strict. Its accepted order is:
 
 ```text
---serve --profile virtual-demo [--bind IPv4] --port PORT
+--serve --config PATH [--bind IPv4 [--allow-remote-tcp]]
+--serve --profile virtual-demo [--bind IPv4 [--allow-remote-tcp]] --port PORT
   [--record-db ABSOLUTE_PATH [--record-policy required|best-effort]]
   [--ws-port PORT --ws-origin ORIGIN [--ws-origin ORIGIN ...]]
 ```
 
-`--bind` affects only the profile TCP/NDJSON Application listener. It accepts a
-numeric IPv4 address, including a configured LAN/VPN address or the explicit wildcard
-`0.0.0.0`; it never discovers an interface automatically. The optional WebSocket
-listener remains IPv4 loopback-only. There is no `--listen`, hostname,
-config-overlay, or hot-reload CLI option.
+`--bind` affects only the TCP/NDJSON Application listener in either startup mode.
+It accepts a numeric unicast IPv4 address; wildcard `0.0.0.0`, broadcast and multicast
+are rejected. A non-loopback address requires `--allow-remote-tcp` immediately after
+it. The config-mode override is startup-only: `server.host` remains loopback in the
+DTO, and reload cannot change the bound listener. WebSocket Host/Origin admission
+and its loopback bind remain unchanged. No interface is discovered automatically.
 
 In deployment mode, `[server]`, `[server.websocket]`, and `[recording]` supply the
-corresponding settings. The only accepted CLI form is exactly:
+corresponding settings. Its CLI form permits only the startup TCP bind override:
 
 ```text
---serve --config PATH
+--serve --config PATH [--bind IPv4 [--allow-remote-tcp]]
 ```
 
 Runtime validates and composes the candidate before printing readiness. A listener
@@ -166,7 +169,7 @@ allowed_origins = ["http://127.0.0.1:3000"]
 | Field | Required/default | Validation |
 |---|---|---|
 | `server.host` | required | Must be exactly `127.0.0.1`. |
-| `server.port` | required `u16` | `0` selects an OS-assigned loopback TCP port. |
+| `server.port` | required `u16` | `0` selects an OS-assigned TCP port on the chosen bind address (loopback unless explicitly overridden at startup). |
 | `websocket` table | omitted by default | Omission means disabled, port `0`, no origins. |
 | `websocket.enabled` | required if table exists | Boolean. |
 | `websocket.port` | default `0` | `u16`; `0` selects an OS-assigned port. |
@@ -512,15 +515,38 @@ should be obvious in a log or shell history.
 
 | Option | Value | Default | Scope | Restart? | Meaning |
 |---|---|---|---|---|---|
-| `--connect` | numeric socket address | none; required | Runtime client | yes | Address used by the one Workbench Application client worker. |
+| `--connect` | numeric TCP socket or WS/WSS URL | none; required | Runtime client | yes | Endpoint used by the one Workbench Application client worker. |
+| `--allow-remote-tcp` | none | absent | Runtime TCP client | yes | Allows a numeric unicast remote IPv4 endpoint with a nonzero port on a trusted LAN; no TLS or authentication. |
+| `--allow-insecure-ws` | none | absent | Runtime WS client | yes | Allows plaintext WS to a host not expressed as a loopback IP; does not change Runtime's loopback WS bind. |
+| `--ws-origin` | exact HTTP/HTTPS origin | `http://127.0.0.1:3000` | WS/WSS handshake | yes | Must match Runtime's Origin allowlist. |
+| `--ws-token-env` | environment variable name | none | WS/WSS handshake | yes | Reads the `X-Token` access key; mutually exclusive with `--ws-token-file`. |
+| `--ws-token-file` | path | none | WS/WSS handshake | yes | Reads a bounded access-key file; mutually exclusive with `--ws-token-env`. |
+| `--ws-ca-file` | PEM path | OS trust roots only | WSS TLS | yes | Adds private CA certificates without disabling certificate or hostname verification. |
+| `--observe` | none | absent | local client policy | yes | Rejects Runtime mutations and Exact Retry; permits queries, subscriptions, manual Check Status and presentation operations. |
 | `--scope` | retained Application scope string | journal scope if usable, otherwise a new scope | Runtime client recovery | yes | Explicitly requests reattachment to an existing retained scope. |
 | `--workspace` | path | Windows user-data workspace | Workbench persistence | yes | Directory containing presentation and recovery files and protected by one process guard. |
 | `--workbench-listen` | numeric IPv4-loopback socket | disabled | external Workbench API | yes | Enables the opt-in bounded TCP/NDJSON client endpoint; port `0` asks the OS for a port. |
 
 Arguments may be ordered freely, but each option may appear only once. Unknown,
-duplicate, or missing options fail startup and print usage. `--connect` accepts a
-numeric socket address, not a hostname. `--workbench-listen` additionally rejects
-wildcard, non-loopback, hostname, and IPv6 forms.
+duplicate, or missing options fail startup and print usage. TCP `--connect` accepts
+a numeric socket address, not a hostname, and defaults to loopback-only policy.
+`--allow-remote-tcp` cannot be combined with WebSocket options. WS/WSS URLs accept
+hostnames, require exactly `/application/v1`, and reject user credentials, queries
+and fragments. Plain `ws://localhost/...` also requires `--allow-insecure-ws`
+because the plaintext exception recognizes numeric loopback IPs only; use
+`ws://127.0.0.1:PORT/application/v1` for local WS. `--workbench-listen` rejects
+wildcard, non-loopback, hostname, and IPv6 forms independently of Runtime transport.
+
+The token file may contain at most 514 bytes including one optional LF or CRLF.
+The resulting token must be nonempty ASCII, at most 512 bytes, with no embedded
+CR/LF. Tokens enter only the `X-Token` handshake header, never Application JSON,
+URLs or recovery/presentation files. CA configuration requires WSS; TLS errors
+fail the connection without a downgrade. See [Tuna access control](distributed-workbench.md#tuna-access-control).
+
+Observation mode also rejects `history_read`, an asynchronous mutation/work job.
+It applies to GUI and mediated Workbench API submissions, not independent Runtime
+clients. All transports retain the same manual mutation recovery and quarantine
+rules; connecting or loading a journal never automatically replays a mutation.
 
 When enabled, the Workbench endpoint prints its actual address:
 
@@ -615,7 +641,7 @@ constructs another candidate from the source file and enters the same lifecycle.
 | Setting domain | Source | Owner | Persistent? | Runtime mutable? | Restart? |
 |---|---|---|---:|---:|---:|
 | Runtime mode and profile listeners | Runtime CLI | Runtime process | no | no | yes |
-| deployment listeners | deployment TOML | Runtime process | source file | no | yes |
+| deployment listeners | deployment TOML plus explicit startup TCP bind override | Runtime process | TOML only; override is process-local | no | yes |
 | deployment topology and safety | deployment TOML | Runtime | source file plus frozen active revision | only through explicit validated operations | not always; operation effect decides |
 | Recorder path and policy | CLI profile or deployment TOML | Runtime | path/policy source plus SQLite archive | path/policy not live-switchable | yes |
 | Runtime experiment mutations | Application operations | Runtime | according to Runtime/Recorder contract, not TOML write-back | yes, where advertised | no |
@@ -674,12 +700,12 @@ hidden topology or pending transport work.
 
 ## Security implications
 
-- Profile startup defaults the Runtime TCP listener to `127.0.0.1`. An explicit
-  non-loopback `--bind` is intended only for a trusted LAN or VPN. It adds no TLS,
-  authentication, VPN, firewall rule, or other transport security; `0.0.0.0` exposes
-  the listener on every IPv4 interface permitted by the host network and firewall.
-- Runtime WebSocket and deployment-configured listeners remain IPv4 loopback-only.
-  Deployment `server.host` cannot widen that boundary.
+- Both startup modes default TCP to `127.0.0.1`. Non-loopback requires both
+  `--bind IPv4` and `--allow-remote-tcp`; this provides no authentication or TLS.
+  Restrict the selected port to trusted source IPs with the Linux firewall. Never
+  publish raw TCP on the Internet; use authenticated WSS for remote access.
+- Runtime WebSocket remains IPv4 loopback-only. Deployment `server.host` cannot
+  widen it; the startup TCP override does not change HTTP Host/Origin checks.
 - The Workbench external endpoint is disabled by default and accepts only numeric
   IPv4 loopback. It has no authentication and must not be forwarded or exposed as a
   remote service.
@@ -698,7 +724,7 @@ hidden topology or pending transport work.
 |---|---|---|
 | usage plus unknown/duplicate argument | Unsupported CLI option, duplicate option, or mixed profile/config forms | Use one exact startup grammar from this guide. |
 | option needs a value | Missing path, port, origin, scope, or address | Supply the value immediately after its option. |
-| invalid port/address | Invalid numeric IPv4 bind, invalid `u16`, hostname where numeric address is required, or non-loopback Workbench endpoint | Use a numeric IPv4 value for Runtime `--bind`, use `127.0.0.1:PORT` for Workbench endpoints, and use port `0` only where documented. |
+| invalid port/address | Invalid numeric IPv4 bind, invalid `u16`, hostname where numeric address is required, or remote TCP without opt-in | Use a numeric IPv4 value for Runtime `--bind`, use `--allow-remote-tcp` for a trusted remote Runtime endpoint; keep Workbench API on `127.0.0.1:PORT`, and use port `0` only where documented. |
 | no readiness; address already in use | Requested TCP or WebSocket port is occupied | Stop the conflicting process, select another configured port, or use `0`. |
 | configuration artifact/read failure | Missing file, wrong current directory, permissions, oversized file, or rejected path traversal | Resolve `--config` with `GetFullPath`, check referenced paths relative to its parent, and use a readable local directory. |
 | invalid TOML | Syntax error, duplicate key, unknown field, wrong type, BOM, or unsupported schema version | Compare with the strict field tables and validate UTF-8 without BOM. |

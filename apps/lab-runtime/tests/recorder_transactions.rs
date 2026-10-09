@@ -456,6 +456,13 @@ fn deferred_foreign_key_rejects_actual_commit_without_advancing_checkpoint() {
     };
     assert_eq!(failed.state, RecordingState::Failed);
     assert_eq!(failed.persisted_through_sequence, worker_start);
+    assert_eq!(failed.confirmed_submission, Some(Duration::ZERO));
+    assert_eq!(
+        failed.outstanding_groups, 1,
+        "failed COMMIT must not release its charged group"
+    );
+    assert_eq!(failed.outstanding_records, 1);
+    assert!(failed.outstanding_bytes > 0);
     assert_eq!(failed.coverage, "unknown_tail");
     assert!(
         failed

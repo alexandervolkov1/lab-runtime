@@ -114,6 +114,23 @@ impl ServiceHost {
             .expect("diagnostic initialized")
             .stage = ReconnectStage::RecorderReservation;
         let pending = self.begin_resource_recorded_lifecycle("reconnect_resource", &active)?;
+        let recording_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match self.host.reserve_rebind_facts() {
+                Ok(true) => break,
+                Ok(false) if std::time::Instant::now() < recording_deadline => {
+                    if self.host.service(&self.clock).is_err() {
+                        self.cancel_recorded_lifecycle(pending);
+                        return Err(LifecycleOperationError::OwnerFailure);
+                    }
+                    std::thread::yield_now();
+                }
+                _ => {
+                    self.cancel_recorded_lifecycle(pending);
+                    return Err(LifecycleOperationError::RecordingUnavailable);
+                }
+            }
+        }
         self.reconnect_diagnostic
             .as_mut()
             .expect("diagnostic initialized")
@@ -350,6 +367,18 @@ impl ServiceHost {
             .expect("diagnostic initialized")
             .stage = ReconnectStage::ProbeWaiting;
         loop {
+            if self
+                .host
+                .begin_configured_probes_for_resource(resource_key, self.clock.now())
+                .is_err()
+            {
+                self.retire_failed_reconnect_best_effort(
+                    resource_key,
+                    resource.recovery_timeout_ms,
+                );
+                self.cancel_recorded_lifecycle(pending);
+                return Err(LifecycleOperationError::OwnerFailure);
+            }
             match self.host.configured_probes_ready_for_resource(resource_key) {
                 Ok(true) => break,
                 Ok(false) => {}

@@ -826,6 +826,11 @@ impl ServiceHost {
             .commit_reserved_configuration_activation(pending.generation, pending.record)
             .is_err()
         {
+            // An unsuccessful FIFO transfer still owns unused lifecycle/fact
+            // reservations. Cancel those only; submitted SQL credit is retained.
+            let _ = self
+                .host
+                .cancel_configuration_activation(pending.generation);
             self.host.configuration_recording_failed(self.clock.now());
             if pending.global_quiesced {
                 self.host.end_configuration_quiesce();

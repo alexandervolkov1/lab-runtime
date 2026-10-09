@@ -1266,6 +1266,10 @@ fn map_ui_error(error: UiCommandError) -> WorkbenchDispatchError {
 
 fn map_send_error(error: CommandSendError) -> WorkbenchDispatchError {
     match error {
+        CommandSendError::ObservationOnly => WorkbenchDispatchError::new(
+            WorkbenchErrorCode::ClientNotReady,
+            "Runtime mutations are disabled in observation mode (local client policy)",
+        ),
         CommandSendError::Busy => WorkbenchDispatchError::new(
             WorkbenchErrorCode::Busy,
             "Runtime client command admission is full",

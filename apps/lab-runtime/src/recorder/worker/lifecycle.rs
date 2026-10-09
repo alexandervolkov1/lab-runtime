@@ -25,7 +25,7 @@ impl RecorderWorker {
         Ok(())
     }
 
-    /// Reserve one of the unchanged four ordinary ingress groups before a
+    /// Reserve one ordinary ingress group before a
     /// configuration owner commit. `None` is bounded backpressure, not failure.
     pub fn try_reserve_live_activation(
         &mut self,
@@ -45,10 +45,7 @@ impl RecorderWorker {
         let bytes = lifecycle
             .charge()
             .ok_or_else(|| StorageError("live activation credit arithmetic exhausted".into()))?;
-        if self.charged_groups >= self.limits.groups
-            || self.charged_records >= self.limits.records
-            || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
-        {
+        if !self.ordinary_capacity_available(1, bytes) {
             return Ok(None);
         }
         let generation = status
@@ -219,7 +216,7 @@ impl RecorderWorker {
         summary: serde_json::Value,
         requested_at: Duration,
     ) -> Result<(), StorageError> {
-        if self.poll().state != RecordingState::Recording {
+        if self.poll().state != RecordingState::Recording || self.reference_completion.is_some() {
             return Err(StorageError("recording stop requires active run".into()));
         }
         if serde_json::to_vec(&summary)
@@ -282,7 +279,8 @@ impl RecorderWorker {
         if !matches!(
             self.poll().state,
             RecordingState::Idle | RecordingState::Failed
-        ) {
+        ) || self.reference_completion.is_some()
+        {
             return Err(StorageError("finish requires idle or failed run".into()));
         }
         if serde_json::to_vec(&summary)
@@ -302,6 +300,19 @@ impl RecorderWorker {
     /// Consume a cumulative receipt and release credit exactly once.
     /// This reads no SQLite state and never waits for the writer's lock.
     pub fn poll(&mut self) -> RecordingStatus {
+        if self.charged_groups != self.cached.outstanding_groups
+            || self.charged_records != self.cached.outstanding_records
+            || self.charged_bytes != self.cached.outstanding_bytes
+        {
+            tracing::debug!(
+                event = "recorder_ingress",
+                groups = self.charged_groups,
+                records = self.charged_records,
+                bytes = self.charged_bytes,
+                reference_groups = self.reference_credit.groups,
+                "Recorder charged ingress"
+            );
+        }
         self.drain_history_cancellations();
         let fresh_receipt = self.receipt.try_lock().ok().map(|receipt| receipt.clone());
         let status = self.reconcile_receipt(fresh_receipt);
@@ -313,8 +324,24 @@ impl RecorderWorker {
         if let Some(receipt) = fresh_receipt {
             self.apply_receipt(receipt);
         }
+        // Normal return publishes alive=false before thread completion. Observe
+        // completion first: an older alive=true must not be paired with a newer
+        // finished=true and misclassified as a panic during a successful close.
+        let finished = self._thread.is_finished();
+        // is_finished observes std's released thread-packet reference count
+        // with a relaxed load; acquire that completion before reading alive.
+        std::sync::atomic::fence(Ordering::Acquire);
         let alive = self.alive.load(Ordering::Acquire);
-        let panicked = alive && self._thread.is_finished();
+        #[cfg(test)]
+        if let Some(barrier) = self.finish_after_alive_observation.take() {
+            barrier.release();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !self._thread.is_finished() {
+                assert!(Instant::now() < deadline, "normal close did not finish");
+                thread::yield_now();
+            }
+        }
+        let panicked = alive && finished;
         if panicked {
             // A Rust panic bypasses the worker's final alive/receipt stores.
             // Detect it without joining or claiming that queued facts committed.
@@ -377,15 +404,44 @@ impl RecorderWorker {
             let new_records = receipt.released_records - self.seen_released_records;
             let new_bytes = receipt.released_bytes - self.seen_released_bytes;
             let new_groups = receipt.released_groups - self.seen_released_groups;
+            let Some(reference_delta) = receipt
+                .reference_released
+                .delta(self.seen_reference_released)
+            else {
+                self.fail("regressing Reference credit receipt");
+                return;
+            };
+            let total_delta = reference_completion::Credit {
+                groups: new_groups,
+                records: new_records,
+                bytes: new_bytes,
+            };
+            let ordinary_credit = reference_completion::Credit {
+                groups: self.charged_groups,
+                records: self.charged_records,
+                bytes: self.charged_bytes,
+            }
+            .delta(self.reference_credit)
+            .expect("Reference credit is part of total credit");
             if new_records > self.charged_records
                 || new_bytes > self.charged_bytes
                 || new_groups > self.charged_groups
+                || !total_delta.contains(reference_delta)
+                || !self.submitted_reference_credit().contains(reference_delta)
+                || !total_delta
+                    .delta(reference_delta)
+                    .is_some_and(|ordinary| ordinary_credit.contains(ordinary))
             {
                 self.fail("future storage receipt");
             } else {
                 self.charged_records -= new_records;
                 self.charged_bytes -= new_bytes;
                 self.charged_groups -= new_groups;
+                self.reference_credit = self
+                    .reference_credit
+                    .delta(reference_delta)
+                    .expect("validated Reference receipt");
+                self.seen_reference_released = receipt.reference_released;
                 self.seen_released_records = receipt.released_records;
                 self.seen_released_bytes = receipt.released_bytes;
                 self.seen_released_groups = receipt.released_groups;
@@ -499,7 +555,7 @@ impl RecorderWorker {
         self.cached.state = state;
     }
 
-    fn fail(&mut self, message: &str) {
+    pub(super) fn fail(&mut self, message: &str) {
         if self.cached.state != RecordingState::Failed {
             tracing::error!(
                 event = "recorder_failed",

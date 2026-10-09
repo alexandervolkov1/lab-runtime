@@ -1,7 +1,9 @@
-//! Single-owner bounded TCP/NDJSON Application client worker.
+//! Single-owner bounded Application client worker over TCP or WebSocket.
 
 use super::{
-    framing::{FrameDecoder, PendingWrite, encode_frame},
+    endpoint::{RuntimeEndpoint, WebSocketEndpoint},
+    framing::{FrameDecoder, encode_frame},
+    transport::{self, Incoming, Outbound, Transport},
     types::{
         COMMAND_QUEUE, ClientCommand, ClientUpdate, CommandSendError, ConnectionState, EventCursor,
         HelloState, KnownAdmission, MAX_IN_FLIGHT, MutationIdentity, QuarantinedRecoveryRecord,
@@ -12,7 +14,7 @@ use crate::recovery::{RecoveryJournal, load_journal, retire_journal, save_journa
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
-    io::{self, Read},
+    io,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     sync::{
@@ -33,7 +35,6 @@ pub(crate) const REATTACH_DEADLINE: Duration = Duration::from_secs(3);
 pub(crate) const WORKER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(3);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 const IDLE_POLL: Duration = Duration::from_millis(2);
-const READ_TURN_BYTES: usize = 8 * 1024;
 const COMMANDS_PER_TURN: usize = 8;
 const BOOTSTRAP_EVENTS: usize = 64;
 const CONNECT_ATTEMPT_CLAIM: usize = 1;
@@ -110,6 +111,7 @@ fn connect_timeout_for_attempt(now: Instant, mode: ReattachMode) -> Option<Durat
 
 /// Owning handle for the one client worker and its bounded mailboxes.
 pub(crate) struct ClientHandle {
+    observation_only: bool,
     command_tx: SyncSender<ClientCommand>,
     update_rx: Receiver<ClientUpdate>,
     control: WorkerControl,
@@ -142,12 +144,31 @@ impl ClientHandle {
         journal_path: Option<PathBuf>,
         wake: Option<WakeCallback>,
     ) -> io::Result<Self> {
-        if !address.ip().is_loopback() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Workbench M14 client requires a numeric loopback endpoint",
-            ));
-        }
+        let endpoint = RuntimeEndpoint::tcp(address, false)
+            .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+        Self::spawn_configured(endpoint, false, journal_path, wake)
+    }
+
+    /// Transport selection does not create another Application owner or sequencer.
+    pub(crate) fn spawn_configured(
+        endpoint: RuntimeEndpoint,
+        observation_only: bool,
+        journal_path: Option<PathBuf>,
+        wake: Option<WakeCallback>,
+    ) -> io::Result<Self> {
+        let (address, websocket) = match endpoint {
+            RuntimeEndpoint::Tcp {
+                address,
+                allow_remote,
+            } => {
+                RuntimeEndpoint::validate_tcp(address, allow_remote)
+                    .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+                (address, None)
+            }
+            RuntimeEndpoint::WebSocket(endpoint) => {
+                (SocketAddr::from(([127, 0, 0, 1], 0)), Some(endpoint))
+            }
+        };
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
         let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
         let control = WorkerControl::new();
@@ -159,7 +180,7 @@ impl ClientHandle {
         let join = thread::Builder::new()
             .name("lab-workbench-application-client".into())
             .spawn(move || {
-                Worker::new(
+                let mut worker = Worker::new(
                     address,
                     journal_path,
                     command_rx,
@@ -168,10 +189,12 @@ impl ClientHandle {
                     wake,
                     #[cfg(test)]
                     worker_update_overflow,
-                )
-                .run();
+                );
+                worker.websocket = websocket;
+                worker.run();
             })?;
         Ok(Self {
+            observation_only,
             command_tx,
             update_rx,
             control,
@@ -279,6 +302,9 @@ impl ClientHandle {
     }
 
     pub(crate) fn mutation(&self, op: &str, args: Value) -> Result<u64, CommandSendError> {
+        if self.observation_only {
+            return Err(CommandSendError::ObservationOnly);
+        }
         self.submit_ordinary(|command_id| ClientCommand::Mutation {
             command_id,
             op: op.to_owned(),
@@ -290,6 +316,9 @@ impl ClientHandle {
         &self,
         identity: MutationIdentity,
     ) -> Result<u64, CommandSendError> {
+        if self.observation_only {
+            return Err(CommandSendError::ObservationOnly);
+        }
         self.submit_ordinary(|command_id| ClientCommand::RetryMutation {
             command_id,
             identity,
@@ -395,7 +424,7 @@ struct PendingExchange {
 
 struct Outgoing {
     msg_id: String,
-    frame: PendingWrite,
+    frame: Outbound,
 }
 
 struct Bootstrap {
@@ -423,7 +452,8 @@ struct Worker {
     #[cfg(test)]
     update_overflow_observed: Arc<AtomicBool>,
     state: ConnectionState,
-    stream: Option<TcpStream>,
+    stream: Option<Transport>,
+    websocket: Option<WebSocketEndpoint>,
     decoder: FrameDecoder,
     outgoing: VecDeque<Outgoing>,
     pending: BTreeMap<String, PendingExchange>,
@@ -469,6 +499,7 @@ impl Worker {
             update_overflow_observed,
             state: ConnectionState::Disconnected,
             stream: None,
+            websocket: None,
             decoder: FrameDecoder::new(),
             outgoing: VecDeque::with_capacity(MAX_IN_FLIGHT),
             pending: BTreeMap::new(),
@@ -536,6 +567,9 @@ impl Worker {
             if self.disconnect_fenced() {
                 thread::sleep(IDLE_POLL);
                 continue;
+            }
+            if let Some(stream) = self.stream.as_mut() {
+                stream.begin_turn();
             }
             self.service_write();
             self.service_read();
@@ -716,11 +750,25 @@ impl Worker {
         } else {
             ConnectionState::Connecting
         });
-        let result = TcpStream::connect_timeout(&self.address, attempt_timeout);
-        self.finish_connect_attempt(command_id, result);
+        if let Some(endpoint) = &self.websocket {
+            let result = transport::connect(endpoint, now + attempt_timeout);
+            self.finish_transport_attempt(command_id, result);
+        } else {
+            let result = TcpStream::connect_timeout(&self.address, attempt_timeout);
+            self.finish_connect_attempt(command_id, result);
+        }
     }
 
     fn finish_connect_attempt(&mut self, command_id: u64, result: io::Result<TcpStream>) {
+        let result = result.and_then(|stream| {
+            stream.set_nonblocking(true)?;
+            let _ = stream.set_nodelay(true);
+            Ok(Transport::from(stream))
+        });
+        self.finish_transport_attempt(command_id, result);
+    }
+
+    fn finish_transport_attempt(&mut self, command_id: u64, result: io::Result<Transport>) {
         self.release_connect_attempt();
         if self.disconnect_fenced() {
             drop(result);
@@ -728,14 +776,6 @@ impl Worker {
         }
         match result {
             Ok(stream) => {
-                if let Err(error) = stream.set_nonblocking(true) {
-                    self.fail_transport(
-                        &format!("could not configure nonblocking socket: {error}"),
-                        ContinuityFault::Protocol,
-                    );
-                    return;
-                }
-                let _ = stream.set_nodelay(true);
                 self.stream = Some(stream);
                 self.decoder = FrameDecoder::new();
                 self.next_msg = 1;
@@ -1174,7 +1214,7 @@ impl Worker {
         );
         self.outgoing.push_back(Outgoing {
             msg_id,
-            frame: PendingWrite::new(frame),
+            frame: Outbound::new(frame),
         });
         true
     }
@@ -1184,16 +1224,21 @@ impl Worker {
             return;
         };
         let Some(outgoing) = self.outgoing.front_mut() else {
+            if stream.flush_control(Instant::now()).is_err() {
+                self.fail_transport("WebSocket control output failed", ContinuityFault::Write);
+            }
             return;
         };
         let now = Instant::now();
-        match outgoing.frame.advance(stream, now) {
+        let result = outgoing.frame.advance(stream, now);
+        // Preserve first-byte evidence even when a partial write ends in error.
+        if outgoing.frame.wrote_any()
+            && let Some(pending) = self.pending.get_mut(&outgoing.msg_id)
+        {
+            pending.transmitted = true;
+        }
+        match result {
             Ok(done) => {
-                if outgoing.frame.wrote_any()
-                    && let Some(pending) = self.pending.get_mut(&outgoing.msg_id)
-                {
-                    pending.transmitted = true;
-                }
                 if done {
                     let outgoing = self.outgoing.pop_front().expect("front exists");
                     if let Some(pending) = self.pending.get_mut(&outgoing.msg_id) {
@@ -1221,25 +1266,32 @@ impl Worker {
         let Some(stream) = self.stream.as_mut() else {
             return;
         };
-        let mut bytes = [0u8; READ_TURN_BYTES];
-        match stream.read(&mut bytes) {
-            Ok(0) => {
+        let result = stream.read_messages(&mut self.decoder);
+        if let Some(outgoing) = self.outgoing.front_mut() {
+            outgoing.frame.observe_writes(stream);
+            if outgoing.frame.wrote_any()
+                && let Some(pending) = self.pending.get_mut(&outgoing.msg_id)
+            {
+                pending.transmitted = true;
+            }
+        }
+        match result {
+            Ok(Incoming::Closed) => {
                 self.fail_transport("server closed the connection", ContinuityFault::EndOfStream)
             }
-            Ok(count) => match self.decoder.push(&bytes[..count], Instant::now()) {
-                Ok(values) => {
-                    for value in values {
-                        if self.stream.is_none() {
-                            break;
-                        }
-                        self.handle_incoming(value);
+            Ok(Incoming::Values(values)) => {
+                for value in values {
+                    if self.stream.is_none() {
+                        break;
                     }
+                    self.handle_incoming(value);
                 }
-                Err(error) => self.fail_transport(
-                    &format!("invalid server frame: {error}"),
-                    ContinuityFault::Protocol,
-                ),
-            },
+            }
+            Ok(Incoming::Idle) => {}
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => self.fail_transport(
+                &format!("invalid server frame: {error}"),
+                ContinuityFault::Protocol,
+            ),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => self.fail_transport(
@@ -1255,6 +1307,10 @@ impl Worker {
             .decoder
             .check_deadline(now, PARTIAL_FRAME_DEADLINE)
             .is_err()
+            || self
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.deadline_expired(now, PARTIAL_FRAME_DEADLINE))
         {
             self.fail_transport(
                 "partial input frame deadline exceeded",
@@ -1842,6 +1898,14 @@ impl Worker {
     }
 
     fn close_connection(&mut self, reason: &str, report_failure: bool) {
+        // Never flush queued Application mutations across an explicit fence.
+        // With no pending wire frame, Close is safe and independently bounded.
+        if self.outgoing.is_empty()
+            && (self.disconnect_fenced() || self.control.stop.load(Ordering::Acquire))
+            && let Some(stream) = self.stream.as_mut()
+        {
+            stream.graceful_close();
+        }
         let mut records = Vec::new();
         let mut unsent = Vec::new();
         for pending in self.pending.values_mut() {
@@ -2299,6 +2363,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         let client = ClientHandle {
+            observation_only: false,
             command_tx,
             update_rx,
             control,
@@ -2707,6 +2772,120 @@ mod tests {
     }
 
     #[test]
+    fn instance_changed_requires_explicit_new_scope_with_empty_or_nonempty_recovery() {
+        for has_recovery in [false, true] {
+            let path = journal_path("instance-changed-gui");
+            let record = recovery_record(1, KnownAdmission::Ambiguous);
+            let records = if has_recovery {
+                vec![record.clone()]
+            } else {
+                Vec::new()
+            };
+            save_test_journal(&path, &records);
+            let before = fs::read(&path).unwrap();
+            let (mut worker, updates) = unit_worker_with_journal(path.clone());
+            let mut model = WorkbenchModel::new(PresentationDocument::empty("same-workspace"));
+            model.apply_client_update(ClientUpdate::Hello(hello_state(1)));
+            model.apply_client_update(ClientUpdate::RecoveryProjection {
+                active: records.clone(),
+                quarantined: Vec::new(),
+            });
+            assert!(!model.connection_requires_new_scope());
+            worker.desired_scope = Some("scope".into());
+            worker.pending.insert("1".into(), pending_hello(1));
+
+            worker.handle_error(
+                "1".into(),
+                json!({"v":1,"msg_id":"1","type":"error","code":"instance_changed"}),
+            );
+            for update in updates.try_iter() {
+                model.apply_client_update(update);
+                if has_recovery {
+                    assert_recovery_evidence_visible(&model, &record);
+                }
+            }
+            assert_eq!(model.connection, ConnectionState::Disconnected);
+            assert!(model.connection_requires_new_scope());
+            assert_eq!(model.recovery.scope.as_deref(), Some("scope"));
+            assert!(model.recovery.mutations.is_empty());
+            assert_eq!(model.recovery.quarantined.len(), usize::from(has_recovery));
+            assert!(worker.desired_scope.is_none());
+            assert!(worker.retry_at.is_none());
+            assert_eq!(worker.reattach, ReattachMode::None);
+            assert!(worker.pending.is_empty());
+            assert!(worker.outgoing.is_empty());
+            assert_eq!(fs::read(&path).unwrap(), before);
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            worker.address = listener.local_addr().unwrap();
+            worker.retry_reattach(Instant::now());
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock
+            ));
+            assert!(worker.outgoing.is_empty());
+
+            // The explicit GUI action submits one Connect without the rejected scope.
+            worker.handle_command(ClientCommand::Connect {
+                command_id: 2,
+                scope: None,
+            });
+            let stream = accept_nonblocking(&listener);
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let mut reader = BufReader::new(stream);
+            let deadline = Instant::now() + TEST_TIMEOUT;
+            while !worker.outgoing.is_empty() {
+                assert!(Instant::now() < deadline, "explicit hello write deadline");
+                worker.service_write();
+                thread::yield_now();
+            }
+            let request = read_request(&mut reader);
+            assert_eq!(request["op"], "hello");
+            assert_eq!(request["args"]["scope"], Value::Null);
+            assert!(request.get("request_id").is_none());
+            write_value(
+                reader.get_mut(),
+                &hello_reply_for(&request["msg_id"], "new-boot", "new-scope", 1),
+            );
+            while worker.hello.is_none() {
+                assert!(Instant::now() < deadline, "explicit hello reply deadline");
+                worker.service_read();
+                thread::yield_now();
+            }
+            apply_worker_updates(&updates, &mut model);
+            assert_eq!(model.connection, ConnectionState::Ready);
+            assert_eq!(model.recovery.scope.as_deref(), Some("new-scope"));
+            assert_eq!(model.connection_requires_new_scope(), has_recovery);
+            assert_eq!(model.quarantine_blocks_mutations(), has_recovery);
+            assert!(worker.outgoing.is_empty());
+            if has_recovery {
+                assert_eq!(model.recovery.quarantined[0].record, record);
+                assert_eq!(
+                    model.recovery.quarantined[0].reason,
+                    RecoveryQuarantineReason::InstanceChanged
+                );
+                worker.queue_retry(3, record.identity.clone());
+                worker.queue_mutation(4, "reference_retune".into(), record.args.clone());
+                let seen = updates.try_iter().collect::<Vec<_>>();
+                assert!(seen.iter().any(|update| matches!(
+                    update, ClientUpdate::LocalRejected { command_id: 3, reason }
+                        if reason == "recovery_quarantine_unresolved"
+                )));
+                assert!(seen.iter().any(|update| matches!(
+                    update, ClientUpdate::LocalRejected { command_id: 4, reason }
+                        if reason == "recovery_quarantine_unresolved"
+                )));
+                assert!(worker.outgoing.is_empty());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
     fn manual_new_scope_can_rebuild_observations_but_quarantine_still_blocks_mutation() {
         let path = journal_path("manual-new-scope");
         let record = recovery_record(1, KnownAdmission::Ambiguous);
@@ -3062,7 +3241,7 @@ mod tests {
         worker.state = ConnectionState::Ready;
         worker.hello = Some(hello_state(2));
         worker.recovery = vec![record.clone()];
-        worker.stream = Some(stream);
+        worker.stream = Some(stream.into());
 
         worker.queue_operation_status(1, record.identity.clone());
         worker.queue_retry(2, record.identity.clone());
@@ -3199,7 +3378,7 @@ mod tests {
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (_peer, _) = listener.accept().unwrap();
         stream.set_nonblocking(true).unwrap();
-        worker.stream = Some(stream);
+        worker.stream = Some(stream.into());
 
         worker.queue_mutation(
             9,
@@ -3345,7 +3524,6 @@ mod tests {
         let base_path = journal_path("write-failure");
         let directory = base_path.parent().unwrap().to_owned();
         let blocked_parent = directory.join("not-a-directory");
-        fs::write(&blocked_parent, b"block directory creation").unwrap();
         let unusable_path = blocked_parent.join("recovery.json");
 
         let (quiet_tx, quiet_rx) = mpsc::channel();
@@ -3364,6 +3542,7 @@ mod tests {
             ClientHandle::spawn_with_recovery_journal(address, Some(unusable_path)).unwrap();
         client.connect(None).unwrap();
         wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+        fs::write(&blocked_parent, b"block directory creation").unwrap();
         let command_id = client
             .mutation(
                 "reference_retune",
@@ -3487,7 +3666,7 @@ mod tests {
             let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let (_peer, _) = listener.accept().unwrap();
             stream.set_nonblocking(true).unwrap();
-            worker.stream = Some(stream);
+            worker.stream = Some(stream.into());
             worker.queue_mutation(
                 1,
                 "reference_retune".into(),
@@ -3540,7 +3719,7 @@ mod tests {
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (_peer, _) = listener.accept().unwrap();
         stream.set_nonblocking(true).unwrap();
-        accepted_worker.stream = Some(stream);
+        accepted_worker.stream = Some(stream.into());
         accepted_worker.queue_mutation(
             1,
             "reference_retune".into(),
@@ -4041,7 +4220,7 @@ mod tests {
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let _peer = accept_nonblocking(&listener);
         stream.set_nonblocking(true).unwrap();
-        worker.stream = Some(stream);
+        worker.stream = Some(stream.into());
         worker.state = ConnectionState::Ready;
         worker.hello = Some(hello_state(3));
         worker.desired_scope = Some("scope".into());
@@ -4414,7 +4593,7 @@ mod tests {
             );
             worker.outgoing.push_back(Outgoing {
                 msg_id: "1".into(),
-                frame: PendingWrite::new(b"request\n".to_vec()),
+                frame: Outbound::new(b"request\n".to_vec()),
             });
 
             worker.fail_transport_at("lost", ContinuityFault::EndOfStream, true, Instant::now());

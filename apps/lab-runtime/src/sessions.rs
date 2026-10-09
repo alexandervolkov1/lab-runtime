@@ -467,6 +467,19 @@ impl SessionStore {
         payload: Mutation,
         now: Duration,
     ) -> Admission {
+        self.admit_with_gate(scope_id, seq, payload, now, || true)
+    }
+
+    /// Run an owner-local atomic resource gate only for an otherwise admissible
+    /// new identity. A false result neither retains a record nor advances sequence.
+    pub(crate) fn admit_with_gate(
+        &mut self,
+        scope_id: &str,
+        seq: u64,
+        payload: Mutation,
+        now: Duration,
+        gate: impl FnOnce() -> bool,
+    ) -> Admission {
         self.expire(now);
         let payload = payload.normalized();
         let Some(scope) = self.scopes.get(scope_id) else {
@@ -501,6 +514,9 @@ impl SessionStore {
             .checked_add(provisioning_charge)
             .is_none_or(|retained| retained > PROVISIONING_RETAINED_BYTES)
         {
+            return Admission::Busy;
+        }
+        if !gate() {
             return Admission::Busy;
         }
         let scope = self.scopes.get_mut(scope_id).expect("looked up above");
@@ -818,5 +834,55 @@ mod provisioning_tests {
         assert!(store.status(&scope, 33) != Admission::ScopeUnknown);
         store.expire(TERMINAL_TTL + Duration::from_nanos(33));
         assert_eq!(store.retained_provisioning_bytes(), 0);
+    }
+}
+
+#[cfg(test)]
+mod admission_gate_tests {
+    use super::*;
+    #[test]
+    fn resource_gate_runs_only_after_identity_and_capacity_checks() {
+        let mut store = SessionStore::new("00112233445566778899aabbccddeeff").unwrap();
+        let scope = store.open(None, 1, Duration::ZERO).unwrap().scope;
+        let payload = Mutation::RetuneRamp {
+            reference: 1,
+            expected_revision: 1,
+            target: 51.0,
+            rate: 2.0,
+        };
+        assert_eq!(
+            store.admit_with_gate(&scope, 1, payload.clone(), Duration::ZERO, || false),
+            Admission::Busy
+        );
+        assert_eq!(store.next_seq(&scope).unwrap(), 1);
+        assert_eq!(
+            store.admit_with_gate(&scope, 2, payload.clone(), Duration::ZERO, || panic!(
+                "gap must bypass resource gate"
+            )),
+            Admission::Gap
+        );
+        assert_eq!(
+            store.admit_with_gate(&scope, 1, payload.clone(), Duration::ZERO, || true),
+            Admission::Accepted
+        );
+        assert_eq!(
+            store.admit_with_gate(&scope, 1, payload, Duration::ZERO, || panic!(
+                "known identity must bypass resource gate"
+            )),
+            Admission::Known(OperationState::Accepted)
+        );
+        let different = Mutation::RetuneRamp {
+            reference: 1,
+            expected_revision: 1,
+            target: 52.0,
+            rate: 2.0,
+        };
+        assert_eq!(
+            store.admit_with_gate(&scope, 1, different, Duration::ZERO, || panic!(
+                "conflict must bypass resource gate"
+            )),
+            Admission::Conflict
+        );
+        assert_eq!(store.next_seq(&scope).unwrap(), 2);
     }
 }

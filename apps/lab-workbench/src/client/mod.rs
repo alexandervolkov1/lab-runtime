@@ -1,6 +1,8 @@
 //! Private bounded Application client used only by `lab-workbench`.
 
+pub(crate) mod endpoint;
 mod framing;
+mod transport;
 pub(crate) mod types;
 mod worker;
 

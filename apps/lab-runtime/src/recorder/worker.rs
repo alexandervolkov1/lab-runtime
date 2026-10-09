@@ -38,14 +38,20 @@ mod fault_injection;
 mod history;
 mod ingress;
 mod lifecycle;
+mod reference_completion;
+mod reserved_facts;
 mod storage_loop;
 
 pub use fault_injection::WriterBarrier;
 use storage_loop::worker_loop;
 
-const MAX_GROUPS: usize = 4;
+// Four acquisition groups + reconnect (accepted, activation, baseline, probe, terminal)
+// + two independent Reference accepted/completion pairs.
+// This is a bounded operating envelope, not a promise for an arbitrarily slow disk.
+const MAX_GROUPS: usize = 4 + 5 + 2 * 2;
+const MAX_BATCH_GROUPS: usize = 4;
 const MAX_HISTORY_JOBS: usize = 8;
-const MAX_RECORDS: usize = 1024;
+const MAX_RECORDS: usize = (4 + 2) * 256 + 3 + 2 * 3;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GROUP_BYTES: usize = 512 * 1024;
 
@@ -55,12 +61,16 @@ const MAX_GROUP_BYTES: usize = 512 * 1024;
 enum MonotonicSource {
     Serving(SystemClock),
     Offline(Instant),
+    #[cfg(test)]
+    Manual(Duration),
 }
 impl MonotonicSource {
     fn now(self) -> Duration {
         match self {
             Self::Serving(clock) => clock.now(),
             Self::Offline(origin) => origin.elapsed(),
+            #[cfg(test)]
+            Self::Manual(now) => now,
         }
     }
 }
@@ -124,7 +134,8 @@ pub struct RecordingStatus {
     pub outstanding_groups: usize,
     /// First stable failure message, retained through reconnect.
     pub first_error: Option<String>,
-    /// Original owner time of the latest committed start/group/probe receipt.
+    /// Greatest original owner time in the committed start/group/probe prefix.
+    /// Record sequences identify durability; this is not a time-range guarantee.
     pub confirmed_submission: Option<Duration>,
     /// Current checked run counter within the serving boot.
     pub run_no: Option<u64>,
@@ -157,6 +168,7 @@ struct Receipt {
     released_records: usize,
     released_bytes: usize,
     released_groups: usize,
+    reference_released: reference_completion::Credit,
     first_error: Option<String>,
     confirmed_submission: Option<Duration>,
     run_no: Option<u64>,
@@ -175,6 +187,7 @@ impl Default for Receipt {
             released_records: 0,
             released_bytes: 0,
             released_groups: 0,
+            reference_released: reference_completion::Credit::default(),
             first_error: None,
             confirmed_submission: None,
             run_no: None,
@@ -198,6 +211,14 @@ enum Message {
     Facts(Vec<RecordingFact>, usize, Duration, Instant, u64),
     ClockAnchor(u64),
     Operation(OperationRecord, usize, u64),
+    ReferenceAccepted(OperationRecord, usize, u64),
+    ReferenceCompletion {
+        fact: Option<Box<RecordingFact>>,
+        captured_at: Duration,
+        terminal: OperationRecord,
+        bytes: usize,
+        first_record: u64,
+    },
     Annotation(AnnotationRecord, usize, u64),
     GapSeal(RecorderGap, u64),
     Probe(Duration),
@@ -235,10 +256,14 @@ pub struct RecorderWorker {
     alive: Arc<AtomicBool>,
     /// Dropping this handle detaches rather than waiting for a blocked OS call.
     _thread: thread::JoinHandle<()>,
+    #[cfg(test)]
+    finish_after_alive_observation: Option<WriterBarrier>,
     limits: RecorderLimits,
     charged_records: usize,
     charged_bytes: usize,
     charged_groups: usize,
+    reference_credit: reference_completion::Credit,
+    seen_reference_released: reference_completion::Credit,
     seen_released_records: usize,
     seen_released_bytes: usize,
     seen_released_groups: usize,
@@ -261,6 +286,9 @@ pub struct RecorderWorker {
     periodic_pending: Option<u64>,
     pending_activation_generation: Option<u64>,
     live_activation_reservation: Option<LiveActivationReservation>,
+    reference_completion: Option<reference_completion::Reservation>,
+    reserved_fact_groups: BTreeSet<u64>,
+    next_fact_reservation: u64,
     last_owner_submission: Option<Duration>,
     last_accepted_fact: Option<u64>,
     gap_scheduled: bool,
@@ -268,6 +296,14 @@ pub struct RecorderWorker {
 }
 
 impl RecorderWorker {
+    /// Give manual-time unit fixtures explicit control of periodic FIFO admission.
+    /// The SQL worker retains its real UTC clock; production and integration
+    /// tests continue to use their normal serving/offline monotonic sources.
+    #[cfg(test)]
+    pub(crate) fn set_periodic_time_for_test(&mut self, now: Duration) {
+        self.source = MonotonicSource::Manual(now);
+    }
+
     /// Open SQLite on the worker before readiness, with a finite startup barrier.
     pub fn open(path: &Path, limits: RecorderLimits) -> Result<Self, StorageError> {
         let mut entropy = [0u8; 16];
@@ -408,10 +444,14 @@ impl RecorderWorker {
             receipt,
             alive,
             _thread: handle,
+            #[cfg(test)]
+            finish_after_alive_observation: None,
             limits,
             charged_records: 0,
             charged_bytes: 0,
             charged_groups: 0,
+            reference_credit: reference_completion::Credit::default(),
+            seen_reference_released: reference_completion::Credit::default(),
             seen_released_records: 0,
             seen_released_bytes: 0,
             seen_released_groups: 0,
@@ -453,6 +493,9 @@ impl RecorderWorker {
             periodic_pending: None,
             pending_activation_generation: None,
             live_activation_reservation: None,
+            reference_completion: None,
+            reserved_fact_groups: BTreeSet::new(),
+            next_fact_reservation: 1,
             last_owner_submission: None,
             last_accepted_fact: None,
             gap_scheduled: false,
@@ -702,6 +745,57 @@ mod receipt_fence_tests {
 #[cfg(test)]
 mod close_receipt_tests {
     use super::*;
+
+    #[test]
+    fn successful_close_between_liveness_observations_is_not_a_worker_panic() {
+        let mut entropy = [0u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("lab-m18-close-observation-{suffix}.sqlite"));
+        let barrier = WriterBarrier::held_finish();
+        let mut worker =
+            RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
+                .unwrap();
+        worker.request_finish().unwrap();
+        assert!(barrier.wait_until_reached(Duration::from_secs(2)));
+        assert!(worker.alive.load(Ordering::Acquire));
+        // The worker completes a real SQL seal/close after the owner samples
+        // alive, but before the old implementation checks JoinHandle completion.
+        worker.finish_after_alive_observation = Some(barrier);
+        let observed = worker.poll();
+        assert_ne!(
+            observed.state,
+            RecordingState::Failed,
+            "normal completion is not a panic: {observed:?}; sqlite={}",
+            path.display()
+        );
+        let closed = worker.poll();
+        assert_eq!(closed.state, RecordingState::Closed);
+        assert!(closed.terminal_seal_committed && closed.worker_closed);
+        assert!(closed.first_error.is_none());
+        assert_eq!(
+            (
+                closed.outstanding_groups,
+                closed.outstanding_records,
+                closed.outstanding_bytes
+            ),
+            (0, 0, 0)
+        );
+        drop(worker);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row::<String, _, _>("SELECT state FROM runtime_boots", [], |row| row.get(0))
+                .unwrap(),
+            "sealed"
+        );
+        assert_eq!(
+            db.query_row::<String, _, _>("PRAGMA integrity_check", [], |row| row.get(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn closed_worker_rechecks_final_receipt_after_a_stale_owner_clone() {

@@ -1,5 +1,7 @@
 //! Recorder configuration is selected before readiness and never starts control.
 
+mod support;
+
 use lab_runtime::{
     application::Application,
     host::{Clock, HostCore},
@@ -24,6 +26,7 @@ fn temporary_database() -> PathBuf {
 
 #[test]
 fn database_option_defaults_to_required_and_invalid_candidates_do_not_start() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let text = path.to_string_lossy();
     let args = [
@@ -92,6 +95,7 @@ fn database_option_defaults_to_required_and_invalid_candidates_do_not_start() {
 
 #[test]
 fn explicit_unopenable_storage_fails_startup_before_readiness_for_both_policies() {
+    let _runtime_owner = support::managed_runtime_guard();
     let parent = temporary_database().with_extension("missing-parent");
     assert!(!parent.exists());
     let path = parent.join("recording.sqlite");
@@ -189,6 +193,7 @@ fn external_sqlite_writer_lock_fails_within_the_busy_bound_without_starting_a_bo
 #[cfg(windows)]
 #[test]
 fn readonly_windows_archive_fails_startup_for_both_policies_without_mutation() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let mut original = lab_runtime::recorder::SqliteStore::open_with_boot(
         &path,
@@ -295,6 +300,7 @@ fn oversized_existing_archive_is_rejected_without_startup_mutation() {
 
 #[test]
 fn public_recording_status_reports_semantic_state_without_storage_internals() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let text = path.to_string_lossy();
     let options = ServiceOptions::parse(&[
@@ -384,8 +390,10 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
     let options =
         ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
     let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    // Only the explicit measurement below belongs to this checkpoint test.
+    // Poll receipts without running acquisition: unrelated scheduled facts may
+    // otherwise commit after the baseline but before the injected SQL failure.
     let clock = service.clock_copy();
-    service.owner_mut().service(&clock).unwrap();
     service
         .owner_mut()
         .start_recording("checkpoint status", clock.now())
@@ -393,7 +401,7 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
     let by = Instant::now() + Duration::from_secs(2);
     while service.owner().recording_status().unwrap().state != RecordingState::Recording {
         assert!(Instant::now() < by);
-        service.owner_mut().service(&clock).unwrap();
+        let _ = service.owner_mut().recording_activation_committed();
         std::thread::yield_now();
     }
     let prefix = service
@@ -428,7 +436,7 @@ fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_f
             Instant::now() < by,
             "injected WAL checkpoint failure did not fail closed"
         );
-        service.owner_mut().service(&clock).unwrap();
+        let _ = service.owner_mut().recording_activation_committed();
         std::thread::yield_now();
     }
     let status = service.owner().recording_status().unwrap();

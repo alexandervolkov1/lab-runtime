@@ -255,6 +255,7 @@ pub(crate) enum ClientUpdate {
 /// Failure to submit a local command without blocking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandSendError {
+    ObservationOnly,
     Busy,
     WorkerStopped,
     IdExhausted,
@@ -263,6 +264,7 @@ pub(crate) enum CommandSendError {
 impl std::fmt::Display for CommandSendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::ObservationOnly => "Runtime mutations are disabled in observation mode",
             Self::Busy => "client command queue is full",
             Self::WorkerStopped => "client worker has stopped",
             Self::IdExhausted => "client command identity exhausted",

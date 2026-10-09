@@ -111,6 +111,9 @@ pub(crate) struct WorkbenchModel {
     pub(crate) client_error: Option<String>,
     /// Durable recovery-journal failure; separately gates mutation controls.
     pub(crate) recovery_problem: Option<String>,
+    /// The retained scope was rejected by a different Runtime instance.
+    /// Cleared only by an authoritative hello; never initiates a connection.
+    scope_instance_changed: bool,
 }
 
 impl WorkbenchModel {
@@ -127,6 +130,7 @@ impl WorkbenchModel {
             action_order: VecDeque::new(),
             client_error: None,
             recovery_problem: None,
+            scope_instance_changed: false,
         };
         model.refresh_unresolved();
         model
@@ -283,6 +287,11 @@ impl WorkbenchModel {
         !self.recovery.quarantined.is_empty()
     }
 
+    /// Whether an explicit GUI connection must request a new scope.
+    pub(crate) fn connection_requires_new_scope(&self) -> bool {
+        self.scope_instance_changed || !self.recovery.quarantined.is_empty()
+    }
+
     /// Returns one caller-local action state without crossing into mutation identity.
     pub(crate) fn action_state(&self, command_id: u64) -> Option<OperatorActionState> {
         self.actions.get(&CommandId::new(command_id)).copied()
@@ -356,6 +365,7 @@ impl WorkbenchModel {
     }
 
     fn apply_hello(&mut self, hello: HelloState) {
+        self.scope_instance_changed = false;
         let changed_boot = self
             .recovery
             .boot_id
@@ -375,6 +385,12 @@ impl WorkbenchModel {
     }
 
     fn apply_reply(&mut self, command_id: u64, op: &str, kind: ReplyKind, envelope: Value) {
+        if op == "hello"
+            && kind == ReplyKind::PublicError
+            && envelope.get("code").and_then(Value::as_str) == Some("instance_changed")
+        {
+            self.scope_instance_changed = true;
+        }
         if kind != ReplyKind::Result
             && let Some(action) = self.actions.get_mut(&CommandId::new(command_id))
         {

@@ -1,5 +1,7 @@
 //! Historical SQL is an Operation; page Query uses a bounded retained result.
 
+mod support;
+
 use lab_core::{
     Command, InstrumentId, ParameterId, Sample, SignalId, Unit, Value as DomainValue,
     managed::CapturedInput, recording::RecordingFact,
@@ -42,6 +44,7 @@ fn temporary_database() -> PathBuf {
 
 #[test]
 fn history_read_rejects_untrusted_fields_and_invalid_ranges_before_worker_admission() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let text = path.to_string_lossy();
     let options = ServiceOptions::parse(&[
@@ -152,6 +155,7 @@ fn history_read_rejects_untrusted_fields_and_invalid_ranges_before_worker_admiss
 
 #[test]
 fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empty_range() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let archive_boot = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
     let signal = SignalId::new(InstrumentId::new(211), lab_core::TEMPERATURE);
@@ -406,6 +410,7 @@ fn restart_rejects_old_scope_event_and_history_cursor_but_pages_old_run_and_empt
 
 #[test]
 fn public_archived_gap_page_keeps_loss_metadata_within_json_budget() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let archive_boot = "79797979797979797979797979797979";
     let reason = "\0".repeat(512);
@@ -507,6 +512,7 @@ fn public_archived_gap_page_keeps_loss_metadata_within_json_budget() {
 
 #[test]
 fn history_cursor_expires_on_reconnect_and_explicit_ttl_without_silent_resume() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let archive_boot = "89898989898989898989898989898989";
     let signal = SignalId::new(InstrumentId::new(1), lab_core::TEMPERATURE);
@@ -699,6 +705,7 @@ fn history_cursor_expires_on_reconnect_and_explicit_ttl_without_silent_resume() 
 
 #[test]
 fn history_read_is_accepted_then_caches_one_bounded_raw_page_for_pure_query() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let text = path.to_string_lossy();
     let options = ServiceOptions::parse(&[
@@ -1107,6 +1114,7 @@ fn continuation_capacity_is_bounded_and_disconnect_releases_its_slot() {
 
 #[test]
 fn run_discovery_operation_lists_archived_runs_after_service_reopen() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let mut previous = lab_runtime::recorder::SqliteStore::open_with_boot(
         &path,
@@ -1179,6 +1187,7 @@ fn run_discovery_operation_lists_archived_runs_after_service_reopen() {
 
 #[test]
 fn escaped_archived_values_page_through_public_api_with_bounded_complete_frames() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let old_boot = "77777777777777777777777777777777";
     let instrument = InstrumentId::new(97);

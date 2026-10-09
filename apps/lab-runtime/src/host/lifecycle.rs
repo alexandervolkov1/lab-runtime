@@ -217,7 +217,14 @@ impl HostCore {
         if self.stopping {
             return Err(Error::InvalidConfiguration("host is stopping"));
         }
-        self.poll_recorder(self.last_now);
+        if matches!(
+            &command,
+            Command::RetuneRampReference { .. } | Command::ReconfigureReference { .. }
+        ) {
+            self.prepare_reference_recording(self.last_now)?;
+        } else {
+            self.poll_recorder(self.last_now);
+        }
         let start = match &command {
             Command::StartController { controller, .. }
             | Command::ResumeController { controller, .. } => Some(*controller),

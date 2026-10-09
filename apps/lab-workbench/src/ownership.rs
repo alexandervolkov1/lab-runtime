@@ -55,8 +55,10 @@ pub(crate) enum OwnershipError {
     /// Workspace path resolution failed.
     Io(io::Error),
     /// Another process already owns the same resolved workspace.
+    #[cfg(windows)]
     AlreadyActive(PathBuf),
     /// The platform mutex API failed.
+    #[cfg(windows)]
     Platform(String),
     /// The v0.1 Workbench process guard currently supports Windows only.
     #[cfg(not(windows))]
@@ -67,11 +69,13 @@ impl fmt::Display for OwnershipError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "cannot resolve Workbench workspace: {error}"),
+            #[cfg(windows)]
             Self::AlreadyActive(path) => write!(
                 formatter,
                 "another Workbench already owns workspace {}",
                 path.display()
             ),
+            #[cfg(windows)]
             Self::Platform(error) => write!(formatter, "Workbench ownership guard failed: {error}"),
             #[cfg(not(windows))]
             Self::Unsupported => {

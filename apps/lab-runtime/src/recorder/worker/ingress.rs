@@ -43,9 +43,7 @@ impl RecorderWorker {
         });
         if oversized_record
             || bytes > MAX_GROUP_BYTES
-            || self.charged_groups >= self.limits.groups
-            || facts.len() > self.limits.records.saturating_sub(self.charged_records)
-            || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
+            || !self.ordinary_capacity_available(facts.len(), bytes)
         {
             self.fail_with_gap(RecorderGap {
                 reason: "recorder ingress capacity exhausted".into(),
@@ -76,13 +74,24 @@ impl RecorderWorker {
                 self.charged_records += record_count;
                 self.charged_bytes += bytes;
                 self.charged_groups += 1;
+                tracing::debug!(
+                    event = "recorder_fact_admitted",
+                    groups = self.charged_groups,
+                    records = record_count,
+                    bytes,
+                    "Recorder causal group admitted"
+                );
                 self.last_accepted_fact = last_fact;
                 Ok(assigned)
             }
-            Err(
-                TrySendError::Full(Message::Facts(facts, _, _, _, _))
-                | TrySendError::Disconnected(Message::Facts(facts, _, _, _, _)),
-            ) => {
+            Err(TrySendError::Disconnected(_)) => {
+                // Receiver teardown can precede JoinHandle::is_finished after
+                // panic. Its unconfirmed SQL prefix is unknown, not an ingress
+                // overflow. Preserve the same failure evidence as poll().
+                self.fail("recorder worker disconnected");
+                Err(StorageError("recorder worker disconnected".into()))
+            }
+            Err(TrySendError::Full(Message::Facts(facts, _, _, _, _))) => {
                 self.fail_with_gap(RecorderGap {
                     reason: "recorder ingress unavailable".into(),
                     at: submitted_at,
@@ -99,7 +108,10 @@ impl RecorderWorker {
     /// Charge and transfer one original application-boundary fact without disk I/O.
     /// A rejected transfer is a sticky coverage failure; it never edits the
     /// already committed application outcome.
-    pub fn try_admit_operation(&mut self, operation: OperationRecord) -> Result<(), StorageError> {
+    pub fn try_admit_operation(
+        &mut self,
+        mut operation: OperationRecord,
+    ) -> Result<(), StorageError> {
         self.poll();
         let lifecycle_terminal = self.cached.state == RecordingState::Idle
             && operation.command == "recording_stop"
@@ -112,14 +124,15 @@ impl RecorderWorker {
         {
             return Err(StorageError("operation fact not admissible".into()));
         }
+        // Normalize unused allocation before charging the transferred payload.
+        // This makes the two reconnect audit envelopes obey the same <=16 KiB
+        // data + 64-byte scope + 256-byte metadata bound as Reference acceptance.
+        operation.scope = operation.scope.into_boxed_str().into_string();
+        operation.data = operation.data.into_boxed_str().into_string();
         let bytes = operation
             .charge()
             .ok_or_else(|| StorageError("operation credit arithmetic exhausted".into()))?;
-        if bytes > MAX_GROUP_BYTES
-            || self.charged_groups >= self.limits.groups
-            || self.charged_records >= self.limits.records
-            || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
-        {
+        if bytes > MAX_GROUP_BYTES || !self.ordinary_capacity_available(1, bytes) {
             self.fail_with_gap(RecorderGap {
                 reason: "recorder ingress capacity exhausted".into(),
                 at: operation.at,
@@ -180,17 +193,14 @@ impl RecorderWorker {
         {
             return Err(StorageError("operation fact not admissible".into()));
         }
-        let bytes = operation
-            .charge()
-            .ok_or_else(|| StorageError("operation credit arithmetic exhausted".into()))?;
+        // try_admit_operation compacts these bounded strings before transfer.
+        let bytes = operation.scope.len() + operation.data.len() + 256;
         if bytes > MAX_GROUP_BYTES {
             return Err(StorageError(
                 "operation record exceeds ingress bound".into(),
             ));
         }
-        Ok(self.charged_groups < self.limits.groups
-            && self.charged_records < self.limits.records
-            && bytes <= self.limits.bytes.saturating_sub(self.charged_bytes))
+        Ok(self.ordinary_capacity_available(1, bytes))
     }
 
     /// Reserve the exact annotation record ID after an atomic bounded transfer.
@@ -208,9 +218,7 @@ impl RecorderWorker {
             .ok_or_else(|| StorageError("annotation credit arithmetic exhausted".into()))?;
         if bytes > 64 * 1024
             || bytes > MAX_GROUP_BYTES
-            || self.charged_groups >= self.limits.groups
-            || self.charged_records >= self.limits.records
-            || bytes > self.limits.bytes.saturating_sub(self.charged_bytes)
+            || !self.ordinary_capacity_available(1, bytes)
         {
             self.fail_with_gap(RecorderGap {
                 reason: "recorder annotation ingress capacity exhausted".into(),

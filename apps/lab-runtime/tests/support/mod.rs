@@ -7,11 +7,22 @@ use std::{
 };
 
 /// Allocate a process-safe temporary SQLite path with the requested test label.
+#[allow(dead_code)]
 pub fn temporary_database(label: &str) -> PathBuf {
     let mut entropy = [0u8; 16];
     getrandom::fill(&mut entropy).expect("test entropy");
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     std::env::temp_dir().join(format!("lab-runtime-test-{label}-{suffix}.sqlite"))
+}
+
+/// Serialize only fixtures that own the process-wide two-worker ManagedExecutor.
+/// Hold this guard until every ServiceHost created by the fixture has been dropped.
+#[allow(dead_code)]
+pub fn managed_runtime_guard() -> std::sync::MutexGuard<'static, ()> {
+    static OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    OWNER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Remove a SQLite database and its WAL/SHM sidecars after worker shutdown.

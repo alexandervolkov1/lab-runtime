@@ -202,9 +202,15 @@ fn live_activation_capacity_allows_fifo_fact_before_commit_without_identity_hole
 fn cancellation_after_intervening_fact_groups_releases_credit_without_sequence_rewind() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();
-    let mut worker =
-        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
-            .unwrap();
+    let mut worker = RecorderWorker::open_with_barrier(
+        &path,
+        RecorderLimits {
+            groups: 4,
+            ..RecorderLimits::default()
+        },
+        barrier.clone(),
+    )
+    .unwrap();
     worker
         .request_activation(provenance(b"old=true"), vec![])
         .unwrap();
@@ -224,7 +230,13 @@ fn cancellation_after_intervening_fact_groups_releases_credit_without_sequence_r
         worker.try_admit(vec![measurement_fact(sequence)]).unwrap();
     }
     let saturated = worker.poll();
-    assert_eq!(saturated.limits, RecorderLimits::default());
+    assert_eq!(
+        saturated.limits,
+        RecorderLimits {
+            groups: 4,
+            ..RecorderLimits::default()
+        }
+    );
     assert_eq!(saturated.outstanding_groups, 4);
     assert_eq!(saturated.outstanding_records, 4);
 
@@ -312,9 +324,15 @@ fn unavailable_fact_before_lifecycle_cancellation_remains_contiguous_and_recorde
 fn c20_live_activation_reserves_one_of_the_same_four_groups_and_commits_one_fact() {
     let path = temporary_database();
     let barrier = WriterBarrier::held();
-    let mut worker =
-        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
-            .unwrap();
+    let mut worker = RecorderWorker::open_with_barrier(
+        &path,
+        RecorderLimits {
+            groups: 4,
+            ..RecorderLimits::default()
+        },
+        barrier.clone(),
+    )
+    .unwrap();
     worker
         .request_activation(provenance(b"old=true"), vec![])
         .unwrap();

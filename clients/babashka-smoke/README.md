@@ -1,5 +1,14 @@
 # Minimal Babashka boundary smoke
 
+M18 also adds [`distributed.clj`](distributed.clj), an explicit bounded virtual-demo
+WS/WSS acceptance example. It uses Java WebSocket with normal TLS verification,
+performs one direct Runtime mutation and confirms its authoritative result, then
+changes a GUI plot through the existing local Workbench API. It never relays
+measurements or replays mutations. Pass `--runtime-only` instead of the Workbench
+port to operate with Workbench closed. See the
+[distributed deployment guide](../../docs/distributed-workbench.md) for tested
+commands, access-key configuration and outstanding LAN/Tuna acceptance gates.
+
 These two standalone scripts are wire examples and boundary-smoke evidence, not a
 client SDK or a supported Clojure client architecture. Babashka is optional tooling;
 Cargo builds and production executables do not depend on it. Tested with Babashka

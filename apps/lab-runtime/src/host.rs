@@ -420,6 +420,8 @@ pub struct HostCore {
     last_recording_submission: Option<Duration>,
     recorder_finish_requested: bool,
     pending_operations: BTreeMap<(String, u64), PendingOperation>,
+    rebind_fact_reservation: Option<u64>,
+    probe_fact_reservations: BTreeMap<SignalId, u64>,
     deployment_provenance: Vec<ProvenanceEntry>,
     configuration_revision: u64,
     simple_device_provenance: BTreeMap<InstrumentId, SimpleDeviceProvenance>,
@@ -659,6 +661,8 @@ impl HostCore {
             last_recording_submission: None,
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
+            rebind_fact_reservation: None,
+            probe_fact_reservations: BTreeMap::new(),
             deployment_provenance,
             configuration_revision: 1,
             simple_device_provenance,
@@ -775,6 +779,8 @@ impl HostCore {
             last_recording_submission: None,
             recorder_finish_requested: false,
             pending_operations: BTreeMap::new(),
+            rebind_fact_reservation: None,
+            probe_fact_reservations: BTreeMap::new(),
             deployment_provenance: Vec::new(),
             configuration_revision: 1,
             simple_device_provenance: BTreeMap::new(),
@@ -831,9 +837,10 @@ mod recorder_outbox_host_tests {
     fn core_outbox_overflow_marks_best_effort_gap_without_stopping_native_control() {
         let path = temporary_database();
         let barrier = WriterBarrier::held();
-        let worker =
+        let mut worker =
             RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
                 .unwrap();
+        worker.set_periodic_time_for_test(Duration::ZERO);
         let mut host = HostCore::virtual_demo().unwrap();
         host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
             .unwrap();
@@ -906,9 +913,15 @@ mod recorder_outbox_host_tests {
     fn safe_pause_terminal_waits_in_bounded_owner_slot_when_four_groups_are_busy() {
         let path = temporary_database();
         let barrier = WriterBarrier::held();
-        let worker =
-            RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier.clone())
-                .unwrap();
+        let worker = RecorderWorker::open_with_barrier(
+            &path,
+            RecorderLimits {
+                groups: 4,
+                ..RecorderLimits::default()
+            },
+            barrier.clone(),
+        )
+        .unwrap();
         let mut host = HostCore::virtual_demo().unwrap();
         host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
             .unwrap();
@@ -1008,3 +1021,6 @@ mod recorder_outbox_host_tests {
 
 #[cfg(test)]
 mod reconnect_recorder_ordering_tests;
+
+#[cfg(test)]
+mod reference_completion_tests;

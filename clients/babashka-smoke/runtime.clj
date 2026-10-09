@@ -1,4 +1,4 @@
-;; Explicit acceptance/example only: bb runtime.clj PORT (virtual-demo Runtime).
+;; Explicit example: bb runtime.clj PORT [--host IPv4 --allow-remote-tcp].
 (require '[cheshire.core :as json])
 (import '[java.net Socket InetSocketAddress]
         '[java.io BufferedReader InputStreamReader OutputStreamWriter])
@@ -6,10 +6,33 @@
 (defn check [condition message]
   (when-not condition (throw (ex-info message {}))))
 
-(let [[port & extra] *command-line-args*]
-  (check (and port (empty? extra)) "usage: bb runtime.clj PORT")
+(defn tcp-options [args]
+  (loop [args args host nil allow-remote false]
+    (if (empty? args)
+      {:host (or host "127.0.0.1") :allow-remote allow-remote}
+      (case (first args)
+        "--host" (do (check (and (nil? host) (second args)) "--host needs one IPv4 address")
+                     (recur (nnext args) (second args) allow-remote))
+        "--allow-remote-tcp" (do (check (not allow-remote) "duplicate remote TCP option")
+                                (recur (next args) host true))
+        (throw (ex-info "unknown TCP option" {}))))))
+
+(let [[port & extra] *command-line-args*
+      {:keys [host allow-remote]} (tcp-options extra)]
+  (check port "usage: bb runtime.clj PORT [--host IPv4 --allow-remote-tcp]")
+  (check (re-matches #"[0-9]{1,3}(\.[0-9]{1,3}){3}" host) "host must be a numeric IPv4 address")
+  (let [octets (mapv #(Integer/parseInt %) (re-seq #"[0-9]+" host))
+        first-byte (first octets)
+        loopback (= first-byte 127)]
+    (check (every? #(<= 0 % 255) octets) "invalid IPv4 octet")
+    (check (and (> first-byte 0) (< first-byte 224)) "host must be a unicast IPv4 address")
+    (check (or loopback allow-remote)
+           "remote TCP requires --allow-remote-tcp; trusted LAN only, without TLS/authentication")
+    (when-not loopback
+      (binding [*out* *err*]
+        (println "WARNING: plaintext TCP; restrict the Runtime port to trusted LAN clients."))))
   (with-open [socket (Socket.)]
-    (.connect socket (InetSocketAddress. "127.0.0.1" (Integer/parseInt port)) 2000)
+    (.connect socket (InetSocketAddress. host (Integer/parseInt port)) 2000)
     (.setSoTimeout socket 5000)
     (with-open [reader (BufferedReader. (InputStreamReader. (.getInputStream socket) "UTF-8"))
                 writer (OutputStreamWriter. (.getOutputStream socket) "UTF-8")]

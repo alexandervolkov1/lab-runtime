@@ -143,7 +143,16 @@ fn host_with_old_wire(old: Rc<RefCell<Wire>>) -> HostCore {
 }
 
 fn attach_and_start(host: &mut HostCore, worker: RecorderWorker) {
-    host.attach_recorder(worker, RecordingPolicy::Required, Duration::ZERO)
+    attach_and_start_with_policy(host, worker, RecordingPolicy::Required);
+}
+
+fn attach_and_start_with_policy(
+    host: &mut HostCore,
+    mut worker: RecorderWorker,
+    policy: RecordingPolicy,
+) {
+    worker.set_periodic_time_for_test(Duration::ZERO);
+    host.attach_recorder(worker, policy, Duration::ZERO)
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !host.recording_activation_committed().unwrap() {
@@ -537,11 +546,269 @@ fn required_recorder_failure_after_rebind_stays_quiesced_and_never_rolls_generat
     assert_eq!(host.configured_binding_generation(11), Some(2));
     assert!(host.configured_resource_reconnect_quiesced(ResourceId::new(7)));
     assert_eq!(host.resource_records()[0]["data"]["state"], "offline");
-    assert_eq!(host.recording_status().unwrap().coverage, "unknown_tail");
+    assert_eq!(
+        host.recording_status().unwrap().coverage,
+        "unknown_tail",
+        "{:?}",
+        host.recording_status()
+    );
     assert_ne!(
         host.recording_status().unwrap().first_error.as_deref(),
         Some("fact record reservation mismatch")
     );
     drop(host);
+    remove_database(&path);
+}
+
+#[test]
+fn m18_review_reference_admission_is_fenced_while_reconnect_probe_is_reserved() {
+    use lab_core::reference::{ReferenceConfig, ReferenceId};
+    let path = temporary_database("review-reference-probe-fence");
+    let mut host = host_with_old_wire(Rc::new(RefCell::new(Wire::default())));
+    let reference = ReferenceId::new(1);
+    host.command(Command::RegisterReference(ReferenceConfig::Ramp {
+        id: reference,
+        start: 20.0,
+        target: 50.0,
+        rate: 1.0,
+        unit: lab_core::Unit::CELSIUS,
+        at: Duration::ZERO,
+    }))
+    .unwrap();
+    attach_and_start(
+        &mut host,
+        RecorderWorker::open(&path, RecorderLimits::default()).unwrap(),
+    );
+    let record = lifecycle(Duration::from_millis(10));
+    let reservation = reserve_reconnect(&mut host, &record);
+    let wire = Rc::new(RefCell::new(Wire {
+        responses: VecDeque::from([channel_type_response(3)]),
+        ..Wire::default()
+    }));
+    install_replacement(&mut host, wire.clone(), record.at);
+    assert_eq!(host.probe_fact_reservations.len(), 1);
+    let accepted = OperationRecord {
+        scope: "review-probe".into(),
+        request_seq: 1,
+        command: "reference_retune",
+        phase: "accepted",
+        data: "{}".into(),
+        outcome_basis: "application_admission",
+        at: Duration::from_millis(11),
+    };
+    assert!(!host.reserve_reference_operation(accepted.clone()).unwrap());
+    assert_eq!(
+        host.probe_fact_reservations.len(),
+        1,
+        "rejected Reference cannot consume the probe token"
+    );
+    assert!(!host.recorder.as_ref().unwrap().has_reference_completion());
+    for ms in [11, 20, 30] {
+        host.service(&Clock(Duration::from_millis(ms))).unwrap();
+    }
+    assert!(
+        host.configured_probes_ready_for_resource(ResourceId::new(7))
+            .unwrap()
+    );
+    assert!(host.probe_fact_reservations.is_empty());
+    assert_eq!(wire.borrow().requests.len(), 1);
+    assert!(
+        !host.reserve_reference_operation(accepted.clone()).unwrap(),
+        "even a completed probe does not release the pending activation fence"
+    );
+    await_only_activation_reservation(&mut host, Duration::from_millis(30));
+    host.commit_reserved_configuration_activation(reservation, record)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !host
+        .live_activation_committed(
+            reservation,
+            false,
+            Duration::from_millis(10),
+            Duration::from_millis(30),
+        )
+        .unwrap()
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let accepted = OperationRecord {
+        at: Duration::from_millis(30),
+        ..accepted
+    };
+    assert!(host.reserve_reference_operation(accepted.clone()).unwrap());
+    host.record_operation(accepted.clone());
+    host.prepare_reference_completion("review-probe", 1, "reference_retune", accepted.at)
+        .unwrap();
+    host.command(Command::RetuneRampReference {
+        reference,
+        expected_revision: 1,
+        target: 51.0,
+        rate: 2.0,
+        at: accepted.at,
+    })
+    .unwrap();
+    host.record_operation(OperationRecord {
+        phase: "completed",
+        outcome_basis: "domain_result",
+        ..accepted
+    });
+    assert_eq!(
+        host.recording_status().unwrap().state,
+        RecordingState::Recording
+    );
+    close_recording(&mut host, Duration::from_millis(40));
+    assert_eq!(host.recording_status().unwrap().outstanding_groups, 0);
+    drop(host);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT COUNT(*) FROM operation_events", [], |r| r.get(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT COUNT(*) FROM reference_events", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    drop(db);
+    remove_database(&path);
+}
+
+#[test]
+fn failed_recorder_cancels_pending_probe_but_retains_submitted_baseline_credit() {
+    let path = temporary_database("probe-failure-cleanup");
+    let barrier = WriterBarrier::held();
+    struct Release(WriterBarrier);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let release = Release(barrier.clone());
+    let mut host = host_with_old_wire(Rc::new(RefCell::new(Wire::default())));
+    attach_and_start(
+        &mut host,
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), barrier).unwrap(),
+    );
+    let record = lifecycle(Duration::from_millis(10));
+    let reservation = reserve_reconnect(&mut host, &record);
+    install_replacement(&mut host, Rc::new(RefCell::new(Wire::default())), record.at);
+    let token = *host.probe_fact_reservations.values().next().unwrap();
+    assert!(release.0.wait_until_reached(Duration::from_secs(2)));
+    host.recorder.as_mut().unwrap().fail_with_gap(RecorderGap {
+        reason: "failure while probe pending".into(),
+        at: record.at,
+        first_missing_fact: None,
+        known_missing_count: None,
+        last_accepted_fact: None,
+    });
+    host.poll_recorder(record.at);
+    assert!(host.probe_fact_reservations.is_empty());
+    assert!(
+        host.recorder
+            .as_mut()
+            .unwrap()
+            .cancel_fact_group(token)
+            .is_err()
+    );
+    host.cancel_configuration_activation(reservation).unwrap();
+    host.poll_recorder(record.at);
+    assert_eq!(
+        host.recording_status().unwrap().outstanding_groups,
+        1,
+        "the baseline entered the FIFO and must remain charged while writer is held"
+    );
+    release.0.release();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        host.poll_recorder(record.at);
+        let status = host.recording_status().unwrap();
+        if status.failure_persisted && status.outstanding_groups == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{status:?}");
+        std::thread::yield_now();
+    }
+    host.finish_recorder().unwrap();
+    while !host.recording_status().unwrap().worker_closed {
+        host.poll_recorder(record.at);
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let status = host.recording_status().unwrap();
+    assert_eq!(
+        (status.outstanding_records, status.outstanding_bytes),
+        (0, 0)
+    );
+    drop(host);
+    remove_database(&path);
+}
+
+#[test]
+fn best_effort_failed_recorder_keeps_explicit_failure_while_rebind_remains_available() {
+    let path = temporary_database("best-effort-failed-rebind");
+    let mut host = host_with_old_wire(Rc::new(RefCell::new(Wire::default())));
+    attach_and_start_with_policy(
+        &mut host,
+        RecorderWorker::open(&path, RecorderLimits::default()).unwrap(),
+        RecordingPolicy::BestEffort,
+    );
+    assert!(host.reserve_rebind_facts().unwrap());
+    host.begin_configured_resource_reconnect(ResourceId::new(7))
+        .unwrap();
+    assert!(
+        host.prepare_configured_transport_replacement(
+            ResourceId::new(7),
+            Duration::from_millis(10)
+        )
+        .unwrap()
+    );
+    host.recorder.as_mut().unwrap().fail_with_gap(RecorderGap {
+        reason: "best-effort failure before rebind".into(),
+        at: Duration::from_millis(10),
+        first_missing_fact: None,
+        known_missing_count: None,
+        last_accepted_fact: None,
+    });
+    host.rebind_configured_transport(
+        ResourceId::new(7),
+        Box::new(Transport(Rc::new(RefCell::new(Wire::default())))),
+        Duration::from_millis(11),
+    )
+    .unwrap();
+    assert_eq!(host.configured_binding_generation(11), Some(2));
+    assert!(host.rebind_fact_reservation.is_none());
+    assert_eq!(
+        host.recording_status().unwrap().state,
+        RecordingState::Failed
+    );
+    assert_eq!(host.recording_status().unwrap().outstanding_groups, 0);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !host.recording_status().unwrap().failure_persisted {
+        host.poll_recorder(Duration::from_millis(11));
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    host.finish_recorder().unwrap();
+    while !host.recording_status().unwrap().worker_closed {
+        host.poll_recorder(Duration::from_millis(11));
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(host);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT COUNT(*) FROM measurements", [], |r| r.get(0))
+            .unwrap(),
+        0,
+        "best-effort failure must never be reported as recorded rebind evidence"
+    );
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT COUNT(*) FROM gaps", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    drop(db);
     remove_database(&path);
 }

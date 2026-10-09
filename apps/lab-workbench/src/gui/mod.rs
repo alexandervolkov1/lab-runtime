@@ -4,18 +4,17 @@ mod app;
 pub(crate) use crate::rebuild;
 
 use crate::{
+    client::endpoint::RuntimeEndpoint,
     external::PreparedEndpoint,
     ownership::WorkspaceOwnership,
     presentation::{PresentationDocument, load_presentation},
     recovery::load_journal,
 };
-use std::{
-    net::{SocketAddr, SocketAddrV4},
-    path::PathBuf,
-};
+use std::{net::SocketAddrV4, path::PathBuf};
 
 pub(crate) struct GuiLaunch {
-    pub(crate) address: SocketAddr,
+    pub(crate) address: RuntimeEndpoint,
+    pub(crate) observation_only: bool,
     pub(crate) scope: Option<String>,
     pub(crate) workspace: PathBuf,
     pub(crate) workbench_listen: Option<SocketAddrV4>,
@@ -67,6 +66,7 @@ pub(crate) fn run(launch: GuiLaunch) -> Result<(), String> {
             Ok(Box::new(app::WorkbenchApp::new(
                 context,
                 address,
+                launch.observation_only,
                 desired_scope,
                 journal_path,
                 presentation,

@@ -63,7 +63,13 @@ impl Running {
             BufReader::new(stdout).read_line(&mut line).unwrap();
             let _ = tx.send(line);
         });
-        let line = rx.recv_timeout(TIMEOUT).unwrap();
+        let line = rx.recv_timeout(TIMEOUT).unwrap_or_else(|error| {
+            panic!(
+                "Runtime readiness {error:?}; child={:?}; stderr={}",
+                running.child.try_wait(),
+                fs::read_to_string(running.root.join("stderr.log")).unwrap()
+            );
+        });
         assert!(
             !line.is_empty(),
             "Runtime failed before readiness: {}",
@@ -108,7 +114,14 @@ impl Drop for Running {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = fs::remove_dir_all(&self.root);
+        if thread::panicking() {
+            eprintln!(
+                "Preserved failed Linux process evidence: {}",
+                self.root.display()
+            );
+        } else {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }
 
