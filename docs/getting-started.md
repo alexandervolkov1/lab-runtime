@@ -1,356 +1,138 @@
-# Getting started with Runtime and Workbench
+# Your first experiment
 
-This guide runs the built-in virtual laboratory, connects the native Workbench,
-observes live measurements, retunes a virtual Reference through the typed operator
-workflow, and optionally records the run. The virtual profile opens no serial hardware.
+[User manual](README.md) · [Workbench guide](workbench.md)
 
-## Prerequisites
+This walkthrough uses the Windows portable package and a simulated temperature
+instrument. It opens no serial ports and controls no physical equipment.
+No programming tools or source checkout are needed.
 
-For the headless Linux x86_64 package, use the [Linux Runtime guide](linux-runtime.md).
-The Runtime + native Workbench walkthrough below uses Windows.
+## 1. Extract the Windows package
 
-- Windows for the native Workbench;
-- PowerShell;
-- a free local TCP port (the primary example uses `7420`).
+Download the Windows ZIP from the [release page](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4).
+Use **Extract All**, then open the folder containing both `.exe` files.
+Keep the accompanying folders and notices together.
 
-An extracted preview package already contains both executables and does not require
-Rust. Building from source requires Rust 1.95 with Cargo. Run package commands from
-the extracted package root or source commands from the repository root. Runtime
-TCP defaults to loopback; the primary walkthrough keeps that default.
+Type `powershell` in that folder's File Explorer address bar and press Enter.
+All Windows commands below run from this folder, not from `docs`.
 
-The recommended progression is:
+If you already ran the README example, close its Workbench and stop its Runtime
+with Ctrl+C first. Only one Runtime can listen on port 7420 at a time.
 
-1. start the built-in virtual Runtime;
-2. start Workbench and wait for Fresh;
-3. observe a signal and make one safe virtual Reference change;
-4. inspect and operate the Runtime-owned Recorder;
-5. optionally try the direct Runtime API and minimal deployment TOML;
-6. continue with the [Configuration Guide](configuration.md).
+## 2. Start Runtime with recording available
 
-## Build
-
-`lab-runtime.exe` and `lab-workbench.exe` are already present in an extracted
-package, so package users skip this step.
+Create a new folder for this walkthrough. If `first-run` already exists, choose
+a different name here and in the Workbench command; do not delete an old run.
 
 ```powershell
-cargo build --workspace --locked
+$run = [IO.Path]::GetFullPath((Join-Path $PWD "first-run"))
+New-Item -ItemType Directory -Path $run -ErrorAction Stop | Out-Null
+.\lab-runtime.exe --serve --profile virtual-demo --port 7420 `
+  --record-db (Join-Path $run "history.sqlite") --record-policy required
 ```
 
-This builds both product executables:
+Expected: Runtime stays running and prints a line containing
+`"port":7420` and `"state":"ready"`. The `first-run\history.sqlite` file is
+created. The database is ready, but a recording run has not started yet.
 
-- `lab-runtime`, the authoritative experiment process;
-- `lab-workbench`, the native operator and presentation client.
+Keep this terminal open. Do not close it to stop the program; use Ctrl+C when
+you reach the last step.
 
-## Start a safe virtual Runtime
+## 3. Open Workbench and wait for Fresh
 
-Resolve an absolute local path for the SQLite archive, then start the built-in
-`virtual-demo` profile:
+Open another PowerShell window in the same extracted package folder:
 
 ```powershell
-$db = [IO.Path]::GetFullPath((Join-Path $PWD "demo.sqlite"))
-
-cargo run -p lab-runtime --locked -- `
-  --serve `
-  --profile virtual-demo `
-  --port 7420 `
-  --record-db $db `
-  --record-policy required
+.\lab-workbench.exe --connect 127.0.0.1:7420 --workspace .\first-run\workspace
 ```
 
-From an extracted package, the equivalent command is:
+Expected: the Workbench window opens. Its connection goes through startup states,
+and the top row eventually shows **Fresh**. This means the displayed information
+has caught up with Runtime. Wait if it says **Rebuilding**; do not act on **Stale**
+values. If it never becomes Fresh, use [troubleshooting](troubleshooting.md).
 
-```powershell
-./lab-runtime.exe --serve --profile virtual-demo --port 7420 `
-  --record-db $db --record-policy required
-```
+## 4. Find the virtual instrument and plot
 
-Port `7420` must be free. The profile contains a virtual thermal plant, Reference 1,
-a PID controller, and the configured Runtime-owned Recorder. Its measurements are
-virtual observations, not evidence from physical hardware.
+1. In the **Discovery** list, select **Instrument 1**. Its details identify the
+   virtual thermal plant.
+2. Select **Signal 1/1**, its temperature measurement.
+3. Look for **Fresh observation** and the live graph in the main pane.
 
-Without `--bind`, the TCP Application listener remains on `127.0.0.1`. To accept TCP
-clients through a specific trusted LAN or VPN interface, put its numeric IPv4 address
-before `--port`, for example:
+Selecting the signal displays its plot; there is no **Add graph** button.
+The line is normally near 20 degrees and can be flat. The virtual controller
+has not been started. Values here are simulated, not measurements from a device.
 
-```powershell
-./lab-runtime.exe --serve --profile virtual-demo `
-  --bind 192.168.1.50 --allow-remote-tcp --port 8765
-```
+## 5. Change the virtual Reference
 
-`0.0.0.0`, broadcast and multicast binds are rejected. A non-loopback bind requires
-`--allow-remote-tcp` and adds no TLS or authentication. Restrict access to trusted
-client IPs with the host firewall; never expose raw TCP to the public Internet. It does not widen the optional
-WebSocket listener, which remains loopback-only.
-
-Running `lab-runtime` without arguments executes a finite demonstration and exits;
-it does not start the Application server.
-
-## Understand readiness
-
-Runtime validates and constructs its composition before it announces readiness. It
-then writes one JSON line to stdout:
-
-```json
-{"boot_id":"<32 lowercase hex characters>","port":7420,"state":"ready"}
-```
-
-Do not start a client until this line appears. The `boot_id` identifies this Runtime
-process, and `port` is the actual TCP listener.
-
-To let the operating system choose a free port, use `--port 0` instead. Read the
-`port` from the readiness line and substitute it in the Workbench command:
-
-```powershell
-cargo run -p lab-runtime --locked -- `
-  --serve `
-  --profile virtual-demo `
-  --port 0 `
-  --record-db $db `
-  --record-policy required
-```
-
-The optional WebSocket listener, when configured, is reported separately in the same
-readiness object. Runtime supports TCP/NDJSON on the selected IPv4 bind and optional
-loopback WebSocket/JSON. Native Workbench supports TCP, WS and verified WSS through
-one Application worker; this walkthrough uses local TCP.
-
-## Start Workbench
-
-In a second PowerShell terminal, create an absolute workspace path and connect:
-
-```powershell
-$workspace = [IO.Path]::GetFullPath((Join-Path $PWD ".workbench-demo"))
-
-cargo run -p lab-workbench --locked -- `
-  --connect 127.0.0.1:7420 `
-  --workspace $workspace
-```
-
-From an extracted package, use:
-
-```powershell
-./lab-workbench.exe --connect 127.0.0.1:7420 --workspace $workspace
-```
-
-If Runtime selected another port, replace `7420`. Workbench acquires exclusive
-ownership of the workspace, loads its bounded recovery journal and presentation
-document when present, opens one private Application client, and begins connecting
-immediately. Do not open a second Workbench on the same workspace.
-
-For observation without operator mutations, add `--observe`. Queries, manual Check
-Status and local presentation operations remain available; Runtime mutations and
-Exact Retry are disabled, so omit this flag for the retune/Recorder steps below.
-The [distributed guide](distributed-workbench.md#deployment-scenarios) covers all
-three placements: everything on Windows, Windows Runtime/Workbench with remote
-Clojure, and Linux Runtime with Windows Workbench/Clojure. Remote TCP requires
-explicit trusted-LAN opt-in; public access uses authenticated WSS through Tuna.
-The separate Workbench presentation API remains loopback-only in every placement.
-
-## Wait for Fresh
-
-The header shows connection and observation state. Startup normally progresses
-through Connecting/AwaitingHello and Rebuilding before it shows **Fresh**.
-
-Connected is not the same as Fresh. Fresh means Workbench has rebuilt the required
-authoritative Runtime projections, established its aggregate subscription, and caught
-up to the rebuild barrier. Keep mutation controls untouched while observations are
-Stale or Rebuilding; the GUI disables unavailable controls.
-
-Accepted or Completed operation evidence is also not the same as current physical or
-projection state. Operation evidence describes an identified request. The displayed
-Runtime observation remains authoritative for current state.
-
-## Inspect measurements and the live plot
-
-1. In **Discovery**, select a signal, for example **Signal 1/1** from the virtual
-   thermal plant.
-2. Confirm the detail pane says **Fresh observation**.
-3. Watch the live plot populate from authoritative signal events.
-
-The plot is Workbench presentation state. It does not become Runtime experiment
-authority, and a virtual value must not be interpreted as physical readback.
-
-## Retune Reference 1
-
-The virtual profile's Reference 1 is a ramp, so the typed retune workflow is available
-after the corresponding detail is Fresh:
+A Reference is a setpoint: the value a controller can aim for.
+This example uses a changing setpoint, or ramp.
 
 1. Select **Reference 1** in Discovery.
-2. In **Reference controls**, choose a finite **Target** and a positive **Rate**. For
-   example, change the target slightly and retain the displayed rate.
-3. Select **Retune**.
-4. Read the **Confirmation required** summary. The draft includes the current
-   authoritative revision; if that revision changes, reload and review rather than
-   forcing the stale draft.
-5. Select **Confirm** once.
-6. Observe the operation state. It may pass quickly through **Accepted / in progress**
-   before **Operation completed**.
-7. Separately observe the refreshed Reference projection and revision.
+2. Under **Reference controls**, enter `30` in **Target** and `1` in **Rate**.
+   Here the units are degrees Celsius and degrees Celsius per second.
+3. Click **Retune**.
+4. Under **Operator action**, read **Confirmation required**, then click
+   **Confirm** once.
+5. Wait for **Operation completed** and check the Reference details for target
+   `30` and rate `1`. Click **Acknowledge** to return to the controls.
 
-Confirm expresses operator intent; it is not evidence of completion. Completed is an
-authoritative operation outcome, but the later Reference projection/event remains the
-authority for the currently displayed Reference state. Workbench never automatically
-retries this mutation.
+The Reference changes, but temperature will not follow until a controller runs.
+Leave the controller inactive for now: with required recording, recording must
+start before the controller. The next step shows the correct order.
 
-## Optionally record the experiment
+If the draft becomes stale, click **Cancel**, wait for Fresh and prepare it again.
+If the outcome is unknown, do not submit another command: follow
+[connection recovery](workbench.md#loss-of-connection-and-recovery).
 
-Because the Runtime command configured `--record-db`, Workbench shows the Recorder
-and its authoritative state:
+## 6. Record and finish a run
 
-1. Enter a short run label in the **Recorder** section.
-2. Select **Start recording**, review the confirmation, and select **Confirm**.
-3. Wait for the operation outcome and the authoritative Recorder state to show an
-   active run.
-4. When finished, select **Stop recording**, review, confirm, and wait for the
-   authoritative state to return to idle.
+1. Find the **Recorder** section below the operator controls. It should show
+   `authoritative state: idle`. Scroll the main pane if needed.
+2. Enter `First virtual run` in the text box next to **Start recording**.
+3. Click **Start recording**, review, then **Confirm** once.
+4. Wait for **Operation completed**, then click **Acknowledge**. Recorder should
+   now show `authoritative state: recording`.
+5. Optionally, for this virtual example only, select **Controller 1**, click
+   **Start**, review and **Confirm**, wait for completion, then **Acknowledge**.
+   Return to **Signal 1/1** to see the simulated temperature respond. Do not use
+   this as a procedure for starting physical equipment.
+6. Let it record for about ten seconds. If you started the virtual controller,
+   select **Controller 1**, click **Pause**, review and **Confirm**, wait for
+   completion and **Acknowledge** before stopping the recording.
+7. Click **Stop recording**, review and **Confirm** once. Wait for
+   **Operation completed**. Its result includes `run_sealed` and
+   `transaction_committed` set to `true`; then click **Acknowledge**.
+8. Check that Recorder has returned to `authoritative state: idle`.
 
-Recorder is Runtime-owned. Closing Workbench does not stop an active Runtime or imply
-Recorder shutdown. See [Recorder and SQLite](recorder-sqlite.md) for durability,
-archive, and sealing semantics.
+Do not treat an **Accepted / in progress** message or the existence of a database
+file as proof that recording finished. On an error, preserve the files and use
+[Recording](recording.md). Workbench does not have a saved-recording browser.
 
-For a copyable direct-API start/annotation/stop/history workflow, continue with the
-[virtual Recorder tutorial](recorder-sqlite.md#virtual-recorder-tutorial).
+## 7. Close Workbench
 
-## Disconnect and reconnect
+Close the Workbench window normally. The Runtime terminal remains running.
+Closing the viewer does not stop the experiment, its controller or an active
+recording. This is intentional: Runtime does not depend on the viewer staying open.
 
-The **Disconnect** button is an explicit client action:
+You can reopen Workbench with the same command while this Runtime is still running
+and wait for Fresh again. Close it before the next step.
 
-- Workbench closes its socket and marks cached observations stale;
-- it preserves exact recovery/journal evidence;
-- it performs no automatic reconnect.
+## 8. Stop Runtime and check the file
 
-After Disconnected is visible, select **Connect** to make one new manual connection.
-Workbench rebuilds from Runtime and must pass through the full barrier before becoming
-Fresh again.
+In the Runtime terminal, press **Ctrl+C** once and wait for the PowerShell prompt
+to return. Runtime shuts down its experiment and recording. Do not force-close
+the terminal while it is stopping.
 
-Unexpected transport loss is different. After an attached retained scope, Workbench
-may make one bounded automatic retained-scope reattach episode. During it the GUI
-shows Reattaching/reconnecting state, observations remain stale, and mutation controls
-are unavailable. If the episode expires, Workbench stays Disconnected until a manual
-Connect. Neither path automatically retries a mutation, Check Status, or Exact Retry.
-
-## Close Workbench
-
-Close the Workbench window when the GUI is no longer needed. A clean close or an OS
-process failure releases workspace ownership and stops only the Workbench client.
-Runtime, controllers, Recorder, and admitted Runtime work have independent lifetimes.
-A replacement Workbench can reopen the workspace and rebuild authoritative
-observations.
-
-These are distinct actions:
-
-| Action | Effect |
-|---|---|
-| Workbench **Disconnect** | Disconnects the client; no automatic reconnect |
-| close Workbench | Stops the GUI/client process; Runtime continues |
-| Workbench crash | Runtime continues; the OS releases workspace ownership |
-| Runtime shutdown | Stops the authoritative Runtime through a separate explicit lifecycle action |
-
-## Stop Runtime explicitly
-
-When the experiment process itself should end, return to the Runtime terminal and
-press **Ctrl+C**. Runtime performs its bounded shutdown, including its own controller,
-output, and Recorder cleanup. Closing Workbench is not a substitute for this action,
-and Runtime shutdown is not the normal way to close the GUI.
-
-## Configuration-based startup
-
-The repository and package include a minimal declarative virtual composition. Copy it
-to a user-writable directory so its relative Recorder path has an obvious home:
+From the package folder, check the archive:
 
 ```powershell
-$run = [IO.Path]::GetFullPath((Join-Path $PWD "minimal-run"))
-New-Item -ItemType Directory -Force $run | Out-Null
-Copy-Item ./examples/runtime.minimal.toml (Join-Path $run "runtime.toml")
-$config = Join-Path $run "runtime.toml"
-
-cargo run -p lab-runtime --locked -- --serve --config $config
+Get-Item .\first-run\history.sqlite | Select-Object FullName, Length, LastWriteTime
 ```
 
-The extracted-package equivalent is:
+Expected: a nonempty SQLite file at the path used in step 2. The completed stop
+result in step 6 is the recording result; this file check only confirms its
+location. Keep any matching `-wal` and `-shm` files too. See
+[safe backups](recording.md#keep-and-copy-a-recording) before moving data.
 
-```powershell
-./lab-runtime.exe --serve --config $config
-```
-
-The configuration is bounded, parsed, cross-validated, and frozen before activation.
-It asks the OS for a free port and creates `$run\history.sqlite`. Read the selected
-port from the readiness line before starting Workbench. Review every physical
-deployment before use; a file containing serial resources may open its configured
-hardware after validation.
-
-The fuller [`runtime.virtual.toml`](../examples/runtime.virtual.toml) example adds a
-virtual thermal plant, ramp Reference, safe profile, and PID controller. The
-[Configuration Guide](configuration.md) is the canonical reference for both examples,
-all Runtime and Workbench CLI options, path resolution, deployment fields, limits,
-and failure behavior.
-
-## Advanced: a minimal Application API client
-
-Workbench is the primary operator path, but the Application API is also a supported
-client boundary. TCP carries one UTF-8 JSON object followed by LF for each NDJSON
-frame. The API, not TCP, defines experiment semantics.
-
-With the virtual Runtime still listening on port `7420`, this PowerShell snippet
-performs hello, reads one query, and closes only its own socket:
-
-```powershell
-$port = 7420
-$client = [Net.Sockets.TcpClient]::new("127.0.0.1", $port)
-$stream = $client.GetStream()
-$reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false))
-$writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
-$writer.NewLine = "`n"
-$writer.AutoFlush = $true
-
-$writer.WriteLine('{"v":1,"msg_id":"hello-1","op":"hello","args":{"scope":null}}')
-$hello = $reader.ReadLine() | ConvertFrom-Json
-$hello.result | ConvertTo-Json -Depth 8
-
-$writer.WriteLine('{"v":1,"msg_id":"recorder-1","op":"recording_status","args":{}}')
-$reader.ReadLine() | ConvertFrom-Json | ConvertTo-Json -Depth 8
-
-$client.Dispose()
-```
-
-`hello` returns the process boot identity, a server-issued scope, the next mutation
-sequence, the operations and capabilities available in this composition, event
-cursors, and exact limits. Closing this socket does not shut down Runtime. See the
-[Application API reference](api/README.md) before adding subscriptions or
-mutations; clients must not blindly retry mutations.
-
-## Optional external language smoke
-
-With Babashka installed, follow the [minimal Babashka acceptance](../clients/babashka-smoke/README.md)
-to run hello plus a safe query against a real virtual Runtime. Its separate Workbench
-smoke uses the [opt-in Workbench API](workbench-api.md) for client/presentation work.
-These examples are not an SDK; full Arduino + Clojure + Clay integration is outside
-this preview. Babashka is not required to build or run the Rust applications.
-
-## Diagnostics
-
-The default diagnostic level is `INFO`. On Windows, bounded best-effort logs are
-written under:
-
-```text
-%LOCALAPPDATA%\lab-runtime\logs
-```
-
-`LAB_RUNTIME_LOG_LEVEL` accepts `ERROR`, `WARN`, `INFO`, `DEBUG`, or
-`TRACE`. `LAB_RUNTIME_LOG_DIRECTORY` selects another directory. Diagnostic logs
-are not experiment history. See
-[Safety and failure behavior](safety-and-failures.md#diagnostic-logging).
-
-## Next steps
-
-- [Configuration and deployment](configuration.md)
-- [SimpleDevice reference](simple-device.md)
-- [Build a SimpleDevice instrument](developer/simple-device-tutorial.md)
-- [Add a trusted native Rust instrument](developer/full-driver-tutorial.md)
-- [Workbench user guide](workbench.md)
-- [Runtime architecture and concepts](architecture.md)
-- [Application API reference](api/README.md)
-- [Recorder and SQLite](recorder-sqlite.md)
-- [Recovery and fault handling](recovery-and-faults.md)
-- [Safety and failure behavior](safety-and-failures.md)
-- [Extending the Runtime](extending-runtime.md)
+You have now viewed a measurement, changed a virtual setpoint, recorded a run and
+closed both programs. Continue with [daily Workbench use](workbench.md) or
+[your own configuration](configuration.md).

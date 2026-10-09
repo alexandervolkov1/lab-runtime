@@ -91,7 +91,7 @@ mutation identity. No second Runtime session, sequencer, subscription, recovery
 engine, or presentation owner is introduced. Direct Runtime clients remain independent.
 This Workbench endpoint stays loopback-only even for a remote Runtime; a script on
 another machine cannot directly use it to change presentation. See the
-[deployment scenarios](distributed-workbench.md#deployment-scenarios).
+[transport reference](reference/transports.md).
 
 Workbench connection recovery preserves process ownership. An explicit Disconnect
 does not reconnect automatically. An unexpected continuity loss may start one

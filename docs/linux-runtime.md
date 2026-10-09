@@ -1,160 +1,94 @@
-# Headless Runtime on Linux x86_64
+# Run Runtime on Linux
 
-The Linux package targets `x86_64-unknown-linux-gnu` and contains the headless
-`lab-runtime` executable and a redistribution notice. Windows and Linux share the
-same Rust source, Application API, controller/output authority and Recorder implementation. Workbench is a
-separate Windows application and is not built or included here. ARM is not supported
-by this package.
+[User manual](README.md) · [Connect Windows Workbench](distributed-workbench.md)
 
-## Extract and run
+The Linux package runs Runtime without a desktop. Workbench is the separate
+Windows application. The supplied Linux binary is for x86_64 GNU/Linux, not ARM
+or musl-only systems.
 
-Keep the accompanying `.licenses.tar.gz` and `.build.json` with the package when
-redistributing it. The license archive contains the project license, third-party
-texts, the exact MPL-covered serialport source archive, and separate application
-and Rust standard-library inventories; it is not needed at runtime. Extract it
-into the executable directory so the notice's relative paths resolve offline.
-Package creation does not publish a release or grant formal legal sign-off.
+## Download and check
+
+From the [release page](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4),
+download these files into the same directory:
+
+- `lab-runtime-0.1.0-linux-x86_64.tar.gz`;
+- `lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz`;
+- their two `.sha256` files;
+- `lab-runtime-0.1.0-linux-x86_64.build.json`.
+
+The preview.4 binary needs glibc **2.34 or newer** and system `libgcc_s`, `libm`
+and `libc`. It was checked on Arch Linux WSL2 with glibc 2.44; this is not a promise
+of compatibility with every Linux distribution. Check the local system:
 
 ```sh
+uname -m
+getconf GNU_LIBC_VERSION
 sha256sum -c lab-runtime-0.1.0-linux-x86_64.tar.gz.sha256
 sha256sum -c lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz.sha256
-tar -xzf lab-runtime-0.1.0-linux-x86_64.tar.gz
-tar -xzf lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz -C lab-runtime-0.1.0-linux-x86_64
-cd lab-runtime-0.1.0-linux-x86_64
-mkdir -p "$PWD/state/logs"
-export LAB_RUNTIME_LOG_DIRECTORY="$PWD/state/logs"
-./lab-runtime --serve --profile virtual-demo --port 7420 \
-  --record-db "$PWD/state/history.sqlite"
 ```
 
-This virtual profile opens no serial hardware. Wait for the JSON `state: ready`
-line before connecting. TCP/NDJSON defaults to `127.0.0.1`; the optional WebSocket
-listener remains loopback-only and requires an explicit allowed origin:
+Expected: `x86_64`, glibc at least 2.34, and `OK` for both archives. On a mismatch,
+do not run the archive. Download it again from the release page.
+
+## Extract the package and licenses
+
+Run in the download directory. Use a new directory if `lab-runtime-preview4`
+already exists:
 
 ```sh
-./lab-runtime --serve --profile virtual-demo --port 7420 \
-  --ws-port 7421 --ws-origin http://127.0.0.1:3000
+mkdir lab-runtime-preview4
+tar -xzf lab-runtime-0.1.0-linux-x86_64.tar.gz -C lab-runtime-preview4
+tar -xzf lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz \
+  -C lab-runtime-preview4/lab-runtime-0.1.0-linux-x86_64
+cd lab-runtime-preview4/lab-runtime-0.1.0-linux-x86_64
 ```
 
-Clients use the unchanged [Application API](api/README.md): complete `hello` before
-queries or commands. Ctrl+C, SIGTERM and SIGHUP request the existing Runtime-owned
-safe shutdown and Recorder flush. SIGHUP shuts down; it does not reload configuration.
-Client disconnect does not stop the experiment. Forced termination cannot perform
-safe shutdown or guarantee a sealed Recorder tail.
+Keep the extracted license materials with the executable, especially when copying
+it to another computer. The Linux archive contains no Workbench or configuration
+examples; the built-in virtual profile below needs neither.
 
-The executable dynamically links GNU/Linux system libraries. Consult `ldd` and
-`required_glibc_symbol_version` in its `.build.json`; builds on a newer distribution
-may require a newer glibc than older hosts provide. SQLite is compiled into Runtime
-through the existing bundled rusqlite feature; no SQLite executable, database template,
-GUI library or libudev package is required. A writable local directory is needed for
-Recorder databases and their WAL/SHM sidecars. Use an absolute `--record-db` path.
+## Start a local virtual experiment
 
-Set `LAB_RUNTIME_LOG_DIRECTORY` explicitly for unattended deployment. Existing
-diagnostic fallback is `$XDG_STATE_HOME/lab-runtime/logs` when that variable is set
-(after `LOCALAPPDATA`, if supplied), otherwise a temporary `lab-runtime/logs` directory.
-Logging remains bounded and best effort; it is separate from scientific recording.
+```sh
+mkdir -p state/logs
+export LAB_RUNTIME_LOG_DIRECTORY="$PWD/state/logs"
+./lab-runtime --serve --profile virtual-demo --port 7420 \
+  --record-db "$PWD/state/history.sqlite" --record-policy required
+```
+
+Expected: a line containing `"state":"ready"` and `"port":7420`. Keep the terminal
+open. This command opens no serial hardware and listens only on this Linux
+computer. Recording is available, but a run starts only when requested in Workbench.
+
+The database is `state/history.sqlite` below the extracted executable. It stays
+on Linux even when you view the experiment from Windows. Use a fresh directory
+for separate experiments; do not delete old recordings to repeat a walkthrough.
+
+For a Windows computer to connect, stop this local instance and follow
+[Two computers on a trusted network](distributed-workbench.md). That guide changes
+the listening address explicitly and checks the firewall first.
+
+## Stop Runtime
+
+Press **Ctrl+C** once in its terminal and wait for it to exit. If it is managed by
+an administrator, SIGTERM also requests normal shutdown. Do not use a forced kill
+as the normal stop procedure. SIGHUP stops Runtime; it is not a reload command.
+
+Closing Windows Workbench does not stop this process. Follow
+[Recording and backups](recording.md) before copying the database and sidecars.
 
 ## Serial deployment
 
-Follow the existing [Configuration Guide](configuration.md). Schema-v1 resource
-kind strings remain `windows_com_read_only` and `windows_com` on both platforms;
-Linux does not introduce a new DTO or resource kind. On Linux set `port` to an absolute
-device path, for example `/dev/ttyUSB0`, `/dev/ttyACM0`, or a stable
-`/dev/serial/by-id/...` symlink. Paths preserve case, are limited to 4096 bytes, and
-reject control characters, empty segments and `.`/`..` segments. Validation does not
-open a device or resolve symlinks. Legacy COM names still validate for compatibility,
-but a Windows COM name does not identify a Linux device automatically.
+The [Configuration Guide](configuration.md#a-real-instrument-read-only) supplies
+complete read-only configuration texts that can also be saved on Linux. Replace
+`COM3` with the actual device path, such as `/dev/ttyUSB0`, preferably a stable
+`/dev/serial/by-id/...` path. Keep the resource kind `windows_com_read_only`:
+that spelling is shared by both platforms.
 
-The service account must have access to the device node (often through a distribution's
-`dialout` group or a local udev rule). Select that policy on the deployment host.
-Do not substitute virtual evidence for physical ACK, readback or safe confirmation.
-Linux compilation and virtual tests do not establish USB/RS-485 hardware acceptance;
-device permissions, baud/parity/flow control, disconnect/reconnect, adapter latency,
-output safety and finite shutdown still need qualification with the actual equipment.
+The Runtime account needs permission to open the device; ask the administrator to
+configure the host's device-access group or rule. Do not run as root just to avoid
+a permissions error. Confirm serial settings and measurement scale with the
+instrument owner. Use a writable local recording path.
 
-## Optional systemd deployment
-
-Create a dedicated `lab-runtime` account, install the executable as
-`/opt/lab-runtime/lab-runtime`, and create `/var/lib/lab-runtime` owned by that account.
-An example unit at `/etc/systemd/system/lab-runtime.service` is:
-
-```ini
-[Unit]
-Description=Headless laboratory Runtime (virtual demo)
-After=network.target
-
-[Service]
-Type=simple
-User=lab-runtime
-Group=lab-runtime
-WorkingDirectory=/var/lib/lab-runtime
-Environment=LAB_RUNTIME_LOG_DIRECTORY=/var/lib/lab-runtime/logs
-ExecStart=/opt/lab-runtime/lab-runtime --serve --profile virtual-demo --port 7420 --record-db /var/lib/lab-runtime/history.sqlite
-KillSignal=SIGTERM
-TimeoutStopSec=15s
-Restart=no
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Validate with `systemd-analyze verify /etc/systemd/system/lab-runtime.service`, then
-use the host's normal `systemctl daemon-reload` and `systemctl start lab-runtime`
-commands. `systemctl stop lab-runtime` requests safe shutdown. The example makes no
-automatic restart/rearm decision. For physical deployments replace the demo CLI with
-`--serve --config /etc/lab-runtime/runtime.toml` and provide validated definitions,
-device permissions and a writable local recording path. See
-[configuration](configuration.md) and [Recorder](recorder-sqlite.md).
-Service management remains outside Runtime application logic.
-
-## Build and package
-
-Use Linux x86_64, official Rust 1.95.0 with Cargo, Python 3.11.4+, Git, a C compiler/linker, and
-binutils. For Ubuntu these host tools are available from `build-essential`,
-`binutils`, `git`, `python3` and `curl` (curl is useful for installing Rust).
-
-```sh
-cargo build -p lab-runtime --locked --target x86_64-unknown-linux-gnu
-cargo build -p lab-runtime --release --locked --target x86_64-unknown-linux-gnu
-cargo test -p lab-core -p lab-runtime --all-features --locked --target x86_64-unknown-linux-gnu
-cargo test -p lab-core -p lab-runtime --release --all-features --locked --target x86_64-unknown-linux-gnu
-cargo fmt --all --check
-cargo clippy -p lab-core -p lab-runtime --all-targets --all-features --locked \
-  --target x86_64-unknown-linux-gnu -- -D warnings
-python3 scripts/package-linux-runtime.py
-```
-
-The packager derives the version from workspace Cargo metadata. Outputs in `dist/`:
-
-- `lab-runtime-<version>-linux-x86_64.tar.gz`, containing one executable with mode 0755 and `NOTICE.txt`;
-- `.licenses.tar.gz`, containing Runtime dependency texts, exact serialport sources,
-  Rust standard-library notice evidence and a checked file inventory;
-- `.build.json`, recording target, source commit/dirty state, toolchain, lockfile hash,
-  binary/archive SHA-256, shared libraries and required glibc symbol version;
-- `.sha256` companions for both archives.
-
-Existing outputs are protected against accidental overwrite. `--allow-dirty` explicitly
-records an uncommitted review build. Build products can be kept on a Linux filesystem
-with `CARGO_TARGET_DIR` when the source checkout is on a WSL-mounted Windows drive.
-The packager uses Cargo's reported executable path rather than assuming `target/`.
-License evidence is pinned to the reviewed official Rust 1.95.0 libraries and exact
-dependency checksums. Missing/mismatched evidence fails packaging, including checks
-after unpacking the license archive. See [license packaging review](release-license-evidence.txt)
-for scope, provenance and lightweight regression commands. A different toolchain
-requires a new standard-library notice review, not a silent version substitution.
-
-The Linux process test completes hello and `latest` through real TCP and WebSocket
-connections, checks Application shutdown, and checks SIGINT/SIGTERM/SIGHUP with active
-recording plus sealed SQLite rows and integrity. To run that same acceptance against
-an extracted package outside the checkout:
-
-```sh
-LAB_RUNTIME_SMOKE_BINARY=/absolute/extracted/path/lab-runtime \
-  cargo test -p lab-runtime --release --locked --target x86_64-unknown-linux-gnu \
-  --test linux_process
-```
-
-WSL2 provides Linux build/process evidence, not bare-metal kernel, USB, serial adapter
-or physical safety qualification. Review the verification report for the exact build
-host, glibc requirement, commands and remaining hardware risks.
+No physical two-computer or hardware safety qualification is implied by the
+virtual walkthrough. See [Troubleshooting](troubleshooting.md) if startup fails.

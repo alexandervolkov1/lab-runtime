@@ -1,320 +1,117 @@
-# Distributed Workbench preview (M18)
+# Runtime and Workbench on two computers
 
-Runtime owns experiments, acquisition, controller/output authority and Recorder.
-Workbench owns presentation and one bounded Application client. A script connects
-directly to Runtime with its own scope and separately to the local Workbench API
-when it needs to change plots. It never relays measurements into Workbench.
+[User manual](README.md) · [Linux installation](linux-runtime.md)
 
-```text
-Script -------- TCP/WSS Application API --------> Linux Runtime
-Windows GUI --- TCP/WSS Application API --------> Linux Runtime
-Script -------- loopback Workbench API --------> Windows GUI presentation
-```
+Run Runtime on a Linux computer near the instruments and view it with Workbench
+on a Windows computer. SQLite stays on Linux; no shared network folder is needed.
+Start with the virtual experiment before connecting hardware.
 
-Local TCP remains the default. Both clients can explicitly opt in to plaintext TCP
-on a trusted isolated LAN. TCP and WS/WSS use the same worker, scope, sequencer,
-admission, recovery journal and rebuild barrier. Runtime's WS listener and exact
-Host/Origin admission remain loopback-only; Tuna terminates authenticated WSS and
-forwards HTTP Upgrade to that loopback listener.
+**Warning:** raw TCP has no TLS encryption or authentication. Anyone allowed to
+connect can send experiment commands. Use only a trusted isolated local network,
+never direct Internet access or router port forwarding.
 
-## Deployment scenarios
+## 1. Choose addresses
 
-The supported client placements share the same Application API and independent
-Runtime scopes. These are deployment instructions, not a claim that physical
-two-computer E2E qualification has been completed.
+This example uses:
 
-| Scenario | Runtime | Workbench | Clojure/Babashka | Presentation access |
-|---|---|---|---|---|
-| A | Windows PC | same Windows PC | same Windows PC | local Workbench API |
-| B | Windows PC | same Windows PC | another PC | no direct remote Workbench API |
-| C | separate Linux PC | Windows PC | same Windows PC as Workbench | local Workbench API on Windows |
+| Setting | Example — replace with your own |
+|---|---|
+| Linux Runtime address | `192.168.1.50` |
+| Windows Workbench address | `192.168.1.60` |
+| Runtime TCP port | `7420` |
+| Linux network interface | `eno1` |
 
-### A: everything on one Windows PC
+On Linux use `ip -4 address`; on Windows use `ipconfig`. Choose the actual local
+network addresses, preferably fixed or reserved in your router. `127.0.0.1` means
+this computer, so it cannot identify the other computer.
 
-From the portable package directory, start a virtual Runtime with Required
-Recorder and both local Application transports:
+## 2. Restrict the firewall first
 
-```powershell
-$db = [IO.Path]::GetFullPath((Join-Path $PWD "preview.sqlite"))
-./lab-runtime.exe --serve --profile virtual-demo --port 8765 `
-  --record-db $db --record-policy required `
-  --ws-port 8766 --ws-origin http://127.0.0.1:3000
-```
+Ask the network administrator to allow incoming TCP **only** from the Windows
+address to the Linux address on port 7420, and block other sources to that port.
+Keep any existing remote-administration access intact. Neither program configures
+the firewall for you.
 
-In another terminal, start Workbench; the optional script runs from the repository
-or package directory containing `clients`:
+If Linux already uses **active UFW with default-deny incoming traffic**, first
+review `sudo ufw status verbose`. With the sample addresses above, add:
 
-```powershell
-./lab-workbench.exe --connect 127.0.0.1:8765 --observe `
-  --workspace ./preview-workspace --workbench-listen 127.0.0.1:8767
-bb clients/babashka-smoke/distributed.clj ws://127.0.0.1:8766/application/v1 8767
-```
-
-The script mutates only the virtual Runtime through its own scope and changes
-plots through local Workbench. Observation mode does not restrict that independent
-Runtime client. For Workbench WS, replace `--connect` with
-`ws://127.0.0.1:8766/application/v1`.
-
-### B: Windows Runtime and Workbench, remote Clojure
-
-For trusted LAN TCP, replace the Runtime command above with this command using
-the Windows host's actual LAN address:
-
-```powershell
-./lab-runtime.exe --serve --profile virtual-demo `
-  --bind 192.168.1.50 --allow-remote-tcp --port 8765 `
-  --record-db $db --record-policy required
-./lab-workbench.exe --connect 192.168.1.50:8765 --allow-remote-tcp `
-  --observe --workspace ./preview-workspace --workbench-listen 127.0.0.1:8767
-```
-
-Runtime binds one selected TCP interface, so the local Workbench also uses that
-address and opt-in. Limit the Windows firewall rule to the selected port and
-trusted client addresses. On the remote machine, run the bundled query smoke:
-
-```powershell
-bb clients/babashka-smoke/runtime.clj 8765 --host 192.168.1.50 --allow-remote-tcp
-```
-
-For WSS/Tuna, use scenario A's loopback Runtime with WS enabled, run the
-authenticated Tuna agent on that Windows host, and point the remote client at
-the verified WSS URL. The local Workbench may keep using loopback TCP. With the
-protected key available in the remote client's environment, the virtual test is:
-
-```powershell
-bb clients/babashka-smoke/distributed.clj `
-  wss://fresh-hedgehog-9022.ru.tuna.am/application/v1 `
-  --runtime-only --token-env LAB_RUNTIME_TUNNEL_TOKEN
-```
-
-Remote presentation control is **not directly available** in scenario B.
-`--workbench-listen` remains IPv4 loopback-only, with no remote binding or
-authentication option. Runtime LAN/WSS connectivity does not expose this API.
-Run presentation commands on the Windows Workbench host; use `--runtime-only`
-for the remote bundled script. Do not forward the unauthenticated Workbench API.
-
-### C: Linux Runtime, Windows Workbench and Clojure
-
-Run Runtime on the Linux PC using the [LAN TCP instructions](#trusted-lan-tcp)
-or the [loopback WS instructions](#linux-runtime) with [protected Tuna](#tuna-access-control).
-Both Windows clients independently use the Linux Runtime's opted-in TCP address
-or verified WSS endpoint. Clojure uses `127.0.0.1:8767` only for presentation on
-its own Windows Workbench host. Recorder and its SQLite archive stay with the
-Linux Runtime. The [Babashka WSS example](#independent-babashka-client) supports
-this placement. Prior Windows/WSL2 runs exercise one computer and do not establish
-physical Windows-PC/Linux-PC acceptance.
-
-## Trusted LAN TCP
-
-Choose the actual Linux interface and Windows source IP; these example private
-addresses are deployment placeholders. Neither Runtime nor Workbench configures
-firewalls. Review existing firewall rules before changing them. With an existing
-UFW default-deny inbound policy, allow only the Windows client:
-
-```bash
+```sh
 sudo ufw allow in on eno1 proto tcp from 192.168.1.60 to 192.168.1.50 port 7420
 sudo ufw status numbered
-./lab-runtime --serve --config /etc/lab-runtime/runtime.toml \
-  --bind 192.168.1.50 --allow-remote-tcp
-# The TCP port comes from server.port in runtime.toml (7420 in the example).
+```
+
+There must not be another broader rule allowing this port. These commands do not
+set up an inactive firewall. If you use a different firewall, apply the same
+source/destination/port restriction through its administrator. Do not flush rules,
+disable the firewall, or enable a new firewall blindly over a remote session.
+See the [UFW manual](https://manpages.ubuntu.com/manpages/noble/man8/ufw.8.html)
+for that tool's rule syntax.
+
+## 3. Start Runtime on Linux
+
+From the extracted executable's directory, after completing the Linux installation:
+
+```sh
+mkdir -p state/logs
+export LAB_RUNTIME_LOG_DIRECTORY="$PWD/state/logs"
+./lab-runtime --serve --profile virtual-demo \
+  --bind 192.168.1.50 --allow-remote-tcp --port 7420 \
+  --record-db "$PWD/state/history.sqlite" --record-policy required
+```
+
+Use the Linux computer's own address. Runtime binds just that interface, not all
+interfaces. Wait for `"state":"ready"`. This is a replacement for the loopback
+command, not a second Runtime to run beside it.
+
+In another Linux terminal, you can check the listener:
+
+```sh
 ss -ltn '( sport = :7420 )'
 ```
 
-Do not add a broad allow rule or router port forwarding. Raw TCP has **no TLS or
-authentication**. Opt-in is local policy, not authorization. The selected address
-must belong to Linux. Wildcard/multicast/broadcast binds are rejected. The default
-and configuration DTO still specify loopback; the CLI override applies at startup
-and cannot change through deployment reload.
+Expected: a listening socket at `192.168.1.50:7420`.
+
+## 4. Connect Windows Workbench
+
+In PowerShell, from the extracted Windows package directory:
 
 ```powershell
-./target/release/lab-workbench.exe --connect 192.168.1.50:7420 --allow-remote-tcp `
-  --observe --workspace ./target/lan-preview --workbench-listen 127.0.0.1:8767
-bb clients/babashka-smoke/runtime.clj 7420 --host 192.168.1.50 --allow-remote-tcp
+Test-NetConnection -ComputerName 192.168.1.50 -Port 7420
+.\lab-workbench.exe --connect 192.168.1.50:7420 --allow-remote-tcp `
+  --workspace .\lan-workspace
 ```
 
-The bundled TCP smoke validates hello and Reference queries. A separate automation
-client, including `thermal-plant-analysis`, must configure its Runtime socket to
-`192.168.1.50:7420`, retain the existing NDJSON protocol/scope/recovery rules and use
-`127.0.0.1:8767` solely for Workbench presentation. No external project is modified.
-Both clients connect independently; Clojure does not forward measurements to GUI.
-A WSL2 interface test is not physical two-computer LAN acceptance.
+Expected: `TcpTestSucceeded : True`, then Workbench reaches **Fresh**. The port
+check alone does not prove that the correct Runtime or measurements are ready.
 
-## Linux Runtime
+Select **Signal 1/1** to view the virtual temperature. Use the same Reference and
+Recorder controls as in [Your first experiment](getting-started.md#5-change-the-virtual-reference).
+For a watch-only station, add `--observe`; that station cannot start/stop recording
+or change the experiment. No inbound Workbench firewall rule is needed for this
+outgoing connection.
 
-Install the existing Linux x86_64 GNU Runtime package and use its example
-unit in the [Linux Runtime guide](linux-runtime.md#optional-systemd-deployment)
-with an absolute executable path, dedicated working directory and separate SQLite
-path. Do not run against a production DB
-for acceptance. The virtual-demo command is:
+## 5. Finish and locate your data
 
-```bash
-./lab-runtime --serve --profile virtual-demo --port 8765 \
-  --record-db /var/lib/lab-runtime/preview.sqlite \
-  --ws-port 8766 --ws-origin http://127.0.0.1:3000
-```
+Stop recording in Workbench and check the completed result. Close Workbench.
+Runtime continues on Linux until you press Ctrl+C in its own terminal and wait
+for it to exit. The archive remains at `state/history.sqlite` under the Linux
+executable directory. Follow [backup instructions](recording.md) before copying it.
 
-The process must have write access to the DB directory. Recorder is independent of
-GUI/script lifetime. Its SQLite connection is exclusive: inspect live recording
-through Application history/status queries; stop Runtime before raw SQLite checks.
+If connection fails, check the selected addresses, port, firewall and that Runtime
+still runs. Do not widen the firewall to every address as a diagnostic shortcut.
 
-```bash
-sudo systemctl start lab-runtime
-sudo systemctl status lab-runtime --no-pager
-sudo journalctl -u lab-runtime -f
-sudo systemctl restart lab-runtime
-sudo systemctl stop lab-runtime
-ss -ltn '( sport = :8765 or sport = :8766 )'
-sqlite3 /var/lib/lab-runtime/preview.sqlite 'PRAGMA integrity_check;'
-```
+## Other supported arrangements
 
-WS remains bound to `127.0.0.1` and requires the configured exact Origin, Host and
-`lab-runtime.application.v1` subprotocol. Origin is a browser policy, not client
-authentication. Do not expose a managing endpoint publicly without authentication.
-Service supervision is an OS concern; it is not Runtime application logic.
+Runtime can also run on a Windows computer using the same `--bind` and
+`--allow-remote-tcp` options; use `lab-runtime.exe` and a Windows absolute database
+path. Restrict its Windows inbound firewall rule to the Workbench computer's IP.
+A Workbench on that same Runtime computer must also connect to the selected LAN
+address, since this command does not additionally listen on loopback.
 
-WSL2 verifies Linux binaries/SQLite/systemd plus Windows clients on one laptop. It
-does not prove two physical machines, USB/RS-485, bare-metal timing or power loss.
-WSL localhost forwarding and systemd lifetime depend on WSL availability; a systemd
-unit inside WSL does not make the distribution independent of Windows/WSL shutdown.
+Workbench also supports WS/WSS connections. Those require a separately configured
+secure endpoint; see the [technical transport reference](reference/transports.md).
+The separate Workbench presentation API stays loopback-only and must not be
+forwarded as a remote-control service.
 
-## Windows Workbench
-
-```powershell
-cargo build --release -p lab-workbench --locked
-./target/release/lab-workbench.exe --connect 127.0.0.1:8765 --workspace ./target/tcp-preview
-./target/release/lab-workbench.exe --connect ws://127.0.0.1:8766/application/v1 `
-  --observe --workspace ./target/ws-preview --workbench-listen 127.0.0.1:8767
-```
-
-`--observe` is explicit and defaults off. It disables GUI Runtime controls and
-rejects Runtime mutations and Exact Retry before submission to the worker mailbox,
-including mediated mutations through the Workbench API. Read queries, subscriptions,
-manual Check Status and presentation operations remain available. It is local
-client policy, **not server authorization**: another client can still mutate Runtime.
-`history_read` is an asynchronous mutation/work job in the frozen API and is also
-blocked by this conservative mode. Recent in-memory history and existing history
-page queries remain queries; use normal mode for explicit archive selection jobs.
-
-`--ws-origin` defaults to `http://127.0.0.1:3000` and must match Runtime policy.
-Non-loopback plaintext WS requires `--allow-insecure-ws` and prints a warning; use
-only on an explicitly trusted network. There is no automatic WSS downgrade.
-WSS validates certificates and hostname against OS roots. `--ws-ca-file PATH` adds
-a bounded PEM trust bundle for a private CA; it does not bypass verification.
-TLS certificate/hostname errors fail the connection. The GUI thread owns no socket.
-
-## Tuna access control
-
-The existing endpoint is
-`wss://fresh-hedgehog-9022.ru.tuna.am/application/v1`, with local upstream
-`http://127.0.0.1:8766`. A previous hello/latest is not proof of current key-auth.
-The authorized 2026-10-09 M18 test verified missing/wrong keys returning HTTP 401
-and the existing correct key upgrading with HTTP 101, followed by Workbench and
-Babashka mutation/presentation/reconnect checks. It used one Windows laptop plus
-Ubuntu WSL2 through the public endpoint, not a second physical computer. The owned
-test tunnel was stopped afterward; these results do not imply a tunnel is running now.
-
-Official [Tuna HTTP tunnel documentation](https://tuna.am/docs/tunnels/http/) supports
-WebSocket Upgrade, `--key-auth`, `X-Token`, and the `TUNA_KEY_AUTH` environment variable.
-The account token authenticating the Tuna agent is different from the client tunnel
-key. Reuse the provisioned client access key; new deployments need an independent
-random access key. Never put it in a URL or command
-line; use a protected file/environment and disable tunnel inspection.
-
-On Linux, after approval and using the existing assigned subdomain/account:
-
-```bash
-# Store only the client access key in this root/user-readable file (mode 0600).
-IFS= read -r TUNA_KEY_AUTH < /etc/lab-runtime/tuna-access-key
-export TUNA_KEY_AUTH
-tuna http 127.0.0.1:8766 --subdomain=fresh-hedgehog-9022 --location=ru \
-  --request-header='host:127.0.0.1:8766' --inspect=false --log-level=warn
-unset TUNA_KEY_AUTH
-```
-
-This command is a proposed protected launch, not evidence that the currently assigned
-tunnel is authorized or running. Verify the installed Tuna version's `http --help`
-and the assigned subdomain before replacing a working agent. Do not change its
-configuration as part of a client-only test. For systemd, put the access key in a
-permissions-restricted environment file and reference it with `EnvironmentFile=`;
-do not put literal keys in a unit or journal. Keep Runtime upstream on loopback.
-
-On Windows, use a restricted file containing the access key, optionally ending in
-one LF or CRLF. Workbench reads at most 514 bytes and accepts a nonempty ASCII header
-value no larger than 512 bytes, with no embedded CR/LF:
-
-```powershell
-./target/release/lab-workbench.exe `
-  --connect wss://fresh-hedgehog-9022.ru.tuna.am/application/v1 `
-  --ws-token-file C:/Users/user/.secrets/tuna-runtime-key `
-  --observe --workspace ./target/wss-preview --workbench-listen 127.0.0.1:8767
-```
-
-Alternatively use `--ws-token-env LAB_RUNTIME_TUNNEL_TOKEN`. The two secret sources
-are mutually exclusive. Header values never enter Application JSON, recovery or
-presentation documents. HTTP response bodies/headers are not included in client
-errors. Raw HTTP Upgrade trace logging in Tungstenite is disabled at compile time.
-
-Before sending any public mutation, establish that missing and deliberately wrong
-`X-Token` requests cannot upgrade, while the correct key can complete hello and
-read-only queries. Do not print request headers or response bodies during these tests.
-Check TLS errors and incorrect hostname with a local TLS fixture, never by turning
-verification off. Tunnel authorization is not per-operation Runtime authorization.
-Tuna terminates public TLS and can see Application traffic; the Tuna service/operator
-and local upstream are inside the experiment's trust boundary.
-
-## Independent Babashka client
-
-Babashka 1.13.220 includes Cheshire and Java's asynchronous WebSocket client. The
-following bounded acceptance example requires **virtual-demo/test** instances. It
-creates its own Runtime scope, performs exactly one safe Reference retune, waits
-for authoritative accepted/completed evidence, verifies the resulting snapshot,
-then adds a temperature plot through the local Workbench presentation API:
-
-```powershell
-bb clients/babashka-smoke/distributed.clj ws://127.0.0.1:8766/application/v1 8767
-# Only after protected Tuna is confirmed:
-bb clients/babashka-smoke/distributed.clj `
-  wss://fresh-hedgehog-9022.ru.tuna.am/application/v1 8767 `
-  --token-env LAB_RUNTIME_TUNNEL_TOKEN
-```
-
-The script never forwards observations, calls mediated Runtime mutations, or retries
-an ambiguous mutation. Workbench acquires measurements directly from Runtime and
-updates its own subscribed/rebuilt observations. The original TCP smoke examples
-remain available. The example is not an unattended experiment/recovery SDK.
-
-## Recovery
-
-Unexpected continuity loss uses the existing bounded retained-scope episode; hello
-does not prove Fresh. Queries/subscriptions are rebuilt through the authoritative
-barrier; ambiguous mutations, status and Exact Retry are never replayed automatically.
-Explicit Disconnect cancels reconnect. After `instance_changed`, use **Connect new
-scope** in the same workspace. Only this explicit action chooses a new scope.
-Unresolved quarantined evidence remains visible and blocks new mutations. Manual
-Check Status/Exact Retry follow existing eligibility; observation mode also disables
-Exact Retry. Closing Workbench never stops Runtime or Recorder.
-
-If the local Workbench API is unavailable, direct scripts can still use Runtime;
-presentation changes require reconnecting to Workbench. Do not turn an unacknowledged
-UI call or Runtime timeout into an automatic mutation retry.
-
-```powershell
-# The Runtime remains usable when Workbench is closed.
-bb clients/babashka-smoke/distributed.clj ws://127.0.0.1:8766/application/v1 --runtime-only
-```
-
-## Recorder operating envelope and qualification
-
-The published preview reserves accepted/completion credit before Reference
-admission. Its thirteen-group / 1,545-record / 4 MiB budget is finite, with protected
-Reference headroom but no separately protected reconnect pool. See
-[Recorder ingress settings](recorder-sqlite.md#ingress-and-storage-settings) and
-[receipt/close invariants](recorder-sqlite.md#receipt-credit-and-close-invariants).
-Real storage failure remains fail-closed for Required recording; successful
-transport delivery is not a durability receipt or a successful shutdown flush.
-
-Earlier four-group candidate failures, their retained databases and detailed
-review protocols remain in the published source history. Current capabilities,
-verification boundaries and unresolved WSS/physical-E2E limits are summarized in
-[project status](developer/project-status.md); transport-only smoke is not proof
-of Recorder acceptance or hardware safety.
+These instructions do not claim completed physical two-computer testing or
+hardware safety qualification. Check the actual network and equipment before use.

@@ -370,7 +370,7 @@ by their respective API references.
 - [Safety and failure behavior](safety-and-failures.md)
 - [Runtime mutation, event, and recovery protocol](api/events-mutations-and-recovery.md)
 - [Runtime errors and limits](api/errors-and-limits.md)
-- [Workbench recovery UI](workbench.md#recovery-and-reconciliation)
+- [Workbench recovery UI](workbench.md#loss-of-connection-and-recovery)
 - [Workbench external recovery API](workbench-api.md#recovery-get)
 - [SimpleDevice reconnect/output rules](simple-device.md#reconnect-and-stale-evidence)
 - [Native-driver fault obligations](developer/full-driver-tutorial.md#step-12-failure-cleanup)

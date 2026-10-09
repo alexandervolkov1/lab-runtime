@@ -120,7 +120,7 @@ produces valid evidence. Structural preparation failures can still prevent readi
 ### 6. Discover and describe the signal
 
 Connect to the printed loopback port using the TCP/NDJSON procedure in
-[Getting started](../getting-started.md#advanced-a-minimal-application-api-client). The first request
+[Protocol and sessions](../api/protocol-and-sessions.md). The first request
 must be hello:
 
 ```json
@@ -149,7 +149,7 @@ explicit not-observed or unavailable state, not an invented zero.
 ### 7. Recorder behavior
 
 The supplied deployment keeps recording disabled. To record, configure the Runtime
-Recorder as described in [Configuration](../configuration.md#recorder-configuration)
+Recorder as described in [Configuration](../reference/configuration.md#recorder-configuration)
 and start a run through the normal Application operation. SimpleDevice measurements
 then enter the same Runtime-owned Recorder path as native measurements, including
 definition and binding provenance. The client does not write SQLite directly.
@@ -245,7 +245,7 @@ There is intentionally no raw Application write operation. An accepted Runtime
 controller/proposal path must own the output proposal and central authority. Add a
 controller only when its input signal, Reference, timing, bounds, and safe lifecycle
 have been designed and validated; see the controller and safe-profile sections of
-[Configuration](../configuration.md). Do not create a client shortcut around
+[Configuration](../reference/configuration.md). Do not create a client shortcut around
 `OutputAuthority`.
 
 ### 5. Interpret failures safely

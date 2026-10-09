@@ -16,7 +16,7 @@ preview package can use drivers already compiled into `lab-runtime.exe`, but it 
 not contain the source tree or a driver SDK.
 
 Read [Architecture and concepts](../architecture.md),
-[Configuration](../configuration.md), and
+[Configuration](../reference/configuration.md), and
 [Safety and failure behavior](../safety-and-failures.md) first.
 
 ## Choose the right path
@@ -172,7 +172,7 @@ queue_timeout_ms = 1000
 transaction_timeout_ms = 1000
 ```
 
-The exact fields and bounds are in [Configuration](../configuration.md). Metakon
+The exact fields and bounds are in [Configuration](../reference/configuration.md). Metakon
 accepts address `1..=247`, poll/queue/transaction times of `1..=60000` ms, and a
 strict definition no larger than 16 KiB with at most 16 parameters. Its only current
 live property is `poll_period_ms`; the generic property projection consumes neutral
@@ -798,7 +798,7 @@ Before requesting review, confirm:
 
 ## Packaging and public documentation
 
-Update [Configuration](../configuration.md) with the new deployment kind and public
+Update [Configuration](../reference/configuration.md) with the new deployment kind and public
 bounds. Update [Extending the Runtime](../extending-runtime.md) only if the integration
 changes the source map. Add safe public examples only when they do not unexpectedly
 open physical hardware; keep physical qualification inputs clearly identified.

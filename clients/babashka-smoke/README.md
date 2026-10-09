@@ -1,13 +1,32 @@
 # Minimal Babashka boundary smoke
 
-M18 also adds [`distributed.clj`](distributed.clj), an explicit bounded virtual-demo
+[`distributed.clj`](distributed.clj) is an explicit bounded virtual-demo
 WS/WSS acceptance example. It uses Java WebSocket with normal TLS verification,
 performs one direct Runtime mutation and confirms its authoritative result, then
 changes a GUI plot through the existing local Workbench API. It never relays
 measurements or replays mutations. Pass `--runtime-only` instead of the Workbench
 port to operate with Workbench closed. See the
-[distributed deployment guide](../../docs/distributed-workbench.md) for tested
-commands, access-key configuration and outstanding LAN/Tuna acceptance gates.
+[transport reference](../../docs/reference/transports.md) for access-key options
+and deployment security boundaries. Physical two-computer qualification remains
+incomplete. These are developer examples, separate from the user walkthrough.
+
+For a virtual Runtime already exposing local WS at port 8766 and a local Workbench
+API at port 8767, the distributed smoke is:
+
+```powershell
+bb clients/babashka-smoke/distributed.clj ws://127.0.0.1:8766/application/v1 8767
+```
+
+For an administrator-provided WSS endpoint, substitute its hostname and provide
+the key through the named environment variable. `--runtime-only` skips the local
+presentation call:
+
+```powershell
+bb clients/babashka-smoke/distributed.clj wss://runtime.example.org/application/v1 --runtime-only --token-env LAB_RUNTIME_ACCESS_KEY
+```
+
+The example changes a virtual Reference; do not point it at physical equipment.
+No service-specific tunnel setup or credentials are supplied here.
 
 These two standalone scripts are wire examples and boundary-smoke evidence, not a
 client SDK or a supported Clojure client architecture. Babashka is optional tooling;

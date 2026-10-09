@@ -117,7 +117,7 @@ candidate has 1..=4 instances and forbids `safe_profile` and `controller`. An
 output-capable candidate has exactly one instance and requires `safe_profile`; its
 optional `controller` uses the ordinary controller identities, input/output bindings,
 Reference ID, PID/EMA values, timing, lease, and proposal-TTL fields documented by
-[Configuration](configuration.md#safe-profiles-and-controllers). Unknown fields are
+[Configuration](reference/configuration.md#safe-profiles-and-controllers). Unknown fields are
 rejected at every candidate level.
 
 The complete compact candidate is limited to 8,192 bytes, 900 JSON values/object

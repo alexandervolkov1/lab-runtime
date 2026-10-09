@@ -12,10 +12,11 @@ protocol v1 and the v0.1 product:
 The Application API is a supported language-neutral product boundary, not an
 implementation detail of Workbench. Runtime currently exposes it over local
 TCP/NDJSON and optional loopback WebSocket/JSON; native Workbench uses TCP or
-WS/WSS through its existing single client worker. See the
-[distributed Workbench guide](distributed-workbench.md) for endpoint configuration,
-observation policy, TLS and tunnel access control. Runtime's WS listener remains
-loopback-only; direct LAN WS and protected Tuna acceptance are still pending.
+WS/WSS through its existing single client worker. TCP additionally supports an
+explicit trusted-LAN bind. See the [transport reference](reference/transports.md)
+for endpoint configuration, observation policy and TLS/access-control boundaries.
+Runtime's WS listener remains loopback-only; WSS needs a separately administered
+authenticated TLS endpoint. Physical two-computer qualification remains incomplete.
 
 The [Workbench external API](workbench-api.md) is a distinct presentation/client
 surface, not another Runtime Application implementation. See the optional

@@ -41,9 +41,9 @@ separate Rust standard-library inventory.
 The authoritative current explanations are [architecture](../architecture.md),
 [safety](../safety-and-failures.md), [Recorder](../recorder-sqlite.md),
 [recovery](../recovery-and-faults.md), [Application API](../api/README.md),
-[Workbench API](../workbench-api.md) and [distributed deployment](../distributed-workbench.md).
-The deployment guide covers all-local Windows, Windows Runtime/Workbench with a
-remote script, and Linux Runtime with Windows Workbench/scripts.
+[Workbench API](../workbench-api.md) and [transport reference](../reference/transports.md).
+The separate [user manual](../README.md) covers all-local Windows and Linux Runtime
+with Windows Workbench. Programmable clients remain in the developer documentation.
 
 ## Evidence and open qualification limits
 
@@ -89,7 +89,7 @@ maps Runtime integration suites. Keep `cargo fmt --all -- --check` and
 `git diff --check` clean. Full workspace Debug/Release gates belong to changes that
 need them, not every documentation cleanup. Packaging uses an explicit public-file
 inventory: new README/document links must also resolve inside the extracted package.
-Run the six existing packaging/evidence scripts as appropriate; license tests do
+Run packaging, documentation and evidence checks as appropriate; license tests do
 not require rebuilding Rust. Never treat successful archive creation alone as a
 complete license audit.
 
