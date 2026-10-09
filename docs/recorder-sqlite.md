@@ -288,6 +288,38 @@ BLOBs so byte ordering is numeric ordering.
 
 Neither policy allows a false durable acknowledgement.
 
+### Receipt, credit and close invariants
+
+The committed submission watermark is the maximum original owner timestamp in
+the receipted FIFO prefix, not the last timestamp after SQL sorting and not a
+promise that every timestamp in a range is durable. Duplicate, stale, future or
+otherwise invalid receipts cannot advance progress or release credit twice.
+
+Only owner-held, never-transferred reservations may be cancelled. Once a group
+has entered FIFO it stays charged until a validated cumulative post-COMMIT
+receipt, including when SQL fails. Failure cleanup cancels unused probe/rebind
+tokens without releasing submitted groups. Required Failed/Closed checks precede
+rebind shortcuts and side effects; they cannot be bypassed by an existing token.
+
+Before a synchronous Reference effect, the owner polls receipts and drains the
+existing causal group intact, including safety facts produced by a late Required
+deadline. It rechecks the Required gate at final dispatch. It must not mix those
+prior facts into the reserved single-Reference fact/terminal completion envelope.
+
+Normal writer return publishes the final receipt and clears liveness before exit.
+The close-race implementation samples completion before liveness, with acquire
+synchronization, so an earlier alive sample cannot be combined with later thread
+completion and mislabeled as panic. Real panic and SQL failures remain failures.
+`recorder_flushed` requires Closed, a committed seal, no first error and zero
+outstanding records: thread completion alone is insufficient. Reopen recovers
+historical committed state, never controller authority or automatic mutations.
+
+Maintainer regression anchors include `recorder/worker.rs`,
+`host/reference_completion_tests.rs`, `host/reconnect_recorder_ordering_tests.rs`
+under `apps/lab-runtime/src/`, and the Recorder failure/shutdown/reopen integration
+suites. These tests retain the safety, credit and durability proof independently
+of historical review reports.
+
 ## Ingress and storage settings
 
 Default owner-side ingress credit is 1,545 records, 4 MiB accounted bytes, thirteen

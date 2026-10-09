@@ -11,6 +11,11 @@ deduplication, and retained operation outcomes. Workbench connects through the s
 language-neutral Application API available to other clients and provides live plots,
 typed operator workflows, and manual recovery/reconciliation.
 
+Current published release: [v0.1.0-preview.4](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4)
+(Windows Runtime + Workbench; Linux headless Runtime). See
+[project status and development map](docs/developer/project-status.md) for the
+verified baseline, remaining qualification limits and repository layout.
+
 External clients can use the direct Runtime API or the separate opt-in
 [Workbench presentation/client API](docs/workbench-api.md). Workbench's bounded
 IPv4-loopback TCP/NDJSON adapter shares its existing single Runtime client worker;
@@ -175,6 +180,7 @@ Workbench workspace behavior, and validation failures, use the
 | Add a simple serial instrument | [SimpleDevice reference](docs/simple-device.md) and [tutorial](docs/developer/simple-device-tutorial.md) |
 | Add a trusted native instrument | [Extension overview](docs/extending-runtime.md) and [native driver guide](docs/developer/full-driver-tutorial.md) |
 | Run optional language examples | [Babashka](clients/babashka-smoke/README.md) and [ClojureScript](clients/clojurescript-smoke/README.md) |
+| Contribute or locate current project status | [Development map](docs/developer/project-status.md) |
 
 ## Current environment and limitations
 
@@ -197,10 +203,10 @@ Workbench workspace behavior, and validation failures, use the
 - Recovery evidence has no Discard/Forget action; invalidated evidence remains visible
   and fail-closed.
 
-The published [v0.1.0-preview.1](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.1)
-Windows package is the earlier Runtime-only preview. Current packaging produces a
-portable Windows archive containing both Runtime and Workbench, or a headless Linux
-x86_64 Runtime archive; creating a package does not publish or tag a release.
+The published preview.4 contains a portable Windows Runtime + Workbench archive
+and a headless Linux x86_64 Runtime archive with a mandatory license companion.
+Creating a package does not itself publish or tag a release. Earlier previews and
+their exact source/evidence remain available in Git history and GitHub Releases.
 
 ## Safety posture
 

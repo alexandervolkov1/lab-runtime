@@ -3,7 +3,10 @@ preview.4 license packaging follow-up (2026-10-10)
 Scope: packaging and notice evidence only, based on production commit
 952c90040654ea4dc8feaa1b4918958e1fd6a4c6. No Runtime/Workbench Rust, dependency,
 Application API, Recorder, transport or release profile change is required.
-This candidate still requires independent release review; no publication is implied.
+The reviewed candidate was published as v0.1.0-preview.4 from
+cc32f827708ee9fefe63394245dcce1aa437e520 after engineering approval and owner
+authorization. This is evidence provenance, not legal certification or standing
+permission to publish a different candidate.
 
 1. serialport 4.10.1
 

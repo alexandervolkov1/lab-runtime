@@ -588,6 +588,7 @@ try {
         'docs\simple-device.md',
         'docs\developer\simple-device-tutorial.md',
         'docs\developer\full-driver-tutorial.md',
+        'docs\developer\project-status.md',
         'docs\architecture.md',
         'docs\application-api.md',
         'docs\recorder-sqlite.md',

@@ -148,6 +148,12 @@ continuity loss. It never automatically sends the mutation, checks status, or
 performs Exact Retry. Manual **Check Status** and confirmed **Exact Retry** are
 available only where retained identity and session fences permit them.
 
+The retained-scope episode has one absolute 3 s deadline; each connect attempt is
+bounded by `min(2 s, remaining)` and retries are spaced by at least 10 ms. Explicit
+Disconnect cancels the episode through the out-of-band/coalesced admission fence.
+Fresh requires a complete authoritative snapshot/subscription/cursor rebuild;
+successful hello or a terminal mutation result does not establish that barrier.
+
 Records from a different Runtime boot, an unknown scope, or an attached boot/scope
 mismatch are quarantined. Quarantine preserves uncertainty evidence but removes
 retry/status authority for the current session.

@@ -239,6 +239,18 @@ missing recording. Thread completion alone never proves durability or a flush.
 Monotonic time governs scheduling, freshness, controller `dt`, leases, and
 deadlines. Wall-clock time is human/archive context and does not drive control.
 
+## Trusted extension and scheduling boundaries
+
+Managed components use the bounded language-neutral invocation/result contract;
+the shipped implementations are trusted compile-time Rust. They do not own
+Runtime, transport, SQLite or output authority. There is no embedded scripting VM
+or dynamic plugin loader. Keep `lab-core` independent of these adapters and of
+wire/deployment/presentation concerns; see [extension boundaries](extending-runtime.md).
+
+Required acquisition, control, safety and Recorder progress have architectural
+priority over clients and managed work. This does not claim OS thread priority,
+preemption of an in-flight serial transaction or hard-real-time guarantees.
+
 ## Boundedness and shutdown
 
 Every long-lived queue, session, projection, cursor, history, and worker has a fixed
