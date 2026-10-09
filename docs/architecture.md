@@ -77,8 +77,11 @@ drafts, and confirmation workflows. These do not become Runtime experiment autho
 Workbench sends typed control intent through the Application API and waits for
 authoritative operation/projection evidence.
 
-Native Workbench uses TCP/NDJSON today. Other clients may use either supported
-transport.
+Native Workbench uses one bounded Application worker for TCP/NDJSON, WS and WSS.
+Transport selection preserves the same scope, sequencer, subscription, recovery
+journal and authoritative rebuild barrier. `--observe` blocks Workbench Runtime
+mutations and Exact Retry while allowing queries and presentation changes. It is
+client policy, not a Runtime authorization role or transfer of experiment ownership.
 
 The optional [Workbench external API](workbench-api.md) is a separate numeric
 IPv4-loopback TCP/NDJSON endpoint. One `WorkbenchDispatcher` serializes GUI and
@@ -86,6 +89,9 @@ external presentation changes and sends all external lab work through the existi
 single `ClientHandle`. External `call_id` is connection correlation, never Runtime
 mutation identity. No second Runtime session, sequencer, subscription, recovery
 engine, or presentation owner is introduced. Direct Runtime clients remain independent.
+This Workbench endpoint stays loopback-only even for a remote Runtime; a script on
+another machine cannot directly use it to change presentation. See the
+[deployment scenarios](distributed-workbench.md#deployment-scenarios).
 
 Workbench connection recovery preserves process ownership. An explicit Disconnect
 does not reconnect automatically. An unexpected continuity loss may start one
@@ -119,7 +125,7 @@ authoritative.
 |---|---|---|
 | `lab_core::Runtime` | instruments, committed signals/history, References, controllers, `OutputAuthority`, resource/component state, semantic Recorder-fact outbox | sockets, SQLite, OS serial ownership, presentation |
 | `HostCore` | composes one Runtime with schedules, adapters, Recorder admission, events, and configuration catalogs | no second experiment state |
-| `ServiceHost` | startup, loopback listeners, deployment lifecycle, reconnect, and finite shutdown | no controller/measurement semantics |
+| `ServiceHost` | startup, bounded Application listeners, deployment lifecycle, reconnect, and finite shutdown | no controller/measurement semantics |
 | `Application` | public projections, sessions, deduplication, operations, pages, subscriptions | no experiment authority |
 | `SessionStore` | scopes, next sequence, normalized mutation identity, retained outcomes | no transport or domain execution |
 | `RecorderWorker` | bounded ingress and exclusive SQLite worker ownership | no Runtime decisions or output authority |
@@ -155,8 +161,13 @@ The canonical API reference starts at [Application API](api/README.md).
 
 ### TCP/NDJSON
 
-TCP listens on IPv4 loopback. Each complete frame is one UTF-8 JSON object followed
-by LF; CRLF input is accepted. Framing is bounded before semantic processing.
+TCP defaults to IPv4 loopback. Both startup modes allow an explicit
+`--bind IPv4 --allow-remote-tcp` on a selected trusted LAN interface; remote
+Workbench TCP also requires `--allow-remote-tcp`. This plaintext transport provides
+no authentication or TLS and must not be exposed on the public Internet. Listener
+selection is startup-only and deployment reload cannot widen it. Each complete
+frame is one UTF-8 JSON object followed by LF; CRLF input is accepted. Framing is
+bounded before semantic processing.
 
 ### WebSocket/JSON
 
@@ -170,6 +181,12 @@ client capacity. Its public endpoint contract is:
 
 The JSON body is the same Application message used inside an NDJSON frame. See
 [Errors and limits](api/errors-and-limits.md) for canonical bounds.
+
+For public access, Tuna terminates WSS with `X-Token` authentication and forwards
+Upgrade to Runtime's loopback WS listener with the required Host rewrite.
+Workbench validates the certificate and hostname and never downgrades WSS.
+Tuna is inside the trust boundary; tunnel authentication does not add Runtime
+per-operation roles. The proxy does not change Application semantics.
 
 ## Measurements and scheduling
 
@@ -210,6 +227,14 @@ Reconnect and fresh input do not automatically rearm control. See
 Runtime emits semantic facts and owns Recorder lifecycle. Recorder admission is not
 durable commit; the authoritative committed prefix advances only after the storage
 receipt returns to the owner. See [Recorder and SQLite](recorder-sqlite.md).
+
+Reference mutations reserve accepted/completion audit capacity before admission.
+The bounded budget is 13 groups / 1,545 records / 4 MiB; only Reference credit is
+protected, while reconnect shares ordinary credit with acquisition. Reservation
+does not guarantee SQL success or unlimited concurrent admission. Submitted credits
+remain charged until a valid cumulative SQL receipt. Required recording failure
+rejects side effects through the accepted fail-closed fences; BestEffort exposes
+missing recording. Thread completion alone never proves durability or a flush.
 
 Monotonic time governs scheduling, freshness, controller `dt`, leases, and
 deadlines. Wall-clock time is human/archive context and does not drive control.

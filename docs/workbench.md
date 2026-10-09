@@ -55,7 +55,8 @@ From an extracted preview package, run the packaged executable instead:
 ./lab-workbench.exe --connect 127.0.0.1:7420 --workspace $workspace
 ```
 
-`--connect` is required and accepts a numeric socket address. `--workspace` is
+`--connect` is required and accepts a numeric TCP socket address or a
+`ws://HOST/application/v1` or `wss://HOST/application/v1` URL. `--workspace` is
 optional; when omitted, Workbench uses its Windows user-data location. An optional
 `--scope` value requests that retained Application scope.
 
@@ -63,9 +64,25 @@ Workbench acquires exclusive process ownership of the resolved workspace, loads 
 presentation and recovery files when present, and immediately starts connecting. A
 second Workbench process cannot use the same workspace at the same time.
 
-The native Workbench currently runs on Windows and uses TCP/NDJSON. Runtime may also
-offer loopback WebSocket/JSON to other clients; Workbench does not currently have a
-WebSocket transport.
+The native Windows Workbench uses one Application worker for TCP/NDJSON, WS and WSS.
+Remote TCP requires `--allow-remote-tcp` and a trusted LAN; it has no TLS or
+authentication. Runtime WS remains loopback-only. WSS through Tuna uses an
+`X-Token` from `--ws-token-env NAME` or `--ws-token-file PATH`, with certificate and
+hostname verification. See the [complete CLI reference](configuration.md#workbench-startup-options)
+and [three deployment scenarios](distributed-workbench.md#deployment-scenarios).
+
+### Observation-only mode
+
+Add `--observe` to disable Runtime mutation controls and Exact Retry. The client
+also rejects mediated Workbench API mutations before worker-mailbox admission.
+Queries, subscriptions, manual Check Status and presentation changes remain
+available. `history_read` is a mutation/work job and is also blocked. This is
+local client policy, not server authorization; independent scripts can still
+mutate Runtime through their own Application scopes.
+
+The optional `--workbench-listen 127.0.0.1:PORT` endpoint controls this Workbench
+locally. It remains loopback-only even when Workbench connects to a remote Runtime;
+it does not provide direct remote presentation control from another computer.
 
 ## Connection and freshness
 
@@ -277,6 +294,10 @@ explicit connection action.
 
 Automatic transport reattach is not automatic mutation recovery. Workbench does not
 automatically submit a mutation, Check Status, or Exact Retry.
+The same recovery path applies to TCP, WS and WSS. After `instance_changed`,
+**Connect new scope** is an explicit action even with an empty recovery journal.
+Old incompatible evidence remains quarantined and may still block mutations after
+fresh observations have been rebuilt.
 
 Closing the window stops only the Workbench client process. A Workbench crash likewise
 does not stop Runtime, controllers, the Recorder, or the experiment. Stop Runtime
@@ -381,7 +402,6 @@ The current GUI does not provide:
 - Runtime shutdown controls;
 - deployment stage/apply/reload controls;
 - a general controller-policy editor;
-- a Workbench WebSocket transport;
 - Discard or Forget recovery actions;
 - an embedded scripting or automation runtime.
 

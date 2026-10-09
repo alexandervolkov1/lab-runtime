@@ -1,6 +1,6 @@
 # lab-runtime
 
-`lab-runtime` is a local laboratory automation system with two separate executables:
+`lab-runtime` is a laboratory automation system with two separate executables:
 
 - `lab-runtime` owns authoritative experiment state and behavior;
 - `lab-workbench` is the native operator and presentation client.
@@ -46,10 +46,11 @@ stop its Recorder, or roll back an admitted operation.
   authority;
 - resource reconnect and typed configuration-property updates;
 - Runtime-owned SQLite recording with provenance, gaps, and lifecycle sealing;
-- one Application API over TCP/NDJSON with a loopback-default IPv4 bind, and optional
-  loopback WebSocket/JSON;
+- one Application API over TCP/NDJSON with explicit trusted-LAN opt-in, optional
+  loopback WebSocket/JSON, and authenticated WSS through a TLS proxy such as Tuna;
 - a Windows-native Workbench with discovery, measurements, live plots, typed
-  Reference/controller/PID/resource/property/Recorder workflows, and manual recovery.
+  Reference/controller/PID/resource/property/Recorder workflows, manual recovery,
+  TCP/WS/WSS connections through one worker, and an explicit observation-only mode.
 
 The full Application API is broader than the Workbench GUI. Workbench deliberately
 exposes a typed safe operator subset rather than a raw button for every API operation.
@@ -110,11 +111,14 @@ cargo run -p lab-runtime --locked -- `
   --record-policy required
 ```
 
-The TCP listener defaults to `127.0.0.1`. Profile startup may explicitly select a
-numeric LAN/VPN IPv4 address with `--bind IPv4 --allow-remote-tcp` before `--port`; this adds no TLS,
-authentication, VPN, or firewall configuration. The optional WebSocket listener
-remains loopback-only. See the Configuration Guide before exposing Runtime beyond
-localhost.
+The TCP listener defaults to `127.0.0.1`. Both profile and configuration startup
+accept `--bind IPv4 --allow-remote-tcp` for a selected trusted LAN interface; in
+profile mode these options precede `--port`. Remote Workbench TCP also requires
+`--allow-remote-tcp`. This adds no TLS, authentication, VPN, or firewall configuration.
+Runtime WebSocket remains loopback-only; Tuna can expose it through WSS with
+`X-Token` authentication and certificate/hostname verification. See
+[distributed deployment](docs/distributed-workbench.md) for all-local Windows,
+remote Clojure, and Linux Runtime with Windows clients.
 
 In a second terminal, start Workbench with its own workspace:
 
@@ -164,6 +168,7 @@ Workbench workspace behavior, and validation failures, use the
 | Use the native operator GUI | [Workbench user guide](docs/workbench.md) |
 | Automate Runtime directly | [Runtime Application API](docs/api/README.md) |
 | Automate Workbench presentation | [Workbench external API](docs/workbench-api.md) |
+| Connect across machines or through Tuna | [Distributed Workbench deployment](docs/distributed-workbench.md) |
 | Record or query history | [Recorder and SQLite](docs/recorder-sqlite.md) |
 | Recover after faults | [Recovery and fault handling](docs/recovery-and-faults.md) |
 | Understand authority and safety | [Architecture](docs/architecture.md) and [safety](docs/safety-and-failures.md) |
@@ -176,8 +181,12 @@ Workbench workspace behavior, and validation failures, use the
 - Runtime TCP is loopback by default and may be explicitly bound to a trusted LAN/VPN
   IPv4 address. This project has no remote-network transport-security qualification;
   `--bind` adds no TLS or authentication. Runtime WebSocket remains loopback-only.
-- Native Workbench currently runs on Windows and currently connects over TCP. Runtime
-  may also expose its optional loopback WebSocket transport to other clients.
+- Native Workbench runs on Windows and connects over TCP, WS, or verified WSS.
+  `--observe` blocks its Runtime mutations and Exact Retry while allowing queries
+  and presentation changes; it is client policy, not Runtime authorization.
+- The separate Workbench presentation/client API remains IPv4 loopback-only. A
+  remote Clojure client can reach Runtime over LAN TCP or WSS, but cannot directly
+  control presentation on another computer through that Workbench API.
 - The system is not hard real-time and has not completed exhaustive physical,
   multi-day, disk-full, power-loss, USB/driver, or hardware fault-injection
   qualification.
@@ -206,6 +215,10 @@ readback != physical_effect
 A started write with an ambiguous outcome is not blindly retried. Reconnect and a
 fresh measurement do not rearm a failed controller. Recorder/SQLite is durable
 scientific and audit history; bounded diagnostic logs are not experiment authority.
+Required Recorder failures fail closed. Admission and reserved capacity are not
+durability: only validated SQL receipts advance the committed prefix and release
+submitted credits. The bounded capacity and its limits are described in
+[Recorder and SQLite](docs/recorder-sqlite.md#ingress-and-storage-settings).
 
 ## License
 

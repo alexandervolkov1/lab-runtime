@@ -111,7 +111,8 @@ cargo run -p lab-runtime --locked -- `
 
 The optional WebSocket listener, when configured, is reported separately in the same
 readiness object. Runtime supports TCP/NDJSON on the selected IPv4 bind and optional
-loopback WebSocket/JSON. Native Workbench uses TCP today.
+loopback WebSocket/JSON. Native Workbench supports TCP, WS and verified WSS through
+one Application worker; this walkthrough uses local TCP.
 
 ## Start Workbench
 
@@ -135,6 +136,15 @@ If Runtime selected another port, replace `7420`. Workbench acquires exclusive
 ownership of the workspace, loads its bounded recovery journal and presentation
 document when present, opens one private Application client, and begins connecting
 immediately. Do not open a second Workbench on the same workspace.
+
+For observation without operator mutations, add `--observe`. Queries, manual Check
+Status and local presentation operations remain available; Runtime mutations and
+Exact Retry are disabled, so omit this flag for the retune/Recorder steps below.
+The [distributed guide](distributed-workbench.md#deployment-scenarios) covers all
+three placements: everything on Windows, Windows Runtime/Workbench with remote
+Clojure, and Linux Runtime with Windows Workbench/Clojure. Remote TCP requires
+explicit trusted-LAN opt-in; public access uses authenticated WSS through Tuna.
+The separate Workbench presentation API remains loopback-only in every placement.
 
 ## Wait for Fresh
 

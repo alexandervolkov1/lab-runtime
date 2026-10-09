@@ -17,6 +17,93 @@ admission, recovery journal and rebuild barrier. Runtime's WS listener and exact
 Host/Origin admission remain loopback-only; Tuna terminates authenticated WSS and
 forwards HTTP Upgrade to that loopback listener.
 
+## Deployment scenarios
+
+The supported client placements share the same Application API and independent
+Runtime scopes. These are deployment instructions, not a claim that physical
+two-computer E2E qualification has been completed.
+
+| Scenario | Runtime | Workbench | Clojure/Babashka | Presentation access |
+|---|---|---|---|---|
+| A | Windows PC | same Windows PC | same Windows PC | local Workbench API |
+| B | Windows PC | same Windows PC | another PC | no direct remote Workbench API |
+| C | separate Linux PC | Windows PC | same Windows PC as Workbench | local Workbench API on Windows |
+
+### A: everything on one Windows PC
+
+From the portable package directory, start a virtual Runtime with Required
+Recorder and both local Application transports:
+
+```powershell
+$db = [IO.Path]::GetFullPath((Join-Path $PWD "preview.sqlite"))
+./lab-runtime.exe --serve --profile virtual-demo --port 8765 `
+  --record-db $db --record-policy required `
+  --ws-port 8766 --ws-origin http://127.0.0.1:3000
+```
+
+In another terminal, start Workbench; the optional script runs from the repository
+or package directory containing `clients`:
+
+```powershell
+./lab-workbench.exe --connect 127.0.0.1:8765 --observe `
+  --workspace ./preview-workspace --workbench-listen 127.0.0.1:8767
+bb clients/babashka-smoke/distributed.clj ws://127.0.0.1:8766/application/v1 8767
+```
+
+The script mutates only the virtual Runtime through its own scope and changes
+plots through local Workbench. Observation mode does not restrict that independent
+Runtime client. For Workbench WS, replace `--connect` with
+`ws://127.0.0.1:8766/application/v1`.
+
+### B: Windows Runtime and Workbench, remote Clojure
+
+For trusted LAN TCP, replace the Runtime command above with this command using
+the Windows host's actual LAN address:
+
+```powershell
+./lab-runtime.exe --serve --profile virtual-demo `
+  --bind 192.168.1.50 --allow-remote-tcp --port 8765 `
+  --record-db $db --record-policy required
+./lab-workbench.exe --connect 192.168.1.50:8765 --allow-remote-tcp `
+  --observe --workspace ./preview-workspace --workbench-listen 127.0.0.1:8767
+```
+
+Runtime binds one selected TCP interface, so the local Workbench also uses that
+address and opt-in. Limit the Windows firewall rule to the selected port and
+trusted client addresses. On the remote machine, run the bundled query smoke:
+
+```powershell
+bb clients/babashka-smoke/runtime.clj 8765 --host 192.168.1.50 --allow-remote-tcp
+```
+
+For WSS/Tuna, use scenario A's loopback Runtime with WS enabled, run the
+authenticated Tuna agent on that Windows host, and point the remote client at
+the verified WSS URL. The local Workbench may keep using loopback TCP. With the
+protected key available in the remote client's environment, the virtual test is:
+
+```powershell
+bb clients/babashka-smoke/distributed.clj `
+  wss://fresh-hedgehog-9022.ru.tuna.am/application/v1 `
+  --runtime-only --token-env LAB_RUNTIME_TUNNEL_TOKEN
+```
+
+Remote presentation control is **not directly available** in scenario B.
+`--workbench-listen` remains IPv4 loopback-only, with no remote binding or
+authentication option. Runtime LAN/WSS connectivity does not expose this API.
+Run presentation commands on the Windows Workbench host; use `--runtime-only`
+for the remote bundled script. Do not forward the unauthenticated Workbench API.
+
+### C: Linux Runtime, Windows Workbench and Clojure
+
+Run Runtime on the Linux PC using the [LAN TCP instructions](#trusted-lan-tcp)
+or the [loopback WS instructions](#linux-runtime) with [protected Tuna](#tuna-access-control).
+Both Windows clients independently use the Linux Runtime's opted-in TCP address
+or verified WSS endpoint. Clojure uses `127.0.0.1:8767` only for presentation on
+its own Windows Workbench host. Recorder and its SQLite archive stay with the
+Linux Runtime. The [Babashka WSS example](#independent-babashka-client) supports
+this placement. Prior Windows/WSL2 runs exercise one computer and do not establish
+physical Windows-PC/Linux-PC acceptance.
+
 ## Trusted LAN TCP
 
 Choose the actual Linux interface and Windows source IP; these example private

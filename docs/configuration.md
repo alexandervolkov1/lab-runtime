@@ -515,15 +515,38 @@ should be obvious in a log or shell history.
 
 | Option | Value | Default | Scope | Restart? | Meaning |
 |---|---|---|---|---|---|
-| `--connect` | numeric socket address | none; required | Runtime client | yes | Address used by the one Workbench Application client worker. |
+| `--connect` | numeric TCP socket or WS/WSS URL | none; required | Runtime client | yes | Endpoint used by the one Workbench Application client worker. |
+| `--allow-remote-tcp` | none | absent | Runtime TCP client | yes | Allows a numeric unicast remote IPv4 endpoint with a nonzero port on a trusted LAN; no TLS or authentication. |
+| `--allow-insecure-ws` | none | absent | Runtime WS client | yes | Allows plaintext WS to a host not expressed as a loopback IP; does not change Runtime's loopback WS bind. |
+| `--ws-origin` | exact HTTP/HTTPS origin | `http://127.0.0.1:3000` | WS/WSS handshake | yes | Must match Runtime's Origin allowlist. |
+| `--ws-token-env` | environment variable name | none | WS/WSS handshake | yes | Reads the `X-Token` access key; mutually exclusive with `--ws-token-file`. |
+| `--ws-token-file` | path | none | WS/WSS handshake | yes | Reads a bounded access-key file; mutually exclusive with `--ws-token-env`. |
+| `--ws-ca-file` | PEM path | OS trust roots only | WSS TLS | yes | Adds private CA certificates without disabling certificate or hostname verification. |
+| `--observe` | none | absent | local client policy | yes | Rejects Runtime mutations and Exact Retry; permits queries, subscriptions, manual Check Status and presentation operations. |
 | `--scope` | retained Application scope string | journal scope if usable, otherwise a new scope | Runtime client recovery | yes | Explicitly requests reattachment to an existing retained scope. |
 | `--workspace` | path | Windows user-data workspace | Workbench persistence | yes | Directory containing presentation and recovery files and protected by one process guard. |
 | `--workbench-listen` | numeric IPv4-loopback socket | disabled | external Workbench API | yes | Enables the opt-in bounded TCP/NDJSON client endpoint; port `0` asks the OS for a port. |
 
 Arguments may be ordered freely, but each option may appear only once. Unknown,
-duplicate, or missing options fail startup and print usage. `--connect` accepts a
-numeric socket address, not a hostname. `--workbench-listen` additionally rejects
-wildcard, non-loopback, hostname, and IPv6 forms.
+duplicate, or missing options fail startup and print usage. TCP `--connect` accepts
+a numeric socket address, not a hostname, and defaults to loopback-only policy.
+`--allow-remote-tcp` cannot be combined with WebSocket options. WS/WSS URLs accept
+hostnames, require exactly `/application/v1`, and reject user credentials, queries
+and fragments. Plain `ws://localhost/...` also requires `--allow-insecure-ws`
+because the plaintext exception recognizes numeric loopback IPs only; use
+`ws://127.0.0.1:PORT/application/v1` for local WS. `--workbench-listen` rejects
+wildcard, non-loopback, hostname, and IPv6 forms independently of Runtime transport.
+
+The token file may contain at most 514 bytes including one optional LF or CRLF.
+The resulting token must be nonempty ASCII, at most 512 bytes, with no embedded
+CR/LF. Tokens enter only the `X-Token` handshake header, never Application JSON,
+URLs or recovery/presentation files. CA configuration requires WSS; TLS errors
+fail the connection without a downgrade. See [Tuna access control](distributed-workbench.md#tuna-access-control).
+
+Observation mode also rejects `history_read`, an asynchronous mutation/work job.
+It applies to GUI and mediated Workbench API submissions, not independent Runtime
+clients. All transports retain the same manual mutation recovery and quarantine
+rules; connecting or loading a journal never automatically replays a mutation.
 
 When enabled, the Workbench endpoint prints its actual address:
 
@@ -618,7 +641,7 @@ constructs another candidate from the source file and enters the same lifecycle.
 | Setting domain | Source | Owner | Persistent? | Runtime mutable? | Restart? |
 |---|---|---|---:|---:|---:|
 | Runtime mode and profile listeners | Runtime CLI | Runtime process | no | no | yes |
-| deployment listeners | deployment TOML | Runtime process | source file | no | yes |
+| deployment listeners | deployment TOML plus explicit startup TCP bind override | Runtime process | TOML only; override is process-local | no | yes |
 | deployment topology and safety | deployment TOML | Runtime | source file plus frozen active revision | only through explicit validated operations | not always; operation effect decides |
 | Recorder path and policy | CLI profile or deployment TOML | Runtime | path/policy source plus SQLite archive | path/policy not live-switchable | yes |
 | Runtime experiment mutations | Application operations | Runtime | according to Runtime/Recorder contract, not TOML write-back | yes, where advertised | no |
