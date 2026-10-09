@@ -1,6 +1,134 @@
 # Current work — M18 distributed Workbench connectivity
 
-## M18 current authorization (2026-10-08)
+## Active M18 closure after Recorder approval (2026-10-09)
+
+The final external Recorder review is **APPROVE**. Its safety-fact separation,
+probe-token cleanup and Required Failed/Closed reconnect fixes are accepted.
+Recorder architecture is frozen; reopen it only for an established invariant
+violation. No new Recorder production change is requested.
+
+The user authorizes local logical commits: first the complete accepted Recorder
+pre-admission/capacity implementation, fixes, regressions and related documentation;
+then separately grouped remaining LAN/client/example, portability/fixture and
+deployment/review-documentation work. Preserve all existing work and evidence.
+Inspect each complete staged diff, include required new modules and pass cached
+diff-check before committing. Do not mix unrelated network changes into Recorder.
+
+After local commits, rerun Windows/Linux workspace Debug/Release, fmt, workspace
+all-target Clippy with warnings denied and diff-check using the existing shared
+Linux target and C:/VHDX safety policy. Verify a clean tree with no untracked source,
+retained Recorder matrix evidence and documented LAN/Tuna limitations. The accepted
+80-case process matrix need not be repeated if relevant production code is unchanged.
+Stop for final consolidated M18 review. Merge, push, tag and Release remain forbidden.
+
+**Closure prepared; stop for consolidated review.** The accepted Recorder commit is
+`55bbf30`; separate local commits contain LAN opt-in, fixture/Clippy corrections,
+the independently reproduced close-observation fix (`bb22d57`) and stronger WSS
+test diagnostics (`fe9057d`). No admission/capacity architecture change was added.
+Final workspace Debug/Release pass Windows 884 and Linux 883 tests per profile,
+with 13 existing ignored; both platforms pass fmt and warnings-denied Clippy.
+The fresh Recorder matrix and full prior-boot reopen comparisons pass 80/80,
+with zero Busy/gaps and complete Reference terminal audits. All previous evidence
+is preserved. C: has 7.70 GiB free, the common Linux target is 17.59 GiB and VHDX
+has not grown. Owned test processes are stopped. The intermittent earlier WSS
+denial-count failure is not claimed fixed, and physical two-machine qualification
+remains open. Exact commits, results and limits are in `M18_CONSOLIDATED_REVIEW.md`.
+Do not resume implementation or publish without the consolidated review outcome.
+
+## Accepted final Recorder remediation (2026-10-09; historical execution record)
+
+The second external review accepted the diagnostics in `M18_RECORDER_REREVIEW.md`.
+The user now authorizes three local production fixes: separate pre-Reference safety
+facts and reject Required side effects at the final dispatch boundary; cancel unused
+probe reservations on capture error/failure; reject Required Failed/Closed rebind
+before either reservation shortcut and clean up unused lifecycle reservations.
+Keep pre-admission, 13 groups / 1545 records / 4 MiB, FIFO/durability, identity,
+recovery and policy contracts. Do not modify transports, Workbench, Tuna or GUI.
+
+Run the original six regressions on Windows/Linux Debug/Release, Recorder suites,
+full workspace Debug/Release, fmt, warnings-denied Clippy and diff-check. Repeat the
+affected two-client TCP/WS Recorder matrix. Reuse the existing Linux target and
+enforce the C:/VHDX disk policy below. Preserve all work/evidence and make no commits,
+merge, push, tags or releases. Stop for final Recorder review when verification ends.
+
+**Implemented and verified; stopped for final Recorder review.** The three local
+fixes and their invariant proof are in `M18_RECORDER_FINAL_FIX.md`. Original six
+regressions pass on Windows/Linux Debug/Release. Final workspace gates give Windows
+883 PASS and Linux 882 PASS per profile (13 existing ignored); both fmt and Clippy
+with warnings denied pass. The two-client TCP/WS matrix and complete prior-boot SQL
+reopen comparisons pass 80/80, with zero Busy/gaps and all Reference terminal audits.
+One earlier unchanged Workbench WSS test failure remains an unresolved stability
+issue despite isolated and final full-gate PASS; its failed evidence is retained.
+No commit or network/Workbench/GUI change was made. The common Linux target is
+17.31 GiB, C: has 7.86 GiB free and VHDX did not grow. HEAD/index are unchanged.
+Do not cross this final review boundary or resume broader M18 work automatically.
+
+## Previous external re-review boundary (2026-10-09)
+
+The diagnostic-step user instruction superseded the broader authority below:
+diagnose Reference completion/concurrent facts and Required Recorder failure during
+reconnect, add deterministic tests, clarify the thirteen-group capacity statement,
+and stop for short external re-review. No production changes or commits are authorized
+in this step. Do not resume the remaining M18 implementation or full workspace gates
+until this review boundary is resolved.
+
+`M18_RECORDER_REREVIEW.md` records two production defects and a defensive token-cleanup
+defect: late Required progress polling can mix safety facts into Reference completion;
+Failed Recorder permits core rebind before a later lifecycle fence rejects completion;
+injected capture failure can orphan a removed probe reservation. The actual reconnect
+activation fence prevents normal probe/Reference overlap. Six new targeted tests give
+two PASS and four RED contract regressions, without ignores or expected-panic masking.
+The prior green complete gates below do not override these findings. Production code,
+HEAD, index and existing work are preserved. Stop here for external re-review.
+
+## Historical continuation authority and status (2026-10-09, after reboot)
+
+This section supersedes conflicting historical M18 restrictions below. The user
+authorizes atomic pre-admission reservation of Reference accepted/completion audit
+credit, a quantified capacity policy including acquisition/rebind/probe/concurrent
+mutations, and required/best-effort regressions. Application operation lifecycle,
+identity, durable-prefix, safety and transport contracts remain frozen. No local
+Recorder commits, merge, push, tag or release are authorized. A genuine contract
+contradiction requires external review.
+
+Preserve the feature branch and existing uncommitted changes. HEAD remains
+`b546354bddf035c15f78f1f1d1ea1d22eb84ac76`. The interrupted session had already
+implemented a pre-admission/capacity candidate; recovery identified its provenance
+from the saved review snapshots and admission-test logs before continuing.
+
+Disk policy: reuse `/root/lab-runtime-target/m18-implementation-20261009` for
+sequential Ubuntu gates. Only verified obsolete Cargo profile artifacts were
+removed; sources, diagnostics, SQLite evidence and useful binaries were preserved.
+Do not move/compact/export/reimport Ubuntu, shut down/unregister WSL, touch Arch,
+remove toolchains/registry or clean the entire target root. Before each heavy
+Linux gate inspect processes, Ubuntu space, C: free space and VHDX size. Stop heavy
+builds below 5 GiB free on C: or on significant VHDX growth despite ext4 free space.
+
+After the Windows reboot the user explicitly authorized starting/configuring and
+stopping owned test infrastructure. One Ubuntu virtual-demo Runtime, loopback TCP
+8765 plus WS 8766, and protected Tuna may be used with isolated SQLite/workspaces.
+Use the existing access key without printing or copying it into arguments, logs,
+evidence or Git; authentication must reject missing/wrong X-Token before mutation
+E2E. Disable Tuna inspection. This supersedes the earlier read-only Tuna restriction.
+The completed protected public-endpoint E2E uses the same laptop and WSL2 and is
+not physical two-machine evidence. Only owned test processes are stopped.
+
+Current implementation, capacity proof, disk accounting, test outcomes and open
+review limits are recorded in `M18_RECORDER_ADMISSION_CAPACITY.md`. M18 remains a
+review candidate; consolidated acceptance and publication are not claimed.
+
+The final candidate has atomic Reference pre-admission reservation and a quantified
+13-group / 1,545-record / 4 MiB budget. Final Windows Debug/Release each pass
+874 tests; Linux each passes 873 (13 existing ignored in every mode). Both fmt and
+warnings-denied workspace/all-target Clippy gates pass. The repeated TCP/WS process
+matrix is 80/80 plus 8/8 two-client cases and 8/8 final-artifact checks; all 96
+reopened prior-boot SQL histories remain unchanged, including audits. Protected
+real Tuna and the five-minute config-mode TCP LAN GUI/Babashka checks pass on this
+single Windows laptop/Ubuntu WSL2 setup. Owned test processes are stopped. Physical
+two-machine qualification and external acceptance remain open; earlier unreproduced
+Linux timing failures remain documented, not silently classified as fixed.
+
+## Historical M18 authorization (2026-10-08)
 
 The user authorizes M18 transport adapters, observation mode, independent direct
 Clojure/Babashka clients, bounded integration/fault tests and deployment documentation.
@@ -29,11 +157,82 @@ are implemented for review. Windows workspace Debug/Release gates each pass
 842 tests with 13 ignored; Workbench passes repeated concurrent runs. Actual
 Windows GUI + Arch WSL2 WS and authenticated local WSS proxy validation pass.
 Direct LAN WS and protected real Tuna remain outstanding. Required Recorder failed
-under concurrent clients on the unchanged final Linux Runtime, including a headless
-reproduction; this blocks operational acceptance. Runtime production is unchanged.
+under concurrent clients on the original final Linux Runtime, including a headless
+reproduction; this blocked operational acceptance at M18 client commit b546354.
+The subsequently authorized narrow writer correction is recorded below.
 See the M18 record for exact evidence, limits and the next review boundary.
 
+The user separately authorizes the narrow Recorder writer receipt high-water
+correction and regressions in `M18_RECORDER_RECEIPT_FIX.md`, plus a read-only TCP
+LAN audit in `M18_TCP_LAN_AUDIT.md`. Owner receipt defenses, Recorder credit,
+Application/operation semantics and network production code remain unchanged.
+Genuine four-group saturation is a separate operational acceptance risk; it is
+not waived by correcting false credit retention. No merge/push/release is authorized.
+The writer correction is implemented as an uncommitted review candidate. Windows
+full gates pass (847 / 13 ignored in each mode); Linux full default-parallel
+diagnostics remain failed, including genuine Recorder saturation during reconnect.
+The four-pair process matrix preserves gaps/credit release but still fails 53/80
+recordings. A five-minute dual-client session passes Recorder/model/SQLite checks;
+native visible GUI rendering remains unconfirmed. No new commit or M18 acceptance
+is claimed while these review blockers remain.
+
+## M18 continuation authorization (2026-10-09)
+
+The user authorizes M18.7 Recorder saturation investigation, narrow proven
+Linux test-only corrections, explicitly opted-in trusted LAN TCP clients, and
+subsequent operational validation. The external thermal-plant-analysis repository
+must remain untouched. Runtime operation/Recorder contracts remain frozen; a
+config-mode remote TCP security-boundary change requires external review first.
+
+The existing writer correction is preserved. The separate genuine saturation and
+startup-only config-mode LAN proposals are prepared in
+`M18_7_11_CONTINUATION_REVIEW.md`. Implementing the proposed Recorder completion
+group/reservation or Runtime remote-bind exception is not claimed authorized:
+work stops at these explicit architecture/security review gates. Linux fixture
+corrections remain pending; no full green Linux gate, native plotted GUI, protected
+Tuna E2E or M18 completion is claimed. No new commit/merge/push/tag/release.
+
+## M18 implementation approval (2026-10-09)
+
+The user grants preliminary external-review approval to implement bounded
+Reference completion reservation, startup-only config-mode `--bind <IPv4>
+--allow-remote-tcp`, opted-in Workbench/bundled Babashka TCP clients, and proven
+Linux fixture isolation/platform corrections. This supersedes the preceding
+implementation stop for those concrete changes. Runtime Application lifecycle,
+identity, authority, fail-closed and durable-prefix contracts remain unchanged;
+any demonstrated contradiction still requires review before proceeding.
+
+Implementation and full cross-platform verification are in progress. Genuine
+rebind/probe saturation needs a separate bounded budget; it is not waived by the
+Reference completion fix. Fresh Linux build directories exclude the stale baseline
+cache. Logical local commits are permitted after relevant PASS; merge, push, tags,
+Release and unsolicited changes to the existing Tuna remain prohibited.
+
+The implementation candidate is now stopped for an additional Recorder admission
+review, documented in `M18_IMPLEMENTATION_REVIEW.md`. A real Arch process produced
+three outstanding ordinary groups before the accepted Reference audit occupied
+the fourth. Completion reservation correctly rejected the side effect, but could
+not preserve its terminal audit. Extending reservation ahead of SessionStore
+admission is not implemented without review. Windows Debug is 857/0/13; full Linux
+Debug diagnostics are 857/1/13 (passed/failed/ignored), with reconnect still failing.
+Linux Clippy also rejects existing Windows-only ownership error variants. No new
+commit, Release gate PASS, completed GUI/Tuna E2E or M18 acceptance is claimed.
+
 ## Canonical current state
+
+M18 Recorder admission/capacity and the three final remediation fixes are externally
+**APPROVED** and committed as `55bbf30`. Local closure commits separately contain
+LAN opt-in, portable test fixtures and the Linux Clippy correction. A final Linux
+gate exposed a further normal-close/false-panic race; it was reproduced before
+fixing and is documented in `M18_RECORDER_CLOSE_RACE.md` under the established
+invariant-violation exception. No admission/capacity/API architecture changes.
+The intermittent Linux WSS denial-count failure recurred during closure; only
+test diagnostics/assertions were strengthened in `fe9057d`, without claiming its
+underlying early-connection cause fixed. No transport production change.
+Current commit inventory, gates, process evidence, disk status and review limits
+are in `M18_CONSOLIDATED_REVIEW.md`. Consolidated M18 acceptance is still required;
+no merge, push, tag or Release is authorized. Earlier sections below preserve their
+dated milestone state rather than overriding this current authorization.
 
 M16 is complete and externally accepted. Its generic fast/simple/declarative
 SimpleDevice onboarding is accepted, including ordinary Runtime/Application,

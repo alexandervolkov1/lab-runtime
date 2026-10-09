@@ -1,5 +1,10 @@
 # M18: distributed Workbench transport audit
 
+**Historical review record.** The Recorder remediation was subsequently approved
+and committed; current M18 scope, verification and remaining review limits are in
+[M18_CONSOLIDATED_REVIEW.md](M18_CONSOLIDATED_REVIEW.md). Earlier restrictions,
+HEAD/status claims and failed gates below describe their dated diagnostic stage.
+
 Status: Workbench/client implementation ready for review; M18 acceptance blocked.
 Evidence date: 2026-10-08. No merge, push, tag or release publication.
 Base: approved GUI recovery commit `c87890be2e3cac3a12300a02fa42673743ebe307`.

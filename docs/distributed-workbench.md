@@ -115,18 +115,22 @@ WSS validates certificates and hostname against OS roots. `--ws-ca-file PATH` ad
 a bounded PEM trust bundle for a private CA; it does not bypass verification.
 TLS certificate/hostname errors fail the connection. The GUI thread owns no socket.
 
-## Tuna access control (configure only after approval)
+## Tuna access control
 
 The existing endpoint is
 `wss://fresh-hedgehog-9022.ru.tuna.am/application/v1`, with local upstream
 `http://127.0.0.1:8766`. A previous hello/latest is not proof of current key-auth.
-At M18 inspection, no Tuna process was found and Upgrade probes returned HTTP 404;
-protected internet acceptance remains pending. Existing configuration was not changed.
+The authorized 2026-10-09 M18 test verified missing/wrong keys returning HTTP 401
+and the existing correct key upgrading with HTTP 101, followed by Workbench and
+Babashka mutation/presentation/reconnect checks. It used one Windows laptop plus
+Ubuntu WSL2 through the public endpoint, not a second physical computer. The owned
+test tunnel was stopped afterward; these results do not imply a tunnel is running now.
 
 Official [Tuna HTTP tunnel documentation](https://tuna.am/docs/tunnels/http/) supports
 WebSocket Upgrade, `--key-auth`, `X-Token`, and the `TUNA_KEY_AUTH` environment variable.
 The account token authenticating the Tuna agent is different from the client tunnel
-key. Configure an independent random access key. Never put it in a URL or command
+key. Reuse the provisioned client access key; new deployments need an independent
+random access key. Never put it in a URL or command
 line; use a protected file/environment and disable tunnel inspection.
 
 On Linux, after approval and using the existing assigned subdomain/account:
@@ -233,6 +237,10 @@ The four-group ingress credit and writer's 100 ms fact coalescing window are the
 leading capacity explanation; the rejection's exact receipt interleaving was not
 instrumented. A healthy restart/continued recording result is not claimed.
 
-This is an operational acceptance blocker, not a Workbench transport PASS. Runtime
-production and Recorder limits/semantics were not changed. Sustained recording with
-concurrent clients requires separate diagnosis/review before preview publication.
+These are historical failures of the four-group candidate. The accepted Recorder
+implementation reserves accepted/completion credit before Reference admission and
+uses the quantified bounded capacity described in [Recorder ingress settings](recorder-sqlite.md#ingress-and-storage-settings).
+Required Recorder failure rejects subsequent Reference mutations. Current evidence
+and remaining M18 review limits are tracked in the repository review record
+`ai/M18_CONSOLIDATED_REVIEW.md`;
+the earlier transport checks alone did not establish recording acceptance.
