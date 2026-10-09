@@ -578,11 +578,35 @@ fn wss_proxy_requires_key_trusted_certificate_and_matching_hostname() {
         .unwrap_or_else(|error| error.into_inner());
     let runtime = Running::start();
     let proxy = TlsProxy::start(runtime.ws);
-    for (host, token, ca) in [
-        ("localhost", None, true),
-        ("localhost", Some("wrong-key"), true),
-        ("localhost", Some("synthetic-test-key"), false),
-        ("127.0.0.1", Some("synthetic-test-key"), true),
+    for (case, host, token, ca, expected_failure) in [
+        (
+            "missing key",
+            "localhost",
+            None,
+            true,
+            "authorization rejected",
+        ),
+        (
+            "wrong key",
+            "localhost",
+            Some("wrong-key"),
+            true,
+            "authorization rejected",
+        ),
+        (
+            "untrusted CA",
+            "localhost",
+            Some("synthetic-test-key"),
+            false,
+            "TLS validation failed",
+        ),
+        (
+            "wrong hostname",
+            "127.0.0.1",
+            Some("synthetic-test-key"),
+            true,
+            "TLS validation failed",
+        ),
     ] {
         let client =
             ClientHandle::spawn_configured(proxy.endpoint(host, token, ca), false, None, None)
@@ -599,6 +623,10 @@ fn wss_proxy_requires_key_trusted_certificate_and_matching_hostname() {
             );
             if let ClientUpdate::TransportFailure { reason } = update {
                 assert!(!reason.contains("synthetic-test-key") && !reason.contains("wrong-key"));
+                assert!(
+                    reason.contains(expected_failure),
+                    "{case}: expected {expected_failure}, observed {reason}"
+                );
                 break;
             }
         }
