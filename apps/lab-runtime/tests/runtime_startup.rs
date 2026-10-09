@@ -20,6 +20,7 @@ fn documented_runtime_cli_forms_are_accepted_by_the_real_parser() {
             "virtual-demo",
             "--bind",
             "192.168.1.50",
+            "--allow-remote-tcp",
             "--port",
             "0",
             "--record-db",
@@ -51,6 +52,7 @@ fn profile_accepts_explicit_numeric_ipv4_bind_and_rejects_invalid_bind() {
         "virtual-demo",
         "--bind",
         "192.168.1.50",
+        "--allow-remote-tcp",
         "--port",
         "8765",
     ])
@@ -77,12 +79,16 @@ fn profile_accepts_explicit_numeric_ipv4_bind_and_rejects_invalid_bind() {
 
 #[test]
 fn startup_uses_the_explicit_tcp_bind_without_expanding_websocket() {
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap();
+    let interface = route.local_addr().unwrap().ip().to_string();
     let options = ServiceOptions::parse(&[
         "--serve",
         "--profile",
         "virtual-demo",
         "--bind",
-        "0.0.0.0",
+        &interface,
+        "--allow-remote-tcp",
         "--port",
         "0",
         "--ws-port",
@@ -92,7 +98,7 @@ fn startup_uses_the_explicit_tcp_bind_without_expanding_websocket() {
     ])
     .unwrap();
     let service = ServiceHost::startup(options).unwrap();
-    assert_eq!(service.bound_address().ip().to_string(), "0.0.0.0");
+    assert_eq!(service.bound_address().ip().to_string(), interface);
     assert_eq!(
         service.websocket_bound_address().unwrap().ip().to_string(),
         "127.0.0.1"

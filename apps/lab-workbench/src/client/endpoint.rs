@@ -11,7 +11,10 @@ pub(crate) const SUBPROTOCOL: &str = "lab-runtime.application.v1";
 
 #[derive(Clone)]
 pub(crate) enum RuntimeEndpoint {
-    Tcp(SocketAddr),
+    Tcp {
+        address: SocketAddr,
+        allow_remote: bool,
+    },
     WebSocket(WebSocketEndpoint),
 }
 
@@ -25,6 +28,40 @@ pub(crate) struct WebSocketEndpoint {
 
 // Intentionally no Debug implementation: HTTP errors may include reflected credentials.
 impl RuntimeEndpoint {
+    pub(crate) fn tcp(address: SocketAddr, allow_remote: bool) -> Result<Self, &'static str> {
+        Self::validate_tcp(address, allow_remote)?;
+        Ok(Self::Tcp {
+            address,
+            allow_remote,
+        })
+    }
+
+    pub(crate) fn validate_tcp(
+        address: SocketAddr,
+        allow_remote: bool,
+    ) -> Result<(), &'static str> {
+        if !address.ip().is_loopback() {
+            if !allow_remote {
+                return Err(
+                    "remote TCP requires --allow-remote-tcp (trusted LAN only; no TLS/authentication)",
+                );
+            }
+            let std::net::IpAddr::V4(ip) = address.ip() else {
+                return Err("remote TCP requires a numeric unicast IPv4 endpoint");
+            };
+            if ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+                || ip.octets()[0] >= 240
+                || address.port() == 0
+            {
+                return Err("remote TCP requires a numeric unicast IPv4 endpoint and nonzero port");
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse(
         address: &str,
         origin: &str,
@@ -37,10 +74,7 @@ impl RuntimeEndpoint {
                 return Err("WebSocket credentials and CA configuration require a WS/WSS endpoint");
             }
             let address: SocketAddr = address.parse().map_err(|_| "invalid Runtime endpoint")?;
-            if !address.ip().is_loopback() {
-                return Err("TCP requires a numeric loopback endpoint; use WS/WSS remotely");
-            }
-            return Ok(Self::Tcp(address));
+            return Self::tcp(address, false);
         }
         if address.len() > 1024 {
             return Err("Runtime endpoint exceeds its bound");
@@ -104,14 +138,14 @@ impl RuntimeEndpoint {
 
     pub(crate) fn label(&self) -> String {
         match self {
-            Self::Tcp(address) => address.to_string(),
+            Self::Tcp { address, .. } => address.to_string(),
             Self::WebSocket(endpoint) => endpoint.url.to_string(),
         }
     }
 
     pub(crate) fn insecure_remote(&self) -> bool {
         match self {
-            Self::Tcp(_) => false,
+            Self::Tcp { address, .. } => !address.ip().is_loopback(),
             Self::WebSocket(endpoint) => {
                 endpoint.url.scheme() == "ws"
                     && !endpoint
@@ -198,5 +232,29 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn remote_tcp_requires_explicit_opt_in_and_rejects_non_unicast_destinations() {
+        let remote = "192.168.1.50:8765".parse().unwrap();
+        assert!(RuntimeEndpoint::tcp(remote, false).is_err());
+        let endpoint = RuntimeEndpoint::tcp(remote, true).unwrap();
+        assert_eq!(endpoint.label(), "192.168.1.50:8765");
+        assert!(endpoint.insecure_remote());
+        assert!(RuntimeEndpoint::tcp("127.0.0.1:8765".parse().unwrap(), false).is_ok());
+        for address in [
+            "0.0.0.0:8765",
+            "0.1.2.3:8765",
+            "255.255.255.255:8765",
+            "224.0.0.1:8765",
+            "240.1.2.3:8765",
+            "[2001:db8::1]:8765",
+            "192.168.1.50:0",
+        ] {
+            assert!(
+                RuntimeEndpoint::tcp(address.parse().unwrap(), true).is_err(),
+                "{address}"
+            );
+        }
     }
 }

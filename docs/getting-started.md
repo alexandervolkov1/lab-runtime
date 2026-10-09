@@ -74,12 +74,12 @@ before `--port`, for example:
 
 ```powershell
 ./lab-runtime.exe --serve --profile virtual-demo `
-  --bind 192.168.1.50 --port 8765
+  --bind 192.168.1.50 --allow-remote-tcp --port 8765
 ```
 
-`0.0.0.0` is also accepted when explicitly requested. A non-loopback bind adds no
-TLS, authentication, VPN, or firewall configuration, so use it only on a trusted
-network with appropriate host firewall policy. It does not widen the optional
+`0.0.0.0`, broadcast and multicast binds are rejected. A non-loopback bind requires
+`--allow-remote-tcp` and adds no TLS or authentication. Restrict access to trusted
+client IPs with the host firewall; never expose raw TCP to the public Internet. It does not widen the optional
 WebSocket listener, which remains loopback-only.
 
 Running `lab-runtime` without arguments executes a finite demonstration and exits;

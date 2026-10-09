@@ -20,7 +20,7 @@ use std::{io::Read, net::SocketAddrV4, path::PathBuf, process::ExitCode};
 
 fn usage() {
     eprintln!(
-        "usage: lab-workbench --connect ADDRESS|ws://HOST/application/v1|wss://HOST/application/v1 [--observe] [--allow-insecure-ws] [--ws-origin ORIGIN] [--ws-token-env NAME|--ws-token-file PATH] [--ws-ca-file PATH] [--scope SCOPE] [--workspace PATH] [--workbench-listen 127.0.0.1:PORT]"
+        "usage: lab-workbench --connect ADDRESS|ws://HOST/application/v1|wss://HOST/application/v1 [--observe] [--allow-remote-tcp] [--allow-insecure-ws] [--ws-origin ORIGIN] [--ws-token-env NAME|--ws-token-file PATH] [--ws-ca-file PATH] [--scope SCOPE] [--workspace PATH] [--workbench-listen 127.0.0.1:PORT]"
     );
 }
 
@@ -44,6 +44,7 @@ fn arguments_from(args: impl IntoIterator<Item = String>) -> Result<Arguments, &
     let mut workbench_listen = None;
     let mut observation_only = false;
     let mut allow_insecure = false;
+    let mut allow_remote_tcp = false;
     let mut origin = None;
     let mut token_env = None;
     let mut token_file = None;
@@ -55,6 +56,7 @@ fn arguments_from(args: impl IntoIterator<Item = String>) -> Result<Arguments, &
             }
             "--observe" if !observation_only => observation_only = true,
             "--allow-insecure-ws" if !allow_insecure => allow_insecure = true,
+            "--allow-remote-tcp" if !allow_remote_tcp => allow_remote_tcp = true,
             "--ws-origin" if origin.is_none() => {
                 origin = Some(args.next().ok_or("--ws-origin needs an origin")?)
             }
@@ -115,13 +117,26 @@ fn arguments_from(args: impl IntoIterator<Item = String>) -> Result<Arguments, &
     } else {
         None
     };
-    let address = RuntimeEndpoint::parse(
-        &address.ok_or("--connect is required")?,
-        origin.as_deref().unwrap_or("http://127.0.0.1:3000"),
-        allow_insecure,
-        token,
-        ca_file,
-    )?;
+    let address = address.ok_or("--connect is required")?;
+    let address = if allow_remote_tcp {
+        if token.is_some() || ca_file.is_some() || origin.is_some() || allow_insecure {
+            return Err("--allow-remote-tcp cannot be combined with WebSocket options");
+        }
+        RuntimeEndpoint::tcp(
+            address
+                .parse()
+                .map_err(|_| "remote TCP requires a numeric IPv4 endpoint")?,
+            true,
+        )?
+    } else {
+        RuntimeEndpoint::parse(
+            &address,
+            origin.as_deref().unwrap_or("http://127.0.0.1:3000"),
+            allow_insecure,
+            token,
+            ca_file,
+        )?
+    };
     Ok(Arguments {
         address,
         observation_only,
@@ -135,7 +150,7 @@ fn run() -> Result<(), String> {
     let arguments = arguments().map_err(str::to_owned)?;
     if arguments.address.insecure_remote() {
         eprintln!(
-            "WARNING: remote WS is plaintext; use only on an explicitly trusted network. This is not Runtime authorization."
+            "WARNING: remote TCP/WS is plaintext; restrict access to trusted network clients. This is not Runtime authentication or authorization."
         );
     }
     let workspace = match arguments.workspace {
@@ -198,6 +213,49 @@ mod operator_boundary_tests {
                 "--connect".into(),
                 "wss://example.com/application/v1?token=x".into()
             ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn remote_tcp_cli_opt_in_preserves_local_workbench_boundary() {
+        let args = |tail: &[&str]| {
+            let mut args = vec!["--connect".to_owned(), "192.168.1.50:8765".to_owned()];
+            args.extend(tail.iter().map(|value| (*value).to_owned()));
+            arguments_from(args)
+        };
+        assert!(args(&[]).is_err());
+        let options = args(&[
+            "--allow-remote-tcp",
+            "--observe",
+            "--workbench-listen",
+            "127.0.0.1:0",
+        ])
+        .unwrap();
+        assert!(options.address.insecure_remote());
+        assert!(options.observation_only);
+        assert!(options.workbench_listen.unwrap().ip().is_loopback());
+        for tail in [
+            vec!["--allow-remote-tcp", "--allow-remote-tcp"],
+            vec![
+                "--allow-remote-tcp",
+                "--workbench-listen",
+                "192.168.1.5:9000",
+            ],
+            vec!["--allow-remote-tcp", "--allow-insecure-ws"],
+            vec!["--allow-remote-tcp", "--ws-origin", "http://127.0.0.1:3000"],
+        ] {
+            assert!(args(&tail).is_err(), "{tail:?}");
+        }
+        assert!(
+            arguments_from(
+                [
+                    "--connect",
+                    "wss://example.com/application/v1",
+                    "--allow-remote-tcp"
+                ]
+                .map(str::to_owned)
+            )
             .is_err()
         );
     }

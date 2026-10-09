@@ -66,7 +66,7 @@ pub struct RecordingOptions {
     pub policy: RecordingPolicy,
 }
 
-/// Strict virtual-only service options; default binary execution remains finite.
+/// Strict trusted startup options; default binary execution remains finite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceOptions {
     bind: Ipv4Addr,
@@ -78,12 +78,17 @@ pub struct ServiceOptions {
 impl ServiceOptions {
     /// Accept the fixed virtual profile, TCP address, and optional local Recorder.
     pub fn parse(args: &[&str]) -> Result<Self, String> {
-        if args.len() == 3 && args[0] == "--serve" && args[1] == "--config" {
+        if args.len() >= 3 && args[0] == "--serve" && args[1] == "--config" {
             if args[2].is_empty() {
                 return Err("configuration path must not be empty".into());
             }
+            let mut index = 3;
+            let bind = parse_tcp_bind(args, &mut index)?;
+            if index != args.len() {
+                return Err("unknown configuration startup option".into());
+            }
             return Ok(Self {
-                bind: Ipv4Addr::LOCALHOST,
+                bind,
                 port: 0,
                 websocket: None,
                 recording: None,
@@ -95,20 +100,10 @@ impl ServiceOptions {
             || args[1] != "--profile"
             || args[2] != "virtual-demo"
         {
-            return Err("expected --serve --profile virtual-demo [--bind <IPv4>] --port <0..65535> [--record-db <absolute-local-path>] [--record-policy required|best-effort] [--ws-port <0..65535> --ws-origin <exact-origin> ...]".into());
+            return Err("expected --serve --config PATH [--bind <IPv4> --allow-remote-tcp] or --serve --profile virtual-demo [--bind <IPv4> --allow-remote-tcp] --port <0..65535> [--record-db <absolute-local-path>] [--record-policy required|best-effort] [--ws-port <0..65535> --ws-origin <exact-origin> ...]".into());
         }
         let mut index = 3;
-        let bind = if args.get(index) == Some(&"--bind") {
-            let value = args
-                .get(index + 1)
-                .ok_or_else(|| "bind requires an IPv4 address".to_string())?;
-            index += 2;
-            value
-                .parse::<Ipv4Addr>()
-                .map_err(|_| "bind must be a numeric IPv4 address".to_string())?
-        } else {
-            Ipv4Addr::LOCALHOST
-        };
+        let bind = parse_tcp_bind(args, &mut index)?;
         if args.get(index) != Some(&"--port") {
             return Err("expected --port after profile bind options".into());
         }
@@ -208,6 +203,38 @@ impl ServiceOptions {
     pub fn configuration_path(&self) -> Option<&std::path::Path> {
         self.config.as_deref()
     }
+}
+
+// This is a trusted process-start choice, never a deployment DTO/reload setting.
+// An opt-in selects one numeric interface; it does not authenticate TCP clients.
+fn parse_tcp_bind(args: &[&str], index: &mut usize) -> Result<Ipv4Addr, String> {
+    if args.get(*index) != Some(&"--bind") {
+        return Ok(Ipv4Addr::LOCALHOST);
+    }
+    let address: Ipv4Addr = args
+        .get(*index + 1)
+        .ok_or("bind requires an IPv4 address")?
+        .parse()
+        .map_err(|_| "bind must be a numeric IPv4 address")?;
+    *index += 2;
+    let allow_remote = args.get(*index) == Some(&"--allow-remote-tcp");
+    if allow_remote {
+        *index += 1;
+    }
+    if address.is_unspecified()
+        || address.is_broadcast()
+        || address.is_multicast()
+        || address.octets()[0] == 0
+        || address.octets()[0] >= 240
+    {
+        return Err(
+            "TCP bind requires one unicast interface address; wildcard is forbidden".into(),
+        );
+    }
+    if !address.is_loopback() && !allow_remote {
+        return Err("non-loopback TCP bind requires --allow-remote-tcp (trusted LAN only; no TLS/authentication)".into());
+    }
+    Ok(address)
 }
 
 /// Process-lifecycle owner around one serialized [`HostCore`].
@@ -910,7 +937,12 @@ impl ServiceHost {
                     })
                     .transpose()
                     .map_err(io::Error::other)?;
-                (Ipv4Addr::LOCALHOST, dto.server.port, recording, websocket)
+                (
+                    options.bind_address(),
+                    dto.server.port,
+                    recording,
+                    websocket,
+                )
             } else {
                 (
                     options.bind_address(),

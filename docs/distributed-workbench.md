@@ -6,16 +6,51 @@ directly to Runtime with its own scope and separately to the local Workbench API
 when it needs to change plots. It never relays measurements into Workbench.
 
 ```text
-Script -------- WS/WSS Application API --------> Linux Runtime
-Windows GUI --- WS/WSS Application API --------> Linux Runtime
+Script -------- TCP/WSS Application API --------> Linux Runtime
+Windows GUI --- TCP/WSS Application API --------> Linux Runtime
 Script -------- loopback Workbench API --------> Windows GUI presentation
 ```
 
-TCP compatibility is unchanged: Workbench accepts numeric loopback TCP addresses.
-WS/WSS uses the same worker, scope, sequencer, admission, recovery journal and
-rebuild barrier. This guide does not extend Runtime's existing loopback-only WS
-listener. Direct LAN WS needs separate transport-policy review; it is not yet an
-accepted two-computer deployment. A local test proxy is test infrastructure only.
+Local TCP remains the default. Both clients can explicitly opt in to plaintext TCP
+on a trusted isolated LAN. TCP and WS/WSS use the same worker, scope, sequencer,
+admission, recovery journal and rebuild barrier. Runtime's WS listener and exact
+Host/Origin admission remain loopback-only; Tuna terminates authenticated WSS and
+forwards HTTP Upgrade to that loopback listener.
+
+## Trusted LAN TCP
+
+Choose the actual Linux interface and Windows source IP; these example private
+addresses are deployment placeholders. Neither Runtime nor Workbench configures
+firewalls. Review existing firewall rules before changing them. With an existing
+UFW default-deny inbound policy, allow only the Windows client:
+
+```bash
+sudo ufw allow in on eno1 proto tcp from 192.168.1.60 to 192.168.1.50 port 7420
+sudo ufw status numbered
+./lab-runtime --serve --config /etc/lab-runtime/runtime.toml \
+  --bind 192.168.1.50 --allow-remote-tcp
+# The TCP port comes from server.port in runtime.toml (7420 in the example).
+ss -ltn '( sport = :7420 )'
+```
+
+Do not add a broad allow rule or router port forwarding. Raw TCP has **no TLS or
+authentication**. Opt-in is local policy, not authorization. The selected address
+must belong to Linux. Wildcard/multicast/broadcast binds are rejected. The default
+and configuration DTO still specify loopback; the CLI override applies at startup
+and cannot change through deployment reload.
+
+```powershell
+./target/release/lab-workbench.exe --connect 192.168.1.50:7420 --allow-remote-tcp `
+  --observe --workspace ./target/lan-preview --workbench-listen 127.0.0.1:8767
+bb clients/babashka-smoke/runtime.clj 7420 --host 192.168.1.50 --allow-remote-tcp
+```
+
+The bundled TCP smoke validates hello and Reference queries. A separate automation
+client, including `thermal-plant-analysis`, must configure its Runtime socket to
+`192.168.1.50:7420`, retain the existing NDJSON protocol/scope/recovery rules and use
+`127.0.0.1:8767` solely for Workbench presentation. No external project is modified.
+Both clients connect independently; Clojure does not forward measurements to GUI.
+A WSL2 interface test is not physical two-computer LAN acceptance.
 
 ## Linux Runtime
 

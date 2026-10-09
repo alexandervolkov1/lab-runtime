@@ -111,7 +111,7 @@ cargo run -p lab-runtime --locked -- `
 ```
 
 The TCP listener defaults to `127.0.0.1`. Profile startup may explicitly select a
-numeric LAN/VPN IPv4 address with `--bind ADDRESS` before `--port`; this adds no TLS,
+numeric LAN/VPN IPv4 address with `--bind IPv4 --allow-remote-tcp` before `--port`; this adds no TLS,
 authentication, VPN, or firewall configuration. The optional WebSocket listener
 remains loopback-only. See the Configuration Guide before exposing Runtime beyond
 localhost.

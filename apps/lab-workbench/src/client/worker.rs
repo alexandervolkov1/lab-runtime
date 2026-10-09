@@ -144,7 +144,9 @@ impl ClientHandle {
         journal_path: Option<PathBuf>,
         wake: Option<WakeCallback>,
     ) -> io::Result<Self> {
-        Self::spawn_configured(RuntimeEndpoint::Tcp(address), false, journal_path, wake)
+        let endpoint = RuntimeEndpoint::tcp(address, false)
+            .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+        Self::spawn_configured(endpoint, false, journal_path, wake)
     }
 
     /// Transport selection does not create another Application owner or sequencer.
@@ -155,17 +157,18 @@ impl ClientHandle {
         wake: Option<WakeCallback>,
     ) -> io::Result<Self> {
         let (address, websocket) = match endpoint {
-            RuntimeEndpoint::Tcp(address) => (address, None),
+            RuntimeEndpoint::Tcp {
+                address,
+                allow_remote,
+            } => {
+                RuntimeEndpoint::validate_tcp(address, allow_remote)
+                    .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+                (address, None)
+            }
             RuntimeEndpoint::WebSocket(endpoint) => {
                 (SocketAddr::from(([127, 0, 0, 1], 0)), Some(endpoint))
             }
         };
-        if !address.ip().is_loopback() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Workbench M14 client requires a numeric loopback endpoint",
-            ));
-        }
         let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE);
         let (update_tx, update_rx) = mpsc::sync_channel(UPDATE_QUEUE);
         let control = WorkerControl::new();
