@@ -1,0 +1,64 @@
+Rust 1.95.0 standard-library binary notice evidence
+
+Toolchain: official Rust 1.95.0, release date 2026-04-16, rustc commit
+59807616e1fa2540724bfbac14d7976d7e4a3860, commit date 2026-04-14.
+Targets: x86_64-pc-windows-msvc and x86_64-unknown-linux-gnu.
+The Windows and Linux installed COPYRIGHT-library.html files are byte-identical:
+90567e2718bf7fd65a71a3a43c5596488e80e5f51ed02bfea6fec54458b5f3d1
+They are supplied unchanged. COPYRIGHT (also included) explains the distinction
+between this library-only inventory and the whole-toolchain COPYRIGHT.html.
+Official version-specific provenance is recorded in LICENSE-EVIDENCE.json.
+
+Scope and evidence
+
+Windows Runtime and Workbench PDB module/library references identify the exact
+sysroot rlibs for std, core, alloc, panic_unwind, hashbrown, rustc_demangle,
+std_detect and compiler_builtins. They match the installed 1.95.0 rlib identities.
+Linux Runtime ELF symbols additionally show addr2line/gimli, miniz_oxide and object
+backtrace code. std-package.toml and STD-CARGO-LOCK.toml are unchanged upstream
+Rust library manifests, NOT the application's Cargo inputs.
+toolchain.json records the reviewed std dependency/link-input scope and exact
+sysroot rlib hashes; it is a conservative coverage set, not a claim that each
+library or each function survives linker dead-code elimination in every binary.
+
+Both targets: core, alloc, std, panic_unwind/unwind, std_detect, compiler_builtins,
+cfg-if 1.0.4, hashbrown 0.16.1, rustc-demangle 0.1.27 and their std workspace
+shims; hashbrown's foldhash 0.2.0 notice is covered by COPYRIGHT-library.html.
+Windows also uses the in-tree windows_link implementation for system imports.
+Linux additionally uses libc 0.2.178 and backtrace dependencies addr2line 0.25.1,
+gimli 0.32.3, object 0.37.3, memchr 2.7.6, miniz_oxide 0.8.9 and adler2 2.0.1.
+Exact registry checksums are in STD-CARGO-LOCK.toml. COPYRIGHT-library.html's
+generated list omits five of these optional backtrace dependencies; their original
+license texts are supplied under dependencies/ in the Linux license bundle.
+
+Applicable license/notice coverage
+
+- Rust-owned library code and stdarch/backtrace code: Apache-2.0 OR MIT, with
+  component copyrights in COPYRIGHT-library.html. Apache-2.0 is the selected
+  alternative for this distribution where offered; both standard texts are
+  supplied under licenses/. This does not change upstream alternative grants.
+- core Unicode tables: Unicode-3.0, including the original text in
+  licenses/Unicode-3.0.txt and attribution in COPYRIGHT-library.html.
+- Most registry std dependencies: MIT OR Apache-2.0 (select Apache-2.0 where
+  offered). foldhash: Zlib; adler2: 0BSD OR MIT OR Apache-2.0; miniz_oxide:
+  MIT OR Zlib OR Apache-2.0. Original notices retain all offered alternatives.
+- compiler_builtins 0.1.160: compiled runtime intrinsics, not the Rust compiler.
+  Its exact in-tree manifest declares MIT AND Apache-2.0 WITH LLVM-exception
+  AND (MIT OR Apache-2.0). compiler-builtins/LICENSE.txt preserves the applicable
+  original text including the LLVM exception; libm/LICENSE.txt preserves
+  associated mathematical-runtime notices as a conservative related subset.
+  This is the reason for including that runtime license, NOT a distribution of
+  LLVM, clang, rustc, or the whole toolchain.
+
+COPYRIGHT-library.html is an upstream std-only, multi-target superset. Entries
+for SGX, WASI, UEFI, other operating systems and std tests are NOT assertions that
+those components are linked into these two targets. A BSD-2-Clause text is
+included to keep the library inventory's documented in-tree exception readable;
+that Fuchsia-specific implementation is not used by these binaries.
+No whole-compiler COPYRIGHT.html, compiler source inventory, or LLVM inventory
+is included. libgcc/glibc, Windows DLLs and the VC redistributable are external
+system prerequisites, not copied into these archives.
+
+Application Cargo dependency inventories do not cover this std dependency graph.
+Toolchain or target changes require a new review of this pinned evidence. Packaging
+must fail rather than silently apply the 1.95.0 notice set to another toolchain.

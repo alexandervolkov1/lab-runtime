@@ -1,0 +1,333 @@
+{
+  "schema": 1,
+  "rust_release": "1.95.0",
+  "rust_commit": "59807616e1fa2540724bfbac14d7976d7e4a3860",
+  "application_crates": [
+    {
+      "name": "serialport",
+      "version": "4.10.1",
+      "checksum": "6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2"
+    },
+    {
+      "name": "ring",
+      "version": "0.17.14",
+      "checksum": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+    }
+  ],
+  "compiler_builtins_commit": "59807616e1fa2540724bfbac14d7976d7e4a3860",
+  "files": [
+    {
+      "path": "serialport-4.10.1/serialport-4.10.1.crate",
+      "sha256": "6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2",
+      "source": "https://static.crates.io/crates/serialport/serialport-4.10.1.crate",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "serialport-4.10.1/LICENSE.txt",
+      "sha256": "00a4d69750686b8fcd2369b17176b4389d67f275fd22b9eab6c66155b72bd4d2",
+      "source": "https://static.crates.io/crates/serialport/serialport-4.10.1.crate",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "serialport-4.10.1/SOURCE-CONTENTS.json",
+      "sha256": "0018e390c2b8df5ded3254d9327200835f38d255f5c081a15d765941106cd892",
+      "source": "https://static.crates.io/crates/serialport/serialport-4.10.1.crate",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "serialport-4.10.1/MPL-2.0.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "source": "https://www.mozilla.org/media/MPL/2.0/index.f75d2927d3c1.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/LICENSE",
+      "sha256": "b3d734001a94efff3579978d953391aa7115f877657d25eb54037a43875d078a",
+      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/LICENSE-BoringSSL",
+      "sha256": "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d",
+      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/LICENSE-other-bits",
+      "sha256": "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f",
+      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/src/polyfill/once_cell/LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/src/polyfill/once_cell/LICENSE-MIT",
+      "sha256": "6ee2ed6c77710de911761acd5fc1ad1da00f476beb1a7ef27e78c2d1858deafc",
+      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/third_party/fiat/LICENSE",
+      "sha256": "9eacbcb81be660840c714a560a9d65ba07913db98dd4baf969f78dd499fdd60f",
+      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "ring-0.17.14/third_party/fiat/AUTHORS",
+      "sha256": "ad74c036a6afaedc418fed65f171c877c2f74a4c70938a03930aa11c98a20508",
+      "source": "https://raw.githubusercontent.com/briansmith/ring/2723abbca9e83347d82b056d5b239c6604f786df/third_party/fiat/AUTHORS",
+      "targets": [
+        "windows"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/COPYRIGHT-library.html",
+      "sha256": "90567e2718bf7fd65a71a3a43c5596488e80e5f51ed02bfea6fec54458b5f3d1",
+      "source": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/COPYRIGHT",
+      "sha256": "172020dbfd5b53a226dfde77616190a48dcff519b0bc0e6deb91a8450782c4af",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/COPYRIGHT",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/STD-CARGO-LOCK.toml",
+      "sha256": "24ee3436f747470180e01a14bb9dea54eba96be15f65ab0407922a7132de84b4",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/library/Cargo.lock",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/std-package.toml",
+      "sha256": "b3d276b6dcebf517a7dd87adffdfb6be08319ddb26acbad17d476aa2cab0322a",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/Cargo.toml",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/licenses/MIT.txt",
+      "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/LICENSES/MIT.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/licenses/Apache-2.0.txt",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/LICENSES/Apache-2.0.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/licenses/Unicode-3.0.txt",
+      "sha256": "f5062c9a188d81dfe66b56db4182dcf9e4b17c0d9b0d311a8e20b3a1b075c443",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/LICENSES/Unicode-3.0.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/licenses/BSD-2-Clause.txt",
+      "sha256": "f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/LICENSES/BSD-2-Clause.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/compiler-builtins/LICENSE.txt",
+      "sha256": "ab6eec6caf0fa5775e411c7a8bc6a45c4ef2956b0980b157ab74fc5cd62a928b",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/library/compiler-builtins/LICENSE.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/compiler-builtins/libm/LICENSE.txt",
+      "sha256": "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7",
+      "source": "https://raw.githubusercontent.com/rust-lang/rust/59807616e1fa2540724bfbac14d7976d7e4a3860/library/compiler-builtins/libm/LICENSE.txt",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/addr2line-0.25.1/LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "source": "https://static.crates.io/crates/addr2line/addr2line-0.25.1.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/addr2line-0.25.1/LICENSE-MIT",
+      "sha256": "e99d88d232bf57d70f0fb87f6b496d44b6653f99f8a63d250a54c61ea4bcde40",
+      "source": "https://static.crates.io/crates/addr2line/addr2line-0.25.1.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/adler2-2.0.1/LICENSE-0BSD",
+      "sha256": "861399f8c21c042b110517e76dc6b63a2b334276c8cf17412fc3c8908ca8dc17",
+      "source": "https://static.crates.io/crates/adler2/adler2-2.0.1.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/adler2-2.0.1/LICENSE-APACHE",
+      "sha256": "8ada45cd9f843acf64e4722ae262c622a2b3b3007c7310ef36ac1061a30f6adb",
+      "source": "https://static.crates.io/crates/adler2/adler2-2.0.1.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/adler2-2.0.1/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "source": "https://static.crates.io/crates/adler2/adler2-2.0.1.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/memchr-2.7.6/COPYING",
+      "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+      "source": "https://static.crates.io/crates/memchr/memchr-2.7.6.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/memchr-2.7.6/LICENSE-MIT",
+      "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+      "source": "https://static.crates.io/crates/memchr/memchr-2.7.6.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/miniz_oxide-0.8.9/LICENSE",
+      "sha256": "4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b",
+      "source": "https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.8.9.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/miniz_oxide-0.8.9/LICENSE-APACHE.md",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "source": "https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.8.9.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/miniz_oxide-0.8.9/LICENSE-MIT.md",
+      "sha256": "799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d",
+      "source": "https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.8.9.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/miniz_oxide-0.8.9/LICENSE-ZLIB.md",
+      "sha256": "0a54e647fe54104658b5e563c04c6f9edf251710e47bce692e0bd990a4ddaa39",
+      "source": "https://static.crates.io/crates/miniz_oxide/miniz_oxide-0.8.9.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/object-0.37.3/LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "source": "https://static.crates.io/crates/object/object-0.37.3.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/dependencies/object-0.37.3/LICENSE-MIT",
+      "sha256": "0b74dfa0bcee5c420c6b7f67b4b2658f9ab8388c97b8e733975f2cecbdd668a6",
+      "source": "https://static.crates.io/crates/object/object-0.37.3.crate",
+      "targets": [
+        "linux"
+      ]
+    },
+    {
+      "path": "NOTICE.txt",
+      "sha256": "6845ec61f23adba631bcba4a203a41b69241f6e293013ebaa30dc47617d16a5c",
+      "source": "Project packaging review; original upstream materials are identified separately",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/NOTICE.txt",
+      "sha256": "b2619d5e8cf7288a75b9cd8ebd29ea731ab3d46d19c0a01e557b3e4da5df7188",
+      "source": "Project packaging review; original upstream materials are identified separately",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "path": "rust-1.95.0/toolchain.json",
+      "sha256": "9fab5cb32f77f8d2e322c5537fe1d75af3628ad5b787490a3d96574411661386",
+      "source": "Project packaging review; original upstream materials are identified separately",
+      "targets": [
+        "windows",
+        "linux"
+      ]
+    }
+  ]
+}

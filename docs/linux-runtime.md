@@ -1,8 +1,8 @@
 # Headless Runtime on Linux x86_64
 
-The Linux package targets `x86_64-unknown-linux-gnu` and contains only the headless
-`lab-runtime` executable. Windows and Linux share the same Rust source, Application
-API, controller/output authority and Recorder implementation. Workbench is a
+The Linux package targets `x86_64-unknown-linux-gnu` and contains the headless
+`lab-runtime` executable and a redistribution notice. Windows and Linux share the
+same Rust source, Application API, controller/output authority and Recorder implementation. Workbench is a
 separate Windows application and is not built or included here. ARM is not supported
 by this package.
 
@@ -10,13 +10,16 @@ by this package.
 
 Keep the accompanying `.licenses.tar.gz` and `.build.json` with the package when
 redistributing it. The license archive contains the project license, third-party
-texts and a target-specific dependency inventory; it is not needed at runtime.
+texts, the exact MPL-covered serialport source archive, and separate application
+and Rust standard-library inventories; it is not needed at runtime. Extract it
+into the executable directory so the notice's relative paths resolve offline.
 Package creation does not publish a release or grant formal legal sign-off.
 
 ```sh
 sha256sum -c lab-runtime-0.1.0-linux-x86_64.tar.gz.sha256
 sha256sum -c lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz.sha256
 tar -xzf lab-runtime-0.1.0-linux-x86_64.tar.gz
+tar -xzf lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz -C lab-runtime-0.1.0-linux-x86_64
 cd lab-runtime-0.1.0-linux-x86_64
 mkdir -p "$PWD/state/logs"
 export LAB_RUNTIME_LOG_DIRECTORY="$PWD/state/logs"
@@ -107,7 +110,7 @@ Service management remains outside Runtime application logic.
 
 ## Build and package
 
-Use Linux x86_64, Rust 1.95 with Cargo, Python 3.11+, Git, a C compiler/linker, and
+Use Linux x86_64, official Rust 1.95.0 with Cargo, Python 3.11.4+, Git, a C compiler/linker, and
 binutils. For Ubuntu these host tools are available from `build-essential`,
 `binutils`, `git`, `python3` and `curl` (curl is useful for installing Rust).
 
@@ -124,8 +127,9 @@ python3 scripts/package-linux-runtime.py
 
 The packager derives the version from workspace Cargo metadata. Outputs in `dist/`:
 
-- `lab-runtime-<version>-linux-x86_64.tar.gz`, containing one executable with mode 0755;
-- `.licenses.tar.gz`, containing Runtime-only dependency license evidence;
+- `lab-runtime-<version>-linux-x86_64.tar.gz`, containing one executable with mode 0755 and `NOTICE.txt`;
+- `.licenses.tar.gz`, containing Runtime dependency texts, exact serialport sources,
+  Rust standard-library notice evidence and a checked file inventory;
 - `.build.json`, recording target, source commit/dirty state, toolchain, lockfile hash,
   binary/archive SHA-256, shared libraries and required glibc symbol version;
 - `.sha256` companions for both archives.
@@ -134,6 +138,11 @@ Existing outputs are protected against accidental overwrite. `--allow-dirty` exp
 records an uncommitted review build. Build products can be kept on a Linux filesystem
 with `CARGO_TARGET_DIR` when the source checkout is on a WSL-mounted Windows drive.
 The packager uses Cargo's reported executable path rather than assuming `target/`.
+License evidence is pinned to the reviewed official Rust 1.95.0 libraries and exact
+dependency checksums. Missing/mismatched evidence fails packaging, including checks
+after unpacking the license archive. See [license packaging review](release-license-evidence.txt)
+for scope, provenance and lightweight regression commands. A different toolchain
+requires a new standard-library notice review, not a silent version substitution.
 
 The Linux process test completes hello and `latest` through real TCP and WebSocket
 connections, checks Application shutdown, and checks SIGINT/SIGTERM/SIGHUP with active

@@ -15,9 +15,13 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
+
+sys.dont_write_bytecode = True
+from release_license_evidence import check_extracted, destination as license_destination, evidence, package_manifest
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = "x86_64-unknown-linux-gnu"
@@ -118,6 +122,7 @@ def main():
     outputs = artifacts + [p.with_name(p.name + ".sha256") for p in artifacts[:2]]
     if any(p.exists() for p in outputs):
         parser.error("release outputs already exist; move them aside before rebuilding")
+    release_licenses = evidence(ROOT, "linux")
     build = command(
         "cargo", "build", "-p", "lab-runtime", "--release", "--target", TARGET,
         "--locked", "--message-format=json",
@@ -142,19 +147,49 @@ def main():
         "cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET,
     ))
     files, dependencies = license_inputs(metadata)
+    by_name = {name: (name, path, mode) for name, path, mode in files}
+    for row in release_licenses:
+        evidence_name = license_destination(row["path"])
+        path = ROOT / "third-party-licenses/release" / row["path"]
+        if evidence_name in by_name and sha256(by_name[evidence_name][1]) != row["sha256"]:
+            raise RuntimeError(f"supplemental license evidence conflicts: {evidence_name}")
+        by_name[evidence_name] = (evidence_name, path, 0o644)
+    files = list(by_name.values())
     timestamp = int(command("git", "show", "-s", "--format=%ct", "HEAD"))
     # Stage on the destination filesystem: WSL /tmp and a mounted Windows dist/
     # can be different devices, so a cross-device rename would fail.
     with tempfile.TemporaryDirectory(prefix=".lab-runtime-package-", dir=dist) as temporary:
         staging = Path(temporary)
         notices = staging / "THIRD-PARTY-NOTICES.json"
-        notices.write_text(json.dumps({"target": TARGET, "dependencies": dependencies},
+        notices.write_text(json.dumps({"target": TARGET, "dependencies": dependencies,
+                                      "standard_library_evidence": "LICENSE-EVIDENCE.json",
+                                      "source_availability": "NOTICE.txt"},
                                      indent=2) + "\n", encoding="utf-8")
         files.append((notices.name, notices, 0o644))
+        evidence_path = staging / "LICENSE-EVIDENCE.json"
+        evidence_path.write_text(json.dumps(package_manifest(release_licenses, "linux"), indent=2) + "\n")
+        files.append((evidence_path.name, evidence_path, 0o644))
+        contents = staging / "PACKAGE-CONTENTS.txt"
+        contents.write_text("\n".join(sorted([name for name, _, _ in files] + [contents.name])) + "\n")
+        files.append((contents.name, contents, 0o644))
         executable_archive = staging / artifacts[0].name
         licenses_archive = staging / artifacts[1].name
-        archive(executable_archive, [(f"{name}/lab-runtime", binary, 0o755)], timestamp)
+        archive(executable_archive, [(f"{name}/lab-runtime", binary, 0o755),
+                                    (f"{name}/NOTICE.txt", ROOT / "third-party-licenses/release/NOTICE.txt", 0o644)], timestamp)
         archive(licenses_archive, files, timestamp)
+        # Validate the actual archive bytes and offline source after extraction.
+        extracted = staging / "license-audit"
+        with tarfile.open(licenses_archive, "r:gz") as tar:
+            expected = sorted(name for name, _, _ in files)
+            if sorted(tar.getnames()) != expected or not all(m.isfile() for m in tar.getmembers()):
+                raise RuntimeError("license archive inventory mismatch")
+            tar.extractall(extracted, filter="data")
+        if (extracted / contents.name).read_text().splitlines() != expected:
+            raise RuntimeError("extracted license package manifest mismatch")
+        check_extracted(extracted, release_licenses, "linux")
+        for file_name, path, _ in files:
+            if sha256(extracted / file_name) != sha256(path):
+                raise RuntimeError(f"extracted license file changed: {file_name}")
         provenance = {
             "package": name, "target": TARGET, "commit": command("git", "rev-parse", "HEAD"),
             "dirty_status": status, "source_changes": source_changes,

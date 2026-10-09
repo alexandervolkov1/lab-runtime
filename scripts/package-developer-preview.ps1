@@ -17,6 +17,7 @@ $distRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'dist'))
 $stageRoot = [System.IO.Path]::GetFullPath((Join-Path $distRoot $packageName))
 $zipPath = [System.IO.Path]::GetFullPath((Join-Path $distRoot "$packageName.zip"))
 $checksumPath = "$zipPath.sha256"
+. (Join-Path $PSScriptRoot 'release-license-evidence.ps1')
 
 function Assert-Success([string]$operation) {
     if ($LASTEXITCODE -ne 0) {
@@ -337,6 +338,8 @@ function Test-ExtractedPackage([string]$archivePath) {
         if (Compare-Object $expectedFiles $actualFiles) {
             throw 'extracted package does not match PACKAGE-CONTENTS.txt'
         }
+        Test-ExtractedLicenseEvidence $packageRoot $releaseLicenseRows
+        Test-ReleasePackageHygiene $packageRoot
         Test-MarkdownQuality $packageRoot
         Test-MarkdownLinks $packageRoot
 
@@ -548,6 +551,7 @@ try {
     if (-not $AllowDirty -and $dirty) {
         throw 'working tree must be clean (use -AllowDirty only while developing the script)'
     }
+    $releaseLicenseRows = Get-ReleaseLicenseEvidence $repositoryRoot
 
     & cargo build --workspace --release --locked
     Assert-Success 'release build'
@@ -579,6 +583,7 @@ try {
         'LICENSE',
         'docs\getting-started.md',
         'docs\linux-runtime.md',
+        'docs\release-license-evidence.txt',
         'docs\configuration.md',
         'docs\simple-device.md',
         'docs\developer\simple-device-tutorial.md',
@@ -871,6 +876,7 @@ try {
     $notice.Add('Generated from Cargo.lock and the Windows x86_64 normal dependency graphs')
     $notice.Add('for lab-runtime.exe and lab-workbench.exe.')
     $notice.Add('The inventory covers every unique normal third-party dependency in those graphs.')
+    $notice.Add('Rust standard-library evidence is separate: see NOTICE.txt and LICENSE-EVIDENCE.json.')
     $notice.Add('License expressions are copied from Cargo package metadata without interpretation.')
     $notice.Add('Copies of matching upstream license/notice files found by this packaging audit')
     $notice.Add('or recorded by exact-version evidence review are included under licenses/.')
@@ -986,11 +992,29 @@ try {
         $notice.Add('No dependency remains without included package-audit license/notice text evidence.')
         $notice.Add('Legal interpretation and release sign-off remain separate review decisions.')
     }
+    if ($missingLicenses.Count -gt 0 -or $missingLicenseMetadata.Count -gt 0) {
+        throw 'Unresolved dependency license evidence; refusing to create release archive'
+    }
     [System.IO.File]::WriteAllLines(
         (Join-Path $stageRoot 'THIRD-PARTY-NOTICES.txt'),
         $notice,
         $utf8NoBom
     )
+
+    foreach ($row in $releaseLicenseRows) {
+        $destination = Get-ReleaseEvidenceDestination $row.path
+        $destinationPath = Join-Path $stageRoot $destination
+        if ((Test-Path -LiteralPath $destinationPath) -and
+            (Get-FileHash -LiteralPath $destinationPath).Hash.ToLowerInvariant() -ne $row.sha256) {
+            throw "Supplemental evidence conflicts with dependency source: $destination"
+        }
+        Copy-ApprovedFile "third-party-licenses/release/$($row.path)" $destination
+    }
+    $evidenceManifest = Get-ReleaseEvidenceManifest $releaseLicenseRows
+    [IO.File]::WriteAllText((Join-Path $stageRoot 'LICENSE-EVIDENCE.json'),
+        ($evidenceManifest | ConvertTo-Json -Depth 8) + "`n", $utf8NoBom)
+    Test-ExtractedLicenseEvidence $stageRoot $releaseLicenseRows
+    Test-ReleasePackageHygiene $stageRoot
 
     $contentManifestPath = Join-Path $stageRoot 'PACKAGE-CONTENTS.txt'
     $contentPaths = @(Get-ChildItem -LiteralPath $stageRoot -Recurse -File |

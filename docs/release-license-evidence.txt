@@ -1,0 +1,77 @@
+preview.4 license packaging follow-up (2026-10-10)
+
+Scope: packaging and notice evidence only, based on production commit
+952c90040654ea4dc8feaa1b4918958e1fd6a4c6. No Runtime/Workbench Rust, dependency,
+Application API, Recorder, transport or release profile change is required.
+This candidate still requires independent release review; no publication is implied.
+
+1. serialport 4.10.1
+
+The unchanged crates.io .crate is included under licenses/serialport-4.10.1/ in
+both license bundles. Its SHA-256 matches Cargo.lock:
+6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2
+Full Mozilla MPL 2.0 text, upstream Exhibit-A notice, extraction instructions,
+versioned crates.io URL and per-member SOURCE-CONTENTS.json travel with it.
+NOTICE.txt explicitly preserves the project's separate MIT license.
+Linux's executable archive also contains NOTICE.txt pointing to the required
+license companion, which must accompany redistribution of the binary.
+
+2. ring 0.17.14
+
+The Windows bundle preserves all six requested original texts and their relative
+paths, including once_cell and fiat licenses. The .crate was downloaded from
+https://static.crates.io/crates/ring/ring-0.17.14.crate and checked against Cargo.lock:
+a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7
+The .crate omits fiat/AUTHORS. That file was obtained from recorded ring VCS commit
+2723abbca9e83347d82b056d5b239c6604f786df after byte-comparing ALL SIX license files
+at that commit to the archive. This does not treat the entire dirty VCS snapshot
+as equivalent to the published crate. Every imported text has source and SHA-256
+in third-party-licenses/release/evidence.json. No upstream license was rewritten.
+
+3. Rust standard-library evidence
+
+Both official toolchains report Rust 1.95.0, commit
+59807616e1fa2540724bfbac14d7976d7e4a3860. Their COPYRIGHT-library.html files match
+byte-for-byte. The original library-only inventory is distributed, NOT the
+whole compiler/LLVM inventory. Exact upstream Rust library lock/manifest and
+sysroot rlib fingerprints bind the supplemental notices to the reviewed targets.
+The authored Rust NOTICE documents retained Windows PDB/Linux symbol evidence,
+the conservative std dependency scope and license alternatives used.
+
+The generated std inventory is not sufficient on its own: five optional Linux
+backtrace dependencies need supplemental original license files from their exact
+Rust library lock versions. Also included are the original compiler_builtins
+runtime license (including its LLVM exception) and related libm runtime notice,
+plus core Unicode license/attribution. compiler_builtins is linked runtime code;
+this is not a reason to ship the compiler or all LLVM notices.
+The inventory is a std-only multi-target superset, not a claim that SGX, WASI,
+UEFI, Fuchsia or testing libraries occur in these Windows/Linux executables.
+Application Cargo inventories remain separately identified.
+
+Automated acceptance
+
+Windows: powershell -File scripts/test-release-license-evidence.ps1
+Linux: python3 scripts/test_release_license_evidence.py
+
+These small fixture tests do not compile Rust or access the network. They check
+source archive content/version/hashes, corrupt or missing license/source evidence,
+removed required manifest rows, changed lock checksums and unreviewed toolchain
+evidence. Windows also rejects user-database/secret-pattern package fixtures.
+Normal packaging validates exact rustc identity, installed library notice and
+reviewed sysroot hashes; there is no packager option to bypass this license gate.
+Windows unresolved dependency evidence now raises an error before archive creation.
+Both packagers verify supplemental inventory and byte hashes after extraction.
+Existing package smoke and SHA-256 checks remain enabled. Full workspace gates
+are unnecessary for this packaging-only change.
+
+All third-party-licenses/release input bytes are pinned in evidence.json; upstream
+texts are unchanged. Root .gitattributes preserves third-party bytes across OSes.
+Three exact upstream files have narrowly scoped whitespace-check exceptions:
+Rust's generated HTML, its BSD template and serialport's Exhibit-A file. Their
+original whitespace is checksum-protected; authored files have no such exception.
+Archives retain the source commit that produced them in BUILD.txt / .build.json.
+Historical candidate archives must be moved to a verified history directory before
+running packaging; they must not be silently overwritten during this review.
+
+This is an engineering evidence review, not a claim of legal certification.
+The project owner remains responsible for distribution and final release approval.

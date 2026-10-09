@@ -1,0 +1,59 @@
+Additional binary distribution notices
+
+lab-runtime's own code remains MIT licensed; see LICENSE at the package root.
+The Cargo application dependency inventory is separate from Rust standard
+library evidence. Neither inventory changes third-party licensing terms.
+
+serialport 4.10.1 - Mozilla Public License 2.0 (MPL-2.0)
+
+This distribution incorporates unmodified serialport 4.10.1 source code under
+MPL-2.0. The full license is licenses/serialport-4.10.1/MPL-2.0.txt.
+Corresponding source is supplied OFFLINE, without a separate download or charge:
+  licenses/serialport-4.10.1/serialport-4.10.1.crate
+This is the original gzip-compressed tar source archive, not a binary library.
+Extract it with tar -xzf serialport-4.10.1.crate or a compatible archive tool.
+The archive includes upstream source, manifests, copyright/license notices and
+examples. SOURCE-CONTENTS.json in the same directory records every member hash.
+The source remains governed by MPL-2.0; recipients' source rights are unchanged.
+No MPL license is imposed on lab-runtime's own MIT files by this notice.
+
+The identical versioned archive is available from crates.io:
+https://static.crates.io/crates/serialport/serialport-4.10.1.crate
+SHA-256 (also the application's Cargo.lock checksum):
+6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2
+
+Linux recipients: keep the matching .licenses.tar.gz companion with the Runtime
+archive. Extract it into the Runtime directory, for example:
+  tar -xzf lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz -C lab-runtime-0.1.0-linux-x86_64
+It contains this notice, the full MPL license and the offline source.
+Do not redistribute the executable alone without these accompanying materials.
+
+ring 0.17.14 (Windows)
+
+All six original license files are preserved below licenses/ring-0.17.14/:
+  LICENSE
+  LICENSE-BoringSSL
+  LICENSE-other-bits
+  src/polyfill/once_cell/LICENSE-APACHE
+  src/polyfill/once_cell/LICENSE-MIT
+  third_party/fiat/LICENSE
+Paths referenced by LICENSE are relative to that directory. The crate omits
+fiat's AUTHORS, so that file is supplied from ring's recorded upstream commit
+2723abbca9e83347d82b056d5b239c6604f786df. All six license files at that commit
+were byte-compared with the original .crate before using this author supplement.
+Upstream text is reproduced unchanged; no replacement interpretation is used.
+The Linux Runtime's normal Cargo graph does not contain ring, so this section
+does not claim ring is shipped in the Linux binary.
+
+Rust standard library - Rust 1.95.0
+
+Rust commit: 59807616e1fa2540724bfbac14d7976d7e4a3860 (2026-04-14).
+The binaries include code from the prebuilt Rust standard library. See
+licenses/rust-1.95.0/NOTICE.txt for component scope, license choices and evidence.
+COPYRIGHT-library.html is the official library-only inventory, not COPYRIGHT.html
+for the compiler/toolchain. Additional exact-version Linux backtrace texts and
+compiler-builtins runtime texts cover gaps in that generated inventory.
+
+LICENSE-EVIDENCE.json records hashes and provenance for these supplemental files.
+THIRD-PARTY-NOTICES.txt (Windows) or THIRD-PARTY-NOTICES.json (Linux) separately
+records application Cargo dependencies. Preserve all applicable notices.
