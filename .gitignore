@@ -6,3 +6,10 @@
 /m17_*_review.txt
 /m17_*_final.txt
 m12-3-cargo-diff.txt
+
+# Experimental Recorder output is local data, not a source fixture.
+# Deliberate regression fixtures belong in test-data/ with provenance and checks.
+/examples/**/*.sqlite
+/examples/**/*.sqlite-wal
+/examples/**/*.sqlite-shm
+/examples/**/*.sqlite-journal
