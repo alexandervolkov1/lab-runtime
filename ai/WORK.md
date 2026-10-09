@@ -1,6 +1,34 @@
 # Current work — M18 distributed Workbench connectivity
 
-## Active M18 closure after Recorder approval (2026-10-09)
+## Active home-PC final M18 review (2026-10-09)
+
+The user's resumed instruction supersedes the previous-machine execution policy
+below. First synchronize public documentation with the implemented M18 and commit
+it separately, then perform bounded review and targeted Linux checks on official
+Arch WSL2 at `E:\M18-WSL\Arch`, within a strict total of 20,000,000,000 new bytes.
+Do not install another distribution or create large targets on C:/D:. Use one
+Linux Cargo target, at most two build jobs and locked dependencies. Preserve
+existing user files/environments; no production change without a confirmed defect.
+Reuse unchanged-source historical workspace gates instead of repeating them.
+
+The initial feature HEAD and remote matched the requested `4582402`, with a clean
+worktree. Documentation/preview-package inventory correction is locally committed
+as `96a6ff2`, before installing Arch. All Runtime/Workbench Rust and Cargo inputs
+remain unchanged from `fe9057d`. The current review, Arch results, actual disk
+accounting and residual WSS/physical-E2E limits are recorded in
+[`M18_CONSOLIDATED_REVIEW.md`](M18_CONSOLIDATED_REVIEW.md#home-pc-final-review-2026-10-09).
+No merge, feature/main push, tag or Release is authorized. Stop after this review.
+
+**Final bounded review: READY FOR MERGE; stopped.** Arch Debug/Release targeted
+Recorder and Workbench suites pass; WSS stress passes 20/20 in each profile with
+security assertions unchanged. Arch fmt and scoped warnings-denied Clippy pass.
+Historical unchanged-source Windows/Ubuntu workspace gates are reused, not renamed
+as Arch runs. Accounted new task files total 8.54 GB, including an 8.19 GB E: VHDX;
+the one Cargo target is 4.89 GB inside it. No new blocker or production change.
+The old WSS stability root cause, physical two-PC qualification and the existing
+release/legal gate remain open; merge/publication require the user's next step.
+
+## Previous-PC closure after Recorder approval (2026-10-09; historical)
 
 The final external Recorder review is **APPROVE**. Its safety-fact separation,
 probe-token cleanup and Required Failed/Closed reconnect fixes are accepted.
@@ -219,6 +247,11 @@ Linux Clippy also rejects existing Windows-only ownership error variants. No new
 commit, Release gate PASS, completed GUI/Tuna E2E or M18 acceptance is claimed.
 
 ## Canonical current state
+
+The home-PC final-review authorization at the top of this file is current. The
+old Ubuntu, Cargo target and C: disk figures below describe the previous laptop,
+not this machine. Public documentation now describes implemented M18; current
+review results and Arch evidence are in `M18_CONSOLIDATED_REVIEW.md`.
 
 M18 Recorder admission/capacity and the three final remediation fixes are externally
 **APPROVED** and committed as `55bbf30`. Local closure commits separately contain

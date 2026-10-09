@@ -1,5 +1,245 @@
 # M18 consolidated review candidate
 
+## Home-PC final review (2026-10-09)
+
+This section supersedes the old machine/disk descriptions below. The original
+closure record remains historical evidence; its ignored raw artifacts are not
+present on this home PC and were not independently reopened here.
+
+### Git and documentation boundary
+
+The initial worktree was clean at the requested
+`458240229363cb1a48651c72655e428bcae13e5f`, on
+`feature/m18-distributed-workbench`. Read-only `git ls-remote` confirmed the same
+remote feature tip. Local and remote main were
+`8f7cb98de194205c5ffcaaa9292ea5ce6845e623`. All seven final commits were inspected:
+the six implementation/test commits in the historical inventory below plus
+`4582402` (the consolidated evidence/documentation commit).
+
+Before installing Arch, local commit
+`96a6ff25ab412d588882a2ef702219d4538b5917` corrected README and the Workbench,
+configuration, getting-started, architecture and distributed deployment guides.
+It also adds the existing distributed guide and Babashka example to the preview
+package's explicit public-file inventory: otherwise the corrected guides link to
+files absent from the package. No production Rust, dependency, Cargo profile or
+security assertion was changed. Rust/Cargo inputs used by the workspace gates
+still match `fe9057d`.
+
+The source comparison covers all eleven Workbench CLI options, transport-specific
+validation, explicit LAN opt-in in both Runtime startup modes, one worker across
+TCP/WS/WSS, observation admission, recovery/quarantine, local presentation and
+Required Recorder capacity/durability. The existing packaging script's Markdown
+quality/link checks pass for 23 public Markdown files, both against the repository
+and a documentation-only projection of the actual package inventory. External
+links are not claimed checked. Diff checks and a staged secret review pass.
+
+Deployment instructions now explicitly cover:
+
+- A: Runtime, Workbench and Clojure on the same Windows PC; independent Runtime
+  scopes and a local presentation API.
+- B: Windows Runtime/Workbench and remote Clojure over explicitly opted-in trusted
+  LAN TCP or authenticated WSS/Tuna. The Workbench presentation API remains
+  IPv4-loopback-only and has no direct remote access; remote scripts use Runtime
+  only, and presentation commands run on the Workbench host.
+- C: a separate Linux Runtime with Workbench/Clojure on Windows; both independently
+  connect to Runtime, while presentation calls remain local to Windows.
+
+These are supported placements, not a claim of physical two-computer E2E.
+
+### Recorder close-race review
+
+The exact `bb22d57` diff is narrowly scoped to observation order, an acquire fence
+and a deterministic test hook/regression. Completion is sampled before liveness.
+This prevents the old combination of pre-close `alive=true` and post-close
+`is_finished=true` from classifying a normal writer close as panic. Normal worker
+return publishes its final receipt and clears liveness with Release ordering;
+actual panic bypasses that path and remains failure evidence. The implementation
+was cross-checked against Rust 1.95's standard-library thread completion path.
+
+SQL failure remains sticky and fail-closed, including failure after seal. Closure
+alone is not durability: host `recorder_flushed` still requires Closed, committed
+seal, no first error and zero outstanding records. Credits are released only by
+validated cumulative receipts; this fix adds no credit release. Existing tests
+cover real panic, SQL commit/close failure, stale/future/invalid receipts, drain,
+seal and database reopen. No new Recorder production defect was established.
+
+### WSS security and stability review
+
+The local TLS proxy binds its listener before its worker is spawned. The Runtime
+fixture has a readiness signal. Accepted sockets are blocking with bounded
+timeouts. TLS runs before the HTTP Upgrade authorization callback: TLS may succeed
+before that callback, or certificate/hostname rejection may end a connection
+without calling it. Counting exactly two denials is a test coverage assertion for
+the missing/wrong-key cases, not an Application security invariant.
+
+`fe9057d` preserves and strengthens the important outcomes: missing/wrong keys must
+produce authorization rejection; untrusted CA/wrong hostname must produce TLS
+validation failure; every negative attempt must produce no Hello; no invalid
+attempt may be authorized; the valid key/trust/hostname path must complete Hello
+and authoritative queries. Secret-redaction assertions remain. Runtime upstream
+connection occurs only after the proxy's authorized Upgrade succeeds.
+
+The serial proxy's two-second I/O timeouts and bounded client connect deadline
+leave a plausible load-sensitive fixture explanation, but code inspection does not establish that
+as the historical root cause. The committed evidence describes an intermediate
+Linux Debug count failure (the user's recollection also mentioned Release); its
+raw failed log is unavailable here. No authentication/TLS bypass was established.
+Passing repetitions must not be relabelled as fixing the unresolved stability issue.
+
+### Other frozen boundaries
+
+TCP/WS/WSS share Application session/scope/sequencing and the same Workbench worker.
+Recovery rebuilds authoritative observations, never automatically replays mutation,
+status or Exact Retry. Old-boot/scope evidence remains quarantined; starting a new
+scope is explicit. Observation mode blocks Workbench Runtime mutation and Exact
+Retry before mailbox admission without blocking an independent script's own scope.
+Presentation remains client-owned and its unauthenticated API remains loopback-only.
+
+Remote TCP requires explicit Runtime/client opt-in and remains unauthenticated
+plaintext for a trusted LAN, not an Internet transport. Runtime WS stays loopback;
+Tuna supplies authenticated WSS with `X-Token` and normal certificate/hostname
+validation. Recorder remains Runtime-owned: 13 groups / 1545 records / 4 MiB, only
+Reference protected credit, no universal reconnect reserve, no durability promise
+from admission or successful transport delivery. No new architecture blocker found.
+
+### Arch environment and bounded verification method
+
+The home PC already had WSL 3.0.1.0 and enabled Windows WSL/VirtualMachinePlatform
+components, but no registered distribution. The actual installed WSL help supports
+`--location`, `--version`, `--vhd-size` and `--no-launch`; its online list includes
+official `archlinux`. Installation used:
+
+```powershell
+wsl --install -d archlinux --location E:\M18-WSL\Arch --version 2 --vhd-size 16GB --no-launch
+```
+
+The registration and VHDX are on E:, not AppData. No other distribution, Windows
+component update, administrator elevation or reboot was needed. This follows the
+[official Arch WSL installation route](https://archlinux.org/download/) and the
+[documented WSL location option](https://learn.microsoft.com/en-us/windows/wsl/basic-commands).
+No pre-existing `.wslconfig` existed: the new file disables WSL swap and redirects
+crash dumps to E: with their count disabled, using the
+[documented WSL settings](https://learn.microsoft.com/en-us/windows/wsl/wsl-config).
+It does not overwrite an existing user configuration.
+
+Arch uses its normal signed packages and one minimal Rust 1.95.0 Linux toolchain
+(rustc, std, Cargo, rustfmt and Clippy). Existing Windows dependency archives were
+only read, checked against Cargo.lock SHA-256 and copied where useful; missing
+dependencies were fetched normally. No existing Windows toolchain/cache was edited.
+Provisioning retries, including an incomplete new Rust toolchain reinstallation
+to avoid unwanted local rust-docs, are retained in setup logs and are not test runs.
+
+Build/test/Clippy invocations use `--locked`, one `/root/m18-target`, two build jobs,
+`CARGO_INCREMENTAL=0`, offline dependencies after fetch and `/root/m18-tmp` for
+temporary files. Debug remains unoptimized with debuginfo and Release optimized;
+no Cargo profile, feature selection or security assertion is altered. Source is
+read directly from `/mnt/d/rust/lab-runtime`; no duplicate repository or large new
+C:/D: target is created. Existing tests write small ignored TLS/recovery fixtures
+under the repository's target, also included in disk accounting.
+
+`E:\M18-WSL\measure.ps1` measures Windows allocated file sizes, including VHDX,
+all task-created E: setup/cache/download/log files, the new configuration file and
+those small D: fixtures. Cargo/toolchain sizes inside VHDX are not added twice.
+Before each heavy operation and every two seconds during it, the wrapper checks
+this total and C:/E: free space. It refuses new heavy work at 18 GB and terminates
+only the new task-owned Arch distro at 17.5 GB as a conservative stop reserve;
+16 GB triggers a warning. C: must retain at least 5 GiB. Linux `df` is informational,
+not the physical-disk budget proof. Diagnostics remain under `E:\M18-WSL`.
+
+### Fresh Arch targeted test results
+
+All entries below are new runs on this home PC's Arch x86_64/WSL2, not renamed
+Ubuntu results. No test was disabled or ignored. Filters deliberately select the
+reviewed boundaries rather than pretending to be a full workspace run.
+
+| Targeted check | Arch Debug | Arch Release |
+|---|---|---|
+| Runtime `--lib recorder::worker::` (including deterministic close race) | 14 PASS | 14 PASS |
+| Runtime `--lib m18_review_` | 6 PASS | 6 PASS |
+| Runtime `recorder_failure`, `recorder_required`, `recorder_shutdown` integrations | 18 PASS | 18 PASS |
+| Workbench `distributed_tests::` (parity, observation, WSS, recovery/quarantine) | 5 PASS | 5 PASS |
+| Workbench `client::endpoint::tests::` (LAN opt-in, plaintext/URL policy, token handling) | 3 PASS | 3 PASS |
+| Runtime `tcp_lan` | 2 PASS | not repeated |
+| Runtime public registry/documentation projections | 2 PASS | not repeated |
+| Workbench public operation table/source inventory | 1 PASS | not repeated |
+| Exact WSS test, four concurrent processes plus two CPU load workers | 20/20 PASS | 20/20 PASS |
+
+The 40 extra WSS invocations used the already-built binaries in the single target,
+five batches of four independent processes with distinct ephemeral ports/fixtures.
+Debug repetitions also overlapped the two-job Release build; Release repetitions
+overlapped targeted Clippy. Every transcript contains exactly one passed test,
+zero failed and zero ignored. All original authentication/TLS/hostname/no-Hello and
+positive authoritative-query assertions ran unchanged. This does not reproduce or
+resolve the historical intermittent early-connection failure; no minimal fixture
+fix is justified by the new evidence, and no transport change is proposed.
+
+Evidence commands and complete output are retained as `debug-checks.sh`,
+`release-checks.sh`, `static-checks.sh`, `wss-repeats.sh`,
+`debug-targeted.{stdout,stderr}.log`, `release-targeted.{stdout,stderr}.log`,
+`static-checks.{stdout,stderr}.log` and `wss-{debug,release}-{batch}-{slot}.log`
+under `E:\M18-WSL`. The separate four-test Debug failure suite is in `static-checks`.
+
+Full Windows/Ubuntu workspace Debug/Release and workspace/all-target Clippy gates
+below remain historical evidence. `git diff fe9057d -- apps crates Cargo.toml
+Cargo.lock` is empty, including the working tree. Those gates were not repeated
+solely for this documentation/review task. No full Arch workspace gate is claimed;
+it was intentionally not required by this unchanged-source, targeted review, not
+reported as failing or as impossible within 20 GB. No required targeted test was
+omitted because of the disk limit, and no build profile was reduced to obtain PASS.
+
+`cargo fmt --all -- --check` passes on Arch. Scoped Clippy passes with warnings
+denied for `-p lab-runtime --lib` and `-p lab-workbench --bin lab-workbench`, both
+with `--locked`. These are not relabelled as fresh workspace/all-target Clippy.
+
+### Final outcome, disk and independent review
+
+**READY FOR MERGE** for this bounded consolidated review. No new production
+correctness, safety, durability or authentication blocker was established. This is
+not release publication, physical qualification or external legal approval.
+
+After the checks and filesystem sync, at 2026-10-09 21:58:28 +03:00:
+
+| Disk item | Bytes |
+|---|---:|
+| Accounted new task files, including allocated VHDX | 8,535,433,320 |
+| `E:\M18-WSL\Arch\ext4.vhdx`, logical and allocated size | 8,191,475,712 |
+| Single Cargo target inside that VHDX (`du`) | 4,887,732,224 |
+| Cargo home inside VHDX | 659,144,704 |
+| Rustup home inside VHDX | 1,387,479,040 |
+| Free E: | 172,709,392,384 |
+| Free C: | 53,840,871,424 |
+
+The task-file total excludes unrelated pre-existing user data. As a conservative
+cross-check, the entire C: free-space decrease since the initial observation is
+236,777,472 bytes; even charging all of that unrelated/system activity to this
+task keeps the combined figure below 8.78 GB. Small subsequent review text/Git
+objects do not approach the 16/18/20 GB thresholds. No heavy operation reached the
+16 GB warning. Swap is absent (`/proc/swaps` empty), and no Cargo/rustc, test Runtime,
+Workbench or CPU-load process remains. Arch itself is left installed and usable.
+
+Remaining risks are explicit: the historical WSS early-failure/denial-count issue
+is unresolved despite new 40/40 stress PASS; physical two-PC LAN/WSS qualification
+is unperformed; the pre-existing 15-package license-text/legal release gate remains.
+No new production, Recorder, transport or recovery development is opened.
+
+Suggested independent inspection, in priority order:
+
+1. `bb22d57`: `recorder/worker/lifecycle.rs` observation/fence and `worker.rs`
+   deterministic race test, alongside the existing real-panic/SQL-failure tests.
+2. `fe9057d`: Workbench `distributed_tests.rs` per-case failure categories, no-Hello,
+   authorization counters and the positive trusted-key/TLS/query path.
+3. `08e1ee6`: Runtime `service.rs`, Workbench `client/endpoint.rs` and their LAN
+   opt-in tests; `e173789` worker/transport recovery and observation boundaries.
+4. `96a6ff2` and this documentation follow-up: the six public guides, especially
+   the three placements and scenario B limitation, and the two added package files.
+
+Initial remote feature/main identities remain unchanged. Only local documentation
+commits follow the expected initial HEAD; the follow-up records this review and
+clarifies that config-mode port zero uses the explicitly selected bind address.
+No merge, push (including feature), tag or Release was performed. Work stops here.
+
+## Historical closure on the previous Windows laptop
+
 Date: 2026-10-09. Branch: `feature/m18-distributed-workbench`.
 Recorder admission/capacity and the three final remediation fixes are externally
 APPROVED. Consolidated M18 acceptance is requested, not assumed. No merge, push,

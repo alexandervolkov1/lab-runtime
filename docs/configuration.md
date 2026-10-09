@@ -169,7 +169,7 @@ allowed_origins = ["http://127.0.0.1:3000"]
 | Field | Required/default | Validation |
 |---|---|---|
 | `server.host` | required | Must be exactly `127.0.0.1`. |
-| `server.port` | required `u16` | `0` selects an OS-assigned loopback TCP port. |
+| `server.port` | required `u16` | `0` selects an OS-assigned TCP port on the chosen bind address (loopback unless explicitly overridden at startup). |
 | `websocket` table | omitted by default | Omission means disabled, port `0`, no origins. |
 | `websocket.enabled` | required if table exists | Boolean. |
 | `websocket.port` | default `0` | `u16`; `0` selects an OS-assigned port. |
