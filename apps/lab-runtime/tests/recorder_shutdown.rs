@@ -1,5 +1,7 @@
 //! Safe shutdown and durable flush have separate, honest terminal evidence.
 
+mod support;
+
 use lab_core::{
     Command, InstrumentId, Query, QueryResult, Runtime, VirtualInstrumentConfig,
     control::ControllerState,
@@ -227,6 +229,7 @@ fn fatal_owner_time_fault_still_seals_healthy_recorder_before_nonzero_terminal()
 
 #[test]
 fn two_host_runs_and_active_shutdown_reopen_with_distinct_fifo_seals() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let text = path.to_string_lossy();
     let options = ServiceOptions::parse(&[
@@ -791,6 +794,7 @@ fn stop_and_finish_drain_all_four_accepted_groups_with_full_normal_credit() {
 
 #[test]
 fn terminal_sqlite_insert_failure_rolls_back_boot_seal_and_keeps_safe_outcome_honest() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let mut initial = SqliteStore::open(&path).unwrap();
     initial.finish_boot(Duration::ZERO).unwrap();

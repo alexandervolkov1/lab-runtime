@@ -3524,7 +3524,6 @@ mod tests {
         let base_path = journal_path("write-failure");
         let directory = base_path.parent().unwrap().to_owned();
         let blocked_parent = directory.join("not-a-directory");
-        fs::write(&blocked_parent, b"block directory creation").unwrap();
         let unusable_path = blocked_parent.join("recovery.json");
 
         let (quiet_tx, quiet_rx) = mpsc::channel();
@@ -3543,6 +3542,7 @@ mod tests {
             ClientHandle::spawn_with_recovery_journal(address, Some(unusable_path)).unwrap();
         client.connect(None).unwrap();
         wait_for(&client, |update| matches!(update, ClientUpdate::Hello(_)));
+        fs::write(&blocked_parent, b"block directory creation").unwrap();
         let command_id = client
             .mutation(
                 "reference_retune",

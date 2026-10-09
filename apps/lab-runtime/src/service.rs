@@ -4465,7 +4465,9 @@ unit_symbol="C"
             .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            service.host.service(&service.clock).unwrap();
+            // This read-only candidate needs Recorder/lifecycle progress only.
+            // Scheduling the old transport here can independently change its
+            // discovery status, obscuring the no-publication assertion below.
             let _ = service.poll_simple_device_apply();
             if service
                 .pending_simple_apply
@@ -5270,6 +5272,12 @@ unit_symbol="C"
             }
             std::thread::yield_now();
         };
+        if !status.recorder_flushed {
+            eprintln!(
+                "shutdown evidence: {status:?}; Recorder: {:?}",
+                service.owner().recording_status()
+            );
+        }
         drop(service);
         let _ = std::fs::remove_file(&database);
         let _ = std::fs::remove_file(database.with_extension("sqlite-wal"));

@@ -491,6 +491,23 @@ mod lifecycle_tests {
         panic!("managed-worker death did not produce a terminal completion")
     }
 
+    fn wait_for_host_phase(phase: &str, mut poll: impl FnMut() -> bool) {
+        // Fake experiment time cannot stand in for scheduling a real OS worker.
+        // Hold it fixed while awaiting the actual completion; retain a separate
+        // finite wall-clock bound without changing any production deadline.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if poll() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "host {phase} phase did not settle"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn disconnected_completion_terminalizes_each_dead_slot_once() {
         let _guard = test_guard();
@@ -707,13 +724,14 @@ mod lifecycle_tests {
         .unwrap();
         host.stage_standard_components(Duration::ZERO).unwrap();
         let clock = TestClock(Cell::new(Duration::ZERO));
-        for milliseconds in (0..=200).step_by(10) {
-            clock.set(Duration::from_millis(milliseconds));
-            host.service(&clock).unwrap();
-            if host.standard_components_initialized() {
-                break;
-            }
-        }
+        host.service(&clock).unwrap();
+        wait_for_host_phase("initialization", || {
+            // service() polls only when the 10 ms safety slot is due. Explicit
+            // owner polling drains completion without advancing fake time.
+            host.command(Command::PollComponents { at: clock.now() })
+                .unwrap();
+            host.standard_components_initialized()
+        });
         assert!(host.standard_components_initialized());
         host.activate_standard_components(clock.now()).unwrap();
         host.command(Command::StartController {
@@ -727,6 +745,13 @@ mod lifecycle_tests {
         for step in 1..=20 {
             clock.set(Duration::from_millis(start + step * 100));
             controller_ticks += host.service(&clock).unwrap().controller_ticks;
+            if step == 1 {
+                // Observe actual worker death before advancing semantic time:
+                // a simulated invocation timeout is not panic containment.
+                wait_for_workers(1);
+                host.command(Command::PollComponents { at: clock.now() })
+                    .unwrap();
+            }
         }
         let component_id = host.component_catalog()[0].0;
         let QueryResult::Component(component) = host.query(Query::Component(component_id)).unwrap()
@@ -747,15 +772,10 @@ mod lifecycle_tests {
         assert!(controller.pid.latest.is_some());
 
         host.begin_shutdown(&clock).unwrap();
-        for step in 1..=20 {
-            clock.set(clock.now() + Duration::from_millis(10));
+        wait_for_host_phase("shutdown", || {
             host.service(&clock).unwrap();
-            if host.shutdown_status().exit_success {
-                break;
-            }
-            assert!(step < 20, "managed death prevented finite shutdown");
-            std::thread::yield_now();
-        }
+            host.shutdown_status().exit_success
+        });
         let shutdown = host.shutdown_status();
         assert!(shutdown.exit_success, "{shutdown:?}");
         assert_eq!(shutdown.unfinished_workers, 0);

@@ -1,5 +1,7 @@
 //! M9B.7 external-emulator publication and virtual-model lifecycle contracts.
 
+mod support;
+
 use lab_core::{InstrumentId, Query, QueryResult, SignalId, TEMPERATURE};
 use lab_runtime::{
     application::Application,
@@ -15,14 +17,7 @@ use std::{
 };
 
 fn temporary_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "lab-runtime-m9b7-{}-{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ))
+    support::temporary_database("m9b7").with_extension("toml")
 }
 
 fn deployment() -> &'static str {

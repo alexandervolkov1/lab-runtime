@@ -1,5 +1,7 @@
 //! Process death before a confirmed SQLite commit leaves an honest archive tail.
 
+mod support;
+
 use lab_core::{
     Command as DomainCommand, InstrumentId, Query, QueryResult, Runtime, Sample, SignalId, Unit,
     Value, VirtualInstrumentConfig, recording::RecordingFact,
@@ -514,6 +516,7 @@ fn killed_process_after_commit_reopens_committed_row_without_a_receipt() {
 
 #[test]
 fn killed_commit_before_receipt_is_readable_via_public_history_without_control_replay() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let (old_boot, database_id) = kill_held_child(&path, "after_commit", "M7_POSTCOMMIT_REACHED ");
     let text = path.to_string_lossy();
@@ -618,6 +621,7 @@ fn killed_commit_before_receipt_is_readable_via_public_history_without_control_r
 
 #[test]
 fn killed_active_native_authority_reopens_ready_without_restoring_lease_or_replaying_output() {
+    let _runtime_owner = support::managed_runtime_guard();
     let path = temporary_database();
     let (old_boot, database_id) = kill_selected_child(
         &path,
