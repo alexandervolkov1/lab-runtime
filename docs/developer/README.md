@@ -36,7 +36,7 @@ On Windows, use an existing Rust/MSVC build environment:
 cargo build --workspace --locked
 cargo fmt --all -- --check
 .\scripts\test-release-license-evidence.ps1
-.\scripts\package-developer-preview.ps1 -PreviewVersion v0.1.0-preview.4
+.\scripts\package-developer-preview.ps1 -PreviewVersion v0.1.0-preview.5
 ```
 
 The packager builds binaries and writes `dist`; do not use it to check documents
@@ -48,13 +48,20 @@ compiler/linker, binutils, Git and Python 3.11.4 or newer:
 
 ```sh
 python3 scripts/test_release_license_evidence.py
-python3 scripts/package-linux-runtime.py
+python3 scripts/package-linux-runtime.py --preview-version v0.1.0-preview.5
 ```
 
 The Linux packager builds Runtime, checks the extracted files, and writes a Runtime
 archive, mandatory license archive, provenance JSON and SHA-256 companions. Existing
 outputs are protected against accidental overwrite. Windows packaging includes
 Runtime and Workbench. Neither script publishes a release.
+
+Both user packages take their manual and safe examples from
+`scripts/user-package-files.json`. Integration clients and engineering/API
+references remain in Git; the manual links to versioned online references.
+The Linux license companion must be extracted into the executable directory.
+Compare binary hashes with the previous release: unchanged Rust inputs alone do
+not prove byte-for-byte identical binaries.
 
 Use [release license evidence](../release-license-evidence.txt) for legal materials,
 exact-version checks and notice scope. Keep the original `.crate`, Rust library

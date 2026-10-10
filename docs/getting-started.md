@@ -8,7 +8,7 @@ No programming tools or source checkout are needed.
 
 ## 1. Extract the Windows package
 
-Download the Windows ZIP from the [release page](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4).
+Download the Windows ZIP from the [release page](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.5).
 Use **Extract All**, then open the folder containing both `.exe` files.
 Keep the accompanying folders and notices together.
 

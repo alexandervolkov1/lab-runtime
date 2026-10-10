@@ -8,23 +8,23 @@ or musl-only systems.
 
 ## Download and check
 
-From the [release page](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4),
+From the [release page](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.5),
 download these files into the same directory:
 
-- `lab-runtime-0.1.0-linux-x86_64.tar.gz`;
-- `lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz`;
+- `lab-runtime-v0.1.0-preview.5-linux-x86_64.tar.gz`;
+- `lab-runtime-v0.1.0-preview.5-linux-x86_64.licenses.tar.gz`;
 - their two `.sha256` files;
-- `lab-runtime-0.1.0-linux-x86_64.build.json`.
+- `lab-runtime-v0.1.0-preview.5-linux-x86_64.build.json`.
 
-The preview.4 binary needs glibc **2.34 or newer** and system `libgcc_s`, `libm`
+The binary needs glibc **2.34 or newer** and system `libgcc_s`, `libm`
 and `libc`. It was checked on Arch Linux WSL2 with glibc 2.44; this is not a promise
 of compatibility with every Linux distribution. Check the local system:
 
 ```sh
 uname -m
 getconf GNU_LIBC_VERSION
-sha256sum -c lab-runtime-0.1.0-linux-x86_64.tar.gz.sha256
-sha256sum -c lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz.sha256
+sha256sum -c lab-runtime-v0.1.0-preview.5-linux-x86_64.tar.gz.sha256
+sha256sum -c lab-runtime-v0.1.0-preview.5-linux-x86_64.licenses.tar.gz.sha256
 ```
 
 Expected: `x86_64`, glibc at least 2.34, and `OK` for both archives. On a mismatch,
@@ -32,20 +32,22 @@ do not run the archive. Download it again from the release page.
 
 ## Extract the package and licenses
 
-Run in the download directory. Use a new directory if `lab-runtime-preview4`
+Run in the download directory. Use a new directory if `lab-runtime-preview5`
 already exists:
 
 ```sh
-mkdir lab-runtime-preview4
-tar -xzf lab-runtime-0.1.0-linux-x86_64.tar.gz -C lab-runtime-preview4
-tar -xzf lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz \
-  -C lab-runtime-preview4/lab-runtime-0.1.0-linux-x86_64
-cd lab-runtime-preview4/lab-runtime-0.1.0-linux-x86_64
+mkdir lab-runtime-preview5
+tar -xzf lab-runtime-v0.1.0-preview.5-linux-x86_64.tar.gz -C lab-runtime-preview5
+tar -xzf lab-runtime-v0.1.0-preview.5-linux-x86_64.licenses.tar.gz \
+  -C lab-runtime-preview5/lab-runtime-v0.1.0-preview.5-linux-x86_64
+cd lab-runtime-preview5/lab-runtime-v0.1.0-preview.5-linux-x86_64
 ```
 
 Keep the extracted license materials with the executable, especially when copying
-it to another computer. The Linux archive contains no Workbench or configuration
-examples; the built-in virtual profile below needs neither.
+it to another computer. Use the filenames above for the generic extraction
+example in `NOTICE.txt`. The Linux archive includes this guide, the user manual
+and safe configuration examples, but no Workbench executable. Open `docs/README.md`
+for the manual; the built-in virtual profile below needs no configuration file.
 
 ## Start a local virtual experiment
 

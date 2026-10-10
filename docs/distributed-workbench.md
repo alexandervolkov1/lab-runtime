@@ -109,7 +109,7 @@ A Workbench on that same Runtime computer must also connect to the selected LAN
 address, since this command does not additionally listen on loopback.
 
 Workbench also supports WS/WSS connections. Those require a separately configured
-secure endpoint; see the [technical transport reference](reference/transports.md).
+secure endpoint; see the [technical transport reference on GitHub](https://github.com/alexandervolkov1/lab-runtime/blob/v0.1.0-preview.5/docs/reference/transports.md).
 The separate Workbench presentation API stays loopback-only and must not be
 forwarded as a remote-control service.
 

@@ -20,6 +20,11 @@ separate Rust standard-library inventory.
 
 ## Implemented boundaries
 
+The local `v0.1.0-preview.5` candidate updates user documentation and packaging
+only. It is not published yet. Its packages omit experimental clients and
+engineering references, which remain in Git. Publication needs a separate review
+of the candidate archives; preview.4 remains the published historical baseline.
+
 - Runtime owns experiment state, acquisition, controllers, central output
   authority, configuration and durable Recorder history. Workbench owns
   presentation. Neither Workbench nor script lifetime owns the experiment.

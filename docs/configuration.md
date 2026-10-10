@@ -193,5 +193,5 @@ fields are rejected. Do not remove safety settings to work around a validation e
 
 Keep each configuration, its JSON definitions and database location together.
 See [Troubleshooting](troubleshooting.md#runtime-does-not-report-ready) for common
-failures. The separate [Configuration reference](reference/configuration.md)
+failures. The separate [Configuration reference on GitHub](https://github.com/alexandervolkov1/lab-runtime/blob/v0.1.0-preview.5/docs/reference/configuration.md)
 contains all CLI options, field types and limits for technical configuration work.

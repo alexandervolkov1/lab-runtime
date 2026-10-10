@@ -18,13 +18,13 @@ Workbench from a Windows computer on the same trusted local network.
 
 ## Download
 
-Open [GitHub Releases](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4)
-and expand **Assets**. The current release is `v0.1.0-preview.4`, a pre-release.
+Open [GitHub Releases](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.5)
+and expand **Assets**. This guide accompanies `v0.1.0-preview.5`, a pre-release.
 
 | Computer | Download |
 |---|---|
-| Windows x64 | `lab-runtime-v0.1.0-preview.4-windows-x86_64.zip` — Runtime and Workbench |
-| Linux x86_64 | `lab-runtime-0.1.0-linux-x86_64.tar.gz` **and** `lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz` |
+| Windows x64 | `lab-runtime-v0.1.0-preview.5-windows-x86_64.zip` — Runtime and Workbench |
+| Linux x86_64 | `lab-runtime-v0.1.0-preview.5-linux-x86_64.tar.gz` **and** `lab-runtime-v0.1.0-preview.5-linux-x86_64.licenses.tar.gz` |
 
 Download the matching `.sha256` files too. Linux users should also keep the
 `.build.json` file with the downloads. Do not select GitHub's **Source code**
@@ -77,8 +77,8 @@ The [User manual](docs/README.md) then covers:
 - [common problems](docs/troubleshooting.md).
 
 Writing integrations or building the software? Use the separate
-[Developer and API documentation](docs/developer/README.md). It is not needed
-for the walkthrough.
+[Developer and API documentation on GitHub](https://github.com/alexandervolkov1/lab-runtime/blob/v0.1.0-preview.5/docs/developer/README.md).
+It needs an Internet connection and is not needed for the walkthrough.
 
 ## Safety and license
 
