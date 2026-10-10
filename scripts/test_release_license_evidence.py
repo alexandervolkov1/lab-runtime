@@ -139,6 +139,8 @@ class EvidenceTests(unittest.TestCase):
         with tarfile.open(self.root / 'dist' / (prefix+'.tar.gz')) as tar:
             self.assertEqual(tar.getnames(),sorted(prefix+'/'+name for name in
                 documentation + ['NOTICE.txt','lab-runtime','RUNTIME-PACKAGE-CONTENTS.txt']))
+            self.assertEqual(sorted(name for name in tar.getnames() if '/examples/' in name),
+                             [prefix+'/examples/runtime.minimal.toml', prefix+'/examples/runtime.virtual.toml'])
         provenance=json.loads((self.root/'dist'/(prefix+'.build.json')).read_text())
         self.assertEqual((provenance['package'],provenance['commit']),(prefix,'1'*40))
         self.assertEqual(len(provenance['artifacts']),2)
@@ -160,9 +162,37 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             validate_user_files(self.root, documentation)
         (self.root / 'clients').rmdir()
+        for relative in ('examples/simple-device/read-only.json',
+                         'examples/simple-device/runtime.read-only.toml',
+                         'examples/runtime.metakon-513-com5.toml'):
+            orphan = self.root / relative
+            orphan.parent.mkdir(parents=True, exist_ok=True)
+            orphan.write_text('synthetic forbidden fixture')
+            with self.assertRaises(RuntimeError):
+                validate_user_files(self.root, documentation)
+            orphan.unlink()
         page.unlink()
         with self.assertRaises((FileNotFoundError, RuntimeError)):
             validate_user_files(self.root, documentation)
+
+    def test_manifest_rejects_orphan_examples_and_notice_is_version_neutral(self):
+        (self.root / 'scripts').mkdir()
+        manifest_path = self.root / 'scripts/user-package-files.json'
+        documentation = user_files(ROOT)
+        for name in documentation:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, self.root / name)
+        for name in ('examples/simple-device/read-only.json',
+                     'examples/simple-device/runtime.read-only.toml'):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, path)
+            manifest_path.write_text(json.dumps(documentation + [name]))
+            with self.assertRaises(RuntimeError):
+                user_files(self.root)
+        notice = (ROOT / 'third-party-licenses/release/NOTICE.txt').read_text()
+        self.assertIn('docs/linux-runtime.md', notice)
+        self.assertNotIn('lab-runtime-0.1.0-linux-x86_64', notice)
 
 
 if __name__ == '__main__':

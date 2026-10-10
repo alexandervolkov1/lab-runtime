@@ -44,8 +44,8 @@ cd lab-runtime-preview5/lab-runtime-v0.1.0-preview.5-linux-x86_64
 ```
 
 Keep the extracted license materials with the executable, especially when copying
-it to another computer. Use the filenames above for the generic extraction
-example in `NOTICE.txt`. The Linux archive includes this guide, the user manual
+it to another computer. `NOTICE.txt` explains why the companion is required.
+The Linux archive includes this guide, the user manual
 and safe configuration examples, but no Workbench executable. Open `docs/README.md`
 for the manual; the built-in virtual profile below needs no configuration file.
 

@@ -35,22 +35,24 @@ Cargo builds and production executables do not depend on it. Tested with Babashk
 The scripts use its included Cheshire JSON parser and Java TCP streams, with no Rust
 crate access, dependencies to install, recovery, mutation retry, or subscriptions.
 
-From an extracted preview package, with `bb` on PATH, the runner automatically uses
-the release executables at the package root:
-
-```powershell
-./clients/babashka-smoke/run-smoke.ps1 -Repeat 3
-```
-
-From the repository root, with `bb` on PATH and PowerShell 7 on Windows:
+Run these tools from the source checkout, with `bb` on PATH and PowerShell 7 on
+Windows. Preview.5 user packages do not contain `clients/`. From the repository root:
 
 ```powershell
 cargo build -p lab-runtime -p lab-workbench --locked
 ./clients/babashka-smoke/run-smoke.ps1 -Repeat 3
 ```
 
-For another layout, pass `-RuntimeExe` and `-WorkbenchExe` explicitly. The runner
-never downloads or builds either product executable.
+To test packaged executables instead, stay in the source checkout and pass their
+paths explicitly. Replace the example package directory with your extracted folder:
+
+```powershell
+./clients/babashka-smoke/run-smoke.ps1 -Repeat 3 `
+  -RuntimeExe 'C:\lab-runtime-package\lab-runtime.exe' `
+  -WorkbenchExe 'C:\lab-runtime-package\lab-workbench.exe'
+```
+
+The runner never downloads or builds either product executable.
 
 The runner starts the actual `lab-runtime.exe --serve --profile virtual-demo --port 0`,
 reads its bound port, and starts the native Workbench with a temporary workspace and
@@ -106,5 +108,4 @@ The separate [browser smoke](../clojurescript-smoke/README.md) remains the real-
 Runtime WebSocket regression. See the canonical
 [Runtime Application API](../../docs/api/README.md) and
 [Workbench API](../../docs/workbench-api.md) for the two surfaces; this README and
-the scripts are not competing protocol specifications. Full Arduino + Clojure +
-Clay integration is post-preview practical work, outside this smoke.
+the scripts are not competing protocol specifications.

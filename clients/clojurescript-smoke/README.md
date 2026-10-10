@@ -22,10 +22,12 @@ event replay, unsubscribe and final committed-state query.
   coordinate);
 - Python 3 for a temporary numeric-loopback HTTP server;
 - installed Google Chrome or Microsoft Edge;
-- a current debug `lab-runtime.exe` built from the repository under test.
+- a `lab-runtime.exe` built from the repository under test, or a packaged executable
+  selected explicitly below.
 
 ## Run
 
+Run from the source checkout; preview.5 user packages do not contain `clients/`.
 From the repository root:
 
 ```powershell
@@ -33,10 +35,11 @@ cargo build -p lab-runtime --locked
 ./clients/clojurescript-smoke/run-smoke.ps1
 ```
 
-From an extracted preview package, supply the packaged release executable explicitly:
+To test an extracted preview executable, stay in the source checkout and select
+its path explicitly. Replace the example directory with your extracted folder:
 
 ```powershell
-./clients/clojurescript-smoke/run-smoke.ps1 -RuntimeExe ./lab-runtime.exe
+./clients/clojurescript-smoke/run-smoke.ps1 -RuntimeExe 'C:\lab-runtime-package\lab-runtime.exe'
 ```
 
 This optional browser smoke still requires the Java, Clojure, Python, and browser

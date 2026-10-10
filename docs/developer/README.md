@@ -74,7 +74,8 @@ Markdown checks against a documentation projection; do not rebuild binaries just
 to validate links. For example, with a new task-owned output directory:
 
 ```powershell
-.\scripts\test-package-documentation.ps1 -OutputDirectory E:\doc-audit\package
+$auditDirectory = Join-Path ([IO.Path]::GetTempPath()) ('lab-runtime-doc-audit-' + [guid]::NewGuid().ToString('N'))
+.\scripts\test-package-documentation.ps1 -OutputDirectory $auditDirectory
 ```
 
 This copies only public documents/examples, checks their hashes and links, validates

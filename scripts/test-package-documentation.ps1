@@ -49,4 +49,16 @@ foreach ($relative in $files) {
 Test-UserDocumentation $destination
 Test-MarkdownQuality $destination
 Test-MarkdownLinks $destination
+# Check that an orphan hardware fixture cannot silently return to the user ZIP.
+$orphan = Join-Path $destination 'examples/runtime.hardware.toml'
+if (Test-Path -LiteralPath $orphan) { throw 'Unexpected fixture already exists' }
+try {
+    [IO.File]::WriteAllText($orphan, '# synthetic forbidden package fixture')
+    $rejected = $false
+    try { Test-UserDocumentation $destination } catch { $rejected = $true }
+    if (-not $rejected) { throw 'User package accepted an extra hardware example' }
+} finally {
+    Remove-Item -LiteralPath $orphan
+}
+Write-Output 'PASS: extra hardware example rejected; clean projection restored'
 Write-Output "PASS: $($files.Count) public package inputs; projection retained at $destination"

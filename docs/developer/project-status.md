@@ -1,6 +1,6 @@
 # Project status and development map
 
-## Published baseline
+## Historical published baseline
 
 [v0.1.0-preview.4](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.4)
 is published and its seven uploaded assets were downloaded and hash-verified.
@@ -18,12 +18,19 @@ See [Linux deployment](../linux-runtime.md) and the
 `third-party-licenses/` materials, including original serialport source and the
 separate Rust standard-library inventory.
 
-## Implemented boundaries
+## Preview.5 documentation and packaging
 
-The local `v0.1.0-preview.5` candidate updates user documentation and packaging
-only. It is not published yet. Its packages omit experimental clients and
-engineering references, which remain in Git. Publication needs a separate review
-of the candidate archives; preview.4 remains the published historical baseline.
+The `v0.1.0-preview.5` changes concern user documentation and packaging only,
+not product behavior. User packages contain the manual and two safe virtual
+configuration examples. Experimental clients, hardware/protocol examples and
+engineering references remain in the source repository.
+
+Check [GitHub Releases](https://github.com/alexandervolkov1/lab-runtime/releases)
+for the current publication status and downloadable assets. This source document
+does not assert whether preview.5 has been published. The preview.4 commit above
+identifies the historical published source, not a moving latest-release pointer.
+
+## Implemented boundaries
 
 - Runtime owns experiment state, acquisition, controllers, central output
   authority, configuration and durable Recorder history. Workbench owns

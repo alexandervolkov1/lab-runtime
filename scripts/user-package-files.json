@@ -10,7 +10,5 @@
   "docs/distributed-workbench.md",
   "docs/troubleshooting.md",
   "examples/runtime.minimal.toml",
-  "examples/runtime.virtual.toml",
-  "examples/simple-device/read-only.json",
-  "examples/simple-device/runtime.read-only.toml"
+  "examples/runtime.virtual.toml"
 ]

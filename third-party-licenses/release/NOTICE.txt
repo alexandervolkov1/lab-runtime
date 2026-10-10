@@ -22,10 +22,11 @@ https://static.crates.io/crates/serialport/serialport-4.10.1.crate
 SHA-256 (also the application's Cargo.lock checksum):
 6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2
 
-Linux recipients: keep the matching .licenses.tar.gz companion with the Runtime
-archive. Extract it into the Runtime directory, for example:
-  tar -xzf lab-runtime-0.1.0-linux-x86_64.licenses.tar.gz -C lab-runtime-0.1.0-linux-x86_64
-It contains this notice, the full MPL license and the offline source.
+Linux recipients: keep the matching .licenses.tar.gz companion from the same
+release as the Runtime archive. First extract the Runtime archive, then extract
+the license companion into the directory containing the lab-runtime executable.
+Use the exact filenames and commands in the packaged docs/linux-runtime.md guide.
+The companion contains this notice, the full MPL license and the offline source.
 Do not redistribute the executable alone without these accompanying materials.
 
 ring 0.17.14 (Windows)

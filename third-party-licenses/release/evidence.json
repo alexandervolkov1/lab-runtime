@@ -304,7 +304,7 @@
     },
     {
       "path": "NOTICE.txt",
-      "sha256": "6845ec61f23adba631bcba4a203a41b69241f6e293013ebaa30dc47617d16a5c",
+      "sha256": "0a81b1a03156ce04cb3c329e293261135242b6da9a08a765b7b278e7edb73757",
       "source": "Project packaging review; original upstream materials are identified separately",
       "targets": [
         "windows",

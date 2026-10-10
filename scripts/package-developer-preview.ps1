@@ -318,9 +318,7 @@ function Test-UserDocumentation([string]$packageRoot) {
         }
     }
     foreach ($relative in @(
-        'LICENSE', 'examples\runtime.minimal.toml', 'examples\runtime.virtual.toml',
-        'examples\simple-device\read-only.json',
-        'examples\simple-device\runtime.read-only.toml'
+        'LICENSE', 'examples\runtime.minimal.toml', 'examples\runtime.virtual.toml'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relative) -PathType Leaf)) {
             throw "missing documented package input: $relative"
@@ -331,18 +329,23 @@ function Test-UserDocumentation([string]$packageRoot) {
             throw "developer-only directory in user package: $relative"
         }
     }
+    $examplesRoot = Join-Path $packageRoot 'examples'
+    $examples = @(Get-ChildItem -LiteralPath $examplesRoot -Recurse -File |
+        ForEach-Object { $_.FullName.Substring($examplesRoot.Length + 1).Replace('\', '/') })
+    if (Compare-Object @('runtime.minimal.toml', 'runtime.virtual.toml') $examples) {
+        throw 'User package must contain only the two safe virtual examples'
+    }
     Write-Host 'User manual: required pages, audience separation and PowerShell syntax passed'
 }
 
 function Get-UserPackageFiles([string]$sourceRoot) {
     $files = @(Get-Content -LiteralPath (Join-Path $sourceRoot 'scripts/user-package-files.json') -Raw |
         ConvertFrom-Json)
-    if (-not $files.Count -or @($files | Sort-Object -Unique).Count -ne $files.Count) {
-        throw 'Empty or duplicate user package inventory'
+    if ($files.Count -ne 12 -or @($files | Sort-Object -Unique).Count -ne $files.Count) {
+        throw 'User package requires exactly 12 unique document/example inputs'
     }
     foreach ($relative in $files) {
-        if ($relative -notmatch '^(README\.md|LICENSE|docs/[a-z-]+\.md|docs/README\.md|examples/[a-z./-]+\.(toml|json))$' -or
-            '..' -in ($relative -split '/') -or
+        if ($relative -notmatch '^(README\.md|LICENSE|docs/[a-z-]+\.md|docs/README\.md|examples/runtime\.(minimal|virtual)\.toml)$' -or
             -not (Test-Path -LiteralPath (Join-Path $sourceRoot $relative) -PathType Leaf)) {
             throw "Invalid user package input: $relative"
         }
@@ -372,15 +375,15 @@ function Test-ExtractedPackage([string]$archivePath) {
         }
 
         foreach ($relativeExample in @(
-            'examples\simple-device\read-only.json',
-            'examples\simple-device\runtime.read-only.toml'
+            'examples\runtime.minimal.toml',
+            'examples\runtime.virtual.toml'
         )) {
             $sourceExample = Join-Path $repositoryRoot $relativeExample
             $packageExample = Join-Path $packageRoot $relativeExample
             if (-not (Test-Path -LiteralPath $packageExample -PathType Leaf) -or
                 (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceExample).Hash -ne
                 (Get-FileHash -Algorithm SHA256 -LiteralPath $packageExample).Hash) {
-                throw "packaged SimpleDevice example differs from validated source: $relativeExample"
+                throw "packaged virtual example differs from validated source: $relativeExample"
             }
         }
 
