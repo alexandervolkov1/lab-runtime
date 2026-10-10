@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 import release_license_evidence as licenses
+from package_user_documentation import user_files, validate_user_files
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -99,6 +100,12 @@ class EvidenceTests(unittest.TestCase):
         spec.loader.exec_module(packager)
         (self.root / 'Cargo.toml').write_text('[workspace.package]\nversion="0.1.0"\n')
         shutil.copy2(ROOT / 'LICENSE', self.root / 'LICENSE')
+        (self.root / 'scripts').mkdir()
+        shutil.copy2(ROOT / 'scripts/user-package-files.json', self.root / 'scripts/user-package-files.json')
+        documentation = user_files(ROOT)
+        for name in documentation:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, self.root / name)
         binary = self.root / 'lab-runtime'
         binary.write_bytes(b'\x7fELF\x02\x01'+bytes(12)+b'\x3e\x00'+bytes(100))
         rows = licenses.evidence(self.root, 'linux', check_toolchain=False)
@@ -125,14 +132,37 @@ class EvidenceTests(unittest.TestCase):
         with patch.object(packager,'ROOT',self.root), patch.object(packager,'command',side_effect=command), \
              patch.object(packager,'evidence',return_value=rows), \
              patch.object(packager,'license_inputs',return_value=([('LICENSE',self.root/'LICENSE',0o644)],[])), \
-             patch.object(packager.subprocess,'check_output',return_value=b''), patch.object(sys,'argv',['packager']):
+             patch.object(packager.subprocess,'check_output',return_value=b''), \
+             patch.object(sys,'argv',['packager','--preview-version','v0.1.0-preview.5']):
             packager.main()
-        prefix = 'lab-runtime-0.1.0-linux-x86_64'
+        prefix = 'lab-runtime-v0.1.0-preview.5-linux-x86_64'
         with tarfile.open(self.root / 'dist' / (prefix+'.tar.gz')) as tar:
-            self.assertEqual(tar.getnames(),[prefix+'/NOTICE.txt',prefix+'/lab-runtime'])
+            self.assertEqual(tar.getnames(),sorted(prefix+'/'+name for name in
+                documentation + ['NOTICE.txt','lab-runtime','RUNTIME-PACKAGE-CONTENTS.txt']))
         provenance=json.loads((self.root/'dist'/(prefix+'.build.json')).read_text())
         self.assertEqual((provenance['package'],provenance['commit']),(prefix,'1'*40))
         self.assertEqual(len(provenance['artifacts']),2)
+
+    def test_user_package_rejects_missing_extra_and_broken_links(self):
+        documentation = user_files(ROOT)
+        for name in documentation:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, self.root / name)
+        validate_user_files(self.root, documentation)
+        page = self.root / 'docs/linux-runtime.md'
+        original = page.read_text()
+        for link in ('missing.md', '../README.md#missing-heading', '../../outside.md'):
+            page.write_text(original + f'\n[broken]({link})\n')
+            with self.assertRaises(RuntimeError):
+                validate_user_files(self.root, documentation)
+        page.write_text(original)
+        (self.root / 'clients').mkdir()
+        with self.assertRaises(RuntimeError):
+            validate_user_files(self.root, documentation)
+        (self.root / 'clients').rmdir()
+        page.unlink()
+        with self.assertRaises((FileNotFoundError, RuntimeError)):
+            validate_user_files(self.root, documentation)
 
 
 if __name__ == '__main__':

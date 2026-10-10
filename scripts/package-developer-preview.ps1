@@ -318,15 +318,36 @@ function Test-UserDocumentation([string]$packageRoot) {
         }
     }
     foreach ($relative in @(
-        'docs\developer\README.md', 'docs\reference\configuration.md',
-        'docs\reference\transports.md', 'examples\runtime.minimal.toml',
-        'examples\runtime.virtual.toml'
+        'LICENSE', 'examples\runtime.minimal.toml', 'examples\runtime.virtual.toml',
+        'examples\simple-device\read-only.json',
+        'examples\simple-device\runtime.read-only.toml'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relative) -PathType Leaf)) {
             throw "missing documented package input: $relative"
         }
     }
+    foreach ($relative in @('clients', 'ai', 'docs\developer', 'docs\api', 'docs\reference')) {
+        if (Test-Path -LiteralPath (Join-Path $packageRoot $relative)) {
+            throw "developer-only directory in user package: $relative"
+        }
+    }
     Write-Host 'User manual: required pages, audience separation and PowerShell syntax passed'
+}
+
+function Get-UserPackageFiles([string]$sourceRoot) {
+    $files = @(Get-Content -LiteralPath (Join-Path $sourceRoot 'scripts/user-package-files.json') -Raw |
+        ConvertFrom-Json)
+    if (-not $files.Count -or @($files | Sort-Object -Unique).Count -ne $files.Count) {
+        throw 'Empty or duplicate user package inventory'
+    }
+    foreach ($relative in $files) {
+        if ($relative -notmatch '^(README\.md|LICENSE|docs/[a-z-]+\.md|docs/README\.md|examples/[a-z./-]+\.(toml|json))$' -or
+            '..' -in ($relative -split '/') -or
+            -not (Test-Path -LiteralPath (Join-Path $sourceRoot $relative) -PathType Leaf)) {
+            throw "Invalid user package input: $relative"
+        }
+    }
+    return $files
 }
 
 function Test-ExtractedPackage([string]$archivePath) {
@@ -343,20 +364,16 @@ function Test-ExtractedPackage([string]$archivePath) {
         $workbenchExecutable = Join-Path $packageRoot 'lab-workbench.exe'
         $starter = Join-Path $packageRoot 'examples\runtime.minimal.toml'
         $fullVirtual = Join-Path $packageRoot 'examples\runtime.virtual.toml'
-        $babashkaExample = Join-Path $packageRoot 'clients\babashka-smoke\README.md'
         if (-not (Test-Path -LiteralPath $runtimeExecutable -PathType Leaf) -or
             -not (Test-Path -LiteralPath $workbenchExecutable -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $babashkaExample -PathType Leaf) -or
             -not (Test-Path -LiteralPath $starter -PathType Leaf) -or
             -not (Test-Path -LiteralPath $fullVirtual -PathType Leaf)) {
-            throw 'extracted product binary, client example, or safe starter is missing'
+            throw 'extracted product binary or safe starter is missing'
         }
 
         foreach ($relativeExample in @(
             'examples\simple-device\read-only.json',
-            'examples\simple-device\writable.json',
-            'examples\simple-device\runtime.read-only.toml',
-            'examples\simple-device\runtime.writable.toml'
+            'examples\simple-device\runtime.read-only.toml'
         )) {
             $sourceExample = Join-Path $repositoryRoot $relativeExample
             $packageExample = Join-Path $packageRoot $relativeExample
@@ -593,6 +610,12 @@ try {
     }
     $releaseLicenseRows = Get-ReleaseLicenseEvidence $repositoryRoot
 
+    foreach ($output in @($stageRoot, $zipPath, $checksumPath)) {
+        Assert-ChildPath $output $distRoot
+        if (Test-Path -LiteralPath $output) {
+            throw "release output already exists; preserve it and choose a new version: $output"
+        }
+    }
     & cargo build --workspace --release --locked
     Assert-Success 'release build'
 
@@ -606,64 +629,11 @@ try {
 
     Assert-ChildPath $stageRoot $distRoot
     Assert-ChildPath $zipPath $distRoot
-    if (Test-Path -LiteralPath $stageRoot) {
-        Remove-Item -LiteralPath $stageRoot -Recurse -Force
-    }
-    foreach ($artifact in @($zipPath, $checksumPath)) {
-        if (Test-Path -LiteralPath $artifact) {
-            Remove-Item -LiteralPath $artifact -Force
-        }
-    }
     [System.IO.Directory]::CreateDirectory($stageRoot) | Out-Null
 
     Copy-Item -LiteralPath $runtimeBinary -Destination (Join-Path $stageRoot 'lab-runtime.exe')
     Copy-Item -LiteralPath $workbenchBinary -Destination (Join-Path $stageRoot 'lab-workbench.exe')
-    $publicFiles = @(
-        'README.md',
-        'LICENSE',
-        'docs\README.md',
-        'docs\getting-started.md',
-        'docs\recording.md',
-        'docs\troubleshooting.md',
-        'docs\linux-runtime.md',
-        'docs\release-license-evidence.txt',
-        'docs\configuration.md',
-        'docs\simple-device.md',
-        'docs\developer\simple-device-tutorial.md',
-        'docs\developer\full-driver-tutorial.md',
-        'docs\developer\project-status.md',
-        'docs\developer\README.md',
-        'docs\reference\configuration.md',
-        'docs\reference\transports.md',
-        'docs\architecture.md',
-        'docs\application-api.md',
-        'docs\recorder-sqlite.md',
-        'docs\recovery-and-faults.md',
-        'docs\safety-and-failures.md',
-        'docs\extending-runtime.md',
-        'docs\workbench.md',
-        'docs\distributed-workbench.md',
-        'docs\workbench-api.md',
-        'docs\api\README.md',
-        'docs\api\protocol-and-sessions.md',
-        'docs\api\operations.md',
-        'docs\api\events-mutations-and-recovery.md',
-        'docs\api\errors-and-limits.md',
-        'examples\runtime.minimal.toml',
-        'examples\runtime.virtual.toml',
-        'examples\simple-device\read-only.json',
-        'examples\simple-device\writable.json',
-        'examples\simple-device\runtime.read-only.toml',
-        'examples\simple-device\runtime.writable.toml',
-        'clients\babashka-smoke\README.md',
-        'clients\babashka-smoke\run-smoke.ps1',
-        'clients\babashka-smoke\runtime.clj',
-        'clients\babashka-smoke\distributed.clj',
-        'clients\babashka-smoke\workbench.clj',
-        'clients\clojurescript-smoke\README.md',
-        'clients\clojurescript-smoke\run-smoke.ps1',
-        'clients\clojurescript-smoke\src\lab_runtime_smoke\core.cljs'
-    )
+    $publicFiles = @(Get-UserPackageFiles $repositoryRoot)
     foreach ($relativePath in $publicFiles) {
         Copy-ApprovedFile $relativePath $relativePath
     }
@@ -698,6 +668,9 @@ try {
         "target=$targetTriple"
         "git-commit=$commit"
         "git-tree=$sourceState"
+        "cargo-lock-sha256=$((Get-FileHash -LiteralPath (Join-Path $repositoryRoot 'Cargo.lock')).Hash.ToLowerInvariant())"
+        "lab-runtime.exe-sha256=$((Get-FileHash -LiteralPath $runtimeBinary).Hash.ToLowerInvariant())"
+        "lab-workbench.exe-sha256=$((Get-FileHash -LiteralPath $workbenchBinary).Hash.ToLowerInvariant())"
         'protocol=lab-runtime.application/1'
         'application-api=0.1-pre'
         'project-license=MIT'

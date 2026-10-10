@@ -4,7 +4,7 @@ param(
     [string]$OutputDirectory
 )
 
-# A lightweight projection of the packager's literal public-file inventory.
+# A lightweight projection of the shared user-file inventory.
 # Does not build Rust, run product binaries, change existing archives or delete files.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -21,7 +21,7 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
 if ($parseErrors.Count) { throw 'Packaging script has syntax errors' }
 foreach ($name in @(
     'Get-MarkdownHeadingIds', 'Test-MarkdownQuality',
-    'Test-MarkdownLinks', 'Test-UserDocumentation'
+    'Test-MarkdownLinks', 'Test-UserDocumentation', 'Get-UserPackageFiles'
 )) {
     $function = $ast.Find({ param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
@@ -30,12 +30,7 @@ foreach ($name in @(
     if (-not $function) { throw "Missing packaging function: $name" }
     Invoke-Expression $function.Extent.Text
 }
-$inventory = $ast.Find({ param($node)
-    $node -is [Management.Automation.Language.AssignmentStatementAst] -and
-    $node.Left.Extent.Text -eq '$publicFiles'
-}, $true)
-if (-not $inventory) { throw 'Missing public-file inventory' }
-$files = @(Invoke-Expression $inventory.Right.Extent.Text)
+$files = @(Get-UserPackageFiles $repositoryRoot)
 $destinationPrefix = $destination.TrimEnd('\') + '\'
 $sourcePrefix = $repositoryRoot.TrimEnd('\') + '\'
 foreach ($relative in $files) {

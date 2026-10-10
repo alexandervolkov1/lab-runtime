@@ -22,6 +22,7 @@ import tomllib
 
 sys.dont_write_bytecode = True
 from release_license_evidence import check_extracted, destination as license_destination, evidence, package_manifest
+from package_user_documentation import user_files, validate_user_files
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = "x86_64-unknown-linux-gnu"
@@ -95,6 +96,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-dirty", action="store_true",
                         help="record an uncommitted review build explicitly")
+    parser.add_argument("--preview-version", required=True,
+                        help="explicit release identity, for example v0.1.0-preview.5")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         parser.error("run this packager on Linux x86_64 (native, VM or WSL2)")
@@ -114,7 +117,11 @@ def main():
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
         parser.error("unsafe package version")
-    name = f"lab-runtime-{version}-linux-x86_64"
+    if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-preview\.[1-9][0-9]*', args.preview_version) or \
+            args.preview_version[1:].split('-')[0] != version:
+        parser.error('preview version must match the Cargo package base version')
+    name = f"lab-runtime-{args.preview_version}-linux-x86_64"
+    documentation = user_files(ROOT)
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
     artifacts = [dist / f"{name}.tar.gz", dist / f"{name}.licenses.tar.gz",
@@ -174,8 +181,24 @@ def main():
         files.append((contents.name, contents, 0o644))
         executable_archive = staging / artifacts[0].name
         licenses_archive = staging / artifacts[1].name
-        archive(executable_archive, [(f"{name}/lab-runtime", binary, 0o755),
-                                    (f"{name}/NOTICE.txt", ROOT / "third-party-licenses/release/NOTICE.txt", 0o644)], timestamp)
+        runtime_files = [(f"{name}/lab-runtime", binary, 0o755),
+                         (f"{name}/NOTICE.txt", ROOT / "third-party-licenses/release/NOTICE.txt", 0o644)]
+        runtime_files.extend((f'{name}/{path}', ROOT / path, 0o644) for path in documentation)
+        runtime_contents = staging / 'RUNTIME-PACKAGE-CONTENTS.txt'
+        runtime_contents.write_text('\n'.join(sorted(
+            [path for path, _, _ in runtime_files] + [f'{name}/{runtime_contents.name}'])) + '\n')
+        runtime_files.append((f'{name}/{runtime_contents.name}', runtime_contents, 0o644))
+        archive(executable_archive, runtime_files, timestamp)
+        runtime_extract = staging / 'runtime-audit'
+        with tarfile.open(executable_archive, 'r:gz') as tar:
+            if sorted(tar.getnames()) != sorted(path for path, _, _ in runtime_files) or \
+                    not all(m.isfile() for m in tar.getmembers()):
+                raise RuntimeError('Runtime archive inventory mismatch')
+            tar.extractall(runtime_extract, filter='data')
+        for path, source, _ in runtime_files:
+            if sha256(runtime_extract / path) != sha256(source):
+                raise RuntimeError(f'Extracted Runtime package file changed: {path}')
+        validate_user_files(runtime_extract / name, documentation)
         archive(licenses_archive, files, timestamp)
         # Validate the actual archive bytes and offline source after extraction.
         extracted = staging / "license-audit"
@@ -192,6 +215,7 @@ def main():
                 raise RuntimeError(f"extracted license file changed: {file_name}")
         provenance = {
             "package": name, "target": TARGET, "commit": command("git", "rev-parse", "HEAD"),
+            "preview_version": args.preview_version, "cargo_package_version": version,
             "dirty_status": status, "source_changes": source_changes,
             "build_host": {"system": platform.platform(), "machine": platform.machine()},
             "rustc": toolchain, "cargo": command("cargo", "--version"),
