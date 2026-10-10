@@ -241,6 +241,10 @@ its values as physical evidence.
 
 ### Native Metakon instrument
 
+Complete regression deployments and their relative `definitions/` directory live
+in [test-data/fixtures/metakon](../../test-data/fixtures/metakon/README.md), not in
+the user examples. They are not ready-to-run hardware configurations.
+
 ```toml
 [[instruments]]
 id = 11

@@ -127,7 +127,7 @@ fn advance(host: &mut HostCore, clock: &mut TestClock, milliseconds: u64) {
 fn configured_controller_reaches_physical_output_and_safe_zero_through_one_path() {
     let path = std::fs::canonicalize(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/runtime.metakon-513-com5-output.toml"),
+            .join("../../test-data/fixtures/metakon/runtime.metakon-513-com5-output.toml"),
     )
     .unwrap();
     let deployment = load_runtime_toml(&path).unwrap();
@@ -198,7 +198,7 @@ fn configured_controller_reaches_physical_output_and_safe_zero_through_one_path(
 fn reconnect_and_fresh_input_do_not_rearm_a_controller_after_ambiguous_output() {
     let path = std::fs::canonicalize(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/runtime.metakon-513-com5-output.toml"),
+            .join("../../test-data/fixtures/metakon/runtime.metakon-513-com5-output.toml"),
     )
     .unwrap();
     let deployment = load_runtime_toml(&path).unwrap();

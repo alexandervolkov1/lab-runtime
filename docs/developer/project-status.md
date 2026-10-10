@@ -90,8 +90,8 @@ These are directions for discussion, not authorization to start another mileston
 | `apps/lab-workbench/` | Native client, presentation, recovery and local API |
 | `crates/lab-core/` | Platform-neutral experiment and safety contracts |
 | `clients/` | Independent Babashka/ClojureScript Application-boundary demonstrations |
-| `examples/` | Device definitions and deployment TOML/JSON; not live experiment archives |
-| `test-data/` | Source-consumed deterministic regression fixture data |
+| `examples/` | Safe virtual deployments and developer-oriented SimpleDevice protocol examples |
+| `test-data/` | Deterministic regression inputs, including internal Metakon deployments under `fixtures/metakon/` |
 | `scripts/` | Windows/Linux packaging, license evidence gates and their tests |
 | `third-party-licenses/` | Pinned redistribution evidence; not a disposable cache |
 | `docs/` | Current user, API, architecture and contributor documentation |

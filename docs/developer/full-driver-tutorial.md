@@ -157,7 +157,9 @@ The deployment schema is a closed, tagged enum in
 7. classify each property as read-only, deployment-only, ordinary live, live-safe,
    or reinitializing according to its real lifecycle.
 
-Metakon's current deployment shape is:
+Metakon's current deployment shape is shown below. Complete internal test inputs
+are in [the Metakon fixture directory](../../test-data/fixtures/metakon/README.md);
+the definition path stays relative to the TOML file.
 
 ```toml
 [[instruments]]
@@ -641,9 +643,9 @@ avoid integrating with the source listed in the middle column.
 The repository's physical examples are qualification/development inputs, not safe
 virtual package examples. In a source checkout, trace the read-only path as follows:
 
-1. `examples/runtime.metakon-513-com5.toml` selects `kind = "metakon"`, a COM
+1. `test-data/fixtures/metakon/runtime.metakon-513-com5.toml` selects `kind = "metakon"`, a COM
    resource, address, cadence, and frozen definition.
-2. `examples/definitions/metakon-513-thermocouple.json` selects trusted
+2. `test-data/fixtures/metakon/definitions/metakon-513-thermocouple.json` selects trusted
    `channel_type` and `temperature` operations and supplies descriptor metadata.
 3. `configuration.rs` parses/cross-validates both and freezes exact definition bytes.
 4. `host/instruments.rs` registers `MetakonInstrumentConfig`, the temperature
@@ -656,8 +658,8 @@ virtual package examples. In a source checkout, trace the read-only path as foll
 8. Generic Application discovery/measurement/history and Recorder paths expose the
    result without a Metakon-specific client operation.
 
-Trace writable output with `examples/runtime.metakon-513-com5-output.toml` and
-`examples/definitions/metakon-513-output.json`:
+Trace writable output with `test-data/fixtures/metakon/runtime.metakon-513-com5-output.toml`
+and `test-data/fixtures/metakon/definitions/metakon-513-output.json`:
 
 ```text
 controller proposal

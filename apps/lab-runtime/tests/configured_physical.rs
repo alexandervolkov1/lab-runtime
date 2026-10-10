@@ -243,7 +243,8 @@ fn reconnect_retirement_uses_current_monotonic_time_after_transport_poll() {
 #[test]
 fn c16_metakon_513_thermocouple_scale_preserves_raw_degree_values() {
     let path = std::fs::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtime.metakon-513-com5.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-data/fixtures/metakon/runtime.metakon-513-com5.toml"),
     )
     .unwrap();
     let deployment = load_runtime_toml(&path).unwrap();

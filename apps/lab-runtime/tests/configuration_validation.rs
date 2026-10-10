@@ -289,14 +289,27 @@ fn c1_repository_example_deployments_parse_with_the_production_loader() {
     for name in [
         "runtime.minimal.toml",
         "runtime.virtual.toml",
-        "runtime.metakon-read-only.toml",
-        "runtime.metakon-513-com5.toml",
-        "runtime.metakon-513-m9d-read-preflight.toml",
-        "runtime.metakon-513-com5-output.toml",
         "simple-device/runtime.read-only.toml",
         "simple-device/runtime.writable.toml",
     ] {
         let deployment = load_runtime_toml(&examples.join(name)).unwrap();
+        assert!(!deployment.toml_bytes().is_empty());
+    }
+}
+
+#[test]
+fn c1_metakon_regression_fixtures_parse_with_the_production_loader() {
+    let fixtures = std::fs::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/fixtures/metakon"),
+    )
+    .unwrap();
+    for name in [
+        "runtime.metakon-read-only.toml",
+        "runtime.metakon-513-com5.toml",
+        "runtime.metakon-513-m9d-read-preflight.toml",
+        "runtime.metakon-513-com5-output.toml",
+    ] {
+        let deployment = load_runtime_toml(&fixtures.join(name)).unwrap();
         assert!(!deployment.toml_bytes().is_empty());
     }
 }
