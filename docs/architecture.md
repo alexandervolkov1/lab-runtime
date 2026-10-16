@@ -182,7 +182,7 @@ durable commit; the authoritative committed prefix advances only after the stora
 receipt returns to the owner. See [Recorder and SQLite](recorder-sqlite.md).
 
 Reference mutations reserve accepted/completion audit capacity before admission.
-The bounded budget is 13 groups / 1,545 records / 4 MiB; only Reference credit is
+The bounded budget is 36 groups / 1,545 records / 4 MiB; only Reference credit is
 protected, while reconnect shares ordinary credit with acquisition. Reservation
 does not guarantee SQL success or unlimited concurrent admission. Submitted credits
 remain charged until a valid cumulative SQL receipt. Required recording failure

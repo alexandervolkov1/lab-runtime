@@ -274,18 +274,19 @@ fn failed_required_recorder_rejects_before_admission_but_best_effort_is_explicit
 }
 
 #[test]
-fn protected_credit_handles_nine_ordinary_groups_two_clients_and_exact_busy_identity() {
+fn protected_credit_handles_full_ordinary_budget_two_clients_and_exact_busy_identity() {
     for policy in [RecordingPolicy::Required, RecordingPolicy::BestEffort] {
         let mut f = Fixture::new(policy, RecorderLimits::default());
         let a = f.hello(1);
         let b = f.hello(2);
         let c = f.hello(3);
-        f.facts(9);
+        let ordinary_groups = RecorderLimits::default().groups - 4;
+        f.facts(ordinary_groups as u64);
         assert_eq!(f.retune(1, &a, 1, 1)[1]["state"], "completed");
         assert_eq!(f.retune(2, &b, 1, 2)[1]["state"], "completed");
         let before = f.service.owner().recording_status().unwrap().clone();
-        assert_eq!(before.outstanding_groups, 13);
-        assert_eq!(before.outstanding_records, 15);
+        assert_eq!(before.outstanding_groups, RecorderLimits::default().groups);
+        assert_eq!(before.outstanding_records, ordinary_groups + 6);
         assert_eq!(before.activation_generation, 1);
         assert_eq!(before.persisted_through_sequence, 2);
         let busy = f.retune(3, &c, 1, 3);
@@ -310,7 +311,10 @@ fn protected_credit_handles_nine_ordinary_groups_two_clients_and_exact_busy_iden
         let db = f.seal();
         assert_eq!(count(&db, "SELECT COUNT(*) FROM operation_events"), 6);
         assert_eq!(count(&db, "SELECT COUNT(*) FROM reference_events"), 3);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM measurements"), 9);
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM measurements"),
+            ordinary_groups as i64
+        );
         assert_eq!(count(&db, "SELECT COUNT(*) FROM gaps"), 0);
         drop(db);
         let mut reopened = RecorderWorker::open(&f.path, RecorderLimits::default()).unwrap();
@@ -356,13 +360,18 @@ fn reduced_shared_capacity_rejects_whole_operation_without_gap_or_sequence_consu
 #[test]
 fn genuine_ordinary_overload_remains_failed_with_durable_gap() {
     let mut f = Fixture::new(RecordingPolicy::Required, RecorderLimits::default());
-    f.facts(10);
+    // Production protects four groups for Reference accepted/completion pairs.
+    let ordinary_groups = RecorderLimits::default().groups - 4;
+    f.facts(ordinary_groups as u64 + 1);
     let status = f.service.owner().recording_status().unwrap();
     assert_eq!(status.state, RecordingState::Failed);
-    assert_eq!(status.outstanding_groups, 9);
+    assert_eq!(status.outstanding_groups, ordinary_groups);
     assert_eq!(status.coverage, "gap");
     let db = f.seal();
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM measurements"), 9);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM measurements"),
+        ordinary_groups as i64
+    );
     assert_eq!(count(&db, "SELECT COUNT(*) FROM gaps"), 1);
 }
 
