@@ -1,10 +1,10 @@
 # Configuration guide
 
-[User manual](README.md) · [Troubleshooting](troubleshooting.md)
+[User manual](README.md) Р’В· [Troubleshooting](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/troubleshooting.md)
 
 Use a configuration file when you want to keep instrument and recording settings
 between launches. Stop Runtime before editing the file; editing it does not change
-a running experiment. The GUI does not have a configuration-file reload button.
+a running experiment.
 
 ## Where to keep files
 
@@ -18,7 +18,7 @@ Copy-Item .\examples\runtime.minimal.toml .\my-config\runtime.toml
 ```
 
 The supplied example chooses a free port. Read `port` from the ready message and
-use that number with Workbench. It writes `my-config\history.sqlite`.
+use that number with your Application client. It writes `my-config\history.sqlite`.
 
 Do not combine `--config` with `--profile`, `--record-db` or `--port`. In this mode,
 edit the file to select the port and database. All commands assume the package
@@ -56,8 +56,8 @@ poll_period_ms = 100
 ```
 
 Save as UTF-8 without BOM, with a `.toml` extension rather than `.toml.txt`.
-Start it with the same `--serve --config` command above. Connect Workbench to
-`127.0.0.1:7420` and select **Signal 1/1**. This small configuration has no controller
+Start it with the same `--serve --config` command above. Connect an Application client to
+`127.0.0.1:7420`, perform `hello`, then query `latest` for signal 1/1. This small configuration has no controller
 or Reference. For the virtual controller example, copy `examples/runtime.virtual.toml`
 instead; use a different directory so each example has its own database.
 
@@ -161,7 +161,7 @@ for this procedure.
     },
     {
       "id": 2, "name": "temperature", "value_type": "float",
-      "unit": { "id": "degC", "symbol": "°C" }, "min": -999.0, "max": 9999.0,
+      "unit": { "id": "degC", "symbol": "Р’В°C" }, "min": -999.0, "max": 9999.0,
       "role": "measurement", "access": "read_only",
       "operation": "temperature", "scale": 1.0, "write_effect": "none"
     }
@@ -180,8 +180,8 @@ Stop any other Runtime on port 7420, then run:
 .\lab-runtime.exe --serve --config .\metakon-read-only\runtime.toml
 ```
 
-After ready, connect Workbench to `127.0.0.1:7420`. Select **Signal 1/2** for the
-measured temperature. Compare it with the instrument's display before trusting or
+After ready, connect an Application client to `127.0.0.1:7420`. After `hello`,
+query `latest` for signal 1/2 for the measured temperature. Compare it with the instrument's display before trusting or
 recording it. Missing readings or an implausible scale are reasons to stop and
 review the definition, not to guess at write commands. Ctrl+C stops Runtime.
 
@@ -192,6 +192,6 @@ encoding, quotation marks, field spelling, COM port and definition path. Unknown
 fields are rejected. Do not remove safety settings to work around a validation error.
 
 Keep each configuration, its JSON definitions and database location together.
-See [Troubleshooting](troubleshooting.md#runtime-does-not-report-ready) for common
-failures. The separate [Configuration reference on GitHub](https://github.com/alexandervolkov1/lab-runtime/blob/v0.1.0-preview.5/docs/reference/configuration.md)
+See [Troubleshooting](reference/configuration.md#troubleshooting) for common
+failures. The separate [Configuration reference on GitHub](reference/configuration.md)
 contains all CLI options, field types and limits for technical configuration work.

@@ -6,28 +6,15 @@ The Application API is the supported language-neutral boundary for observing and
 operating Runtime. It exposes laboratory semantics without exposing Rust internals,
 transport handles, SQLite internals, or GUI presentation state.
 
-There are two separate external surfaces:
-
-```text
-direct automation
-    client -> Runtime API -> Runtime
-
-presentation-aware automation
-    client -> Workbench API -> dispatcher
-           -> existing Runtime client -> Runtime
-```
-
-Runtime remains the experiment authority in both paths. Workbench additionally owns
-presentation revision and client-local recovery, but it is not a second Runtime, a
-second mutation sequencer, or a transparent arbitrary-operation proxy. Use Runtime
-directly when Workbench presentation semantics are unnecessary.
+Any independent client can connect directly to Runtime. Workbench remains an
+external presentation client maintained in the original repository.
 
 ## Reference map
 
 - [Protocol and sessions](protocol-and-sessions.md): transports, envelopes, hello,
   scopes, IDs, and versioning.
 - [Manual output](manual-output.md): explicit scope-owned power, finite leases,
-  delivery evidence, safe return and a direct Clojure example.
+  delivery evidence, safe return and an optional external example.
 - [Operations](operations.md): the exact 47-operation registry, availability, and 27
   capabilities.
 - [Events, mutations, and recovery](events-mutations-and-recovery.md): subscriptions,
@@ -62,11 +49,8 @@ state. A closed socket cannot be translated into Completed or Failed.
 Native Workbench is one TCP client. The API is also intended for advanced external
 clients; it is not private Workbench protocol.
 
-Workbench also offers a separate opt-in [presentation/client API](../workbench-api.md).
-Its external callers share the existing Workbench worker and do not select Runtime
-mutation identities. Direct Application clients still use the scope/sequence contract
-below. The optional [Babashka smoke](../../clients/babashka-smoke/README.md) is
-acceptance/example code, not a supported client SDK.
+An optional external example is linked from the repository README. It is not a
+supported SDK or a prerequisite for Runtime build, tests, configuration or startup.
 
 ## Version and first request
 

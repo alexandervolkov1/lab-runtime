@@ -242,7 +242,7 @@ its values as physical evidence.
 ### Native Metakon instrument
 
 Complete regression deployments and their relative `definitions/` directory live
-in [test-data/fixtures/metakon](../../test-data/fixtures/metakon/README.md), not in
+in [test-data/fixtures/metakon](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/test-data/fixtures/metakon/README.md), not in
 the user examples. They are not ready-to-run hardware configurations.
 
 ```toml
@@ -266,7 +266,7 @@ against the configured instrument and controller bindings.
 
 Metakon is the current source-integrated native physical implementation, not a
 dynamic driver plugin. See the
-[native Rust instrument guide](../developer/full-driver-tutorial.md) for its complete
+[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md) for its complete
 developer boundary and [Extending the Runtime](../extending-runtime.md) for the
 extension overview.
 
@@ -298,7 +298,7 @@ definition is at most 8,192 bytes and is resolved relative to the deployment fil
 
 The [SimpleDevice reference](../simple-device.md) defines the exact JSON grammar,
 READ, WRITE, ACK, READBACK, bounds, mapping, and output-safety semantics. Follow the
-[SimpleDevice tutorial](../developer/simple-device-tutorial.md) for validated read-only
+[SimpleDevice tutorial](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/simple-device-tutorial.md) for validated read-only
 and writable examples. The lifecycle boundary is also summarized in
 [Extending the Runtime](../extending-runtime.md#add-a-declarative-simpledevice).
 
@@ -339,7 +339,7 @@ key = "temperature-setpoint"
 kind = "fixed"
 value = 20.0
 unit_id = "degC"
-unit_symbol = "°C"
+unit_symbol = "Р’В°C"
 ```
 
 For `kind = "ramp"`, both finite `target` and finite positive `rate` are required.
@@ -427,8 +427,6 @@ Path bases are intentionally not universal:
 | instrument `definition` | parent of the resolved deployment file | `..` traversal is rejected; exact bytes are frozen for provenance. |
 | profile `--record-db` | none | Must already be an absolute local path; UNC/network forms are rejected. |
 | diagnostics directory | value as supplied | Prefer absolute `LAB_RUNTIME_LOG_DIRECTORY`; a relative value follows process filesystem semantics. |
-| Workbench `--workspace` | process current working directory | Resolved lexically and through its deepest existing ancestor before ownership. |
-| default Workbench workspace | Windows user-data directory | `%LOCALAPPDATA%\lab-runtime\workbench`, falling back to `%APPDATA%`. |
 
 The deployment path is lexically absolutized, not canonicalized. Relative referenced
 paths are owned by the deployment file even if Runtime's current directory later
@@ -437,82 +435,6 @@ traversal rule; Recorder storage separately rejects nonlocal/UNC paths.
 
 Use `[IO.Path]::GetFullPath(...)` for CLI paths on Windows when the intended base
 should be obvious in a log or shell history.
-
-## Workbench startup options
-
-| Option | Value | Default | Scope | Restart? | Meaning |
-|---|---|---|---|---|---|
-| `--connect` | numeric TCP socket or WS/WSS URL | none; required | Runtime client | yes | Endpoint used by the one Workbench Application client worker. |
-| `--allow-remote-tcp` | none | absent | Runtime TCP client | yes | Allows a numeric unicast remote IPv4 endpoint with a nonzero port on a trusted LAN; no TLS or authentication. |
-| `--allow-insecure-ws` | none | absent | Runtime WS client | yes | Allows plaintext WS to a host not expressed as a loopback IP; does not change Runtime's loopback WS bind. |
-| `--ws-origin` | exact HTTP/HTTPS origin | `http://127.0.0.1:3000` | WS/WSS handshake | yes | Must match Runtime's Origin allowlist. |
-| `--ws-token-env` | environment variable name | none | WS/WSS handshake | yes | Reads the `X-Token` access key; mutually exclusive with `--ws-token-file`. |
-| `--ws-token-file` | path | none | WS/WSS handshake | yes | Reads a bounded access-key file; mutually exclusive with `--ws-token-env`. |
-| `--ws-ca-file` | PEM path | OS trust roots only | WSS TLS | yes | Adds private CA certificates without disabling certificate or hostname verification. |
-| `--observe` | none | absent | local client policy | yes | Rejects Runtime mutations and Exact Retry; permits queries, subscriptions, manual Check Status and presentation operations. |
-| `--scope` | retained Application scope string | journal scope if usable, otherwise a new scope | Runtime client recovery | yes | Explicitly requests reattachment to an existing retained scope. |
-| `--workspace` | path | Windows user-data workspace | Workbench persistence | yes | Directory containing presentation and recovery files and protected by one process guard. |
-| `--workbench-listen` | numeric IPv4-loopback socket | disabled | external Workbench API | yes | Enables the opt-in bounded TCP/NDJSON client endpoint; port `0` asks the OS for a port. |
-
-Arguments may be ordered freely, but each option may appear only once. Unknown,
-duplicate, or missing options fail startup and print usage. TCP `--connect` accepts
-a numeric socket address, not a hostname, and defaults to loopback-only policy.
-`--allow-remote-tcp` cannot be combined with WebSocket options. WS/WSS URLs accept
-hostnames, require exactly `/application/v1`, and reject user credentials, queries
-and fragments. Plain `ws://localhost/...` also requires `--allow-insecure-ws`
-because the plaintext exception recognizes numeric loopback IPs only; use
-`ws://127.0.0.1:PORT/application/v1` for local WS. `--workbench-listen` rejects
-wildcard, non-loopback, hostname, and IPv6 forms independently of Runtime transport.
-
-The token file may contain at most 514 bytes including one optional LF or CRLF.
-The resulting token must be nonempty ASCII, at most 512 bytes, with no embedded
-CR/LF. Tokens enter only the `X-Token` handshake header, never Application JSON,
-URLs or recovery/presentation files. CA configuration requires WSS; TLS errors
-fail the connection without a downgrade. See [WS/WSS transport support](transports.md).
-
-Observation mode also rejects `history_read`, an asynchronous mutation/work job.
-It applies to GUI and mediated Workbench API submissions, not independent Runtime
-clients. All transports retain the same manual mutation recovery and quarantine
-rules; connecting or loading a journal never automatically replays a mutation.
-
-When enabled, the Workbench endpoint prints its actual address:
-
-```json
-{"workbench_endpoint":"127.0.0.1:<port>"}
-```
-
-This endpoint is unauthenticated and intentionally loopback-only. It does not create
-another Runtime client, sequencer, recovery engine, or presentation owner. See the
-[Workbench API](../workbench-api.md).
-
-## Workbench workspace and presentation persistence
-
-The resolved workspace contains two independent formats:
-
-- `presentation-v1.json`: an optional, strict, validated client-owned presentation
-  document, bounded to 1,048,576 serialized bytes;
-- `recovery-v1.json`: the worker-owned exact mutation recovery journal, bounded to
-  65,536 bytes and at most eight records.
-
-Workbench acquires an OS-owned Windows process guard before opening either file. A
-second Workbench using the same resolved workspace fails. The guard is released by
-normal exit or process death.
-
-If `--workspace` is omitted, `%LOCALAPPDATA%` is preferred and `%APPDATA%` is the
-fallback. If neither exists, default-workspace selection fails; passing an explicit
-workspace avoids that dependency.
-
-At startup, a valid presentation file becomes the process-local presentation. An
-invalid or unreadable file is not replaced: Workbench reports a local problem and
-uses an empty in-memory document. The current GUI has no Save Layout command or
-general persistence manager, so do not assume every in-memory UI change is written
-back automatically. Recovery journal writes are separate, validated, and atomic;
-loading a journal never retries or resubmits a mutation.
-
-Neither workspace file is Runtime experiment state. Deleting or changing
-presentation cannot alter instruments, controllers, Recorder, or output authority.
-Recovery files are evidence for manual reconciliation, not permission to infer or
-fabricate an operation result.
 
 ## Environment and diagnostics
 
@@ -528,14 +450,6 @@ On Windows the default log directory is
 `$XDG_STATE_HOME/lab-runtime/logs` is used when present, otherwise a temporary
 directory fallback is used. Diagnostic files are bounded best-effort troubleshooting,
 not Recorder history.
-
-`LOCALAPPDATA` and `APPDATA` also participate in Workbench's default workspace
-selection as described above. They are operating-system location inputs, not
-deployment overlays.
-
-The source tree contains narrow environment variables for GUI/process acceptance
-harnesses. They are test-only seams and are intentionally not supported operator
-configuration.
 
 ## Live Runtime operations versus deployment configuration
 
@@ -559,7 +473,7 @@ the deployment lifecycle is disabled. They do not select a new arbitrary file, a
 listener addresses, or write changes back to TOML. Process-local property overlays
 and API-provisioned SimpleDevice overlays are not restart persistence.
 
-A live mutation is not “higher precedence” than TOML. It is a revision-fenced
+A live mutation is not РІР‚Сљhigher precedenceРІР‚Сњ than TOML. It is a revision-fenced
 Runtime mutation of the active authoritative configuration. A later explicit reload
 constructs another candidate from the source file and enters the same lifecycle.
 
@@ -572,18 +486,10 @@ constructs another candidate from the source file and enters the same lifecycle.
 | deployment topology and safety | deployment TOML | Runtime | source file plus frozen active revision | only through explicit validated operations | not always; operation effect decides |
 | Recorder path and policy | CLI profile or deployment TOML | Runtime | path/policy source plus SQLite archive | path/policy not live-switchable | yes |
 | Runtime experiment mutations | Application operations | Runtime | according to Runtime/Recorder contract, not TOML write-back | yes, where advertised | no |
-| Workbench connection and endpoint | Workbench CLI | Workbench | no | no | yes |
-| Workbench presentation | workspace file and current UI/API actions | Workbench | file only when explicitly persisted by implemented behavior | never Runtime-mutable | Workbench-local |
-| Workbench recovery evidence | recovery journal | Workbench client worker | yes, bounded | reconciliation only; never experiment authority | survives Workbench restart when valid |
 | diagnostic verbosity/path | environment | diagnostic subsystem | process-local | no | yes |
 
-There is no field-wise merge between profile CLI and deployment TOML. Workbench state
-does not override Runtime state. Environment diagnostics do not override either.
-
-The one narrow selection rule inside Workbench is retained-scope choice: an explicit
-`--scope` is used first; otherwise a valid journal scope may be requested; otherwise
-hello requests a new scope. Runtime still decides whether a requested scope can be
-reattached.
+There is no field-wise merge between profile CLI and deployment TOML. Client state
+and environment diagnostics do not override Runtime state.
 
 ## Validation and failure behavior
 
@@ -633,9 +539,7 @@ hidden topology or pending transport work.
   publish raw TCP on the Internet; use authenticated WSS for remote access.
 - Runtime WebSocket remains IPv4 loopback-only. Deployment `server.host` cannot
   widen it; the startup TCP override does not change HTTP Host/Origin checks.
-- The Workbench external endpoint is disabled by default and accepts only numeric
-  IPv4 loopback. It has no authentication and must not be forwarded or exposed as a
-  remote service.
+
 - WebSocket origins are exact browser-origin admission, not user authentication.
 - Deployment files are trusted operator input with the ability to select serial
   hardware, Recorder storage, controllers, and outputs. Review physical files before
@@ -651,7 +555,7 @@ hidden topology or pending transport work.
 |---|---|---|
 | usage plus unknown/duplicate argument | Unsupported CLI option, duplicate option, or mixed profile/config forms | Use one exact startup grammar from this guide. |
 | option needs a value | Missing path, port, origin, scope, or address | Supply the value immediately after its option. |
-| invalid port/address | Invalid numeric IPv4 bind, invalid `u16`, hostname where numeric address is required, or remote TCP without opt-in | Use a numeric IPv4 value for Runtime `--bind`, use `--allow-remote-tcp` for a trusted remote Runtime endpoint; keep Workbench API on `127.0.0.1:PORT`, and use port `0` only where documented. |
+| invalid port/address | Invalid numeric IPv4 bind, invalid `u16`, hostname where numeric address is required, or remote TCP without opt-in | Use a numeric IPv4 value for Runtime `--bind`, use `--allow-remote-tcp` for a trusted remote Runtime endpoint; use port `0` only where documented. |
 | no readiness; address already in use | Requested TCP or WebSocket port is occupied | Stop the conflicting process, select another configured port, or use `0`. |
 | configuration artifact/read failure | Missing file, wrong current directory, permissions, oversized file, or rejected path traversal | Resolve `--config` with `GetFullPath`, check referenced paths relative to its parent, and use a readable local directory. |
 | invalid TOML | Syntax error, duplicate key, unknown field, wrong type, BOM, or unsupported schema version | Compare with the strict field tables and validate UTF-8 without BOM. |
@@ -659,8 +563,6 @@ hidden topology or pending transport work.
 | unresolved reference | Instrument points to a missing resource, component input is absent, controller input/Reference is missing, or output lacks a safe profile | Add the referenced object and verify IDs and units exactly. |
 | invalid bound/value | Zero identity, invalid duration/history/serial range, nonfinite number, or unsafe output range | Use the documented inclusive ranges and finite values. |
 | Recorder open/start failure | Database path is empty, nonlocal, unwritable, locked incompatibly, or storage initialization failed | Use a writable local absolute result; for deployment files, put a relative filename beside a copied config in a user-writable directory. |
-| Workbench workspace failure | No default Windows data environment, inaccessible path, invalid ancestor, or another Workbench owns it | Pass an explicit writable workspace and close the other owner. |
-| Workbench endpoint rejected | `--workbench-listen` used wildcard, hostname, IPv6, or non-loopback IPv4 | Use numeric `127.0.0.1:PORT`. |
 | physical startup unexpectedly touches hardware | A copied deployment contains `[[resources]]` and physical instruments | Stop Runtime safely and use `runtime.minimal.toml` or `runtime.virtual.toml` until the hardware configuration is intentionally reviewed. |
 | diagnostic level warning | Unsupported `LAB_RUNTIME_LOG_LEVEL` | Use one of the five documented level names; Runtime falls back to `INFO`. |
 

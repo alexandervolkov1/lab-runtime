@@ -3,7 +3,7 @@
 This is the operator and client guide for lost continuity, uncertain operations,
 Recorder faults, resource reconnects, and retry decisions. The exact Runtime wire
 shapes remain in the [Application API reference](api/README.md); the separate
-[Workbench API reference](workbench-api.md) defines its local boundary.
+[Workbench API reference](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench-api.md) defines its local boundary.
 
 The governing rule is:
 
@@ -124,51 +124,6 @@ Frozen projection page tokens and Recorder history tokens are also different:
 - history page tokens and continuation cursors are connection-local Recorder query
   state;
 - all are discarded on disconnect and must not be treated as durable identities.
-
-## Workbench recovery
-
-Workbench keeps at most the accepted bounded set of exact mutation records in its
-own durable recovery journal. Each record retains Runtime boot/scope/sequence,
-operation, exact arguments, and the last known admission state:
-
-| State | Meaning |
-|---|---|
-| `Pending` | Exact payload was durably prepared before possible wire emission; Runtime admission is not known. |
-| `Ambiguous` | Some request bytes may have been emitted before continuity was lost; admission/outcome is unknown. |
-| `Accepted` | Runtime authoritatively reported admission; terminal outcome is not yet known. |
-| `Completed` | Runtime reported a terminal completed outcome. |
-| `Failed` | Runtime reported a terminal failed outcome. |
-
-`Pending` and `Ambiguous` are intentionally different. Pending preserves a
-pre-emission exact payload. Ambiguous means transmission may have begun, so treating
-the operation as "not sent" is unsafe.
-
-Workbench may perform one bounded retained-scope reattach episode after unexpected
-continuity loss. It never automatically sends the mutation, checks status, or
-performs Exact Retry. Manual **Check Status** and confirmed **Exact Retry** are
-available only where retained identity and session fences permit them.
-
-The retained-scope episode has one absolute 3 s deadline; each connect attempt is
-bounded by `min(2 s, remaining)` and retries are spaced by at least 10 ms. Explicit
-Disconnect cancels the episode through the out-of-band/coalesced admission fence.
-Fresh requires a complete authoritative snapshot/subscription/cursor rebuild;
-successful hello or a terminal mutation result does not establish that barrier.
-
-Records from a different Runtime boot, an unknown scope, or an attached boot/scope
-mismatch are quarantined. Quarantine preserves uncertainty evidence but removes
-retry/status authority for the current session.
-
-For the external Workbench API:
-
-- `workbench_id` identifies the current Workbench process;
-- `recovery_generation` versions its current recovery projection;
-- `recovery_get.expected` is required (explicit `null` for the first read);
-- later enumeration and `lab_operation_status` use exact Workbench, generation,
-  Runtime boot/scope, and active-record fences.
-
-A Workbench restart creates a new `workbench_id` even when its workspace and recovery
-journal remain readable. `recovery_generation` is not Runtime mutation sequence.
-See [Workbench API recovery](workbench-api.md#recovery-get) for the exact wire form.
 
 ## Physical output uncertainty
 
@@ -370,7 +325,7 @@ by their respective API references.
 - [Safety and failure behavior](safety-and-failures.md)
 - [Runtime mutation, event, and recovery protocol](api/events-mutations-and-recovery.md)
 - [Runtime errors and limits](api/errors-and-limits.md)
-- [Workbench recovery UI](workbench.md#loss-of-connection-and-recovery)
-- [Workbench external recovery API](workbench-api.md#recovery-get)
+- [Workbench recovery UI](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench.md#loss-of-connection-and-recovery)
+- [Workbench external recovery API](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench-api.md#recovery-get)
 - [SimpleDevice reconnect/output rules](simple-device.md#reconnect-and-stale-evidence)
-- [Native-driver fault obligations](developer/full-driver-tutorial.md#step-12-failure-cleanup)
+- [Native-driver fault obligations](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md#step-12-failure-cleanup)

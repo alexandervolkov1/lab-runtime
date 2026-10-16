@@ -18,9 +18,9 @@ for endpoint configuration, observation policy and TLS/access-control boundaries
 Runtime's WS listener remains loopback-only; WSS needs a separately administered
 authenticated TLS endpoint. Physical two-computer qualification remains incomplete.
 
-The [Workbench external API](workbench-api.md) is a distinct presentation/client
+The [Workbench external API](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench-api.md) is a distinct presentation/client
 surface, not another Runtime Application implementation. See the optional
-[Babashka wire smoke](../clients/babashka-smoke/README.md) for direct Runtime access
+[Babashka wire smoke](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/clients/babashka-smoke/README.md) for direct Runtime access
 and a separate minimal Workbench example. The
 [Application API overview](api/README.md) diagrams the two external paths.
 

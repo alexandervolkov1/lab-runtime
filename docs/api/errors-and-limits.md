@@ -51,7 +51,7 @@ See [manual output](manual-output.md).
 
 `Retry?` reproduces the source `retryable` bit; the aliased `operation_failed` row
 points to its separate current-behavior table. The bit never authorizes automatic
-mutation replay. “Identity” describes mutation evidence when relevant. Clients must
+mutation replay. вЂњIdentityвЂќ describes mutation evidence when relevant. Clients must
 read `category`, `retryable`, and `resync_required` from the actual envelope rather
 than infer them from `code` alone.
 

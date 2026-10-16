@@ -113,7 +113,7 @@ evidence source. Temperature follows normal acquisition/measurement recording.
 Required Recorder failure still gates ordinary output before the byte boundary;
 safety service remains available. There is no SQLite schema change.
 
-See the [Babashka example](../../clients/babashka-smoke/manual-output.clj) and
-[launch instructions](../../clients/babashka-smoke/README.md#manual-heater-power-direct-runtime).
+See the [Babashka example](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/clients/babashka-smoke/manual-output.clj) and
+[launch instructions](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/clients/babashka-smoke/README.md).
 Its default uses the native virtual plant. Virtual and byte-transport fixture
 results do not imply a physical Arduino run.

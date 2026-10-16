@@ -158,7 +158,7 @@ The deployment schema is a closed, tagged enum in
    or reinitializing according to its real lifecycle.
 
 Metakon's current deployment shape is shown below. Complete internal test inputs
-are in [the Metakon fixture directory](../../test-data/fixtures/metakon/README.md);
+are in [the Metakon fixture directory](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/test-data/fixtures/metakon/README.md);
 the definition path stays relative to the TOML file.
 
 ```toml
@@ -492,9 +492,9 @@ failure. That transaction is not currently a generic native-driver plugin API.
 
 If a new native kind is startup-only, preserve the existing pre-readiness composition
 and failure cleanup. If it genuinely needs live topology addition, it must be designed
-through the accepted configuration/service publication lifecycle—including hidden
+through the accepted configuration/service publication lifecycleвЂ”including hidden
 preparation, EventLog capacity, durable activation, atomic visibility, reconnect
-fencing, and rollback—rather than publishing from driver code.
+fencing, and rollbackвЂ”rather than publishing from driver code.
 
 The service/EventLog layer owns reservation and publication. A driver supplies a
 validated descriptor, binding, and truthful state; it does not manipulate event

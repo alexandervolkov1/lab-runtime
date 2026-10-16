@@ -159,7 +159,7 @@ Estimate UTC nanoseconds as `utc_unix_us * 1000 + measurement_ns - monotonic_aft
 the bracket bounds sampling uncertainty only. This is display metadata, never a
 control clock or device timestamp. Clients may ignore the extension; new clients
 must support old responses without it. Request/envelope/session contracts remain
-unchanged. See the [complete TIME-1 contract](../developer/time-1-time-axis.md).
+unchanged. See the [complete TIME-1 contract](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/developer/time-1-time-axis.md).
 
 ## New and retained scopes
 

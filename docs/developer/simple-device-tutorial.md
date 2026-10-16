@@ -41,7 +41,7 @@ response:  T=<signed i16 big-endian><CR><LF>
 
 ### 2. Inspect the definition
 
-Open [`read-only.json`](../../examples/simple-device/read-only.json). Its one
+Open [`read-only.json`](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/examples/simple-device/read-only.json). Its one
 parameter is a read-only measurement. The request is one literal segment. The
 response requires exactly six bytes, matches `T=` and CRLF at fixed offsets, extracts
 an `i16_be` at offset 2, and applies the declared scale.
@@ -61,7 +61,7 @@ does not satisfy the fixed plan must not become a good observation.
 
 ### 3. Bind a serial resource
 
-Copy [`runtime.read-only.toml`](../../examples/simple-device/runtime.read-only.toml)
+Copy [`runtime.read-only.toml`](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/examples/simple-device/runtime.read-only.toml)
 and `read-only.json` into one directory. Edit only the copied TOML initially:
 
 ```toml
@@ -196,8 +196,8 @@ does not by itself prove every downstream physical effect.
 
 ### 2. Inspect and bind the definition
 
-Open [`writable.json`](../../examples/simple-device/writable.json) and
-[`runtime.writable.toml`](../../examples/simple-device/runtime.writable.toml). The
+Open [`writable.json`](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/examples/simple-device/writable.json) and
+[`runtime.writable.toml`](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/examples/simple-device/runtime.writable.toml). The
 actuator is `read_write`, output-affecting, and bounded to `0.0..=100.0`. Its ordinary
 READ and its post-WRITE READBACK use the same raw transform.
 

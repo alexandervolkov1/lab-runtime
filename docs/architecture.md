@@ -65,59 +65,12 @@ client or Workbench disconnect, but is not restored after a Runtime restart; the
 persistent deployment is restored instead. Failed pre-durable applies do not become
 successful activation provenance.
 
-### lab-workbench.exe
+## Client boundary
 
-Workbench is a separate native Application client. Its private Rust client owns one
-socket, framing, hello/session state, request correlation, subscription state, and its
-bounded exact recovery journal. `WorkbenchModel` holds observational projections and
-`PresentationDocument` holds client-owned presentation state.
-
-Workbench owns GUI selection, layout/presentation, live plot display buffers, operator
-drafts, and confirmation workflows. These do not become Runtime experiment authority.
-Workbench sends typed control intent through the Application API and waits for
-authoritative operation/projection evidence.
-
-Native Workbench uses one bounded Application worker for TCP/NDJSON, WS and WSS.
-Transport selection preserves the same scope, sequencer, subscription, recovery
-journal and authoritative rebuild barrier. `--observe` blocks Workbench Runtime
-mutations and Exact Retry while allowing queries and presentation changes. It is
-client policy, not a Runtime authorization role or transfer of experiment ownership.
-
-The optional [Workbench external API](workbench-api.md) is a separate numeric
-IPv4-loopback TCP/NDJSON endpoint. One `WorkbenchDispatcher` serializes GUI and
-external presentation changes and sends all external lab work through the existing
-single `ClientHandle`. External `call_id` is connection correlation, never Runtime
-mutation identity. No second Runtime session, sequencer, subscription, recovery
-engine, or presentation owner is introduced. Direct Runtime clients remain independent.
-This Workbench endpoint stays loopback-only even for a remote Runtime; a script on
-another machine cannot directly use it to change presentation. See the
-[transport reference](reference/transports.md).
-
-Workbench connection recovery preserves process ownership. An explicit Disconnect
-does not reconnect automatically. An unexpected continuity loss may start one
-bounded retained-scope reattach episode, but transport recovery never automatically
-replays a mutation, `operation_status`, or Exact Retry. A successful socket/hello is
-not by itself Fresh; Workbench must complete its authoritative rebuild barrier.
-
-## Authority table
-
-| Concern | Runtime | Workbench |
-|---|---|---|
-| experiment state | authoritative | observational |
-| devices and resources | authoritative owner | current/stale projection |
-| controller state and output authority | authoritative | projection plus typed control intent |
-| Recorder | lifecycle and durable-fact authority | status projection plus start/stop intent |
-| operation outcomes | authoritative retained state | exact retained/displayed evidence |
-| presentation and layout | none | authoritative client-owned state |
-| live plot display buffers | none | bounded presentation-only data |
-| recovery journal | no ownership of the Workbench file | exact bounded client evidence |
-| sessions and mutation deduplication | authoritative process-local store | consumes scope/next sequence |
-| GUI lifecycle | none | local process lifecycle only |
-
-Workbench and other clients never fabricate ACK, readback, physical effect, terminal
-mutation outcome, or recovery authority. A completed operation is not automatically
-proof of current physical state; the relevant Runtime observation remains
-authoritative.
+Clients own presentation and exact recovery evidence, never experiment state.
+They consume committed snapshots and submit typed intent through the Application
+API. Workbench remains an external client in the original repository.
+No GUI, client worker, scripting host or broker is shipped here.
 
 ## Runtime layers
 

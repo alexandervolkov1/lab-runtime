@@ -178,7 +178,7 @@ or permission for blind retry.
 
 ## Exact resubmission
 
-There is no `exact_retry` Application operation. “Exact Retry” is a client workflow
+There is no `exact_retry` Application operation. вЂњExact RetryвЂќ is a client workflow
 that deliberately resubmits:
 
 ```text
@@ -190,7 +190,7 @@ same normalized typed arguments
 The client must use retained exact evidence, not reconstruct or edit the payload. An
 exact resubmission may return a retained outcome without execution. It may also be the
 first Runtime admission if the original bytes never reached admission and that exact
-identity is still the next admissible sequence. Therefore “retry” does not prove prior
+identity is still the next admissible sequence. Therefore вЂњretryвЂќ does not prove prior
 execution.
 
 **Automatic mutation retry is not part of the Application contract.** Workbench makes
