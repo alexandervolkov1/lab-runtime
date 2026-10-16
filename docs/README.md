@@ -7,8 +7,17 @@ PID или Recorder. Для знакомства используйте встр
 
 ## Установка
 
-Получите комплект для своей платформы. До первой публикации релиза используйте
-предоставленный архив. Сравните его SHA-256 с сопровождающим файлом:
+Откройте [релиз v0.1.0-preview.8](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.8)
+и скачайте файлы своей платформы из раздела **Assets**:
+
+| Платформа | Файлы |
+|---|---|
+| Windows x64 | `lab-runtime-v0.1.0-preview.8-windows-x86_64.zip` |
+| Linux x86_64 | `lab-runtime-v0.1.0-preview.8-linux-x86_64.tar.gz` и `lab-runtime-v0.1.0-preview.8-linux-x86_64.licenses.tar.gz` |
+
+Для каждого архива сохраните соответствующий `.sha256`, а для платформы —
+`.build.json` со сведениями о сборке. **Source code** для обычного запуска не нужен.
+Сравните SHA-256 скачанных архивов с сопровождающими файлами:
 `Get-FileHash -Algorithm SHA256 путь-к-архиву.zip` в PowerShell либо
 `sha256sum -c имя-архива.tar.gz.sha256` в Linux. Распакуйте в новую папку.
 
@@ -18,7 +27,7 @@ PID или Recorder. Для знакомства используйте встр
 перейдите в каталог с `lab-runtime` и распакуйте туда соответствующий companion:
 
 ```sh
-tar -xzf /путь/к/lab-runtime-v0.1.0-preview.7-linux-x86_64.licenses.tar.gz
+tar -xzf /путь/к/lab-runtime-v0.1.0-preview.8-linux-x86_64.licenses.tar.gz
 ```
 
 Имя выше — пример версии; используйте файл из того же комплекта.
@@ -297,8 +306,8 @@ cp examples/runtime.virtual.toml my-config/runtime.toml
 
 Для реального прибора возьмите проверенное под вашу модель JSON-описание Metakon
 или SimpleDevice и соответствующую конфигурацию. В исходниках есть
-[Metakon 513](https://github.com/alexandervolkov1/lab-runtime-next/tree/main/test-data/fixtures/metakon)
-и [SimpleDevice](https://github.com/alexandervolkov1/lab-runtime-next/tree/main/examples/simple-device).
+[Metakon 513](https://github.com/alexandervolkov1/lab-runtime/tree/main/test-data/fixtures/metakon)
+и [SimpleDevice](https://github.com/alexandervolkov1/lab-runtime/tree/main/examples/simple-device).
 Это примеры и регрессионные фикстуры: COM3/COM5/COM256, адрес и масштаб нельзя
 считать настройками вашего прибора.
 

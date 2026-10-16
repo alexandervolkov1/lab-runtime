@@ -28,7 +28,7 @@ variable-length or delimiter-driven parsing, arbitrary text-number parsing,
 unsupported binary framing/checksums, a custom transport, multiple coupled outputs,
 device-specific recovery, or unusual scheduling. There is currently no dynamic
 driver plugin API. Use the
-[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md) for the trusted
+[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/full-driver-tutorial.md) for the trusted
 source-level path, or see [Extending the Runtime](extending-runtime.md) for the
 extension overview.
 
@@ -461,7 +461,7 @@ decision model, see [Recovery and fault handling](recovery-and-faults.md).
 
 ## Tutorials and testing
 
-Follow the [step-by-step SimpleDevice tutorial](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/simple-device-tutorial.md)
+Follow the [step-by-step SimpleDevice tutorial](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/simple-device-tutorial.md)
 for the included read-only and writable definitions. The repository validates every
 published definition with the production parser and compiler and validates both
 deployment bindings with the production deployment loader. These checks prove schema,

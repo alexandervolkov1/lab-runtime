@@ -242,7 +242,7 @@ its values as physical evidence.
 ### Native Metakon instrument
 
 Complete regression deployments and their relative `definitions/` directory live
-in [test-data/fixtures/metakon](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/test-data/fixtures/metakon/README.md), not in
+in [test-data/fixtures/metakon](https://github.com/alexandervolkov1/lab-runtime/blob/main/test-data/fixtures/metakon/README.md), not in
 the user examples. They are not ready-to-run hardware configurations.
 
 ```toml
@@ -266,7 +266,7 @@ against the configured instrument and controller bindings.
 
 Metakon is the current source-integrated native physical implementation, not a
 dynamic driver plugin. See the
-[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md) for its complete
+[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/full-driver-tutorial.md) for its complete
 developer boundary and [Extending the Runtime](../extending-runtime.md) for the
 extension overview.
 
@@ -298,7 +298,7 @@ definition is at most 8,192 bytes and is resolved relative to the deployment fil
 
 The [SimpleDevice reference](../simple-device.md) defines the exact JSON grammar,
 READ, WRITE, ACK, READBACK, bounds, mapping, and output-safety semantics. Follow the
-[SimpleDevice tutorial](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/simple-device-tutorial.md) for validated read-only
+[SimpleDevice tutorial](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/simple-device-tutorial.md) for validated read-only
 and writable examples. The lifecycle boundary is also summarized in
 [Extending the Runtime](../extending-runtime.md#add-a-declarative-simpledevice).
 

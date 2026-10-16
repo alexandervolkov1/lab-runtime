@@ -12,9 +12,16 @@
 
 ## Установка и первый запуск
 
-Публичный релиз этого репозитория пока не опубликован. Используйте предоставленный
-готовый комплект Windows x64 или Linux x86_64. После публикации сборки будут
-доступны на [странице релизов](https://github.com/alexandervolkov1/lab-runtime-next/releases).
+Скачайте готовый комплект со страницы
+[v0.1.0-preview.8](https://github.com/alexandervolkov1/lab-runtime/releases/tag/v0.1.0-preview.8).
+
+| Платформа | Файлы |
+|---|---|
+| Windows x64 | `lab-runtime-v0.1.0-preview.8-windows-x86_64.zip` |
+| Linux x86_64 | `lab-runtime-v0.1.0-preview.8-linux-x86_64.tar.gz` и `lab-runtime-v0.1.0-preview.8-linux-x86_64.licenses.tar.gz` |
+
+Сохраните соответствующие `.sha256` и `.build.json`. Архивы **Source code**
+содержат исходники, а не готовое приложение.
 
 Распакуйте комплект в новую папку и откройте терминал в каталоге с приложением.
 На Windows нужен Microsoft Visual C++ Redistributable x64. На Linux сохраните
@@ -56,5 +63,5 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Приложение появится в `target/release`. Упаковка описана
-[отдельно](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/packaging.md).
+[отдельно](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/packaging.md).
 Модель печи и программные тесты не подтверждают безопасность физического оборудования.

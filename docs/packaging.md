@@ -7,12 +7,12 @@ Choose an unused candidate label matching Cargo version 0.1.0:
 
 ```powershell
 python scripts/test_release_license_evidence.py
-python scripts/package-windows-runtime.py --preview-version v0.1.0-preview.7
+python scripts/package-windows-runtime.py --preview-version v0.1.0-preview.8
 ```
 
 ```sh
 python3 scripts/test_release_license_evidence.py
-python3 scripts/package-linux-runtime.py --preview-version v0.1.0-preview.7
+python3 scripts/package-linux-runtime.py --preview-version v0.1.0-preview.8
 ```
 
 Outputs appear in `dist`; existing artifacts are never overwritten. Windows

@@ -96,7 +96,7 @@ Reconnect or reconfiguration creates new generation/revision evidence. Historica
 rows retain their original identities; Recorder never rewrites them as current.
 SimpleDevice provenance is explained in [SimpleDevice](simple-device.md#recorder-and-provenance),
 and native integrations in the
-[native driver guide](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md#step-11-recorder-provenance).
+[native driver guide](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/full-driver-tutorial.md#step-11-recorder-provenance).
 
 ## SQLite ownership and supported access
 

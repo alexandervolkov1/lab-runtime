@@ -158,7 +158,7 @@ The deployment schema is a closed, tagged enum in
    or reinitializing according to its real lifecycle.
 
 Metakon's current deployment shape is shown below. Complete internal test inputs
-are in [the Metakon fixture directory](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/test-data/fixtures/metakon/README.md);
+are in [the Metakon fixture directory](https://github.com/alexandervolkov1/lab-runtime/blob/main/test-data/fixtures/metakon/README.md);
 the definition path stays relative to the TOML file.
 
 ```toml

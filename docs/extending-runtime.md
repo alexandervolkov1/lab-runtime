@@ -51,7 +51,7 @@ Application, Recorder, or Workbench branch:
 
 The complete schema, grammar, limits, and evidence model are in the
 [SimpleDevice reference](simple-device.md). Start with the validated
-[read-only and writable tutorial](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/simple-device-tutorial.md). This is a
+[read-only and writable tutorial](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/simple-device-tutorial.md). This is a
 declarative composition path, not the native Rust extension path below.
 
 The candidate is parsed, cross-referenced, bounded, and prepared before activation.
@@ -81,7 +81,7 @@ enough. Metakon is the current physical reference implementation. Its extension 
 is explicit rather than hidden behind a universal protocol trait:
 
 Follow the canonical
-[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md) for the complete
+[native Rust instrument guide](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/full-driver-tutorial.md) for the complete
 source map, implementation sequence, safety obligations, test matrix, and physical
 qualification boundary. The summary below is a routing overview.
 

@@ -306,4 +306,4 @@ Use Runtime code/category/fences rather than comparing human-readable error text
 - [Runtime mutation, event, and recovery protocol](api/events-mutations-and-recovery.md)
 - [Runtime errors and limits](api/errors-and-limits.md)
 - [SimpleDevice reconnect/output rules](simple-device.md#reconnect-and-stale-evidence)
-- [Native-driver fault obligations](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md#step-12-failure-cleanup)
+- [Native-driver fault obligations](https://github.com/alexandervolkov1/lab-runtime/blob/main/docs/developer/full-driver-tutorial.md#step-12-failure-cleanup)
