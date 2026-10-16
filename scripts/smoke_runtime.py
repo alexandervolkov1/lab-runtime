@@ -1,6 +1,7 @@
 """Bounded standard-library-only package smoke; owns only its virtual fixture."""
 import argparse
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -17,7 +18,8 @@ def smoke(binary, output):
     result = {'command': command, 'cwd': str(binary.parent)}
     flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, 'CREATE_NO_WINDOW') else {}
     with (output/'stdout.log').open('w') as out, (output/'stderr.log').open('w') as err:
-        process = subprocess.Popen(command, cwd=binary.parent, stdout=out, stderr=err, **flags)
+        process = subprocess.Popen(command, cwd=binary.parent, stdout=out, stderr=err,
+                                   env={**os.environ, 'LAB_RUNTIME_LOG_DIRECTORY': str(output/'logs')}, **flags)
         try:
             deadline = time.monotonic() + 20
             ready = None

@@ -1,5 +1,5 @@
 """Bounded portable fixture: one real virtual Runtime and one external Babashka client."""
-import argparse, json, pathlib, subprocess, sys, time, hashlib, platform
+import argparse, json, pathlib, subprocess, sys, time, hashlib, platform, os
 
 root = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -31,7 +31,8 @@ metadata['architecture'] = platform.machine()
 metadata['rustc'] = subprocess.check_output(['rustc','-Vv'],cwd=root,text=True)
 metadata['babashka'] = subprocess.check_output(['bb','--version'],cwd=root,text=True).strip()
 with (folder/'runtime.stdout').open('w') as stdout, (folder/'runtime.stderr').open('w') as stderr:
-    runtime = subprocess.Popen(command, cwd=exe.parent, stdout=stdout, stderr=stderr, **flags)
+    runtime = subprocess.Popen(command, cwd=exe.parent, stdout=stdout, stderr=stderr,
+                               env={**os.environ, 'LAB_RUNTIME_LOG_DIRECTORY': str(folder/'logs')}, **flags)
     try:
         deadline=time.monotonic()+20
         ready=None
@@ -54,6 +55,7 @@ with (folder/'runtime.stdout').open('w') as stdout, (folder/'runtime.stderr').op
     finally:
         if runtime.poll() is None:
             runtime.terminate();runtime.wait(timeout=10);metadata['forced_cleanup']=True
+        metadata['runtime_exit'] = runtime.returncode
         (folder/'run.json').write_text(json.dumps(metadata,indent=2)+'\n')
         print(folder)
 
