@@ -5,9 +5,11 @@ root = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('profile', choices=['debug', 'release'], nargs='?', default='debug')
 parser.add_argument('--binary', type=pathlib.Path)
+parser.add_argument('--output-root', type=pathlib.Path,
+                    help='Writable local evidence/database directory; default target/runtime-manual-api')
 args = parser.parse_args()
 profile = args.profile
-folder = root / 'target/runtime-manual-api' / (profile + '-e2e-' + time.strftime('%Y%m%d-%H%M%S'))
+folder = (args.output_root or root / 'target/runtime-manual-api').resolve() / (profile + '-e2e-' + time.strftime('%Y%m%d-%H%M%S'))
 folder.mkdir(parents=True, exist_ok=False)
 exe = (args.binary or root / 'target' / profile / ('lab-runtime.exe' if platform.system() == 'Windows' else 'lab-runtime')).resolve()
 flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if platform.system() == 'Windows' else {}
