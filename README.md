@@ -31,6 +31,9 @@ From a source checkout, start the built-in virtual thermal plant:
 cargo run -p lab-runtime --locked -- --serve --profile virtual-demo --port 7420
 ```
 
+Windows binaries require the Microsoft Visual C++ 2015-2022 x64 runtime
+(`VCRUNTIME140.dll`), as did the source project.
+
 From an extracted package use `./lab-runtime` (Linux) or `.\lab-runtime.exe`
 (PowerShell) with the same arguments. Wait for the JSON `"state":"ready"` line.
 The virtual profile opens no serial hardware. Ctrl+C requests bounded safe

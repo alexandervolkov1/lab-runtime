@@ -6,7 +6,9 @@ are packaging identities; Cargo remains `lab-runtime` version `0.1.0`.
 
 Use a clean committed checkout, Rust 1.95.0 with the exact reviewed standard
 library, Python 3.11+ and a native C toolchain. Linux additionally uses binutils.
-No GUI or external verification client is built or distributed.
+No GUI or external verification client is built or distributed. Windows targets
+the MSVC runtime and requires the Microsoft Visual C++ 2015-2022 x64 runtime
+(`VCRUNTIME140.dll`) on the destination machine; it is not bundled.
 
 ```powershell
 python scripts/test_release_license_evidence.py
