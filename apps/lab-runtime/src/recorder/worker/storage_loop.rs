@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 // This is progress of the committed FIFO prefix, not a time-indexed promise that
 // every later-queued submission with an earlier timestamp is durable. Record IDs
 // and cumulative released credits identify the exact prefix. Call only after SQL
@@ -185,9 +188,10 @@ pub(super) fn worker_loop(
                     && accounted_bytes < MAX_GROUP_BYTES
                 {
                     let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        break;
-                    }
+                    // The deadline bounds waiting for new arrivals, not draining
+                    // already queued groups. With a slow COMMIT the oldest group
+                    // can be over 100 ms old; refusing to coalesce that backlog
+                    // would force one sync per group and prevent catch-up.
                     match receiver.recv_timeout(remaining) {
                         Ok(Message::Facts(
                             next_facts,

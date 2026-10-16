@@ -336,19 +336,22 @@ of historical review reports.
 
 ## Ingress and storage settings
 
-Default owner-side ingress credit is 1,545 records, 4 MiB accounted bytes, thirteen
-causal groups, and at most 512 KiB per group. The supported budget calculation is
-four acquisition groups, one reconnect's five groups (accepted audit, activation,
-baseline, probe, terminal audit), and two Reference mutations' accepted/completion
-pairs. It assumes that bounded combination of outstanding work; it does not
-guarantee reconnect admission under arbitrary acquisition pressure. Four groups and
-six records are protected for those Reference pairs; ordinary traffic cannot spend
-that credit. Reconnect has no separately protected pool: acquisition and reconnect
-share the remaining nine groups and ordinary record/byte credit. Its activation,
+Default owner-side ingress credit is 1,545 records, 4 MiB accounted bytes, 36
+causal groups, and at most 512 KiB per group. Thirty-two ordinary groups absorb
+short acquisition and command/audit bursts while a local disk completes WAL syncs.
+Four groups and six records are protected for two Reference accepted/completion
+pairs; ordinary traffic cannot spend that credit. Record and byte limits still
+apply independently: 32 groups does not mean 32 full 256-record batches.
+Reconnect has no separately protected pool: acquisition and reconnect
+share ordinary group/record/byte credit. Its activation,
 rebind and probe reservations are incremental, not an atomic five-group admission.
 Their waits retain the existing absolute deadlines; sustained competing acquisition
-can exhaust those deadlines. SQLite still coalesces at most four fact groups per
-transaction.
+can exhaust those deadlines. SQLite coalesces at most four consecutive fact groups,
+256 records and 512 KiB per transaction. The 100 ms batch deadline limits waiting
+for new arrivals; already queued groups can still coalesce after that deadline.
+FIFO order, FULL WAL synchronization, post-COMMIT receipts and Required progress
+deadlines remain in force. No finite budget guarantees progress on an arbitrarily
+slow or stalled disk.
 
 Before a recorded Reference mutation is accepted, the owner atomically reserves
 its accepted audit and completion budget. Insufficient credit returns `busy` with

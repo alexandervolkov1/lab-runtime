@@ -45,10 +45,11 @@ mod storage_loop;
 pub use fault_injection::WriterBarrier;
 use storage_loop::worker_loop;
 
-// Four acquisition groups + reconnect (accepted, activation, baseline, probe, terminal)
-// + two independent Reference accepted/completion pairs.
-// This is a bounded operating envelope, not a promise for an arbitrarily slow disk.
-const MAX_GROUPS: usize = 4 + 5 + 2 * 2;
+// Thirty-two ordinary groups absorb acquisition plus short command/audit bursts
+// while a local disk completes FULL WAL syncs. Four additional groups protect
+// two Reference accepted/completion pairs. Record/byte limits and Required
+// progress deadlines still apply; this is not a promise for an arbitrary disk.
+const MAX_GROUPS: usize = 32 + 2 * 2;
 const MAX_BATCH_GROUPS: usize = 4;
 const MAX_HISTORY_JOBS: usize = 8;
 const MAX_RECORDS: usize = (4 + 2) * 256 + 3 + 2 * 3;
