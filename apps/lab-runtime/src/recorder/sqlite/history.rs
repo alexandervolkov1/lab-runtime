@@ -2,6 +2,18 @@
 
 use super::*;
 
+// Row-value bounds let SQLite seek the complete history index key, including
+// record_seq when many measurements share a publication timestamp.
+const MEASUREMENTS_PAGE_SQL: &str =
+    "SELECT record_seq,published_at,observed_at,unit_key,quality,failure,
+            value_kind,float_value,integer_value,bool_value,text_value,generation,revision,
+            state_revision,lineage
+     FROM measurements
+     WHERE boot_id=?1 AND run_no=?2 AND instrument_id=?3 AND parameter_id=?4
+       AND (published_at,record_seq)>(?5,?6)
+       AND (published_at,record_seq)<=(?7,?8) AND record_seq<=?9
+     ORDER BY published_at,record_seq LIMIT ?10";
+
 // Reset the callback before the worker resumes fact commits. A budget failure
 // must never turn an ordinary SQLite transaction into a history interrupt.
 struct HistoryProgress<'a>(&'a Connection);
@@ -234,33 +246,24 @@ impl SqliteStore {
         let frozen = u64_blob(watermark);
         let upper_at = u64_blob(upper.0);
         let upper_seq = u64_blob(upper.1);
-        let last_at = u64_blob(last.map_or(0, |key| key.0));
-        let last_seq = u64_blob(last.map_or(0, |key| key.1));
-        let mut statement = self.connection.prepare(
-            "SELECT record_seq,published_at,observed_at,unit_key,quality,failure,
-                    value_kind,float_value,integer_value,bool_value,text_value,generation,revision,
-                    state_revision,lineage
-             FROM measurements
-             WHERE boot_id=?1 AND run_no=?2 AND instrument_id=?3 AND parameter_id=?4
-               AND published_at>=?5 AND published_at<?6 AND record_seq<=?7
-               AND (?8=0 OR published_at>?9 OR (published_at=?9 AND record_seq>?10))
-               AND (published_at<?11 OR (published_at=?11 AND record_seq<=?12))
-             ORDER BY published_at,record_seq LIMIT ?13",
-        )?;
+        // Canonical record sequences start at one, so (from, 0) includes every
+        // row at the lower bound on the first page. The retained upper key was
+        // selected strictly before `to`; both bounds stay frozen on continuation.
+        let (last_at, last_seq) = last.map_or((from, u64_blob(0)), |key| {
+            (u64_blob(key.0), u64_blob(key.1))
+        });
+        let mut statement = self.connection.prepare(MEASUREMENTS_PAGE_SQL)?;
         let selected = statement.query_map(
             params![
                 archive_boot.as_slice(),
                 run_no.as_slice(),
                 instrument_id.as_slice(),
                 parameter_id.as_slice(),
-                from.as_slice(),
-                to.as_slice(),
-                frozen.as_slice(),
-                i64::from(last.is_some()),
                 last_at.as_slice(),
                 last_seq.as_slice(),
                 upper_at.as_slice(),
                 upper_seq.as_slice(),
+                frozen.as_slice(),
                 i64::try_from(limit + 1).expect("bounded lookahead")
             ],
             decode_measurement_row,
@@ -393,6 +396,45 @@ fn parse_history_loss(summary: &str) -> Result<HistoryLoss, StorageError> {
         cutoff: Duration::from_nanos(required_id("cutoff_monotonic_ns")?),
         last_confirmed_record: required_id("last_confirmed_record_seq")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measurement_page_seeks_both_cursor_columns_without_sorting() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        create_schema(&mut connection).unwrap();
+        let plan = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {MEASUREMENTS_PAGE_SQL}"))
+            .unwrap()
+            .query_map(
+                params![
+                    [0u8; 16].as_slice(),
+                    u64_blob(1).as_slice(),
+                    u64_blob(1).as_slice(),
+                    u64_blob(1).as_slice(),
+                    u64_blob(10_000).as_slice(),
+                    u64_blob(8_262).as_slice(),
+                    u64_blob(20_000).as_slice(),
+                    u64_blob(20_001).as_slice(),
+                    u64_blob(20_001).as_slice(),
+                    129,
+                ],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(plan.len(), 1, "no scan or temporary sort: {plan:?}");
+        assert!(
+            plan[0].contains("SEARCH measurements USING INDEX measurements_history")
+                && plan[0].contains("(published_at,record_seq)>(?,?)")
+                && plan[0].contains("(published_at,record_seq)<(?,?)"),
+            "the production query must seek the complete cursor key: {plan:?}"
+        );
+    }
 }
 
 // An invalid archive must be rejected before WAL conversion or new-boot

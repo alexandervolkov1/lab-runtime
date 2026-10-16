@@ -573,6 +573,102 @@ fn frozen_pages_keep_unavailable_with_equal_time_append() {
 }
 
 #[test]
+fn wide_history_pagination_reads_every_row_once_with_the_default_budget() {
+    let path = temporary_database();
+    let boot = "78787878787878787878787878787878";
+    let instrument = InstrumentId::new(99);
+    let signal = SignalId::new(instrument, lab_core::TEMPERATURE);
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("wide keyset fixture").unwrap();
+    let fact = |sequence, second| RecordingFact::Measurement {
+        sequence,
+        sample: Sample::validated_good(
+            signal,
+            Unit::CELSIUS,
+            Duration::from_secs(second),
+            Value::Float(sequence as f64),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 1,
+        state_revision: None,
+        lineage: None,
+    };
+    // Each timestamp spans several pages; the first is exactly the lower bound.
+    for group in 0..80u64 {
+        let facts = (1..=250)
+            .map(|slot| {
+                let sequence = group * 250 + slot;
+                fact(sequence, (sequence - 1) / 200 * 200)
+            })
+            .collect::<Vec<_>>();
+        store.append_facts(&facts).unwrap();
+    }
+    // The half-open range must exclude this row even on a fresh selection.
+    store.append_facts(&[fact(20_001, 20_001)]).unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::ZERO,
+        to: Duration::from_secs(20_001),
+    };
+    let first = store.read_history_measurements(&filter, None, 128).unwrap();
+    let watermark = first.watermark;
+    // One late commit sorts inside the frozen range/upper key, another beyond
+    // the old upper key but inside the requested range. Neither may leak in.
+    store
+        .append_facts(&[fact(20_002, 10_000), fact(20_003, 20_000)])
+        .unwrap();
+    let mut page = first;
+    let mut seen = Vec::new();
+    let mut previous = None;
+    let mut tied_page_boundaries = 0;
+    loop {
+        assert_eq!(page.watermark, watermark);
+        assert!(!page.rows.is_empty());
+        assert!(page.rows.len() <= 128);
+        assert!(page.selected_rows <= page.rows.len() + 1);
+        if previous.is_some_and(|at| at == page.rows[0].published_at) {
+            tied_page_boundaries += 1;
+        }
+        for row in &page.rows {
+            let sequence = seen.len() as u64 + 1;
+            assert_eq!(row.record_sequence, sequence + 1);
+            assert_eq!(row.value, Some(Value::Float(sequence as f64)));
+            assert_eq!(
+                row.published_at,
+                Duration::from_secs((sequence - 1) / 200 * 200)
+            );
+            seen.push(row.record_sequence);
+        }
+        assert!(seen.len() <= 20_000, "cursor must make finite progress");
+        previous = page.rows.last().map(|row| row.published_at);
+        let Some(cursor) = page.next_cursor else {
+            break;
+        };
+        page = store
+            .read_history_measurements(&filter, Some(&cursor), 128)
+            .unwrap();
+    }
+    assert_eq!(seen, (2..=20_001).collect::<Vec<_>>());
+    assert!(tied_page_boundaries > 100);
+    let tail = HistoryFilter {
+        from: Duration::from_secs(20_000),
+        ..filter
+    };
+    let fresh = store.read_history_measurements(&tail, None, 128).unwrap();
+    assert!(fresh.watermark > watermark);
+    assert_eq!(fresh.rows.len(), 1);
+    assert_eq!(fresh.rows[0].value, Some(Value::Float(20_003.0)));
+    assert!(fresh.next_cursor.is_none());
+    store.stop_run().unwrap();
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
     let path = temporary_database();
     let boot = "98989898989898989898989898989898";
