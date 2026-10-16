@@ -1,0 +1,70 @@
+{
+  "format_version": 1,
+  "definition_id": "generic-output-v1",
+  "definition_version": 1,
+  "parameters": [
+    {
+      "parameter_id": 2,
+      "key": "output",
+      "display_name": "Output",
+      "role": "actuator",
+      "access": "read_write",
+      "unit_id": "percent",
+      "unit_symbol": "%",
+      "value_type": "float",
+      "engineering_min": 0.0,
+      "engineering_max": 100.0,
+      "write_effect": "output_affecting",
+      "encoding": {
+        "raw": "u16_be",
+        "scale": 0.1,
+        "offset": 0.0
+      },
+      "read": {
+        "request": {
+          "segments": [
+            { "type": "literal", "hex": "4745540d0a" }
+          ]
+        },
+        "response": {
+          "exact_length": 6,
+          "matches": [
+            { "type": "literal_match", "offset": 0, "hex": "563d" },
+            { "type": "literal_match", "offset": 4, "hex": "0d0a" }
+          ],
+          "extract": { "type": "scalar_extract", "offset": 2 }
+        }
+      },
+      "write": {
+        "request": {
+          "segments": [
+            { "type": "literal", "hex": "53455420" },
+            { "type": "value_field" },
+            { "type": "literal", "hex": "0d0a" }
+          ]
+        },
+        "ack": {
+          "exact_length": 4,
+          "matches": [
+            { "type": "literal_match", "offset": 0, "hex": "4f4b0d0a" }
+          ]
+        },
+        "readback": {
+          "request": {
+            "segments": [
+              { "type": "literal", "hex": "4745540d0a" }
+            ]
+          },
+          "response": {
+            "exact_length": 6,
+            "matches": [
+              { "type": "literal_match", "offset": 0, "hex": "563d" },
+              { "type": "literal_match", "offset": 4, "hex": "0d0a" }
+            ],
+            "extract": { "type": "scalar_extract", "offset": 2 }
+          }
+        }
+      }
+    }
+  ]
+}

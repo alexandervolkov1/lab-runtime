@@ -1,0 +1,1636 @@
+//! Configured resource, probe, rebind, deployment-apply and component-staging orchestration.
+//!
+//! The methods here remain implementations of the single HostCore owner declared
+//! in the parent module; this module introduces no additional mutable state owner.
+
+use super::*;
+
+pub(crate) struct PreparedSimpleOverlayPublication {
+    core: lab_core::PreparedSimpleDevicePublication,
+    events: crate::events::PreparedEventPublication,
+}
+
+impl HostCore {
+    /// Install additive SimpleDevice authority behind Core's non-discoverable
+    /// preparation fence. Existing topology remains the only query-visible graph.
+    pub(crate) fn prepare_simple_device_overlay(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<Option<ActuatorId>, Error> {
+        let old_ids: BTreeSet<_> = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .map(InstrumentDto::id)
+            .collect();
+        let mut registered = Vec::new();
+        let result = (|| {
+            let mut prepared_actuator = None;
+            for instrument in &candidate.effective().dto.instruments {
+                let InstrumentDto::SimpleDevice {
+                    id,
+                    display_name,
+                    definition,
+                    resource_id,
+                    address,
+                    channel,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    history_capacity,
+                    ..
+                } = instrument
+                else {
+                    continue;
+                };
+                if old_ids.contains(id) {
+                    continue;
+                }
+                let definition =
+                    candidate
+                        .simple_definition(definition)
+                        .ok_or(Error::InvalidConfiguration(
+                            "prepared simple definition missing",
+                        ))?;
+                let compiled =
+                    compile_simple_instance(definition, InstrumentId::new(*id), *address, *channel)
+                        .map_err(|_| {
+                            Error::InvalidConfiguration("prepared simple definition invalid")
+                        })?;
+                let actuator = compiled.parameters.iter().find_map(|parameter| {
+                    (parameter.descriptor.role == lab_core::ParameterRole::Actuator).then_some(
+                        ActuatorId::new(InstrumentId::new(*id), parameter.descriptor.id),
+                    )
+                });
+                let binding_generation = self
+                    .configured_resource_generation(ResourceId::new(*resource_id))
+                    .unwrap_or(1);
+                self.runtime.command(Command::RegisterPreparedSimpleDevice(
+                    SimpleDeviceInstrumentConfig {
+                        id: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                        parameters: compiled.parameters,
+                        binding: SimpleDeviceBinding {
+                            resource: ResourceId::new(*resource_id),
+                            binding_generation,
+                            mapping_revision: 1,
+                            output_queue_ttl: actuator
+                                .map(|_| Duration::from_millis(*queue_timeout_ms)),
+                            output_timeout: actuator
+                                .map(|_| Duration::from_millis(*transaction_timeout_ms)),
+                        },
+                        history_capacity: *history_capacity,
+                    },
+                ))?;
+                registered.push(InstrumentId::new(*id));
+                if let Some(actuator) = actuator {
+                    let safe = candidate
+                        .effective()
+                        .dto
+                        .safe_profiles
+                        .iter()
+                        .find(|profile| {
+                            profile.instrument_id == *id
+                                && profile.parameter_id == actuator.parameter().get()
+                        })
+                        .ok_or(Error::InvalidConfiguration(
+                            "prepared output safe profile missing",
+                        ))?;
+                    let profile = SafeProfile {
+                        min: safe.min,
+                        max: safe.max,
+                        safe_value: safe.safe_value,
+                        max_lease: Duration::from_millis(safe.max_lease_ms),
+                        max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                        required_evidence: match safe.required_evidence {
+                            EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                            EvidenceDto::Readback => EvidenceLevel::Readback,
+                        },
+                    };
+                    self.runtime.command(Command::Output {
+                        actuator,
+                        at,
+                        command: OutputCommand::BindProfile(profile),
+                    })?;
+                    self.runtime.command(Command::Output {
+                        actuator,
+                        at,
+                        command: OutputCommand::RequestSafe,
+                    })?;
+                    prepared_actuator = Some(actuator);
+                }
+            }
+            Ok(prepared_actuator)
+        })();
+        if result.is_err() && !registered.is_empty() {
+            self.runtime
+                .command(Command::DiscardPreparedSimpleDevices {
+                    instruments: registered,
+                })
+                .expect("prepared SimpleDevice registration cleanup invariant");
+        }
+        result
+    }
+
+    /// Query only the Runtime-owned provisional authority, never public state.
+    pub(crate) fn prepared_simple_output(
+        &self,
+        actuator: ActuatorId,
+    ) -> Option<lab_core::output::OutputSnapshot> {
+        self.runtime.prepared_simple_output_snapshot(actuator)
+    }
+
+    pub(crate) fn prepared_simple_binding(
+        &self,
+        instrument: InstrumentId,
+    ) -> Option<SimpleDeviceBinding> {
+        self.runtime.simple_device_binding(instrument)
+    }
+
+    pub(crate) fn discard_prepared_simple_overlay(
+        &mut self,
+        instruments: Vec<InstrumentId>,
+    ) -> Result<(), Error> {
+        let instruments: Vec<_> = instruments
+            .into_iter()
+            .filter(|instrument| {
+                self.runtime
+                    .prepared_simple_descriptor(*instrument)
+                    .is_some()
+            })
+            .collect();
+        if instruments.is_empty() {
+            return Ok(());
+        }
+        self.runtime
+            .command(Command::DiscardPreparedSimpleDevices { instruments })?;
+        Ok(())
+    }
+
+    /// Prepare activation metadata while the additive topology remains hidden.
+    pub(crate) fn prepare_simple_device_publication(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        at: Duration,
+        configuration_revision: u64,
+    ) -> Result<(), Error> {
+        let old_ids: BTreeSet<_> = active
+            .effective()
+            .dto
+            .instruments
+            .iter()
+            .map(InstrumentDto::id)
+            .collect();
+        for instrument in &candidate.effective().dto.instruments {
+            let InstrumentDto::SimpleDevice {
+                id,
+                key,
+                definition,
+                resource_id,
+                address,
+                channel,
+                poll_period_ms,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                ..
+            } = instrument
+            else {
+                continue;
+            };
+            if old_ids.contains(id) {
+                continue;
+            }
+            let instrument_id = InstrumentId::new(*id);
+            let raw_definition =
+                candidate
+                    .artifact_bytes(definition)
+                    .ok_or(Error::InvalidConfiguration(
+                        "committed simple source missing",
+                    ))?;
+            let definition =
+                candidate
+                    .simple_definition(definition)
+                    .ok_or(Error::InvalidConfiguration(
+                        "committed simple definition missing",
+                    ))?;
+            let raw_sha256: [u8; 32] = Sha256::digest(raw_definition).into();
+            let descriptor = self
+                .runtime
+                .prepared_simple_descriptor(instrument_id)
+                .ok_or(Error::InvalidConfiguration(
+                    "prepared simple descriptor missing",
+                ))?;
+            let actuator_parameter = descriptor.parameters.iter().find_map(|parameter| {
+                (parameter.role == lab_core::ParameterRole::Actuator).then_some(parameter.id.get())
+            });
+            self.simple_device_provenance.insert(
+                instrument_id,
+                SimpleDeviceProvenance {
+                    instrument_key: key.clone(),
+                    definition_id: definition.definition_id.clone(),
+                    definition_version: definition.definition_version,
+                    canonical_sha256: definition.canonical_sha256,
+                    raw_sha256,
+                    address: *address,
+                    channel: *channel,
+                    actuator_parameter,
+                },
+            );
+            self.physical_instruments.insert(instrument_id);
+            for parameter in descriptor.parameters {
+                if parameter.signal.is_some() {
+                    self.plan
+                        .simple_device_reads
+                        .push(SimpleDeviceReadSchedule {
+                            instrument: instrument_id,
+                            parameter: parameter.id,
+                            resource: ResourceId::new(*resource_id),
+                            slot: Periodic::new(Duration::from_millis(*poll_period_ms)),
+                            queue_ttl: Duration::from_millis(*queue_timeout_ms),
+                            timeout: Duration::from_millis(*transaction_timeout_ms),
+                        });
+                }
+                if parameter.role == lab_core::ParameterRole::Actuator {
+                    let actuator = ActuatorId::new(instrument_id, parameter.id);
+                    let safe = candidate
+                        .effective()
+                        .dto
+                        .safe_profiles
+                        .iter()
+                        .find(|safe| {
+                            safe.instrument_id == *id && safe.parameter_id == parameter.id.get()
+                        })
+                        .expect("validated safe profile");
+                    let profile = SafeProfile {
+                        min: safe.min,
+                        max: safe.max,
+                        safe_value: safe.safe_value,
+                        max_lease: Duration::from_millis(safe.max_lease_ms),
+                        max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                        required_evidence: match safe.required_evidence {
+                            EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                            EvidenceDto::Readback => EvidenceLevel::Readback,
+                        },
+                    };
+                    self.outputs.push(actuator);
+                    self.active_safety_profiles.push((actuator, profile));
+                }
+            }
+        }
+        for controller in candidate
+            .effective()
+            .dto
+            .controllers
+            .iter()
+            .filter(|controller| {
+                !active
+                    .effective()
+                    .dto
+                    .controllers
+                    .iter()
+                    .any(|old| old.id == controller.id)
+            })
+        {
+            let id = ControllerId::new(controller.id);
+            let input = SignalId::new(
+                InstrumentId::new(controller.input_instrument_id),
+                lab_core::ParameterId::new(controller.input_parameter_id),
+            );
+            let reference = ReferenceId::new(controller.reference_id);
+            let unit = match self.runtime.query(Query::Reference(reference))? {
+                QueryResult::Reference(ReferenceSnapshot::Fixed { unit, .. }) => unit,
+                QueryResult::Reference(ReferenceSnapshot::Ramp { state, .. }) => state.unit,
+                _ => return Err(Error::InvalidConfiguration("configured Reference missing")),
+            };
+            self.runtime
+                .command(Command::RegisterController(NativeControllerConfig {
+                    id,
+                    input,
+                    output: ActuatorId::new(
+                        InstrumentId::new(controller.output_instrument_id),
+                        lab_core::ParameterId::new(controller.output_parameter_id),
+                    ),
+                    reference,
+                    ema: EmaConfig {
+                        time_constant: Duration::from_millis(controller.ema_time_constant_ms),
+                        warmup_samples: controller.ema_warmup_samples,
+                        unit,
+                    },
+                    pid: PidConfig {
+                        kp: controller.kp,
+                        ki: controller.ki,
+                        kd: controller.kd,
+                        output_min: controller.output_min,
+                        output_max: controller.output_max,
+                    },
+                    max_input_age: Duration::from_millis(controller.max_input_age_ms),
+                    max_tick_gap: Duration::from_millis(controller.max_tick_gap_ms),
+                    lease_lifetime: Duration::from_millis(controller.lease_lifetime_ms),
+                    proposal_ttl: Duration::from_millis(controller.proposal_ttl_ms),
+                }))?;
+            self.runtime.command(Command::PrepareController(id))?;
+            self.plan.controllers.push((
+                id,
+                input,
+                Periodic::new(Duration::from_millis(controller.period_ms)),
+            ));
+        }
+        self.configuration_revision = configuration_revision;
+        self.deployment_provenance = candidate
+            .provenance_entries(configuration_revision)
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        let _ = at;
+        Ok(())
+    }
+
+    /// Validate Core publication and hold exact EventLog capacity before durability.
+    pub(crate) fn prepare_simple_device_overlay_publication(
+        &mut self,
+        instruments: Vec<InstrumentId>,
+        controllers: Vec<ControllerId>,
+    ) -> Result<PreparedSimpleOverlayPublication, Error> {
+        let core = self
+            .runtime
+            .prepare_simple_device_publication(instruments.clone())?;
+        let events = self
+            .events
+            .prepare_simple_device_publication(&self.runtime, &instruments, &controllers)
+            .map_err(event_domain_error)?;
+        Ok(PreparedSimpleOverlayPublication { core, events })
+    }
+
+    /// Release held EventLog capacity while the candidate is still non-durable.
+    pub(crate) fn cancel_simple_device_overlay_publication(
+        &mut self,
+        publication: PreparedSimpleOverlayPublication,
+    ) {
+        self.events
+            .cancel_simple_device_publication(publication.events);
+    }
+
+    /// Publish a durably confirmed, fully prepared topology without a domain failure path.
+    pub(crate) fn commit_simple_device_overlay_publication(
+        &mut self,
+        publication: PreparedSimpleOverlayPublication,
+        at: Duration,
+    ) {
+        self.runtime
+            .commit_simple_device_publication(publication.core);
+        self.events
+            .commit_simple_device_publication(publication.events, at);
+    }
+
+    /// Remove all non-published candidate metadata and restore active provenance.
+    pub(crate) fn rollback_simple_device_publication(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        instruments: Vec<InstrumentId>,
+        active_revision: u64,
+    ) {
+        let prepared: BTreeSet<_> = instruments.iter().copied().collect();
+        self.plan
+            .simple_device_reads
+            .retain(|schedule| !prepared.contains(&schedule.instrument));
+        self.plan
+            .controllers
+            .retain(|(_, input, _)| !prepared.contains(&input.instrument()));
+        self.outputs
+            .retain(|actuator| !prepared.contains(&actuator.instrument()));
+        self.active_safety_profiles
+            .retain(|(actuator, _)| !prepared.contains(&actuator.instrument()));
+        self.physical_instruments
+            .retain(|instrument| !prepared.contains(instrument));
+        self.simple_device_provenance
+            .retain(|instrument, _| !prepared.contains(instrument));
+        self.discard_prepared_simple_overlay(instruments)
+            .expect("prepared SimpleDevice rollback cleanup invariant");
+        self.configuration_revision = active_revision;
+        self.deployment_provenance = active
+            .provenance_entries(self.configuration_revision)
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        let active_controller_ids: BTreeSet<_> = active
+            .effective()
+            .dto
+            .controllers
+            .iter()
+            .map(|controller| controller.id)
+            .collect();
+        let candidate_controller_ids: BTreeSet<_> = candidate
+            .effective()
+            .dto
+            .controllers
+            .iter()
+            .filter(|controller| !active_controller_ids.contains(&controller.id))
+            .map(|controller| ControllerId::new(controller.id))
+            .collect();
+        self.plan
+            .controllers
+            .retain(|(id, _, _)| !candidate_controller_ids.contains(id));
+    }
+
+    /// Queue each configured read-only compatibility probe exactly once.
+    pub fn begin_configured_probes(&mut self, at: Duration) -> Result<(), Error> {
+        for probe in &mut self.configured_probes {
+            if probe.queued {
+                continue;
+            }
+            probe.baseline = match self.runtime.query(Query::GetLatestSignal(SignalId::new(
+                probe.instrument,
+                probe.parameter,
+            )))? {
+                QueryResult::Latest(sample) => sample,
+                _ => {
+                    return Err(Error::InvalidConfiguration(
+                        "configured probe query mismatch",
+                    ));
+                }
+            };
+            self.runtime.command(Command::QueueMetakonRead {
+                instrument: probe.instrument,
+                parameter: probe.parameter,
+                at,
+                queue_ttl: probe.queue_ttl,
+                timeout: probe.timeout,
+            })?;
+            probe.queued = true;
+        }
+        Ok(())
+    }
+
+    /// Quiesce ordinary acquisition for one explicit reconnect without pausing
+    /// unrelated resources, Recorder progress, recovery or native safety work.
+    pub fn begin_configured_resource_reconnect(
+        &mut self,
+        resource: ResourceId,
+    ) -> Result<(), Error> {
+        if !self.resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration("configured resource missing"));
+        }
+        self.reconnect_quiesced_resources.insert(resource);
+        Ok(())
+    }
+
+    /// Report the resource-scoped reconnect gate for diagnostics and acceptance.
+    pub fn configured_resource_reconnect_quiesced(&self, resource: ResourceId) -> bool {
+        self.reconnect_quiesced_resources.contains(&resource)
+    }
+
+    /// Queue trusted native compatibility probes bound to one replacement.
+    /// SimpleDevice plans are already validated and reacquire only through their
+    /// ordinary schedules after the resource fence is durably committed.
+    pub fn begin_configured_probes_for_resource(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<(), Error> {
+        let mut found = false;
+        for probe in &mut self.configured_probes {
+            let bound = self
+                .runtime
+                .metakon_binding(probe.instrument)
+                .is_some_and(|binding| binding.resource == resource);
+            if !bound {
+                continue;
+            }
+            found = true;
+            if probe.queued {
+                continue;
+            }
+            let signal = SignalId::new(probe.instrument, probe.parameter);
+            // Resolve the fallible pure query before owning credit, so a query
+            // rejection cannot strand an untracked probe reservation.
+            let baseline = match self.runtime.query(Query::GetLatestSignal(signal))? {
+                QueryResult::Latest(sample) => sample,
+                _ => {
+                    return Err(Error::InvalidConfiguration(
+                        "configured probe query mismatch",
+                    ));
+                }
+            };
+            let reservation = if self
+                .recording_status
+                .as_ref()
+                .is_some_and(|s| s.state == RecordingState::Recording)
+            {
+                let Some(token) = self
+                    .recorder
+                    .as_mut()
+                    .ok_or(Error::RecordingUnavailable)?
+                    .reserve_fact_group()
+                    .map_err(|_| Error::RecordingUnavailable)?
+                else {
+                    // The serialized reconnect loop services existing work and
+                    // retries admission before its original absolute deadline.
+                    continue;
+                };
+                Some(token)
+            } else {
+                None
+            };
+            probe.baseline = baseline;
+            let queued = self.runtime.command(Command::QueueMetakonRead {
+                instrument: probe.instrument,
+                parameter: probe.parameter,
+                at,
+                queue_ttl: probe.queue_ttl,
+                timeout: probe.timeout,
+            });
+            if let Some(token) = reservation {
+                if queued.is_ok() {
+                    self.probe_fact_reservations.insert(signal, token);
+                } else {
+                    self.recorder
+                        .as_mut()
+                        .unwrap()
+                        .cancel_fact_group(token)
+                        .map_err(|_| Error::RecordingUnavailable)?;
+                }
+            }
+            queued?;
+            probe.queued = true;
+        }
+        let simple = self.simple_device_provenance.keys().any(|instrument| {
+            self.runtime
+                .simple_device_binding(*instrument)
+                .is_some_and(|binding| binding.resource == resource)
+        });
+        if !found && !simple {
+            return Err(Error::InvalidConfiguration(
+                "configured resource has no compatibility probe",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replace one adapter at an explicit closed boundary and advance every
+    /// dependent physical binding generation. Writable authorities are replaced
+    /// by Core and rebound to their existing safe profiles; no controller rearm
+    /// or port enumeration occurs here.
+    pub fn rebind_configured_transport(
+        &mut self,
+        resource: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration("configured resource missing"));
+        }
+        let metakon: BTreeMap<_, _> = self
+            .plan
+            .metakon_reads
+            .iter()
+            .filter_map(|read| {
+                self.runtime
+                    .metakon_binding(read.instrument)
+                    .filter(|binding| binding.resource == resource)
+                    .map(|binding| (read.instrument, binding))
+            })
+            .collect();
+        let simple: BTreeMap<_, _> = self
+            .simple_device_provenance
+            .keys()
+            .filter_map(|instrument| {
+                self.runtime
+                    .simple_device_binding(*instrument)
+                    .filter(|binding| binding.resource == resource)
+                    .map(|binding| (*instrument, binding))
+            })
+            .collect();
+        if metakon.is_empty() && simple.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "configured resource has no instrument",
+            ));
+        }
+        if !metakon.is_empty() && !simple.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "configured resource mixes protocol owners",
+            ));
+        }
+        let metakon_replacements: Vec<_> = metakon
+            .iter()
+            .map(|(instrument, binding)| {
+                Ok((
+                    *instrument,
+                    MetakonBinding {
+                        binding_generation: binding
+                            .binding_generation
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("binding generation exhausted"))?,
+                        mapping_revision: binding
+                            .mapping_revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
+                        ..*binding
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let simple_replacements: Vec<_> = simple
+            .iter()
+            .map(|(instrument, binding)| {
+                Ok((
+                    *instrument,
+                    SimpleDeviceBinding {
+                        binding_generation: binding
+                            .binding_generation
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("binding generation exhausted"))?,
+                        mapping_revision: binding
+                            .mapping_revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
+                        ..*binding
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        if !self.reserve_rebind_facts()? {
+            return Err(Error::RecordingUnavailable);
+        }
+        self.runtime.replace_transport(resource, adapter)?;
+        for (instrument, binding) in metakon_replacements {
+            self.runtime.command(Command::RebindMetakon {
+                instrument,
+                binding,
+                at,
+            })?;
+            for (actuator, profile) in self
+                .active_safety_profiles
+                .iter()
+                .filter(|(actuator, _)| actuator.instrument() == instrument)
+            {
+                self.runtime.command(Command::Output {
+                    actuator: *actuator,
+                    at,
+                    command: OutputCommand::BindProfile(profile.clone()),
+                })?;
+            }
+        }
+        for (instrument, binding) in simple_replacements {
+            self.runtime.command(Command::RebindSimpleDevice {
+                instrument,
+                binding,
+                at,
+            })?;
+            for (actuator, profile) in self
+                .active_safety_profiles
+                .iter()
+                .filter(|(actuator, _)| actuator.instrument() == instrument)
+            {
+                self.runtime.command(Command::Output {
+                    actuator: *actuator,
+                    at,
+                    command: OutputCommand::BindProfile(profile.clone()),
+                })?;
+            }
+        }
+        for probe in &mut self.configured_probes {
+            if self
+                .runtime
+                .metakon_binding(probe.instrument)
+                .is_some_and(|binding| binding.resource == resource)
+            {
+                probe.queued = false;
+                probe.baseline = None;
+            }
+        }
+        self.closed_resources.remove(&resource);
+        self.admit_rebind_facts(at)?;
+        self.observe(at, None)
+    }
+
+    /// Replace a closed resource and every candidate definition/address bound
+    /// to it in one serialized owner turn. The logical IDs remain stable while
+    /// both physical binding generation and mapping revision advance once.
+    pub fn rebind_configured_transport_from_configuration(
+        &mut self,
+        deployment: &FrozenDeployment,
+        resource: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration("configured resource missing"));
+        }
+        let mut replacements = Vec::new();
+        for instrument in &deployment.effective().dto.instruments {
+            let InstrumentDto::Metakon {
+                id,
+                definition,
+                resource_id,
+                address,
+                queue_timeout_ms,
+                transaction_timeout_ms,
+                ..
+            } = instrument
+            else {
+                continue;
+            };
+            if *resource_id != resource.get() {
+                continue;
+            }
+            let old = self
+                .runtime
+                .metakon_binding(InstrumentId::new(*id))
+                .ok_or(Error::InvalidConfiguration("configured binding missing"))?;
+            let bytes = deployment
+                .artifact_bytes(definition)
+                .ok_or(Error::InvalidConfiguration("frozen definition missing"))?;
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| Error::InvalidConfiguration("definition is not UTF-8"))?;
+            let definition = parse_definition_json(text)
+                .map_err(|_| Error::InvalidConfiguration("invalid frozen definition"))?;
+            if definition.id != InstrumentId::new(*id) {
+                return Err(Error::InvalidConfiguration(
+                    "definition and deployment instrument IDs differ",
+                ));
+            }
+            let temperature = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.operation == KnownOperation::Temperature)
+                .ok_or(Error::InvalidConfiguration(
+                    "read-only Metakon definition lacks temperature",
+                ))?
+                .id;
+            let channel_type = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.operation == KnownOperation::ChannelType)
+                .ok_or(Error::InvalidConfiguration(
+                    "read-only Metakon definition lacks compatibility probe",
+                ))?
+                .id;
+            let output_unit = definition
+                .parameters
+                .iter()
+                .find(|parameter| parameter.operation == KnownOperation::Output)
+                .map(|parameter| parameter.unit);
+            replacements.push((
+                InstrumentId::new(*id),
+                MetakonInstrumentConfig {
+                    definition,
+                    binding: MetakonBinding {
+                        resource,
+                        device: *address,
+                        channel: 0,
+                        binding_generation: old
+                            .binding_generation
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("binding generation exhausted"))?,
+                        mapping_revision: old
+                            .mapping_revision
+                            .checked_add(1)
+                            .ok_or(Error::InvalidConfiguration("mapping revision exhausted"))?,
+                        expected_output_unit: output_unit,
+                        output_queue_ttl: output_unit
+                            .map(|_| Duration::from_millis(*queue_timeout_ms)),
+                        output_timeout: output_unit
+                            .map(|_| Duration::from_millis(*transaction_timeout_ms)),
+                    },
+                    history_capacity: 64,
+                },
+                old,
+                temperature,
+                channel_type,
+            ));
+        }
+        if replacements.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "candidate resource has no instrument",
+            ));
+        }
+        let recovery_timeout = deployment
+            .effective()
+            .dto
+            .resources
+            .iter()
+            .find(|candidate| candidate.id == resource.get())
+            .ok_or(Error::InvalidConfiguration("candidate resource missing"))?
+            .recovery_timeout_ms;
+        self.runtime.replace_transport_with_recovery_timeout(
+            resource,
+            adapter,
+            Duration::from_millis(recovery_timeout),
+        )?;
+        for (instrument, config, old, temperature, channel_type) in replacements {
+            self.runtime.command(Command::ReconfigureMetakon {
+                config,
+                expected_binding_generation: old.binding_generation,
+                expected_mapping_revision: old.mapping_revision,
+                at,
+            })?;
+            for (actuator, profile) in self
+                .active_safety_profiles
+                .iter()
+                .filter(|(actuator, _)| actuator.instrument() == instrument)
+            {
+                self.runtime.command(Command::Output {
+                    actuator: *actuator,
+                    at,
+                    command: OutputCommand::BindProfile(profile.clone()),
+                })?;
+            }
+            let read = self
+                .plan
+                .metakon_reads
+                .iter_mut()
+                .find(|read| read.instrument == instrument)
+                .ok_or(Error::InvalidConfiguration(
+                    "configured read schedule missing",
+                ))?;
+            read.parameter = temperature;
+            let probe = self
+                .configured_probes
+                .iter_mut()
+                .find(|probe| probe.instrument == instrument)
+                .ok_or(Error::InvalidConfiguration("configured probe missing"))?;
+            probe.parameter = channel_type;
+            probe.queued = false;
+            probe.baseline = None;
+        }
+        self.closed_resources.remove(&resource);
+        self.observe(at, None)
+    }
+
+    /// Retire the current adapter without waiting; true means a replacement can
+    /// be installed without creating a second handle owner.
+    pub fn prepare_configured_transport_replacement(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<bool, Error> {
+        Ok(self.runtime.shutdown_transport(resource, at)?
+            == lab_core::transport::TransportShutdown::Complete)
+    }
+
+    /// Install a replacement only after explicit provisional-output
+    /// reconciliation fenced and retired the non-discoverable candidate.
+    pub(crate) fn install_reconciled_simple_transport(
+        &mut self,
+        resource: ResourceId,
+        adapter: Box<dyn ByteTransport>,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.reconnect_quiesced_resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration(
+                "simple-output reconciliation is not quiesced",
+            ));
+        }
+        self.runtime.replace_transport(resource, adapter)?;
+        self.closed_resources.remove(&resource);
+        self.reconnect_quiesced_resources.remove(&resource);
+        self.observe(at, None)
+    }
+
+    /// Copy the current physical binding generation for diagnostics/tests.
+    pub fn configured_binding_generation(&self, instrument: u64) -> Option<u64> {
+        self.runtime
+            .metakon_binding(InstrumentId::new(instrument))
+            .map(|binding| binding.binding_generation)
+            .or_else(|| {
+                self.runtime
+                    .simple_device_binding(InstrumentId::new(instrument))
+                    .map(|binding| binding.binding_generation)
+            })
+    }
+
+    /// Highest active binding generation using one stable logical resource.
+    pub(crate) fn configured_resource_generation(&self, resource: ResourceId) -> Option<u64> {
+        let metakon = self
+            .plan
+            .metakon_reads
+            .iter()
+            .filter_map(|read| self.runtime.metakon_binding(read.instrument))
+            .filter(|binding| binding.resource == resource)
+            .map(|binding| binding.binding_generation);
+        let simple = self
+            .plan
+            .simple_device_reads
+            .iter()
+            .filter_map(|read| self.runtime.simple_device_binding(read.instrument))
+            .filter(|binding| binding.resource == resource)
+            .map(|binding| binding.binding_generation);
+        metakon.chain(simple).max()
+    }
+
+    /// Copy the authoritative executor state for bounded reconnect diagnostics.
+    pub(crate) fn configured_resource_executor_state(
+        &self,
+        resource: ResourceId,
+    ) -> Option<ExecutorState> {
+        match self.runtime.query(Query::Transport(resource)).ok()? {
+            QueryResult::Transport(snapshot) => Some(snapshot.state),
+            _ => None,
+        }
+    }
+
+    /// Check frozen channel-type observations without polling or hidden I/O.
+    pub fn configured_probes_ready(&self) -> Result<bool, Error> {
+        for probe in &self.configured_probes {
+            let QueryResult::Latest(Some(sample)) = self.runtime.query(Query::GetLatestSignal(
+                SignalId::new(probe.instrument, probe.parameter),
+            ))?
+            else {
+                return Ok(false);
+            };
+            if probe.baseline.as_ref() == Some(&sample) {
+                return Ok(false);
+            }
+            if sample.quality() != SampleQuality::Good
+                || sample.value() != Some(&lab_core::Value::Integer(3))
+            {
+                return Err(Error::InvalidConfiguration(
+                    "Metakon channel compatibility probe failed",
+                ));
+            }
+        }
+        Ok(true)
+    }
+
+    /// Request the configured physical safe procedure only after compatibility
+    /// probes have established the intended Metakon profile. The next bounded
+    /// safety turns use the normal OutputAuthority/write/ACK/readback path.
+    pub fn request_configured_physical_safe(&mut self, at: Duration) -> Result<(), Error> {
+        if !self.configured_probes_ready()? {
+            return Err(Error::InvalidConfiguration(
+                "physical output compatibility probe is not ready",
+            ));
+        }
+        for actuator in self.outputs.clone() {
+            if self
+                .runtime
+                .metakon_binding(actuator.instrument())
+                .is_none()
+                && self
+                    .runtime
+                    .simple_device_binding(actuator.instrument())
+                    .is_none()
+            {
+                continue;
+            }
+            let QueryResult::Output(snapshot) = self.runtime.query(Query::Output(actuator))? else {
+                unreachable!()
+            };
+            if snapshot.state == lab_core::output::OutputState::Unverified {
+                self.runtime.command(Command::Output {
+                    actuator,
+                    at,
+                    command: OutputCommand::RequestSafe,
+                })?;
+            }
+        }
+        self.observe(at, None)
+    }
+
+    /// True only when every configured physical output has matching readback of
+    /// its safe value and no lease remains.
+    pub fn configured_physical_outputs_safe(&self) -> Result<bool, Error> {
+        for actuator in &self.outputs {
+            if self
+                .runtime
+                .metakon_binding(actuator.instrument())
+                .is_none()
+                && self
+                    .runtime
+                    .simple_device_binding(actuator.instrument())
+                    .is_none()
+            {
+                continue;
+            }
+            let QueryResult::Output(snapshot) = self.runtime.query(Query::Output(*actuator))?
+            else {
+                unreachable!()
+            };
+            if !snapshot.safe_confirmed || snapshot.lease.is_some() || snapshot.in_flight.is_some()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Prepare deferred physical controllers only after their output has trusted
+    /// safe readback. Registration itself never acquires a lease.
+    pub fn prepare_configured_physical_controllers(&mut self) -> Result<(), Error> {
+        for (controller, _, _) in &self.plan.controllers {
+            let QueryResult::Controller(snapshot) =
+                self.runtime.query(Query::Controller(*controller))?
+            else {
+                unreachable!()
+            };
+            if snapshot.state != ControllerState::Created {
+                continue;
+            }
+            let QueryResult::ControllerConfig(config) =
+                self.runtime.query(Query::ControllerConfig(*controller))?
+            else {
+                unreachable!()
+            };
+            if self
+                .runtime
+                .metakon_binding(config.output.instrument())
+                .is_some()
+                || self
+                    .runtime
+                    .simple_device_binding(config.output.instrument())
+                    .is_some()
+            {
+                self.runtime
+                    .command(Command::PrepareController(*controller))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Inspect only the compatibility probes bound to one reconnecting resource.
+    /// The rebind-generated Unavailable baseline is pending, not probe failure.
+    pub fn configured_probes_ready_for_resource(
+        &self,
+        resource: ResourceId,
+    ) -> Result<bool, Error> {
+        let mut found = false;
+        for probe in &self.configured_probes {
+            let bound = self
+                .runtime
+                .metakon_binding(probe.instrument)
+                .is_some_and(|binding| binding.resource == resource);
+            if !bound {
+                continue;
+            }
+            found = true;
+            if !probe.queued {
+                return Ok(false);
+            }
+            let QueryResult::Latest(Some(sample)) = self.runtime.query(Query::GetLatestSignal(
+                SignalId::new(probe.instrument, probe.parameter),
+            ))?
+            else {
+                return Ok(false);
+            };
+            if probe.baseline.as_ref() == Some(&sample) {
+                return Ok(false);
+            }
+            if sample.quality() != SampleQuality::Good
+                || sample.value() != Some(&lab_core::Value::Integer(3))
+            {
+                return Err(Error::InvalidConfiguration(
+                    "Metakon channel compatibility probe failed",
+                ));
+            }
+        }
+        let simple = self.simple_device_provenance.keys().any(|instrument| {
+            self.runtime
+                .simple_device_binding(*instrument)
+                .is_some_and(|binding| binding.resource == resource)
+        });
+        if !found && !simple {
+            return Err(Error::InvalidConfiguration(
+                "configured resource has no compatibility probe",
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Release one replacement only after its trusted probe and durable lifecycle
+    /// have succeeded. The fresh deadline prevents a reconnect catch-up burst.
+    pub fn activate_configured_resource_after_reconnect(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<(), Error> {
+        if !self.reconnect_quiesced_resources.contains(&resource)
+            || !self.configured_probes_ready_for_resource(resource)?
+        {
+            return Err(Error::InvalidConfiguration(
+                "configured resource reconnect is not ready",
+            ));
+        }
+        for read in &mut self.plan.metakon_reads {
+            if self
+                .runtime
+                .metakon_binding(read.instrument)
+                .is_some_and(|binding| binding.resource == resource)
+            {
+                read.slot.next_due = at
+                    .checked_add(read.slot.period)
+                    .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+            }
+        }
+        for read in &mut self.plan.simple_device_reads {
+            if read.resource == resource {
+                read.slot.next_due = at
+                    .checked_add(read.slot.period)
+                    .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+            }
+        }
+        self.reconnect_quiesced_resources.remove(&resource);
+        Ok(())
+    }
+
+    /// Retire a replacement that crossed the generation fence but failed its
+    /// compatibility gate. The new generation remains authoritative and gated.
+    pub fn retire_failed_configured_reconnect(
+        &mut self,
+        resource: ResourceId,
+        at: Duration,
+    ) -> Result<bool, Error> {
+        if !self.reconnect_quiesced_resources.contains(&resource) {
+            return Err(Error::InvalidConfiguration(
+                "configured resource reconnect is not quiesced",
+            ));
+        }
+        let complete = self.runtime.shutdown_transport(resource, at)?
+            == lab_core::transport::TransportShutdown::Complete;
+        self.observe(at, None)?;
+        if complete {
+            self.closed_resources.insert(resource);
+        }
+        Ok(complete)
+    }
+
+    /// Apply display/cadence-only fields at one owner commit without replacing
+    /// instruments, observations, authority or generations.
+    pub(crate) fn apply_live_configuration(
+        &mut self,
+        candidate: &FrozenDeployment,
+        configuration_revision: u64,
+    ) -> Result<(), Error> {
+        for instrument in &candidate.effective().dto.instruments {
+            match instrument {
+                InstrumentDto::VirtualMeasurement {
+                    id,
+                    display_name,
+                    poll_period_ms,
+                    ..
+                }
+                | InstrumentDto::ThermalPlant {
+                    id,
+                    display_name,
+                    poll_period_ms,
+                    ..
+                } => {
+                    self.runtime.command(Command::RenameInstrument {
+                        instrument: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                    })?;
+                    let (_, slot) = self
+                        .plan
+                        .plants
+                        .iter_mut()
+                        .find(|(instrument, _)| instrument.get() == *id)
+                        .ok_or(Error::InvalidConfiguration("configured schedule missing"))?;
+                    slot.period = Duration::from_millis(*poll_period_ms);
+                    slot.next_due = self
+                        .last_now
+                        .checked_add(slot.period)
+                        .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+                }
+                InstrumentDto::Metakon {
+                    id,
+                    poll_period_ms,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } => {
+                    let read = self
+                        .plan
+                        .metakon_reads
+                        .iter_mut()
+                        .find(|read| read.instrument.get() == *id)
+                        .ok_or(Error::InvalidConfiguration(
+                            "configured read schedule missing",
+                        ))?;
+                    read.slot.period = Duration::from_millis(*poll_period_ms);
+                    read.slot.next_due = self
+                        .last_now
+                        .checked_add(read.slot.period)
+                        .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+                    read.queue_ttl = Duration::from_millis(*queue_timeout_ms);
+                    read.timeout = Duration::from_millis(*transaction_timeout_ms);
+                }
+                InstrumentDto::SimpleDevice {
+                    id,
+                    display_name,
+                    poll_period_ms,
+                    queue_timeout_ms,
+                    transaction_timeout_ms,
+                    ..
+                } => {
+                    self.runtime.command(Command::RenameInstrument {
+                        instrument: InstrumentId::new(*id),
+                        name: display_name.clone(),
+                    })?;
+                    let mut found = false;
+                    for read in self
+                        .plan
+                        .simple_device_reads
+                        .iter_mut()
+                        .filter(|read| read.instrument.get() == *id)
+                    {
+                        found = true;
+                        read.slot.period = Duration::from_millis(*poll_period_ms);
+                        read.slot.next_due = self
+                            .last_now
+                            .checked_add(read.slot.period)
+                            .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+                        read.queue_ttl = Duration::from_millis(*queue_timeout_ms);
+                        read.timeout = Duration::from_millis(*transaction_timeout_ms);
+                    }
+                    if !found {
+                        return Err(Error::InvalidConfiguration(
+                            "configured simple-device schedule missing",
+                        ));
+                    }
+                }
+            }
+        }
+        self.configuration_revision = configuration_revision;
+        self.deployment_provenance = candidate
+            .provenance_entries(configuration_revision)
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Revoke configured authority and progress the existing safe policy through
+    /// the normal adapter. Physical safety remains pending until real evidence.
+    pub(crate) fn enter_configuration_safe_barrier(&mut self, at: Duration) -> Result<bool, Error> {
+        let controllers: Vec<_> = self.plan.controllers.iter().map(|(id, _, _)| *id).collect();
+        for controller in controllers {
+            let QueryResult::Controller(snapshot) =
+                self.runtime.query(Query::Controller(controller))?
+            else {
+                return Err(Error::InvalidConfiguration("configured controller missing"));
+            };
+            if matches!(
+                snapshot.state,
+                ControllerState::Warming | ControllerState::Running
+            ) {
+                self.runtime
+                    .command(Command::PauseController { controller, at })?;
+            }
+        }
+        for actuator in self.outputs.clone() {
+            let QueryResult::Output(before) = self.runtime.query(Query::Output(actuator))? else {
+                unreachable!()
+            };
+            if !before.safe_confirmed && before.state != lab_core::output::OutputState::SafePending
+            {
+                self.runtime.command(Command::Output {
+                    actuator,
+                    at,
+                    command: OutputCommand::RequestSafe,
+                })?;
+            }
+        }
+        // Core selects native simulation or physical WRITE/ACK/readback. The
+        // configuration owner must never manufacture transport evidence.
+        self.runtime.command(Command::ServiceSafety { at })?;
+        self.observe(at, None)?;
+        Ok(self.outputs.iter().all(|actuator| {
+            matches!(self.runtime.query(Query::Output(*actuator)),
+                Ok(QueryResult::Output(snapshot)) if snapshot.safe_confirmed && snapshot.lease.is_none())
+        }))
+    }
+
+    /// Commit a fixed-topology candidate after its safe barrier. All mutations
+    /// occur in this serialized owner turn; controllers remain Ready/Paused and
+    /// no output authority is acquired.
+    pub(crate) fn apply_configuration(
+        &mut self,
+        active: &FrozenDeployment,
+        candidate: &FrozenDeployment,
+        at: Duration,
+        configuration_revision: u64,
+    ) -> Result<(), Error> {
+        let old = &active.effective().dto;
+        let new = &candidate.effective().dto;
+
+        if old
+            .instruments
+            .iter()
+            .zip(&new.instruments)
+            .any(|(old, new)| thermal_configuration_changed(old, new))
+        {
+            self.restart_configured_virtual_models(candidate, at)?;
+        }
+
+        for (old_reference, reference) in old.references.iter().zip(&new.references) {
+            if old_reference == reference {
+                continue;
+            }
+            let id = ReferenceId::new(reference.id);
+            let revision = match self.runtime.query(Query::Reference(id))? {
+                QueryResult::Reference(ReferenceSnapshot::Fixed { revision, .. })
+                | QueryResult::Reference(ReferenceSnapshot::Ramp { revision, .. }) => revision,
+                _ => return Err(Error::InvalidConfiguration("configured Reference missing")),
+            };
+            let unit = Unit::new(&reference.unit_id, &reference.unit_symbol)?;
+            let config = match reference.kind {
+                ReferenceKindDto::Fixed => ReferenceConfig::Fixed {
+                    id,
+                    value: reference.value,
+                    unit,
+                },
+                ReferenceKindDto::Ramp => ReferenceConfig::Ramp {
+                    id,
+                    start: reference.value,
+                    target: reference
+                        .target
+                        .ok_or(Error::InvalidConfiguration("ramp target missing"))?,
+                    rate: reference
+                        .rate
+                        .ok_or(Error::InvalidConfiguration("ramp rate missing"))?,
+                    unit,
+                    at,
+                },
+            };
+            self.runtime.command(Command::ReconfigureReference {
+                reference: id,
+                config,
+                expected_revision: revision,
+            })?;
+        }
+
+        for (old_safe, safe) in old.safe_profiles.iter().zip(&new.safe_profiles) {
+            if old_safe == safe {
+                continue;
+            }
+            let actuator = ActuatorId::new(
+                InstrumentId::new(safe.instrument_id),
+                lab_core::ParameterId::new(safe.parameter_id),
+            );
+            let profile = SafeProfile {
+                min: safe.min,
+                max: safe.max,
+                safe_value: safe.safe_value,
+                max_lease: Duration::from_millis(safe.max_lease_ms),
+                max_proposal_ttl: Duration::from_millis(safe.max_proposal_ttl_ms),
+                required_evidence: match safe.required_evidence {
+                    EvidenceDto::Ack => EvidenceLevel::Acknowledgement,
+                    EvidenceDto::Readback => EvidenceLevel::Readback,
+                },
+            };
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::BindProfile(profile.clone()),
+            })?;
+            self.runtime.command(Command::Output {
+                actuator,
+                at,
+                command: OutputCommand::RequestSafe,
+            })?;
+            if let Some((_, current)) = self
+                .active_safety_profiles
+                .iter_mut()
+                .find(|(current, _)| *current == actuator)
+            {
+                *current = profile;
+            }
+        }
+
+        // Applying a profile commits policy, not physical safety. A physical
+        // output stays unarmed while its new safe value awaits real evidence.
+        self.runtime.command(Command::ServiceSafety { at })?;
+        for (old_controller, controller) in old.controllers.iter().zip(&new.controllers) {
+            let id = ControllerId::new(controller.id);
+            if old_controller != controller {
+                let QueryResult::Controller(snapshot) =
+                    self.runtime.query(Query::Controller(id))?
+                else {
+                    return Err(Error::InvalidConfiguration("configured controller missing"));
+                };
+                let reference = ReferenceId::new(controller.reference_id);
+                let unit = match self.runtime.query(Query::Reference(reference))? {
+                    QueryResult::Reference(ReferenceSnapshot::Fixed { unit, .. }) => unit,
+                    QueryResult::Reference(ReferenceSnapshot::Ramp { state, .. }) => state.unit,
+                    _ => {
+                        return Err(Error::InvalidConfiguration("configured Reference missing"));
+                    }
+                };
+                self.runtime.command(Command::ReconfigureController {
+                    controller: id,
+                    config: NativeControllerConfig {
+                        id,
+                        input: SignalId::new(
+                            InstrumentId::new(controller.input_instrument_id),
+                            lab_core::ParameterId::new(controller.input_parameter_id),
+                        ),
+                        output: ActuatorId::new(
+                            InstrumentId::new(controller.output_instrument_id),
+                            lab_core::ParameterId::new(controller.output_parameter_id),
+                        ),
+                        reference,
+                        ema: EmaConfig {
+                            time_constant: Duration::from_millis(controller.ema_time_constant_ms),
+                            warmup_samples: controller.ema_warmup_samples,
+                            unit,
+                        },
+                        pid: PidConfig {
+                            kp: controller.kp,
+                            ki: controller.ki,
+                            kd: controller.kd,
+                            output_min: controller.output_min,
+                            output_max: controller.output_max,
+                        },
+                        max_input_age: Duration::from_millis(controller.max_input_age_ms),
+                        max_tick_gap: Duration::from_millis(controller.max_tick_gap_ms),
+                        lease_lifetime: Duration::from_millis(controller.lease_lifetime_ms),
+                        proposal_ttl: Duration::from_millis(controller.proposal_ttl_ms),
+                    },
+                    expected_revision: snapshot.config_revision,
+                })?;
+            }
+            let (_, _, slot) = self
+                .plan
+                .controllers
+                .iter_mut()
+                .find(|(current, _, _)| *current == id)
+                .ok_or(Error::InvalidConfiguration("controller schedule missing"))?;
+            slot.period = Duration::from_millis(controller.period_ms);
+            slot.next_due = at
+                .checked_add(slot.period)
+                .ok_or(Error::InvalidConfiguration("scheduler time exhausted"))?;
+        }
+        self.apply_live_configuration(candidate, configuration_revision)?;
+        self.observe(at, None)
+    }
+
+    /// Restart every configured native thermal model under its generation fence.
+    pub(crate) fn restart_configured_virtual_models(
+        &mut self,
+        deployment: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<(usize, u64), Error> {
+        let mut count = 0usize;
+        let mut latest_generation = 0u64;
+        for instrument in &deployment.effective().dto.instruments {
+            if let InstrumentDto::ThermalPlant {
+                id,
+                display_name,
+                history_capacity,
+                ambient_temperature,
+                initial_temperature,
+                gain_per_percent,
+                time_constant_ms,
+                ..
+            } = instrument
+            {
+                let id = InstrumentId::new(*id);
+                let expected = *self
+                    .virtual_model_generations
+                    .get(&id)
+                    .ok_or(Error::InvalidConfiguration("model generation missing"))?;
+                let CommandResult::ModelRestarted { generation, .. } =
+                    self.runtime.command(Command::RestartThermalPlant {
+                        instrument: id,
+                        config: ThermalPlantConfig {
+                            id,
+                            name: display_name.clone(),
+                            history_capacity: *history_capacity,
+                            ambient_temperature: *ambient_temperature,
+                            initial_temperature: *initial_temperature,
+                            gain_per_percent: *gain_per_percent,
+                            time_constant: Duration::from_millis(*time_constant_ms),
+                        },
+                        expected_generation: expected,
+                        at,
+                    })?
+                else {
+                    return Err(Error::InvalidConfiguration("unexpected restart result"));
+                };
+                self.virtual_model_generations.insert(id, generation);
+                latest_generation = generation;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return Err(Error::InvalidConfiguration("no configured native models"));
+        }
+        self.observe(at, None)?;
+        Ok((count, latest_generation))
+    }
+
+    /// Stage one configured managed component. Startup and deployment replacement
+    /// call this serially so Core's accepted one-stage/two-worker bound is unchanged.
+    pub(crate) fn stage_configured_component(
+        &mut self,
+        deployment: &FrozenDeployment,
+        index: usize,
+        replaces: bool,
+        at: Duration,
+    ) -> Result<ComponentId, Error> {
+        let component = deployment
+            .effective()
+            .dto
+            .managed_components
+            .get(index)
+            .ok_or(Error::InvalidConfiguration("managed component index"))?;
+        let id = ComponentId::new(component.id);
+        let definition = build_component_definition(
+            &component.implementation,
+            NativeComponentDefinition {
+                id,
+                instrument: InstrumentId::new(component.instrument_id),
+                name: component.display_name.clone(),
+                input: component
+                    .input_instrument_id
+                    .map(|input| SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE)),
+                config: component
+                    .plain_config()
+                    .map_err(|_| Error::InvalidConfiguration("managed PlainData config"))?,
+            },
+        )?;
+        self.runtime.command(if replaces {
+            Command::PrepareComponentReplacement {
+                definition,
+                replaces: id,
+                at,
+            }
+        } else {
+            Command::StageComponent {
+                definition,
+                replaces: None,
+                at,
+            }
+        })?;
+        if !replaces {
+            self.events.track_component(id);
+            self.components.push((
+                id,
+                if component.input_instrument_id.is_some() {
+                    "transform"
+                } else {
+                    "source"
+                },
+            ));
+        }
+        Ok(id)
+    }
+
+    /// Whether one configured init result committed and no callback remains.
+    pub(crate) fn component_initialized(&self, id: ComponentId) -> bool {
+        matches!(self.runtime.query(Query::Component(id)),Ok(QueryResult::Component(snapshot))
+            if matches!(snapshot.state,ComponentState::Warming|ComponentState::Ready)
+                && snapshot.pending.is_none())
+    }
+
+    /// Start configured component cadences only after every init committed.
+    pub(crate) fn activate_configured_components(
+        &mut self,
+        deployment: &FrozenDeployment,
+        at: Duration,
+    ) -> Result<(), Error> {
+        self.plan.sources.clear();
+        self.plan.transforms.clear();
+        for component in &deployment.effective().dto.managed_components {
+            let id = ComponentId::new(component.id);
+            if !self.component_initialized(id) {
+                return Err(Error::InvalidConfiguration("managed init incomplete"));
+            }
+            if let Some(input) = component.input_instrument_id {
+                self.plan.transforms.push((
+                    id,
+                    SignalId::new(InstrumentId::new(input), lab_core::TEMPERATURE),
+                ));
+            } else {
+                let mut slot = Periodic::new(Duration::from_millis(component.period_ms));
+                slot.next_due = at;
+                self.plan.sources.push((id, slot));
+            }
+        }
+        self.deployment_provenance = deployment
+            .provenance_entries(self.configuration_revision)
+            .into_iter()
+            .map(|(kind, encoding, content)| ProvenanceEntry {
+                kind,
+                encoding,
+                content,
+            })
+            .collect();
+        Ok(())
+    }
+}

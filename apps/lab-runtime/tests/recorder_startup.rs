@@ -1,0 +1,477 @@
+//! Recorder configuration is selected before readiness and never starts control.
+
+mod support;
+
+use lab_runtime::{
+    application::Application,
+    host::{Clock, HostCore},
+    recorder::{RecorderLimits, RecorderWorker, RecordingPolicy, RecordingState, WriterBarrier},
+    service::{ServiceHost, ServiceOptions},
+    wire::{decode_frame, encode_frame},
+};
+use serde_json::json;
+use std::{
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom, Write},
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+
+fn temporary_database() -> PathBuf {
+    let mut entropy = [0u8; 16];
+    getrandom::fill(&mut entropy).unwrap();
+    let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+    std::env::temp_dir().join(format!("lab-runtime-m7-startup-{suffix}.sqlite"))
+}
+
+#[test]
+fn database_option_defaults_to_required_and_invalid_candidates_do_not_start() {
+    let _runtime_owner = support::managed_runtime_guard();
+    let path = temporary_database();
+    let text = path.to_string_lossy();
+    let args = [
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ];
+    let options = ServiceOptions::parse(&args).unwrap();
+    assert_eq!(
+        options.recording().unwrap().policy,
+        RecordingPolicy::Required
+    );
+    assert!(
+        ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-policy",
+            "best-effort"
+        ])
+        .is_err()
+    );
+    assert!(
+        ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            "relative.sqlite"
+        ])
+        .is_err()
+    );
+    assert!(
+        ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            text.as_ref(),
+            "--record-policy",
+            "unknown"
+        ])
+        .is_err()
+    );
+    let service = ServiceHost::startup(options).unwrap();
+    let status = service.owner().recording_status().unwrap();
+    assert_eq!(status.state, RecordingState::Idle);
+    drop(service);
+    // Detached startup worker releases its connection after the owner drops.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
+}
+
+#[test]
+fn explicit_unopenable_storage_fails_startup_before_readiness_for_both_policies() {
+    let _runtime_owner = support::managed_runtime_guard();
+    let parent = temporary_database().with_extension("missing-parent");
+    assert!(!parent.exists());
+    let path = parent.join("recording.sqlite");
+    let text = path.to_string_lossy();
+    for policy in ["required", "best-effort"] {
+        let options = ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            text.as_ref(),
+            "--record-policy",
+            policy,
+        ])
+        .unwrap();
+        let error = match ServiceHost::startup(options) {
+            Ok(_) => panic!("missing storage parent must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("sqlite")
+                || error.to_string().contains("open")
+                || error.to_string().contains("storage"),
+            "unexpected startup error: {error}"
+        );
+        assert!(!path.exists());
+    }
+
+    std::fs::create_dir(&parent).unwrap();
+    let directory_text = parent.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        directory_text.as_ref(),
+    ])
+    .unwrap();
+    assert!(
+        ServiceHost::startup(options).is_err(),
+        "a directory cannot become an implicit replacement database"
+    );
+    std::fs::remove_dir(parent).unwrap();
+}
+
+#[test]
+fn external_sqlite_writer_lock_fails_within_the_busy_bound_without_starting_a_boot() {
+    let path = temporary_database();
+    let first_boot = "10101010101010101010101010101010";
+    let mut original =
+        lab_runtime::recorder::SqliteStore::open_with_boot(&path, first_boot).unwrap();
+    original.finish_boot(Duration::ZERO).unwrap();
+    original.close().unwrap();
+
+    let external = rusqlite::Connection::open(&path).unwrap();
+    external
+        .execute_batch(
+            "BEGIN EXCLUSIVE;
+             UPDATE schema_version SET schema_version=schema_version WHERE singleton=1;",
+        )
+        .unwrap();
+    let started = Instant::now();
+    let error = match lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "20202020202020202020202020202020",
+    ) {
+        Ok(_) => panic!("an externally locked archive must not gain a second storage owner"),
+        Err(error) => error,
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the configured 100 ms SQLite busy bound was not finite: {error}"
+    );
+    let boots: i64 = external
+        .query_row("SELECT COUNT(*) FROM runtime_boots", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(boots, 1, "failed open must not create a half-started boot");
+    external.execute_batch("ROLLBACK").unwrap();
+    drop(external);
+
+    let mut reopened = lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "30303030303030303030303030303030",
+    )
+    .unwrap();
+    reopened.finish_boot(Duration::ZERO).unwrap();
+    reopened.close().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn readonly_windows_archive_fails_startup_for_both_policies_without_mutation() {
+    let _runtime_owner = support::managed_runtime_guard();
+    let path = temporary_database();
+    let mut original = lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "40404040404040404040404040404040",
+    )
+    .unwrap();
+    original.finish_boot(Duration::ZERO).unwrap();
+    original.close().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions).unwrap();
+
+    let text = path.to_string_lossy();
+    for policy in ["required", "best-effort"] {
+        let options = ServiceOptions::parse(&[
+            "--serve",
+            "--profile",
+            "virtual-demo",
+            "--port",
+            "0",
+            "--record-db",
+            text.as_ref(),
+            "--record-policy",
+            policy,
+        ])
+        .unwrap();
+        let started = Instant::now();
+        assert!(
+            ServiceHost::startup(options).is_err(),
+            "a read-only archive must not be presented as ready under {policy} policy"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "read-only startup must fail finitely under {policy} policy"
+        );
+    }
+
+    std::fs::set_permissions(&path, original_permissions).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "failed read-only opens must not rewrite the accepted archive"
+    );
+    let archive = rusqlite::Connection::open(&path).unwrap();
+    let boots: i64 = archive
+        .query_row("SELECT COUNT(*) FROM runtime_boots", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(boots, 1);
+    drop(archive);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn oversized_existing_archive_is_rejected_without_startup_mutation() {
+    let path = temporary_database();
+    let mut store = lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "00000000000000000000000000000a01",
+    )
+    .unwrap();
+    store.finish_boot(Duration::ZERO).unwrap();
+    let (page_size, _, _) = store.storage_pages().unwrap();
+    store.close().unwrap();
+
+    let oversized_pages = (1024u64 * 1024 * 1024) / page_size + 1;
+    let oversized_len = oversized_pages.checked_mul(page_size).unwrap();
+    let page_count = u32::try_from(oversized_pages).unwrap();
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.seek(SeekFrom::Start(28)).unwrap();
+    file.write_all(&page_count.to_be_bytes()).unwrap();
+    file.set_len(oversized_len).unwrap();
+    file.flush().unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let mut header_before = [0u8; 100];
+    file.read_exact(&mut header_before).unwrap();
+    drop(file);
+
+    let error = match lab_runtime::recorder::SqliteStore::open_with_boot(
+        &path,
+        "00000000000000000000000000000a02",
+    ) {
+        Ok(_) => panic!("archive above the fixed one-GiB logical cap must fail startup"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("exceeds one GiB"),
+        "unexpected quota error: {error}"
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), oversized_len);
+    let mut file = OpenOptions::new().read(true).open(&path).unwrap();
+    let mut header_after = [0u8; 100];
+    file.read_exact(&mut header_after).unwrap();
+    assert_eq!(header_after, header_before);
+    drop(file);
+    assert!(!path.with_extension("sqlite-wal").exists());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn public_recording_status_reports_semantic_state_without_storage_internals() {
+    let _runtime_owner = support::managed_runtime_guard();
+    let path = temporary_database();
+    let text = path.to_string_lossy();
+    let options = ServiceOptions::parse(&[
+        "--serve",
+        "--profile",
+        "virtual-demo",
+        "--port",
+        "0",
+        "--record-db",
+        text.as_ref(),
+    ])
+    .unwrap();
+    let mut service = ServiceHost::startup(options).unwrap();
+    let at = service.clock().now();
+    service
+        .owner_mut()
+        .start_recording("status health", at)
+        .unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        let clock = service.clock_copy();
+        service.owner_mut().service(&clock).unwrap();
+        std::thread::yield_now();
+    }
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = decode_frame(
+        &encode_frame(&json!({
+            "v":1,"msg_id":"health-hello","op":"hello","args":{"scope":null}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(app.handle(&mut service, 1, hello)[0]["type"], "result");
+    let frame = decode_frame(
+        &encode_frame(&json!({
+            "v":1,"msg_id":"storage-health","op":"recording_status","args":{}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let response = app.handle(&mut service, 1, frame);
+    assert_eq!(response[0]["type"], "result");
+    let health = &response[0]["result"];
+    assert_eq!(health["configured"], true);
+    assert_eq!(health["available"], true);
+    assert_eq!(health["state"], "recording");
+    assert_eq!(health["accepting_facts"], true);
+    assert!(health["archive"]["id"].is_string());
+    assert!(health["active_run"]["run_no"].is_string());
+    assert!(health["active_interval"]["interval_no"].is_string());
+    assert_eq!(health["provenance"]["available"], true);
+    for internal in [
+        "limits",
+        "wal_bytes",
+        "wal_threshold_bytes",
+        "wal_checkpoints",
+        "main_logical_bytes",
+        "main_quota_bytes",
+        "first_error",
+    ] {
+        assert!(
+            health.get(internal).is_none(),
+            "leaked {internal}: {health:?}"
+        );
+    }
+    service.request_shutdown().unwrap();
+    let close_by = Instant::now() + Duration::from_secs(4);
+    while service.shutdown_step().unwrap().is_none() {
+        assert!(Instant::now() < close_by);
+        std::thread::yield_now();
+    }
+    drop(app);
+    drop(service);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn public_status_keeps_last_checkpoint_count_and_prefix_on_injected_checkpoint_failure() {
+    let path = temporary_database();
+    let fault = WriterBarrier::low_wal_threshold_for_testing(1);
+    let worker =
+        RecorderWorker::open_with_barrier(&path, RecorderLimits::default(), fault.clone()).unwrap();
+    let mut host = HostCore::virtual_demo().unwrap();
+    host.attach_recorder(worker, RecordingPolicy::BestEffort, Duration::ZERO)
+        .unwrap();
+    let options =
+        ServiceOptions::parse(&["--serve", "--profile", "virtual-demo", "--port", "0"]).unwrap();
+    let mut service = ServiceHost::startup_from_trusted_host(options, host).unwrap();
+    // Only the explicit measurement below belongs to this checkpoint test.
+    // Poll receipts without running acquisition: unrelated scheduled facts may
+    // otherwise commit after the baseline but before the injected SQL failure.
+    let clock = service.clock_copy();
+    service
+        .owner_mut()
+        .start_recording("checkpoint status", clock.now())
+        .unwrap();
+    let by = Instant::now() + Duration::from_secs(2);
+    while service.owner().recording_status().unwrap().state != RecordingState::Recording {
+        assert!(Instant::now() < by);
+        let _ = service.owner_mut().recording_activation_committed();
+        std::thread::yield_now();
+    }
+    let prefix = service
+        .owner()
+        .recording_status()
+        .unwrap()
+        .persisted_through_sequence;
+    let baseline = service
+        .owner()
+        .recording_status()
+        .unwrap()
+        .storage
+        .as_ref()
+        .unwrap()
+        .wal_checkpoints;
+    assert!(
+        baseline > 0,
+        "tiny real-WAL threshold must produce a checkpoint"
+    );
+    fault.fail_next_checkpoint();
+    let plant = service.owner().plant_id();
+    service
+        .owner_mut()
+        .command(lab_core::Command::RefreshMeasurement {
+            instrument: plant,
+            parameter: lab_core::TEMPERATURE,
+            at: clock.now(),
+        })
+        .unwrap();
+    while service.owner().recording_status().unwrap().state != RecordingState::Failed {
+        assert!(
+            Instant::now() < by,
+            "injected WAL checkpoint failure did not fail closed"
+        );
+        let _ = service.owner_mut().recording_activation_committed();
+        std::thread::yield_now();
+    }
+    let status = service.owner().recording_status().unwrap();
+    assert_eq!(status.persisted_through_sequence, prefix);
+    assert_eq!(status.storage.as_ref().unwrap().wal_checkpoints, baseline);
+    assert!(
+        status
+            .first_error
+            .as_deref()
+            .unwrap()
+            .contains("WAL threshold checkpoint failed")
+    );
+    let mut app = Application::new(service.boot_id()).unwrap();
+    let hello = decode_frame(
+        &encode_frame(&json!({"v":1,"msg_id":"h","op":"hello","args":{"scope":null}})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(app.handle(&mut service, 1, hello)[0]["type"], "result");
+    let frame = decode_frame(
+        &encode_frame(&json!({"v":1,"msg_id":"s","op":"recording_status","args":{}})).unwrap(),
+    )
+    .unwrap();
+    let response = app.handle(&mut service, 1, frame);
+    assert_eq!(
+        response[0]["result"]["durability"]["persisted_through"],
+        prefix.to_string()
+    );
+    assert_eq!(response[0]["result"]["state"], "failed");
+    assert_eq!(response[0]["result"]["failure"]["code"], "recording_failed");
+    assert!(response[0]["result"].get("first_error").is_none());
+    drop(app);
+    drop(service);
+    let remove_by = Instant::now() + Duration::from_secs(2);
+    while std::fs::remove_file(&path).is_err() && Instant::now() < remove_by {
+        std::thread::yield_now();
+    }
+    assert!(!path.exists());
+}

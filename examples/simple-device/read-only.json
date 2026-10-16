@@ -1,0 +1,40 @@
+{
+  "format_version": 1,
+  "definition_id": "generic-temperature-v1",
+  "definition_version": 1,
+  "parameters": [
+    {
+      "parameter_id": 1,
+      "key": "temperature",
+      "display_name": "Temperature",
+      "role": "measurement",
+      "access": "read_only",
+      "unit_id": "degC",
+      "unit_symbol": "°C",
+      "value_type": "float",
+      "engineering_min": -40.0,
+      "engineering_max": 125.0,
+      "write_effect": "none",
+      "encoding": {
+        "raw": "i16_be",
+        "scale": 0.01,
+        "offset": 0.0
+      },
+      "read": {
+        "request": {
+          "segments": [
+            { "type": "literal", "hex": "4745540d0a" }
+          ]
+        },
+        "response": {
+          "exact_length": 6,
+          "matches": [
+            { "type": "literal_match", "offset": 0, "hex": "543d" },
+            { "type": "literal_match", "offset": 4, "hex": "0d0a" }
+          ],
+          "extract": { "type": "scalar_extract", "offset": 2 }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+schema_version = 1
+
+[runtime]
+key = "simple-read-only"
+display_name = "SimpleDevice read-only example"
+
+[server]
+host = "127.0.0.1"
+port = 0
+
+[recording]
+enabled = false
+policy = "best_effort"
+
+[[resources]]
+id = 7
+key = "instrument-bus"
+kind = "windows_com_read_only"
+port = "COM256"
+baud_rate = 9600
+data_bits = 8
+parity = "none"
+stop_bits = 1
+flow_control = "none"
+read_timeout_ms = 100
+write_timeout_ms = 100
+open_timeout_ms = 500
+recovery_timeout_ms = 500
+
+[[instruments]]
+id = 1001
+key = "temperature-device"
+kind = "simple_device"
+display_name = "Temperature device"
+definition = "read-only.json"
+resource_id = 7
+address = 1
+channel = 1
+poll_period_ms = 500
+queue_timeout_ms = 250
+transaction_timeout_ms = 500
+history_capacity = 256

@@ -1,0 +1,5 @@
+# These three original upstream files contain audited whitespace. Preserve their
+# exact bytes; do not exempt authored code/notices or other files from diff-check.
+rust-1.95.0/COPYRIGHT-library.html whitespace=-blank-at-eol
+rust-1.95.0/licenses/BSD-2-Clause.txt whitespace=-blank-at-eol
+serialport-4.10.1/LICENSE.txt whitespace=-blank-at-eof

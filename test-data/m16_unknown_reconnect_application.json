@@ -1,0 +1,90 @@
+{
+  "records": [
+    {
+      "capabilities": {
+        "current": true,
+        "emulator_publication": false,
+        "live_subscription": true,
+        "properties": false,
+        "readable": true,
+        "recent_history": true
+      },
+      "id": "1607",
+      "identity_class": "physical",
+      "implementation_kind": "physical",
+      "kind": "instrument",
+      "name": "Unknown Thermal 1"
+    },
+    {
+      "capabilities": {
+        "current": true,
+        "durable_history": true,
+        "emulator_publication": false,
+        "live_subscription": true,
+        "readable": true,
+        "recent_history": true
+      },
+      "emulator": null,
+      "generation": "2",
+      "id": {
+        "instrument": "1607",
+        "parameter": "1"
+      },
+      "instrument": "1607",
+      "kind": "signal",
+      "name": "Temperature",
+      "quality": "good",
+      "signal_kind": "measurement",
+      "unit": {
+        "id": "degC",
+        "symbol": "C"
+      },
+      "value_type": "float"
+    }
+  ],
+  "current": [
+    {
+      "failure": null,
+      "generation": "2",
+      "observed_at": "3000000000",
+      "observed_at_ns": "3000000000",
+      "quality": "good",
+      "signal": {
+        "instrument": "1607",
+        "parameter": "1"
+      },
+      "source_at_ns": "3000000000",
+      "status": "available",
+      "unit": {
+        "id": "degC",
+        "symbol": "C"
+      },
+      "value": 22.0
+    }
+  ],
+  "event": {
+    "data": {
+      "failure": null,
+      "generation": "2",
+      "observed_at": "3000000000",
+      "observed_at_ns": "3000000000",
+      "quality": "good",
+      "signal": {
+        "instrument": "1607",
+        "parameter": "1"
+      },
+      "source_at_ns": "3000000000",
+      "status": "available",
+      "unit": {
+        "id": "degC",
+        "symbol": "C"
+      },
+      "value": 22.0
+    },
+    "kind": "signal",
+    "target": {
+      "instrument": "1607",
+      "parameter": "1"
+    }
+  }
+}

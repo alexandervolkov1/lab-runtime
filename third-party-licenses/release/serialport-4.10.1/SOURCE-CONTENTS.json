@@ -1,0 +1,202 @@
+[
+  {
+    "path": "serialport-4.10.1/.cargo/config.toml",
+    "sha256": "6e5834cd90f9e69284ed99813be930e693f86a938583c267ba10c81993eed79a"
+  },
+  {
+    "path": "serialport-4.10.1/.cargo_vcs_info.json",
+    "sha256": "6b83c781ee58b156297fe8bf336fc0ef6c41db778e8cbce7c7fac142b58db8f5"
+  },
+  {
+    "path": "serialport-4.10.1/.github/workflows/build.yaml",
+    "sha256": "73d6e526aedbc4972936b2b73e1f83c87e69e3ea7f75b9d40feaa7c18b4cf709"
+  },
+  {
+    "path": "serialport-4.10.1/.github/workflows/ci.yaml",
+    "sha256": "c97324bd010b6eaa75a5cfd9bb9daedd64eda9a95c86d38a25e89c285946bbdc"
+  },
+  {
+    "path": "serialport-4.10.1/.gitignore",
+    "sha256": "0ec34e0b764e0b61f1c4dcc9977d1494b988d6b03bbd1384ac5d928c7788d8d9"
+  },
+  {
+    "path": "serialport-4.10.1/.lycheeignore",
+    "sha256": "3c8b697cc93d5a864c1f632c9225faf4979009cb592bc7c1ea064a5305627d9f"
+  },
+  {
+    "path": "serialport-4.10.1/CHANGELOG.md",
+    "sha256": "10a8b6bc16995b56e5abdcb857a285cf8c9ce0f5f4c6571bc3fa32a0cbd28695"
+  },
+  {
+    "path": "serialport-4.10.1/Cargo.lock",
+    "sha256": "4c8aba25767d95f9fe84749bf5e2145698230e79b7b6e6f5d7af1b7b0c16c518"
+  },
+  {
+    "path": "serialport-4.10.1/Cargo.toml",
+    "sha256": "cbf7fd24486b433dd640d1464b7d65e1f7af5c657aabb3e8569da92c754d1cc1"
+  },
+  {
+    "path": "serialport-4.10.1/Cargo.toml.orig",
+    "sha256": "12af9c04e27b04c960c0ff76fce0c2e589c46d0235fcfff6cb418fa8c39e0e14"
+  },
+  {
+    "path": "serialport-4.10.1/LICENSE.txt",
+    "sha256": "00a4d69750686b8fcd2369b17176b4389d67f275fd22b9eab6c66155b72bd4d2"
+  },
+  {
+    "path": "serialport-4.10.1/NOTES.md",
+    "sha256": "77ad53f90b4bf4b952c4d6877f898dd1e99321039fcda43decdeb5397d494e87"
+  },
+  {
+    "path": "serialport-4.10.1/README.md",
+    "sha256": "472fd9252305d3433e7c8ad8fc39afebc6c698be7d9c25561032b62f875e4378"
+  },
+  {
+    "path": "serialport-4.10.1/TESTING.md",
+    "sha256": "709d346b78666a3fcfbcc2605d5281fc461fe7cc0ff4c613b8dc7e805152029e"
+  },
+  {
+    "path": "serialport-4.10.1/deny.toml",
+    "sha256": "17f1507e926da0576afa9ea5264ff7bb644b745e6776042f2e554aa8d59b14fc"
+  },
+  {
+    "path": "serialport-4.10.1/doc/dev_notes.md",
+    "sha256": "540f6171a82805d84e56f869e5ec2e418e4b962817b8dc7b4b0c8fa281aca2ec"
+  },
+  {
+    "path": "serialport-4.10.1/doc/index.md",
+    "sha256": "99854ff394c2975c978a29423d27292288f0c69885581b4954c5105a6ff07d36"
+  },
+  {
+    "path": "serialport-4.10.1/doc/platforms.md",
+    "sha256": "93a45f9d5914908079804187925daae3345d9301fe7f214c105391e3dcd487aa"
+  },
+  {
+    "path": "serialport-4.10.1/examples/clear_input_buffer.rs",
+    "sha256": "aa9412e5aecb3099ca371096501272275dff0c3aab16c08d5588ea61d41ba467"
+  },
+  {
+    "path": "serialport-4.10.1/examples/clear_output_buffer.rs",
+    "sha256": "1e342309a9e8cbe4e6616cddbe6e694801d423f20b279e999431ec0dfca310f5"
+  },
+  {
+    "path": "serialport-4.10.1/examples/duplex.rs",
+    "sha256": "5d4f18ebd8fc142991ab36ba1bdcd2b958a09204118c9e92bc3ad6b9e4a47e1b"
+  },
+  {
+    "path": "serialport-4.10.1/examples/hardware_check.rs",
+    "sha256": "d056c85c9ac8373e3ac0501a9048d19608e51ad1d4199a8d06773ea60fb5efbe"
+  },
+  {
+    "path": "serialport-4.10.1/examples/list_ports.rs",
+    "sha256": "f8d961b89f4c0c00bbdcbb8a7386b6abc4df448c8be02df1cae77291a705aafe"
+  },
+  {
+    "path": "serialport-4.10.1/examples/loopback.rs",
+    "sha256": "2128aea97dcc83aee038d4cd2f8c7c7dfd58cae5a44f8e25c0c317ecb9dbe238"
+  },
+  {
+    "path": "serialport-4.10.1/examples/pseudo_terminal.rs",
+    "sha256": "721fcd1b215bdbc339c63ad35147244fdcf0d37dd2a769d4c4d9c26ce6238b99"
+  },
+  {
+    "path": "serialport-4.10.1/examples/receive_data.rs",
+    "sha256": "69c66c44a96028700b51a6e076513c6cf02c3bc8617dacaf820ee542b8844784"
+  },
+  {
+    "path": "serialport-4.10.1/examples/transmit.rs",
+    "sha256": "ab7fb75550552ab1889a2d2a80d79c37a1ff715a81f15a5c71749f389cb6d66b"
+  },
+  {
+    "path": "serialport-4.10.1/src/lib.rs",
+    "sha256": "aca0c18419266373281ff874f3b69b3de02628adbef4a5d8625c45030f115a4b"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/enumerate.rs",
+    "sha256": "98b500d044fa3b2922ad454da5b375be9a57e36794a54b1582b72157a7a26321"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/error.rs",
+    "sha256": "67d053d9c75e87dfa31e6dfb6c53d64359f1e80a14e33d0297897d99b580b099"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/flock.rs",
+    "sha256": "00f379f02bffd11c0a6ae34c45b108d90b979eb6a13cf53675b1429513506818"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/ioctl.rs",
+    "sha256": "cd444f7146e6e18dce3b1b11a1fd79aceaaed0923a7b483a2025910488c09d40"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/mod.rs",
+    "sha256": "d03ddbba6096e36e51039bfd6cee806ff2b9e7541fe74e4e6e4eb585f42bd1b0"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/poll.rs",
+    "sha256": "1d8179cf29d04cbf1061e0e94d0864bb09eb8167b585feec9c6d4e1768c76364"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/termios.rs",
+    "sha256": "6be7724a946d5fb5eae61046d17f89fb5968634d2aff0eb213457f6564f92ab6"
+  },
+  {
+    "path": "serialport-4.10.1/src/posix/tty.rs",
+    "sha256": "40d864181367a1ce90c5d96c7da12c2864c1f0005b1a662afbe7ae10ebd161f1"
+  },
+  {
+    "path": "serialport-4.10.1/src/tests/mod.rs",
+    "sha256": "98bfdcd273b7d14319ec694040848cc9a2564858c00eb58232232fb2a8452215"
+  },
+  {
+    "path": "serialport-4.10.1/src/tests/timeout.rs",
+    "sha256": "4d6f921ab9951e28e048273b925fb75bc6c9e0904572b85e25b932461570e6a5"
+  },
+  {
+    "path": "serialport-4.10.1/src/windows/com.rs",
+    "sha256": "458296bcce32b5798b151b0067bee39c7cef10e71ebc3227cd27820ca006a756"
+  },
+  {
+    "path": "serialport-4.10.1/src/windows/dcb.rs",
+    "sha256": "4ae9961839b721a137b21a5f5d1c35c56190f6816942d1db626a883c271b0012"
+  },
+  {
+    "path": "serialport-4.10.1/src/windows/enumerate.rs",
+    "sha256": "8a5ac118586f012545aa0ab8d3a29d842405a11f55dcc13a3da5dc6114be0cf6"
+  },
+  {
+    "path": "serialport-4.10.1/src/windows/error.rs",
+    "sha256": "0c9723c4edb86cf3e8af74741ab5b9ac735bd46b8092f1f6e0c36baaac0fcb5d"
+  },
+  {
+    "path": "serialport-4.10.1/src/windows/mod.rs",
+    "sha256": "d0451fddfce2f13fc9244d37e1e8eb9bd113c6baf1d7fba403b48c4c55706d1c"
+  },
+  {
+    "path": "serialport-4.10.1/tests/config.rs",
+    "sha256": "b1b421f96a2d24363dc99fb5e75e56418b7f55cc60c5d70e94ca2572ce22a70f"
+  },
+  {
+    "path": "serialport-4.10.1/tests/test_baudrate.rs",
+    "sha256": "8c178f26f215029e88e7fd96031036bacdaac0a00a6e0b20cb76c353a1a99501"
+  },
+  {
+    "path": "serialport-4.10.1/tests/test_file_locking.rs",
+    "sha256": "f8e289018ad306f68d00ac10a8169440c69e2c0c8e0e95edb97f40caa01ea5f3"
+  },
+  {
+    "path": "serialport-4.10.1/tests/test_serialport.rs",
+    "sha256": "1e831c84554eebef05dc73627c3972b734a75ffb95abee352ed8e7b2711c659e"
+  },
+  {
+    "path": "serialport-4.10.1/tests/test_timeout.rs",
+    "sha256": "cd35ac6747666a036678f24b809972ba039f86f6fc46f0edc6e0a98aea2480fa"
+  },
+  {
+    "path": "serialport-4.10.1/tests/test_try_clone.rs",
+    "sha256": "3c5e9891f831c94309dd660011d6e8127b698fa0b3f7b797bb27257d06c5e8f1"
+  },
+  {
+    "path": "serialport-4.10.1/tests/test_tty.rs",
+    "sha256": "82c0894f9dec67dbc769be43ad3129f377d7b4f41fd36c1b5e5d7bf84d685f60"
+  }
+]

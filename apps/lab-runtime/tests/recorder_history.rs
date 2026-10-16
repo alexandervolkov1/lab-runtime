@@ -1,0 +1,684 @@
+//! Indexed raw pages freeze a durable watermark while new rows append.
+
+use lab_core::{
+    Command, InstrumentId, ParameterId, Runtime, Sample, SignalId, Unit, Value,
+    VirtualInstrumentConfig, recording::RecordingFact,
+};
+use lab_runtime::recorder::{
+    HistoryBudget, HistoryFilter, RecorderGap, RecorderLimits, RecorderWorker, SqliteStore,
+};
+use std::time::{Duration, Instant};
+
+mod support;
+
+fn temporary_database() -> std::path::PathBuf {
+    support::temporary_database("m7-history")
+}
+
+#[test]
+fn keyset_pages_at_frozen_checkpoint_exclude_rows_appended_between_pages() {
+    let path = temporary_database();
+    let boot = "33333333333333333333333333333333";
+    let instrument = InstrumentId::new(91);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "history fixture".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("history fixture").unwrap();
+    for second in 1..=3 {
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument,
+                parameter: lab_core::TEMPERATURE,
+                at: Duration::from_secs(second),
+            })
+            .unwrap();
+        store.append_facts(&runtime.take_recording_facts()).unwrap();
+    }
+    let filter = HistoryFilter {
+        boot_id: boot.to_owned(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::from_secs(1),
+        to: Duration::from_secs(10),
+    };
+    let first = store.read_history_measurements(&filter, None, 2).unwrap();
+    assert_eq!(first.rows.len(), 2);
+    assert_eq!(first.watermark, 4);
+    assert_eq!(first.rows[0].published_at, Duration::from_secs(1));
+    assert_eq!(first.rows[1].published_at, Duration::from_secs(2));
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(4),
+        })
+        .unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    let second = store
+        .read_history_measurements(&filter, first.next_cursor.as_ref(), 2)
+        .unwrap();
+    assert_eq!(second.watermark, 4);
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.rows[0].published_at, Duration::from_secs(3));
+    assert!(second.next_cursor.is_none());
+    let fresh = store.read_history_measurements(&filter, None, 8).unwrap();
+    assert_eq!(fresh.watermark, 5);
+    assert_eq!(fresh.rows.len(), 4);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn sqlite_history_budget_interrupts_without_returning_a_partial_page_or_cursor() {
+    let path = temporary_database();
+    let boot = "99999999999999999999999999999999";
+    let instrument = InstrumentId::new(93);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "budget fixture".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("budget fixture").unwrap();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::ZERO,
+        to: Duration::from_secs(2),
+    };
+    let error = store
+        .read_history_measurements_with_budget(
+            &filter,
+            None,
+            1,
+            HistoryBudget::for_testing(1, Duration::from_secs(1)),
+        )
+        .unwrap_err();
+    assert_eq!(error.to_string(), "history_budget_exceeded");
+    let page = store.read_history_measurements(&filter, None, 1).unwrap();
+    assert_eq!(
+        page.rows.len(),
+        1,
+        "interrupted query cannot change durable history"
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn archived_history_sql_runs_only_on_storage_worker_and_retains_one_bounded_result() {
+    let path = temporary_database();
+    let archive_boot = "44444444444444444444444444444444";
+    let instrument = InstrumentId::new(92);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "worker archive".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    let mut store = SqliteStore::open_with_boot(&path, archive_boot).unwrap();
+    store.start_run("archive").unwrap();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    store.append_facts(&runtime.take_recording_facts()).unwrap();
+    store.stop_run().unwrap();
+    drop(store);
+    let mut worker = RecorderWorker::open_with_boot(
+        &path,
+        RecorderLimits::default(),
+        "55555555555555555555555555555555",
+    )
+    .unwrap();
+    let filter = HistoryFilter {
+        boot_id: archive_boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::ZERO,
+        to: Duration::from_secs(2),
+    };
+    let job = worker.request_history(filter, None, 8).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut result = None;
+    while result.is_none() && Instant::now() < deadline {
+        result = worker.try_take_history(job);
+        std::thread::yield_now();
+    }
+    let page = result.unwrap().unwrap();
+    assert_eq!(
+        page.watermark, 3,
+        "archived checkpoint includes the terminal interval seal"
+    );
+    assert_eq!(page.rows.len(), 1);
+    assert!(worker.try_take_history(job).is_none());
+    worker.request_finish().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while worker.poll().state != lab_runtime::recorder::RecordingState::Closed
+        && Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        worker.poll().state,
+        lab_runtime::recorder::RecordingState::Closed
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn run_discovery_pages_old_boots_and_freezes_upper_key_across_new_runs() {
+    let path = temporary_database();
+    let mut first = SqliteStore::open_with_boot(&path, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    first.start_run("A1").unwrap();
+    first.stop_run().unwrap();
+    first.start_run("A2").unwrap();
+    first.stop_run().unwrap();
+    drop(first);
+    let mut second =
+        SqliteStore::open_with_boot(&path, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+    second.start_run("B1").unwrap();
+    second.stop_run().unwrap();
+    let first_page = second.read_history_runs(None, 2).unwrap();
+    assert_eq!(first_page.runs.len(), 2);
+    assert_eq!(first_page.runs[0].label, "A1");
+    assert_eq!(first_page.runs[1].label, "A2");
+    second.start_run("B2").unwrap();
+    second.stop_run().unwrap();
+    let second_page = second
+        .read_history_runs(first_page.next_cursor.as_ref(), 2)
+        .unwrap();
+    assert_eq!(second_page.runs.len(), 1);
+    assert_eq!(second_page.runs[0].label, "B1");
+    assert!(second_page.next_cursor.is_none());
+    let fresh = second.read_history_runs(None, 8).unwrap();
+    assert_eq!(fresh.runs.len(), 4);
+    drop(second);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn escaped_equal_time_rows_shorten_pages_without_shifting_frozen_identities() {
+    let path = temporary_database();
+    let boot = "66666666666666666666666666666666";
+    let instrument = InstrumentId::new(96);
+    let parameter = ParameterId::new(19);
+    let signal = SignalId::new(instrument, parameter);
+    let at = Duration::from_secs(1);
+    let long_text = "\0".repeat(1000);
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("escaped equal time").unwrap();
+    let facts: Vec<_> = (1..=3u64)
+        .map(|sequence| RecordingFact::Measurement {
+            sequence,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                at,
+                Value::Text(long_text.clone()),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        })
+        .collect();
+    store.append_facts(&facts).unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter,
+        from: Duration::ZERO,
+        to: Duration::from_secs(2),
+    };
+    let first = store.read_history_measurements(&filter, None, 128).unwrap();
+    assert_eq!(
+        first.rows.len(),
+        1,
+        "escaped JSON text must shorten the 8-KiB page"
+    );
+    let frozen = first.watermark;
+    let mut ids = first
+        .rows
+        .iter()
+        .map(|row| row.record_sequence)
+        .collect::<Vec<_>>();
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 4,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                at,
+                Value::Text("later one".into()),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        }])
+        .unwrap();
+    let second = store
+        .read_history_measurements(&filter, first.next_cursor.as_ref(), 128)
+        .unwrap();
+    assert_eq!(second.watermark, frozen);
+    assert_eq!(second.rows.len(), 1);
+    ids.extend(second.rows.iter().map(|row| row.record_sequence));
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 5,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                at,
+                Value::Text("later two".into()),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        }])
+        .unwrap();
+    let final_page = store
+        .read_history_measurements(&filter, second.next_cursor.as_ref(), 128)
+        .unwrap();
+    assert_eq!(final_page.watermark, frozen);
+    assert_eq!(final_page.rows.len(), 1);
+    assert!(final_page.next_cursor.is_none());
+    ids.extend(final_page.rows.iter().map(|row| row.record_sequence));
+    assert_eq!(ids.len(), 3);
+    assert_eq!(
+        ids,
+        [2, 3, 4],
+        "the boundary record precedes the three fixture rows"
+    );
+    assert_eq!(
+        ids.iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    let mut cursor = None;
+    let mut fresh_ids = Vec::new();
+    for _ in 0..6 {
+        let page = store
+            .read_history_measurements(&filter, cursor.as_ref(), 128)
+            .unwrap();
+        fresh_ids.extend(page.rows.iter().map(|row| row.record_sequence));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(fresh_ids.len(), 5);
+    assert_eq!(fresh_ids[..3], ids);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn archived_gap_page_exposes_known_loss_identity_without_hiding_good_rows() {
+    let path = temporary_database();
+    let boot = "77777777777777777777777777777777";
+    let instrument = InstrumentId::new(97);
+    let signal = SignalId::new(instrument, lab_core::TEMPERATURE);
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("known gap").unwrap();
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 6,
+            sample: Sample::validated_good(
+                signal,
+                Unit::CELSIUS,
+                Duration::from_secs(1),
+                Value::Float(23.5),
+            )
+            .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        }])
+        .unwrap();
+    store
+        .fail_run(&RecorderGap {
+            reason: "ingress overflow".into(),
+            at: Duration::from_secs(2),
+            first_missing_fact: Some(7),
+            known_missing_count: Some(2),
+            last_accepted_fact: Some(6),
+        })
+        .unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::ZERO,
+        to: Duration::from_secs(3),
+    };
+    let page = store.read_history_measurements(&filter, None, 8).unwrap();
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].value, Some(Value::Float(23.5)));
+    assert_eq!(page.coverage, "gap");
+    let loss = page
+        .loss
+        .expect("coverage gap requires bounded loss metadata");
+    assert_eq!(loss.first_missing_fact, Some(7));
+    assert_eq!(loss.known_missing_count, Some(2));
+    assert_eq!(loss.last_accepted_fact, Some(6));
+    assert_eq!(loss.reason, "ingress overflow");
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn frozen_pages_keep_unavailable_with_equal_time_append() {
+    let path = temporary_database();
+    let boot = "78787878787878787878787878787878";
+    let instrument = InstrumentId::new(98);
+    let signal = SignalId::new(instrument, lab_core::TEMPERATURE);
+    let published = Duration::from_secs(3);
+    let mut runtime = Runtime::new();
+    runtime
+        .command(Command::RegisterVirtual(VirtualInstrumentConfig {
+            id: instrument,
+            name: "raw quality fixture".into(),
+            history_capacity: 1,
+            base_temperature: 20.0,
+            measurement_enabled: true,
+        }))
+        .unwrap();
+    runtime.enable_recording_facts();
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("raw quality").unwrap();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: Duration::from_secs(1),
+        })
+        .unwrap();
+    runtime
+        .command(Command::ConfigureParameter {
+            instrument,
+            parameter: lab_core::MEASUREMENT_ENABLED,
+            value: Value::Boolean(false),
+        })
+        .unwrap();
+    assert!(
+        runtime
+            .command(Command::RefreshMeasurement {
+                instrument,
+                parameter: lab_core::TEMPERATURE,
+                at: Duration::from_secs(2),
+            })
+            .is_err()
+    );
+    runtime
+        .command(Command::ConfigureParameter {
+            instrument,
+            parameter: lab_core::MEASUREMENT_ENABLED,
+            value: Value::Boolean(true),
+        })
+        .unwrap();
+    runtime
+        .command(Command::RefreshMeasurement {
+            instrument,
+            parameter: lab_core::TEMPERATURE,
+            at: published,
+        })
+        .unwrap();
+    let mut initial = runtime.take_recording_facts();
+    initial.push(RecordingFact::Measurement {
+        sequence: 4,
+        sample: Sample::derived_good(
+            signal,
+            Unit::CELSIUS,
+            published,
+            Duration::from_secs(1),
+            Value::Float(99.0),
+        )
+        .unwrap(),
+        generation: 1,
+        revision: 2,
+        state_revision: None,
+        lineage: None,
+    });
+    store.append_facts(&initial).unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::ZERO,
+        to: Duration::from_secs(4),
+    };
+    let first = store.read_history_measurements(&filter, None, 1).unwrap();
+    assert_eq!(first.rows.len(), 1);
+    let frozen = first.watermark;
+    let mut seen = vec![first.rows[0].record_sequence];
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 20,
+            sample: Sample::validated_good(signal, Unit::CELSIUS, published, Value::Float(24.0))
+                .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        }])
+        .unwrap();
+    let second = store
+        .read_history_measurements(&filter, first.next_cursor.as_ref(), 1)
+        .unwrap();
+    assert_eq!(second.watermark, frozen);
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.rows[0].quality, "unavailable");
+    assert_eq!(second.rows[0].failure.as_deref(), Some("Disabled"));
+    assert_eq!(second.rows[0].value, None);
+    seen.push(second.rows[0].record_sequence);
+    store
+        .append_facts(&[RecordingFact::Measurement {
+            sequence: 21,
+            sample: Sample::validated_good(signal, Unit::CELSIUS, published, Value::Float(25.0))
+                .unwrap(),
+            generation: 1,
+            revision: 1,
+            state_revision: None,
+            lineage: None,
+        }])
+        .unwrap();
+    let third = store
+        .read_history_measurements(&filter, second.next_cursor.as_ref(), 1)
+        .unwrap();
+    assert_eq!(third.watermark, frozen);
+    assert_eq!(third.rows.len(), 1);
+    assert!(third.next_cursor.is_some());
+    seen.push(third.rows[0].record_sequence);
+    let last = store
+        .read_history_measurements(&filter, third.next_cursor.as_ref(), 1)
+        .unwrap();
+    assert_eq!(last.watermark, frozen);
+    assert_eq!(last.rows.len(), 1);
+    assert_eq!(last.rows[0].observed_at, Duration::from_secs(1));
+    assert_eq!(last.rows[0].published_at, published);
+    assert_eq!(last.rows[0].value, Some(Value::Float(99.0)));
+    assert!(last.next_cursor.is_none());
+    seen.push(last.rows[0].record_sequence);
+    assert_eq!(
+        seen,
+        [2, 3, 4, 5],
+        "the boundary record precedes four frozen observations"
+    );
+    let fresh = store.read_history_measurements(&filter, None, 8).unwrap();
+    assert_eq!(fresh.rows.len(), 6);
+    assert_eq!(
+        fresh
+            .rows
+            .iter()
+            .map(|row| row.record_sequence)
+            .collect::<Vec<_>>(),
+        [2, 3, 4, 5, 6, 7]
+    );
+    assert_eq!(
+        fresh.rows[..4]
+            .iter()
+            .map(|row| row.record_sequence)
+            .collect::<Vec<_>>(),
+        seen
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn large_indexed_archive_reads_a_tiny_tail_range_with_bounded_vm_work() {
+    let path = temporary_database();
+    let boot = "98989898989898989898989898989898";
+    let instrument = InstrumentId::new(99);
+    let signal = SignalId::new(instrument, lab_core::TEMPERATURE);
+    let mut store = SqliteStore::open_with_boot(&path, boot).unwrap();
+    store.start_run("large indexed fixture").unwrap();
+    for group in 0..80u64 {
+        let facts = (1..=250u64)
+            .map(|slot| {
+                let second = group * 250 + slot;
+                RecordingFact::Measurement {
+                    sequence: second,
+                    sample: Sample::validated_good(
+                        signal,
+                        Unit::CELSIUS,
+                        Duration::from_secs(second),
+                        Value::Float(20.0 + (second % 100) as f64),
+                    )
+                    .unwrap(),
+                    generation: 1,
+                    revision: 1,
+                    state_revision: None,
+                    lineage: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        store.append_facts(&facts).unwrap();
+    }
+    store.stop_run().unwrap();
+    let filter = HistoryFilter {
+        boot_id: boot.into(),
+        run_no: 1,
+        instrument,
+        parameter: lab_core::TEMPERATURE,
+        from: Duration::from_secs(19_990),
+        to: Duration::from_secs(20_001),
+    };
+    let first = store
+        .read_history_measurements_with_budget(
+            &filter,
+            None,
+            8,
+            HistoryBudget::for_testing(10_000, Duration::from_millis(50)),
+        )
+        .unwrap();
+    assert_eq!(first.rows.len(), 8);
+    assert_eq!(
+        first.selected_rows, 9,
+        "one lookahead row bounds keyset selection"
+    );
+    assert_eq!(first.rows[0].published_at, Duration::from_secs(19_990));
+    let second = store
+        .read_history_measurements_with_budget(
+            &filter,
+            first.next_cursor.as_ref(),
+            8,
+            HistoryBudget::for_testing(10_000, Duration::from_millis(50)),
+        )
+        .unwrap();
+    assert_eq!(second.rows.len(), 3);
+    assert_eq!(
+        second.selected_rows, 3,
+        "terminal page selects only matching rows"
+    );
+    assert!(second.next_cursor.is_none());
+    let ids = first
+        .rows
+        .iter()
+        .chain(&second.rows)
+        .map(|row| row.record_sequence)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 11);
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let plan = db
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT record_seq FROM measurements
+             WHERE boot_id=?1 AND run_no=?2 AND instrument_id=?3 AND parameter_id=?4
+               AND published_at>=?5 AND published_at<?6
+             ORDER BY published_at,record_seq LIMIT 9",
+        )
+        .unwrap()
+        .query_map(
+            rusqlite::params![
+                [0x98u8; 16].as_slice(),
+                1u64.to_be_bytes().as_slice(),
+                instrument.get().to_be_bytes().as_slice(),
+                lab_core::TEMPERATURE.get().to_be_bytes().as_slice(),
+                (Duration::from_secs(19_990).as_nanos() as u64)
+                    .to_be_bytes()
+                    .as_slice(),
+                (Duration::from_secs(20_001).as_nanos() as u64)
+                    .to_be_bytes()
+                    .as_slice(),
+            ],
+            |row| row.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("measurements_history")),
+        "narrow archive selection must use the keyset history index: {plan:?}"
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}

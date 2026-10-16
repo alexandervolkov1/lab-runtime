@@ -1,0 +1,28 @@
+[package]
+name = "lab-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lab-core = { path = "../../crates/lab-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "=0.3.4"
+ctrlc = "3.5"
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "hooks", "limits"] }
+sha2 = "0.11.0"
+toml = { version = "=1.1.6", default-features = false, features = ["parse", "serde", "std"] }
+serialport = { version = "=4.10.1", default-features = false }
+tracing = "0.1.41"
+tracing-appender = "0.2.3"
+tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "std", "time"] }
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Route service-manager termination through the existing Runtime-owned shutdown.
+ctrlc = { version = "3.5", features = ["termination"] }
+
+[lints]
+workspace = true
