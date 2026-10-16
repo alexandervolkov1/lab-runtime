@@ -7,11 +7,6 @@
       "name": "serialport",
       "version": "4.10.1",
       "checksum": "6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2"
-    },
-    {
-      "name": "ring",
-      "version": "0.17.14",
-      "checksum": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
     }
   ],
   "compiler_builtins_commit": "59807616e1fa2540724bfbac14d7976d7e4a3860",
@@ -50,62 +45,6 @@
       "targets": [
         "windows",
         "linux"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/LICENSE",
-      "sha256": "b3d734001a94efff3579978d953391aa7115f877657d25eb54037a43875d078a",
-      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
-      "targets": [
-        "windows"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/LICENSE-BoringSSL",
-      "sha256": "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d",
-      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
-      "targets": [
-        "windows"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/LICENSE-other-bits",
-      "sha256": "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f",
-      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
-      "targets": [
-        "windows"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/src/polyfill/once_cell/LICENSE-APACHE",
-      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
-      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
-      "targets": [
-        "windows"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/src/polyfill/once_cell/LICENSE-MIT",
-      "sha256": "6ee2ed6c77710de911761acd5fc1ad1da00f476beb1a7ef27e78c2d1858deafc",
-      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
-      "targets": [
-        "windows"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/third_party/fiat/LICENSE",
-      "sha256": "9eacbcb81be660840c714a560a9d65ba07913db98dd4baf969f78dd499fdd60f",
-      "source": "https://static.crates.io/crates/ring/ring-0.17.14.crate",
-      "targets": [
-        "windows"
-      ]
-    },
-    {
-      "path": "ring-0.17.14/third_party/fiat/AUTHORS",
-      "sha256": "ad74c036a6afaedc418fed65f171c877c2f74a4c70938a03930aa11c98a20508",
-      "source": "https://raw.githubusercontent.com/briansmith/ring/2723abbca9e83347d82b056d5b239c6604f786df/third_party/fiat/AUTHORS",
-      "targets": [
-        "windows"
       ]
     },
     {
@@ -304,8 +243,8 @@
     },
     {
       "path": "NOTICE.txt",
-      "sha256": "0a81b1a03156ce04cb3c329e293261135242b6da9a08a765b7b278e7edb73757",
-      "source": "Project packaging review; original upstream materials are identified separately",
+      "sha256": "dc5c3c030d04627eff99c2ec0778f42dbe8586aa4f54fbe63dbb2c98cdf1dc5b",
+      "source": "Runtime-only authored notice adapted from source 7f91e715051f2b0d0ba1cde24a61d7135e15c0fc",
       "targets": [
         "windows",
         "linux"

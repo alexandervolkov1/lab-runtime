@@ -1,6 +1,7 @@
 """License packaging regressions, without builds or network access."""
 import importlib.util
 import json
+import platform
 from pathlib import Path
 import shutil
 import sys
@@ -25,7 +26,7 @@ class EvidenceTests(unittest.TestCase):
         shutil.copy2(ROOT / 'Cargo.lock', self.root / 'Cargo.lock')
 
     def test_actual_toolchain(self):
-        self.assertTrue(licenses.evidence(ROOT, 'linux'))
+        self.assertTrue(licenses.evidence(ROOT, 'windows' if platform.system() == 'Windows' else 'linux'))
 
     def test_source_content_and_version(self):
         import tomllib
@@ -129,7 +130,7 @@ class EvidenceTests(unittest.TestCase):
             if args[:2] == ('git','rev-parse'):
                 return '1'*40
             raise AssertionError(args)
-        with patch.object(packager,'ROOT',self.root), patch.object(packager,'command',side_effect=command), \
+        with patch.object(packager.platform, 'system', return_value='Linux'), patch.object(packager.platform, 'machine', return_value='x86_64'), patch.object(packager,'ROOT',self.root), patch.object(packager,'command',side_effect=command), \
              patch.object(packager,'evidence',return_value=rows), \
              patch.object(packager,'license_inputs',return_value=([('LICENSE',self.root/'LICENSE',0o644)],[])), \
              patch.object(packager.subprocess,'check_output',return_value=b''), \

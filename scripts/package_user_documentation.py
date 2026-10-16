@@ -9,18 +9,14 @@ def user_files(root):
     if not files or len(set(files)) != len(files):
         raise RuntimeError('Empty or duplicate user package inventory')
     for name in files:
-        if not re.fullmatch(r'(README\.md|LICENSE|docs/[a-z-]+\.md|docs/README\.md|'
-                            r'examples/runtime\.(minimal|virtual)\.toml)', name):
+        if name not in {'README.md', 'LICENSE', 'examples/runtime.minimal.toml', 'examples/runtime.virtual.toml'} and not re.fullmatch(r'docs/(?:api/|reference/)?[a-z-]+\.md|docs/README\.md|docs/api/README\.md', name):
             raise RuntimeError(f'Invalid user package input: {name}')
         if not (root / name).is_file():
             raise RuntimeError(f'Missing user package input: {name}')
-    required = {'README.md', 'LICENSE', 'docs/README.md', 'docs/getting-started.md',
-                'docs/workbench.md', 'docs/recording.md', 'docs/configuration.md',
-                'docs/linux-runtime.md', 'docs/distributed-workbench.md',
-                'docs/troubleshooting.md', 'examples/runtime.minimal.toml',
-                'examples/runtime.virtual.toml'}
-    if set(files) != required:
-        raise RuntimeError('User package inventory differs from required manual/examples')
+    required = {'README.md', 'LICENSE', 'docs/README.md', 'docs/api/README.md',
+                'examples/runtime.minimal.toml', 'examples/runtime.virtual.toml'}
+    if not required <= set(files):
+        raise RuntimeError('User package is missing required Runtime documents/examples')
     return files
 
 
@@ -38,7 +34,7 @@ def headings(text):
 def validate_user_files(root, files):
     """Check package-relative links, headings, audience, file bounds and secret patterns."""
     root = root.resolve()
-    for directory in ('clients', 'ai', 'docs/developer', 'docs/api', 'docs/reference'):
+    for directory in ('clients', 'ai', 'docs/developer'):
         if (root / directory).exists():
             raise RuntimeError(f'Developer-only directory in user package: {directory}')
     examples = {p.relative_to(root).as_posix() for p in (root / 'examples').rglob('*') if p.is_file()}
@@ -52,9 +48,6 @@ def validate_user_files(root, files):
             raise RuntimeError(f'Potential secret in user package: {name}')
         if path.suffix != '.md':
             continue
-        if re.search(r'\b(Clojure(?:Script)?|Babashka|Tuna|M(?:12|13|14|15|16|17|18))\b|'
-                     r'external review|mutation identity|client worker|SQL receipts', text, re.I):
-            raise RuntimeError(f'Developer-only material in user manual: {name}')
         for target in re.findall(r'(?<!!)\[[^\]]*\]\(([^)]+)\)', text):
             link = urlsplit(target.strip('<>'))
             if link.scheme in ('http', 'https', 'mailto'):

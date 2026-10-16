@@ -7,11 +7,7 @@ import tomllib
 
 RUST_RELEASE = '1.95.0'
 RUST_COMMIT = '59807616e1fa2540724bfbac14d7976d7e4a3860'
-RING_FILES = ('LICENSE', 'LICENSE-BoringSSL', 'LICENSE-other-bits',
-              'src/polyfill/once_cell/LICENSE-APACHE', 'src/polyfill/once_cell/LICENSE-MIT',
-              'third_party/fiat/LICENSE', 'third_party/fiat/AUTHORS')
-CRATES = {'serialport': ('4.10.1', '6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2'),
-          'ring': ('0.17.14', 'a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7')}
+CRATES = {'serialport': ('4.10.1', '6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2')}
 
 
 def require(condition, message):
@@ -56,9 +52,7 @@ def evidence(root, target, check_toolchain=True):
                 'rust-1.95.0/STD-CARGO-LOCK.toml', 'rust-1.95.0/std-package.toml'}
     required.update(f'rust-1.95.0/licenses/{name}.txt' for name in
                     ('MIT', 'Apache-2.0', 'Unicode-3.0', 'BSD-2-Clause'))
-    if target == 'windows':
-        required.update('ring-0.17.14/' + name for name in RING_FILES)
-    else:
+    if target == 'linux':
         required.update('rust-1.95.0/dependencies/' + path for path in
                         ('addr2line-0.25.1/LICENSE-APACHE', 'adler2-2.0.1/LICENSE-APACHE',
                          'memchr-2.7.6/LICENSE-MIT', 'miniz_oxide-0.8.9/LICENSE-APACHE.md',

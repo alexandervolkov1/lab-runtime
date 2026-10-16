@@ -1,13 +1,16 @@
-"""Bounded Windows fixture: one real virtual Runtime and one external Babashka client."""
-import json, pathlib, subprocess, sys, time, hashlib, platform
+"""Bounded portable fixture: one real virtual Runtime and one external Babashka client."""
+import argparse, json, pathlib, subprocess, sys, time, hashlib, platform
 
-root = pathlib.Path(__file__).resolve().parents[3]
-profile = sys.argv[1] if len(sys.argv) > 1 else 'debug'
-if profile not in ('debug', 'release'):
-    raise SystemExit('profile must be debug or release')
+root = pathlib.Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('profile', choices=['debug', 'release'], nargs='?', default='debug')
+parser.add_argument('--binary', type=pathlib.Path)
+args = parser.parse_args()
+profile = args.profile
 folder = root / 'target/runtime-manual-api' / (profile + '-e2e-' + time.strftime('%Y%m%d-%H%M%S'))
-folder.mkdir(parents=True)
-exe = root / 'target' / profile / 'lab-runtime.exe'
+folder.mkdir(parents=True, exist_ok=False)
+exe = (args.binary or root / 'target' / profile / ('lab-runtime.exe' if platform.system() == 'Windows' else 'lab-runtime')).resolve()
+flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if platform.system() == 'Windows' else {}
 command = [str(exe), '--serve', '--profile', 'virtual-demo', '--port', '0', '--record-db', str(folder/'history.sqlite'), '--record-policy', 'required']
 metadata = {'command': command, 'source_head': subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
             'binary_sha256': hashlib.sha256(exe.read_bytes()).hexdigest(), 'working_diff_sha256': hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=root)).hexdigest()}
@@ -28,7 +31,7 @@ metadata['architecture'] = platform.machine()
 metadata['rustc'] = subprocess.check_output(['rustc','-Vv'],cwd=root,text=True)
 metadata['babashka'] = subprocess.check_output(['bb','--version'],cwd=root,text=True).strip()
 with (folder/'runtime.stdout').open('w') as stdout, (folder/'runtime.stderr').open('w') as stderr:
-    runtime = subprocess.Popen(command, cwd=root, stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+    runtime = subprocess.Popen(command, cwd=exe.parent, stdout=stdout, stderr=stderr, **flags)
     try:
         deadline=time.monotonic()+20
         ready=None
@@ -43,7 +46,7 @@ with (folder/'runtime.stdout').open('w') as stdout, (folder/'runtime.stderr').op
         if not ready: raise RuntimeError('Runtime readiness timeout')
         metadata['ready']=ready
         with (folder/'client.stdout').open('w') as out, (folder/'client.stderr').open('w') as err:
-            client=subprocess.run(['bb','clients/babashka-smoke/manual-output.clj',str(ready['port']),'--shutdown-fixture'],cwd=root,stdout=out,stderr=err,timeout=60,creationflags=subprocess.CREATE_NO_WINDOW)
+            client=subprocess.run(['bb','clients/babashka-smoke/manual-output.clj',str(ready['port']),'--shutdown-fixture'],cwd=root,stdout=out,stderr=err,timeout=60,**flags)
         metadata['client_exit']=client.returncode
         if client.returncode: raise RuntimeError('Babashka client failed')
         metadata['runtime_exit']=runtime.wait(timeout=15)
@@ -53,3 +56,9 @@ with (folder/'runtime.stdout').open('w') as stdout, (folder/'runtime.stderr').op
             runtime.terminate();runtime.wait(timeout=10);metadata['forced_cleanup']=True
         (folder/'run.json').write_text(json.dumps(metadata,indent=2)+'\n')
         print(folder)
+
+closed = [json.loads(line) for line in (folder/'runtime.stdout').read_text().splitlines() if line.startswith('{')]
+assert any(row.get('recorder_flushed') is True for row in closed), closed
+with (folder/'sqlite-check.json').open('w') as out:
+    subprocess.run([sys.executable, str(root/'scripts/check_manual_archive.py'), str(folder/'history.sqlite')], stdout=out, check=True, timeout=15)
+print('PASS: manual output, Recorder flush and SQLite validation')
