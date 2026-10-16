@@ -339,7 +339,7 @@ key = "temperature-setpoint"
 kind = "fixed"
 value = 20.0
 unit_id = "degC"
-unit_symbol = "Р’В°C"
+unit_symbol = "°C"
 ```
 
 For `kind = "ramp"`, both finite `target` and finite positive `rate` are required.
