@@ -57,8 +57,9 @@ with (folder/'runtime.stdout').open('w') as stdout, (folder/'runtime.stderr').op
         (folder/'run.json').write_text(json.dumps(metadata,indent=2)+'\n')
         print(folder)
 
-closed = [json.loads(line) for line in (folder/'runtime.stdout').read_text().splitlines() if line.startswith('{')]
-assert any(row.get('recorder_flushed') is True for row in closed), closed
+replies = [json.loads(line) for line in (folder/'client.stdout').read_text().splitlines()]
+assert any(row.get('kind') == 'response' and row.get('data', {}).get('state') == 'completed'
+           and row['data'].get('result', {}).get('recorder_flushed') is True for row in replies), 'No authoritative shutdown flush result'
 with (folder/'sqlite-check.json').open('w') as out:
     subprocess.run([sys.executable, str(root/'scripts/check_manual_archive.py'), str(folder/'history.sqlite')], stdout=out, check=True, timeout=15)
 print('PASS: manual output, Recorder flush and SQLite validation')

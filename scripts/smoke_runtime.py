@@ -82,8 +82,7 @@ def smoke(binary, output):
                 process.wait(timeout=10)
                 result['forced_cleanup'] = True
             (output/'result.json').write_text(json.dumps(result, indent=2)+'\n')
-    closed = [json.loads(line) for line in (output/'stdout.log').read_text().splitlines() if line.startswith('{')]
-    assert any(row.get('recorder_flushed') is True for row in closed), closed
+    assert result['shutdown']['recorder_flushed'] is True, result['shutdown']
     with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
         assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
         assert db.execute('SELECT state, coverage FROM runs').fetchall() == [('sealed', 'complete')]
