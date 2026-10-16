@@ -849,7 +849,6 @@ mod tests {
         // Checkout line endings depend on the host Git configuration.
         let operations = include_str!("../../../docs/api/operations.md").replace("\r\n", "\n");
         let api_readme = include_str!("../../../docs/api/README.md").replace("\r\n", "\n");
-        let application_api = include_str!("../../../docs/application-api.md");
         let limits = include_str!("../../../docs/api/errors-and-limits.md");
         let operation_count = OPERATIONS.len();
         let query_count = OPERATIONS
@@ -865,10 +864,6 @@ mod tests {
         assert!(operations.contains("`simple_device_provisioning`"));
         assert!(api_readme.contains(&format!("exact {operation_count}-operation registry")));
         assert!(api_readme.contains(&format!("{capability_count}\n  capabilities")));
-        assert!(application_api.contains(&format!(
-            "{operation_count} operations ({query_count} queries and {mutation_count} mutations)"
-        )));
-        assert!(application_api.contains(&format!("{capability_count} structured capabilities")));
         assert!(limits.contains(&format!("{capability_count} currently registered")));
     }
 

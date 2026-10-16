@@ -115,7 +115,7 @@ The canonical API reference starts at [Application API](api/README.md).
 ### TCP/NDJSON
 
 TCP defaults to IPv4 loopback. Both startup modes allow an explicit
-`--bind IPv4 --allow-remote-tcp` on a selected trusted LAN interface; remote
+`--bind IPv4 --allow-remote-tcp` on a selected trusted LAN interface.
 Remote clients must deliberately select the trusted-LAN endpoint. TCP provides
 no authentication or TLS and must not be exposed on the public Internet. Listener
 selection is startup-only and deployment reload cannot widen it. Each complete
@@ -182,7 +182,7 @@ durable commit; the authoritative committed prefix advances only after the stora
 receipt returns to the owner. See [Recorder and SQLite](recorder-sqlite.md).
 
 Reference mutations reserve accepted/completion audit capacity before admission.
-The bounded budget is 13 groups / 1,545 records / 4 MiB; only Reference credit is
+The bounded budget is 36 groups / 1,545 records / 4 MiB; only Reference credit is
 protected, while reconnect shares ordinary credit with acquisition. Reservation
 does not guarantee SQL success or unlimited concurrent admission. Submitted credits
 remain charged until a valid cumulative SQL receipt. Required recording failure

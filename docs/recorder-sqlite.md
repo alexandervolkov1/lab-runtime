@@ -44,106 +44,8 @@ Do not call these all sessions:
 The human label supplied to `recording_start` is not identity. Clients copy returned
 IDs exactly and use decimal strings where the Application protocol requires them.
 
-## Virtual Recorder tutorial
-
-This tutorial uses only the safe `virtual-demo` composition. Start Runtime from the
-source tree:
-
-```powershell
-$db = [IO.Path]::GetFullPath((Join-Path $PWD "recorder-tutorial.sqlite"))
-cargo run -p lab-runtime --locked -- `
-  --serve --profile virtual-demo --port 7420 `
-  --record-db $db --record-policy required
-```
-
-From an extracted preview package, replace the `cargo run ... --` prefix with
-`./lab-runtime.exe`. The database path must be local and absolute. Wait for Runtime's
-readiness line before connecting.
-
-The following PowerShell client performs hello, starts a run, records an annotation,
-stops and seals the exact run, lists archived runs through the public history API,
-and requests clean Runtime shutdown. It consumes both the immediate `accepted` and
-terminal operation envelopes; it never assumes that one line is the whole mutation.
-
-```powershell
-$tcp = [Net.Sockets.TcpClient]::new("127.0.0.1", 7420)
-$stream = $tcp.GetStream()
-$reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false))
-$writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
-$writer.NewLine = "`n"
-$writer.AutoFlush = $true
-
-function Send-Json([hashtable]$message) {
-  $writer.WriteLine(($message | ConvertTo-Json -Compress -Depth 20))
-}
-function Read-Json { $reader.ReadLine() | ConvertFrom-Json }
-function Read-Terminal {
-  $accepted = Read-Json
-  if ($accepted.type -ne "operation" -or $accepted.state -ne "accepted") {
-    throw "mutation was not accepted: $($accepted | ConvertTo-Json -Compress)"
-  }
-  $terminal = Read-Json
-  if ($terminal.type -ne "operation" -or
-      $terminal.state -notin @("completed", "failed")) {
-    throw "terminal operation result missing"
-  }
-  if ($terminal.state -eq "failed") {
-    throw "operation failed: $($terminal.code)"
-  }
-  return $terminal
-}
-
-Send-Json @{v=1; msg_id="hello"; op="hello"; args=@{scope=$null}}
-$hello = Read-Json
-$scope = $hello.result.scope
-
-Send-Json @{v=1; msg_id="status-before"; op="recording_status"; args=@{}}
-$before = Read-Json
-$databaseId = $before.result.database_id
-
-Send-Json @{v=1; msg_id="start"; op="recording_start"
-  request_id=@{scope=$scope; seq="1"}; args=@{label="virtual tutorial"}}
-$started = Read-Terminal
-$runId = $started.result.run_id
-
-Send-Json @{v=1; msg_id="note"; op="experiment_annotate"
-  request_id=@{scope=$scope; seq="2"}
-  args=@{name="operator_note"; data=@{text="virtual tutorial marker"}}}
-$annotation = Read-Terminal
-# annotation.result.durability is "pending"; stop supplies the drain/seal barrier.
-
-Send-Json @{v=1; msg_id="stop"; op="recording_stop"
-  request_id=@{scope=$scope; seq="3"}; args=@{run_id=$runId}}
-$stopped = Read-Terminal
-
-Send-Json @{v=1; msg_id="status-after"; op="recording_status"; args=@{}}
-$after = Read-Json
-if ($after.result.state -ne "idle") { throw "Recorder did not become idle" }
-
-Send-Json @{v=1; msg_id="runs"; op="history_read"
-  request_id=@{scope=$scope; seq="4"}
-  args=@{mode="runs"; database_id=$databaseId; max_records=32; cursor=$null}}
-$history = Read-Terminal
-$pageToken = $history.result.page_token
-Send-Json @{v=1; msg_id="page"; op="history_page"
-  args=@{page_token=$pageToken}}
-$page = Read-Json
-$page.result.runs | Format-Table
-Send-Json @{v=1; msg_id="release"; op="history_release"
-  args=@{page_token=$pageToken}}
-$null = Read-Json
-
-Send-Json @{v=1; msg_id="shutdown"; op="runtime_shutdown"
-  request_id=@{scope=$scope; seq="5"}; args=@{}}
-$shutdown = Read-Terminal
-$tcp.Dispose()
-```
-
-The start terminal result reports that the start/provenance transaction committed
-and fact admission opened. The annotation terminal result proves bounded FIFO
-admission only (`durability:"pending"`). The stop terminal result is the barrier that
-proves accepted facts drained and the run/interval seal transaction committed. The
-history page comes from the frozen committed archive view, not direct SQL.
+For startup, run lifecycle, history requests and backups, follow the
+[user guide](README.md#запись-история-и-остановка).
 
 ## What is durable?
 
@@ -336,19 +238,22 @@ of historical review reports.
 
 ## Ingress and storage settings
 
-Default owner-side ingress credit is 1,545 records, 4 MiB accounted bytes, thirteen
-causal groups, and at most 512 KiB per group. The supported budget calculation is
-four acquisition groups, one reconnect's five groups (accepted audit, activation,
-baseline, probe, terminal audit), and two Reference mutations' accepted/completion
-pairs. It assumes that bounded combination of outstanding work; it does not
-guarantee reconnect admission under arbitrary acquisition pressure. Four groups and
-six records are protected for those Reference pairs; ordinary traffic cannot spend
-that credit. Reconnect has no separately protected pool: acquisition and reconnect
-share the remaining nine groups and ordinary record/byte credit. Its activation,
+Default owner-side ingress credit is 1,545 records, 4 MiB accounted bytes, 36
+causal groups, and at most 512 KiB per group. Thirty-two ordinary groups absorb
+short acquisition and command/audit bursts while a local disk completes WAL syncs.
+Four groups and six records are protected for two Reference accepted/completion
+pairs; ordinary traffic cannot spend that credit. Record and byte limits still
+apply independently: 32 groups does not mean 32 full 256-record batches.
+Reconnect has no separately protected pool: acquisition and reconnect
+share ordinary group/record/byte credit. Its activation,
 rebind and probe reservations are incremental, not an atomic five-group admission.
 Their waits retain the existing absolute deadlines; sustained competing acquisition
-can exhaust those deadlines. SQLite still coalesces at most four fact groups per
-transaction.
+can exhaust those deadlines. SQLite coalesces at most four consecutive fact groups,
+256 records and 512 KiB per transaction. The 100 ms batch deadline limits waiting
+for new arrivals; already queued groups can still coalesce after that deadline.
+FIFO order, FULL WAL synchronization, post-COMMIT receipts and Required progress
+deadlines remain in force. No finite budget guarantees progress on an arbitrarily
+slow or stalled disk.
 
 Before a recorded Reference mutation is accepted, the owner atomically reserves
 its accepted audit and completion budget. Insufficient credit returns `busy` with

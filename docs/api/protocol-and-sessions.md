@@ -81,6 +81,9 @@ request_id = {scope, seq}
 
 ## Response and event envelopes
 
+The envelope examples below are schematic: empty `result`/`data` objects stand
+for the operation-specific payload, not a literal successful recording response.
+
 Query result:
 
 ```json
@@ -122,6 +125,25 @@ Events are not correlated by `msg_id`:
 `request_id` on an event is optional mutation cause, not proof that every changed
 fact has that cause. A filtered scan may instead emit `type:"subscription_progress"`
 with subscription, boot, and sequence so a client can advance its applied cursor.
+
+### Concrete measurement exchange
+
+After hello, a built-in furnace query:
+
+```json
+{"v":1,"msg_id":"temperature","op":"latest","args":{"signal":{"instrument":"1","parameter":"1"}}}
+```
+
+An example complete response (value, generation and times depend on the running
+experiment):
+
+```json
+{"v":1,"msg_id":"temperature","type":"result","result":{"signal":{"instrument":"1","parameter":"1"},"generation":"1","unit":{"id":"degC","symbol":"°C"},"failure":null,"value":20.0,"source_at_ns":"402506200","status":"available","quality":"good","observed_at":"402506200","observed_at_ns":"402506200"}}
+```
+
+This reads a committed observation. `observed_at_ns` and `source_at_ns` are
+monotonic times within this boot, not UTC. The user guide demonstrates the same
+query and the subsequent [subscription workflow](../README.md#новые-точки-по-подписке).
 
 ## Hello-first rule
 

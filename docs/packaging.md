@@ -1,55 +1,43 @@
 # Runtime packaging
 
-These commands prepare local candidate artifacts. They never tag, publish a
-GitHub release, install a service or rename a repository. Candidate version labels
-are packaging identities; Cargo remains `lab-runtime` version `0.1.0`.
-
-Use a clean committed checkout, Rust 1.95.0 with the exact reviewed standard
-library, Python 3.11+ and a native C toolchain. Linux additionally uses binutils.
-No GUI or external verification client is built or distributed. Windows targets
-the MSVC runtime and requires the Microsoft Visual C++ 2015-2022 x64 runtime
-(`VCRUNTIME140.dll`) on the destination machine; it is not bundled.
+Prepare candidate archives from a clean committed checkout with Rust 1.95.0,
+Python 3.11+ and a native C toolchain. Linux also needs binutils. These commands
+build one application and do not publish a release, tag or install a service.
+Choose an unused candidate label matching Cargo version 0.1.0:
 
 ```powershell
 python scripts/test_release_license_evidence.py
-powershell -File scripts/package-developer-preview.ps1 -PreviewVersion v0.1.0-preview.6
+python scripts/package-windows-runtime.py --preview-version v0.1.0-preview.7
 ```
 
 ```sh
 python3 scripts/test_release_license_evidence.py
-python3 scripts/package-linux-runtime.py --preview-version v0.1.0-preview.6
+python3 scripts/package-linux-runtime.py --preview-version v0.1.0-preview.7
 ```
 
-Windows produces one ZIP containing Runtime, docs, two virtual configurations,
-application notices and supplemental licenses/source. Linux produces the Runtime
-tarball and its required matching license companion. Both have SHA-256 files and
-build provenance identifying source, lockfile, compiler and binary. Existing
-outputs are never silently overwritten. Each packager verifies actual extracted
-bytes, offline links and license evidence; run the extracted binary separately:
+Outputs appear in `dist`; existing artifacts are never overwritten. Windows
+produces one ZIP with the executable, documentation, two virtual configurations,
+notices and licenses/source. Linux produces a Runtime tarball and a required
+matching license companion. SHA-256 files and build provenance identify source,
+lockfile, compiler and executable. Windows requires the Microsoft VC++ x64
+runtime; Linux's build record states the measured glibc requirement.
 
-```sh
-python scripts/smoke_runtime.py ABSOLUTE_EXECUTABLE_PATH NEW_EVIDENCE_DIRECTORY
-```
-
-This smoke uses Python's standard library, an ephemeral loopback virtual Runtime,
-Application discovery/measurement/recording, graceful shutdown and read-only
-SQLite checks. For the optional complete manual-output experiment use
-`scripts/run_manual_output.py release --binary ABSOLUTE_EXECUTABLE_PATH` with an
-explicitly installed Babashka client. Neither checker is an execution dependency
-of the packaged application.
+Each packager validates the extracted bytes, offline documentation links and
+license evidence. To check execution, extract into a fresh directory and follow
+the [user guide](README.md). Run the optional single external client separately
+against that executable for TCP and WS. Check Recorder completion through the
+API and inspect a closed SQLite copy; report each operating system independently.
+Real WSS/tuna and physical hardware require separate available access.
 
 ## License scope
 
-The explicit `scripts/user-package-files.json` allowlist controls docs/examples.
-Application license inventories use only the native Runtime normal dependency
-graph. Exact versions/checksums are retained from the original lockfile. Registry
-license files are gathered from Cargo metadata; missing/ambiguous evidence fails
-packaging. Supplemental evidence includes serialport 4.10.1's unchanged `.crate`,
-MPL text and member hashes, plus Rust 1.95.0's standard-library inventory and
-target rlib hashes. The old Workbench `ring` and graphics licenses are excluded
-because those dependencies are absent. Original upstream notice bytes remain
-unchanged. The project-authored NOTICE/evidence manifest was scoped to Runtime.
+The explicit `scripts/user-package-files.json` allowlist controls documentation
+and examples. Client scripts and development tools are not execution dependencies
+or application-package contents.
 
-The gate rejects changed toolchains, locked serialport version/checksum, missing
-required evidence and corrupted bytes. Preserve exact-version license evidence
-and review any new dependency/toolchain before distributing it.
+Cargo inventories include only Runtime's target-specific normal dependency graph.
+The lockfile pins versions/checksums. Missing or ambiguous license evidence fails
+packaging. Supplemental evidence retains unmodified serialport 4.10.1 source,
+MPL text and member hashes, plus Rust 1.95.0 standard-library texts and rlib hashes.
+Upstream evidence bytes must remain unchanged. Review new dependencies/toolchains
+before distribution; preserve all accompanying notices and Linux license archives.

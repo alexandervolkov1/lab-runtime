@@ -1,48 +1,35 @@
-# Optional external manual-output example
+# Optional furnace API check
 
-`manual-output.clj` is an independent TCP/NDJSON Application client. Babashka is
-required only when explicitly running this example. Runtime, Cargo dependencies,
-protocol, configuration, ordinary Rust tests and startup have no Babashka/Clojure
-dependency. The client is not included in binary application packages.
+This is the project's one external client example. It needs Babashka 1.13.220
+(`bb --version`); Runtime, Core, Cargo tests, configuration and application
+packages do not depend on it. Install it only to run this check.
 
-Install Babashka separately if you choose to run the check (`bb --version`). Build
-Runtime with `cargo build -p lab-runtime --locked`, then from the repository root:
+Start the built-in furnace with Recorder, then follow the
+[user guide](../../docs/README.md#внешняя-проверка) for TCP, WS and WSS commands.
+Run `bb clients/babashka-smoke/manual-output.clj --help` for options.
+Without `--shutdown` the client leaves Runtime serving after sealing its own run.
+With that flag it also requires authoritative `recorder_flushed:true`.
 
-```sh
-python scripts/run_manual_output.py debug
-```
+The scenario checks discovery/descriptors, current temperature, several fresh
+subscription measurements without polling, 10 → 20 → 15% manual power, lease
+renewal and expiry, safe confirmation, fixed setpoint, PID start/pause/resume,
+PID/manual conflict, durable run completion and archived measurement/run pages.
+It targets only the built-in virtual furnace. It does not qualify physical hardware.
 
-On Linux use `python3`. To select a local evidence/database directory explicitly,
-add `--output-root PATH`. For the reviewed Windows C: storage run:
+Responses and subscription events are demultiplexed by envelope type and message
+ID. Waits have finite deadlines; failure exits with code 1, success prints a JSON
+`PASS` record. The transcript preserves sent command identities and results.
+The client never reconnects or automatically repeats a command, including status
+or history work. After an uncertain failure inspect the last request and rebuild
+state deliberately using the [API recovery contract](../../docs/api/events-mutations-and-recovery.md).
+Use a fresh furnace process for each complete check.
 
-```powershell
-python scripts/run_manual_output.py debug --output-root "$env:TEMP/lab-runtime-next-review"
-```
+WSS uses the normal certificate and hostname validation of the HTTP client.
+`LAB_RUNTIME_ACCESS_KEY`, when set, supplies tuna's `X-Token` header; the script
+does not log it. A key is sent only over WSS or loopback WS.
 
-The default D: checkout path failed Required Recorder progress on the extraction
-host; see the [qualification and retained failures](../../docs/extraction-review.md).
-Do not weaken Recorder policy or automatically retry uncertain operations.
-The bounded runner starts the built-in virtual plant with
-Required Recorder on an ephemeral loopback port and starts this external client.
-It discovers/describes the instrument, obtains temperature, explicitly acquires
-authority, writes 10%, 20%, 15%, renews the lease, requests safe, verifies evidence,
-seals the run and requests fixture shutdown. It checks the closed SQLite archive
-and retains transcripts, process exits, identities and measurements in a new
-directory under `target/runtime-manual-api`.
-
-For an already-running virtual Runtime with Recorder enabled:
-
-```sh
-bb clients/babashka-smoke/manual-output.clj PORT
-```
-
-Replace PORT with the Runtime ready port. This form leaves Runtime running.
-`--shutdown-fixture` requests Runtime shutdown and is for an owned fixture only.
-To test an extracted binary use
-`python scripts/run_manual_output.py release --binary ABSOLUTE_EXECUTABLE_PATH`.
-
-The optional `--identified-emulator INSTRUMENT TEMPERATURE_PARAMETER OUTPUT_PARAMETER`
-mode requires independently verified hardware identity/definition and operator
-authorization. Never guess a COM port or use the `COM256` placeholder. No physical
-Arduino acceptance is claimed. No automatic reconnect, mutation replay or rearm
-is implemented. See the [API contract](../../docs/api/manual-output.md).
+The optional transport regression needs Python 3 and the same Babashka version:
+`python clients/babashka-smoke/test_tcp_deadline.py` from the repository root.
+It checks the absolute TCP deadline against a trickling loopback endpoint, socket
+closure without retry, and fragmented UTF-8 with interleaved events/responses.
+It is not part of ordinary Cargo tests, builds or application startup.

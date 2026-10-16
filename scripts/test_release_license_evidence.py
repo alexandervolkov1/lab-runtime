@@ -152,13 +152,13 @@ class EvidenceTests(unittest.TestCase):
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, self.root / name)
         validate_user_files(self.root, documentation)
-        page = self.root / 'docs/linux-runtime.md'
-        original = page.read_text()
+        page = self.root / 'docs/README.md'
+        original = page.read_text(encoding='utf-8')
         for link in ('missing.md', '../README.md#missing-heading', '../../outside.md'):
-            page.write_text(original + f'\n[broken]({link})\n')
+            page.write_text(original + f'\n[broken]({link})\n', encoding='utf-8')
             with self.assertRaises(RuntimeError):
                 validate_user_files(self.root, documentation)
-        page.write_text(original)
+        page.write_text(original, encoding='utf-8')
         (self.root / 'clients').mkdir()
         with self.assertRaises(RuntimeError):
             validate_user_files(self.root, documentation)
@@ -192,7 +192,7 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 user_files(self.root)
         notice = (ROOT / 'third-party-licenses/release/NOTICE.txt').read_text()
-        self.assertIn('docs/linux-runtime.md', notice)
+        self.assertIn('docs/README.md', notice)
         self.assertNotIn('lab-runtime-0.1.0-linux-x86_64', notice)
 
 
