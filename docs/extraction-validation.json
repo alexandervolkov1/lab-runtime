@@ -1,0 +1,1386 @@
+{
+  "source_repository": "https://github.com/alexandervolkov1/lab-runtime",
+  "source_commit": "7f91e715051f2b0d0ba1cde24a61d7135e15c0fc",
+  "verified_pr53_head": "3f40ba1925b13056f0f3643f3712af76aa18ce2c",
+  "gate_source_commit": "2133fa8d213093c3c29351b9e0df6051c469640b",
+  "packaged_source_commit": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+  "note": "Rust/Cargo build inputs unchanged between gate and packaged commits; later report commits do not rebuild unchanged Rust",
+  "platforms": {
+    "windows": {
+      "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+      "tests_passed": 673,
+      "tests_ignored": 2,
+      "build": "PASS",
+      "test": "PASS",
+      "fmt": "PASS",
+      "clippy_warnings_denied": "PASS",
+      "license_regressions": 10,
+      "babashka_available_during_build_rust_gates": false,
+      "manual_experiments": [
+        {
+          "directory": "windows/local-storage-runs/debug-e2e-20261016-200528",
+          "source_head": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+          "binary_sha256": "fe83f33ff0e4b2a99933f9f84fd04914d1b1c7ad6286933c282f02dd6b090e95",
+          "client_exit": 0,
+          "runtime_exit": 0,
+          "forced_cleanup": false,
+          "status": "PASS",
+          "before": 20.0,
+          "after": 22.434338067038432,
+          "safe_confirmed": true,
+          "recorder_flushed": true,
+          "sqlite": {
+            "archive": "history.sqlite",
+            "sha256": "c3a17cc8f68919e8ae56c6b11a49746d3f7b87fa970d13d1de1b55324749e599",
+            "integrity": [
+              [
+                "ok"
+              ]
+            ],
+            "operations": [
+              [
+                "output_acquire",
+                "accepted",
+                1
+              ],
+              [
+                "output_acquire",
+                "completed",
+                1
+              ],
+              [
+                "output_renew",
+                "accepted",
+                3
+              ],
+              [
+                "output_renew",
+                "completed",
+                3
+              ],
+              [
+                "output_safe",
+                "accepted",
+                1
+              ],
+              [
+                "output_safe",
+                "completed",
+                1
+              ],
+              [
+                "output_write",
+                "accepted",
+                3
+              ],
+              [
+                "output_write",
+                "completed",
+                3
+              ],
+              [
+                "recording_start",
+                "accepted",
+                1
+              ],
+              [
+                "recording_start",
+                "completed",
+                1
+              ],
+              [
+                "recording_stop",
+                "accepted",
+                1
+              ],
+              [
+                "recording_stop",
+                "completed",
+                1
+              ]
+            ],
+            "outputs": [
+              [
+                "authorized",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "readback_verified",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                20.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "requested",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "revoked",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_readback_verified",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "safe_requested",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_send_started",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                20.0,
+                "virtual_simulation",
+                1
+              ]
+            ],
+            "measurements": [
+              [
+                "good",
+                36,
+                20.03305847876227,
+                22.434338067038432
+              ]
+            ],
+            "runs": [
+              [
+                "sealed",
+                "complete"
+              ]
+            ],
+            "boots": [
+              [
+                "sealed"
+              ]
+            ],
+            "gaps": 0,
+            "status": "PASS"
+          }
+        },
+        {
+          "directory": "windows/local-storage-runs/release-e2e-20261016-200532",
+          "source_head": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+          "binary_sha256": "aa3d7c46216af65b89f2547e430e8e6a20b3a8926921c40852ba7cefad18906e",
+          "client_exit": 0,
+          "runtime_exit": 0,
+          "forced_cleanup": false,
+          "status": "PASS",
+          "before": 20.0,
+          "after": 22.438876061398553,
+          "safe_confirmed": true,
+          "recorder_flushed": true,
+          "sqlite": {
+            "archive": "history.sqlite",
+            "sha256": "1c88e53576878dbd8d0d7831ea540020d6f0f4796f06307af368b334cfc645f8",
+            "integrity": [
+              [
+                "ok"
+              ]
+            ],
+            "operations": [
+              [
+                "output_acquire",
+                "accepted",
+                1
+              ],
+              [
+                "output_acquire",
+                "completed",
+                1
+              ],
+              [
+                "output_renew",
+                "accepted",
+                3
+              ],
+              [
+                "output_renew",
+                "completed",
+                3
+              ],
+              [
+                "output_safe",
+                "accepted",
+                1
+              ],
+              [
+                "output_safe",
+                "completed",
+                1
+              ],
+              [
+                "output_write",
+                "accepted",
+                3
+              ],
+              [
+                "output_write",
+                "completed",
+                3
+              ],
+              [
+                "recording_start",
+                "accepted",
+                1
+              ],
+              [
+                "recording_start",
+                "completed",
+                1
+              ],
+              [
+                "recording_stop",
+                "accepted",
+                1
+              ],
+              [
+                "recording_stop",
+                "completed",
+                1
+              ]
+            ],
+            "outputs": [
+              [
+                "authorized",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "readback_verified",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                20.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "requested",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "revoked",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_readback_verified",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "safe_requested",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_send_started",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                20.0,
+                "virtual_simulation",
+                1
+              ]
+            ],
+            "measurements": [
+              [
+                "good",
+                36,
+                20.033899815082517,
+                22.438876061398553
+              ]
+            ],
+            "runs": [
+              [
+                "sealed",
+                "complete"
+              ]
+            ],
+            "boots": [
+              [
+                "sealed"
+              ]
+            ],
+            "gaps": 0,
+            "status": "PASS"
+          }
+        },
+        {
+          "directory": "windows/local-storage-runs/release-e2e-20261016-200617",
+          "source_head": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+          "binary_sha256": "aa3d7c46216af65b89f2547e430e8e6a20b3a8926921c40852ba7cefad18906e",
+          "client_exit": 0,
+          "runtime_exit": 0,
+          "forced_cleanup": false,
+          "status": "PASS",
+          "before": 20.0,
+          "after": 22.438929433743077,
+          "safe_confirmed": true,
+          "recorder_flushed": true,
+          "sqlite": {
+            "archive": "history.sqlite",
+            "sha256": "be5186e60855bbd2be7fe193a76dd6ae8b952e3a3cc94ab7d294c643a829b5ad",
+            "integrity": [
+              [
+                "ok"
+              ]
+            ],
+            "operations": [
+              [
+                "output_acquire",
+                "accepted",
+                1
+              ],
+              [
+                "output_acquire",
+                "completed",
+                1
+              ],
+              [
+                "output_renew",
+                "accepted",
+                3
+              ],
+              [
+                "output_renew",
+                "completed",
+                3
+              ],
+              [
+                "output_safe",
+                "accepted",
+                1
+              ],
+              [
+                "output_safe",
+                "completed",
+                1
+              ],
+              [
+                "output_write",
+                "accepted",
+                3
+              ],
+              [
+                "output_write",
+                "completed",
+                3
+              ],
+              [
+                "recording_start",
+                "accepted",
+                1
+              ],
+              [
+                "recording_start",
+                "completed",
+                1
+              ],
+              [
+                "recording_stop",
+                "accepted",
+                1
+              ],
+              [
+                "recording_stop",
+                "completed",
+                1
+              ]
+            ],
+            "outputs": [
+              [
+                "authorized",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "readback_verified",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                20.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "requested",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "revoked",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_readback_verified",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "safe_requested",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_send_started",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                20.0,
+                "virtual_simulation",
+                1
+              ]
+            ],
+            "measurements": [
+              [
+                "good",
+                36,
+                20.034187988551626,
+                22.438929433743077
+              ]
+            ],
+            "runs": [
+              [
+                "sealed",
+                "complete"
+              ]
+            ],
+            "boots": [
+              [
+                "sealed"
+              ]
+            ],
+            "gaps": 0,
+            "status": "PASS"
+          }
+        },
+        {
+          "directory": "windows/failed-manual-runs/debug-e2e-20261016-195745",
+          "source_head": "2133fa8d213093c3c29351b9e0df6051c469640b",
+          "binary_sha256": "fe83f33ff0e4b2a99933f9f84fd04914d1b1c7ad6286933c282f02dd6b090e95",
+          "client_exit": null,
+          "runtime_exit": null,
+          "forced_cleanup": false,
+          "status": "FAIL",
+          "reason": "Recorder startup deadline exceeded",
+          "storage": "D: checkout target directory",
+          "root_cause": "not established"
+        },
+        {
+          "directory": "windows/failed-manual-runs/debug-e2e-20261016-200126",
+          "source_head": "cd2006b6772139e1e9d365256cbbf1f251039278",
+          "binary_sha256": "fe83f33ff0e4b2a99933f9f84fd04914d1b1c7ad6286933c282f02dd6b090e95",
+          "client_exit": 1,
+          "runtime_exit": 1,
+          "forced_cleanup": true,
+          "status": "FAIL",
+          "reason": "Required Recorder ingress capacity exhausted; safe virtual output confirmed in transcript",
+          "storage": "D: checkout target directory",
+          "root_cause": "not established"
+        },
+        {
+          "directory": "windows/failed-manual-runs/debug-e2e-20261016-200341",
+          "source_head": "cd2006b6772139e1e9d365256cbbf1f251039278",
+          "binary_sha256": "fe83f33ff0e4b2a99933f9f84fd04914d1b1c7ad6286933c282f02dd6b090e95",
+          "client_exit": 1,
+          "runtime_exit": 1,
+          "forced_cleanup": true,
+          "status": "FAIL",
+          "reason": "Required Recorder ingress capacity exhausted; safe virtual output confirmed in transcript",
+          "storage": "D: checkout target directory",
+          "root_cause": "not established"
+        },
+        {
+          "directory": "windows/failed-manual-runs/release-e2e-20261016-200420",
+          "source_head": "cd2006b6772139e1e9d365256cbbf1f251039278",
+          "binary_sha256": "aa3d7c46216af65b89f2547e430e8e6a20b3a8926921c40852ba7cefad18906e",
+          "client_exit": 1,
+          "runtime_exit": 1,
+          "forced_cleanup": true,
+          "status": "FAIL",
+          "reason": "Required Recorder ingress capacity exhausted; safe virtual output confirmed in transcript",
+          "storage": "D: checkout target directory",
+          "root_cause": "not established"
+        }
+      ],
+      "extracted_package_smoke": {
+        "command": [
+          "D:\\rust\\lab-runtime-next-verify-20261016\\dist\\unpacked-windows\\lab-runtime-v0.1.0-preview.6-windows-x86_64\\lab-runtime.exe",
+          "--serve",
+          "--profile",
+          "virtual-demo",
+          "--port",
+          "0",
+          "--record-db",
+          "C:\\Users\\user\\AppData\\Local\\Temp\\lab-runtime-next-review-20261016\\package-smoke\\history.sqlite",
+          "--record-policy",
+          "required"
+        ],
+        "cwd": "D:\\rust\\lab-runtime-next-verify-20261016\\dist\\unpacked-windows\\lab-runtime-v0.1.0-preview.6-windows-x86_64",
+        "ready": {
+          "boot_id": "c09ea73b58b9e26e620f499994971b48",
+          "port": 51560,
+          "state": "ready"
+        },
+        "latest": {
+          "failure": null,
+          "generation": "1",
+          "observed_at": "400595500",
+          "observed_at_ns": "400595500",
+          "quality": "good",
+          "signal": {
+            "instrument": "1",
+            "parameter": "1"
+          },
+          "source_at_ns": "400595500",
+          "status": "available",
+          "unit": {
+            "id": "degC",
+            "symbol": "\u00b0C"
+          },
+          "value": 20.0
+        },
+        "recording": {
+          "completion": {
+            "accepted_facts_drained": true,
+            "archive_boot_sealed": false,
+            "interval_sealed": true,
+            "run_sealed": true,
+            "transaction_committed": true,
+            "writer_closed": false
+          },
+          "database_id": "553b97ca96056b5c7c7e2eb92619fc5d",
+          "interval_id": {
+            "boot_id": "c09ea73b58b9e26e620f499994971b48",
+            "interval_no": "1"
+          },
+          "run_id": {
+            "boot_id": "c09ea73b58b9e26e620f499994971b48",
+            "run_no": "1"
+          }
+        },
+        "shutdown": {
+          "cleanup_complete": true,
+          "exit_success": true,
+          "fatal_error": false,
+          "outputs": [
+            {
+              "fault_latched": false,
+              "instrument": "1",
+              "lease_present": false,
+              "parameter": "2",
+              "readback": {
+                "at": "428200100",
+                "value": 0.0
+              },
+              "safe_confirmed": true,
+              "state": "disarmed"
+            }
+          ],
+          "recorder_error": false,
+          "recorder_flushed": true,
+          "recorder_unfinished": false,
+          "safe_confirmed": true,
+          "transports_closed": true,
+          "unfinished_transports": 0,
+          "unfinished_workers": 0
+        },
+        "exit": 0,
+        "status": "PASS",
+        "sqlite": "integrity ok; sealed boot/run; complete; zero gaps",
+        "recorder_flushed": true
+      },
+      "build_provenance": {
+        "package": "lab-runtime-v0.1.0-preview.6-windows-x86_64",
+        "target": "x86_64-pc-windows-msvc",
+        "commit": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+        "preview_version": "v0.1.0-preview.6",
+        "cargo_package_version": "0.1.0",
+        "dirty_status": "",
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-pc-windows-msvc\nrelease: 1.95.0\nLLVM version: 22.1.2",
+        "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+        "build_host": "Windows-10-10.0.19045-SP0",
+        "cargo_lock_sha256": "238d63cd56183a0e1eca5ee561e5a90d6ee9ed40d34cd572862640aca6b7042b",
+        "binary_sha256": "aa3d7c46216af65b89f2547e430e8e6a20b3a8926921c40852ba7cefad18906e",
+        "artifacts": {
+          "lab-runtime-v0.1.0-preview.6-windows-x86_64.zip": "bc00f3d1379a74f661f8d395ac04c5994304a1cd46392d3b2a2aaf25c25a8015"
+        }
+      },
+      "gate_logs": {
+        "build.log": "902d54946e614ae491b4f6bff633f80adefc00101a86ff814524a85095752f91",
+        "clippy.log": "f41c5a77b2ca8bae18d26720a814b528577e4a9e6b9a100072386febfa2a89f2",
+        "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "licenses.log": "5702e8459b403964214334c5ce74192dc257bc24eac766860911dd0150f522bc",
+        "package-final.log": "600034fe3470d24ca42a92822cf9c3fdd0fd3656fd197446f7acd1262118a6ee",
+        "package-smoke.log": "0ab0225a2c5ed33ba8d34a8628c1377d6814937bc2faff274e738d0aaa7aa497",
+        "package.log": "d91dfe347b004740634428e64b7077b4671a8b35ee7001a614470ec6d9c18a41",
+        "release-smoke-local-temp.log": "2f67424bd689e05d741151b5e2794724d670ea91fb4103950d3e7ad6aba692c7",
+        "test.log": "8b2f1843075f1b56e7876a3598c0a4df069e93aa9bbe4898d6c573952e05da58"
+      }
+    },
+    "linux": {
+      "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+      "tests_passed": 675,
+      "tests_ignored": 2,
+      "build": "PASS",
+      "test": "PASS",
+      "fmt": "PASS",
+      "clippy_warnings_denied": "PASS",
+      "license_regressions": 10,
+      "babashka_available_during_build_rust_gates": false,
+      "manual_experiments": [
+        {
+          "directory": "linux/manual-runs/debug-e2e-20261016-200027",
+          "source_head": "cd2006b6772139e1e9d365256cbbf1f251039278",
+          "binary_sha256": "fceea8af6fc1aa17e18a7abdbd68fc73674f5d2eaa2c19b50f97296440c515ef",
+          "client_exit": 0,
+          "runtime_exit": 0,
+          "forced_cleanup": false,
+          "status": "PASS",
+          "before": 20.0,
+          "after": 22.521907859521196,
+          "safe_confirmed": true,
+          "recorder_flushed": true,
+          "sqlite": {
+            "archive": "history.sqlite",
+            "sha256": "f0dc86cc77ab8c8dcdf1327a69462940a38e0b2d9a45997ba6e834684f126432",
+            "integrity": [
+              [
+                "ok"
+              ]
+            ],
+            "operations": [
+              [
+                "output_acquire",
+                "accepted",
+                1
+              ],
+              [
+                "output_acquire",
+                "completed",
+                1
+              ],
+              [
+                "output_renew",
+                "accepted",
+                3
+              ],
+              [
+                "output_renew",
+                "completed",
+                3
+              ],
+              [
+                "output_safe",
+                "accepted",
+                1
+              ],
+              [
+                "output_safe",
+                "completed",
+                1
+              ],
+              [
+                "output_write",
+                "accepted",
+                3
+              ],
+              [
+                "output_write",
+                "completed",
+                3
+              ],
+              [
+                "recording_start",
+                "accepted",
+                1
+              ],
+              [
+                "recording_start",
+                "completed",
+                1
+              ],
+              [
+                "recording_stop",
+                "accepted",
+                1
+              ],
+              [
+                "recording_stop",
+                "completed",
+                1
+              ]
+            ],
+            "outputs": [
+              [
+                "authorized",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "readback_verified",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                20.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "requested",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "revoked",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_readback_verified",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "safe_requested",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_send_started",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                20.0,
+                "virtual_simulation",
+                1
+              ]
+            ],
+            "measurements": [
+              [
+                "good",
+                44,
+                20.0,
+                22.553868426298962
+              ]
+            ],
+            "runs": [
+              [
+                "sealed",
+                "complete"
+              ]
+            ],
+            "boots": [
+              [
+                "sealed"
+              ]
+            ],
+            "gaps": 0,
+            "status": "PASS"
+          }
+        },
+        {
+          "directory": "linux/manual-runs/release-e2e-20261016-200543",
+          "source_head": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+          "binary_sha256": "7f7df58ac3f345aa3be72228b719864cdad1fccd887aaacbd6c33dcbcd5ea942",
+          "client_exit": 0,
+          "runtime_exit": 0,
+          "forced_cleanup": false,
+          "status": "PASS",
+          "before": 20.0,
+          "after": 22.57506814863337,
+          "safe_confirmed": true,
+          "recorder_flushed": true,
+          "sqlite": {
+            "archive": "history.sqlite",
+            "sha256": "d97b627a31cbb7fdea11c3963f7908c20947f858d1fa46f5eae4f6e2f01e51b9",
+            "integrity": [
+              [
+                "ok"
+              ]
+            ],
+            "operations": [
+              [
+                "output_acquire",
+                "accepted",
+                1
+              ],
+              [
+                "output_acquire",
+                "completed",
+                1
+              ],
+              [
+                "output_renew",
+                "accepted",
+                3
+              ],
+              [
+                "output_renew",
+                "completed",
+                3
+              ],
+              [
+                "output_safe",
+                "accepted",
+                1
+              ],
+              [
+                "output_safe",
+                "completed",
+                1
+              ],
+              [
+                "output_write",
+                "accepted",
+                3
+              ],
+              [
+                "output_write",
+                "completed",
+                3
+              ],
+              [
+                "recording_start",
+                "accepted",
+                1
+              ],
+              [
+                "recording_start",
+                "completed",
+                1
+              ],
+              [
+                "recording_stop",
+                "accepted",
+                1
+              ],
+              [
+                "recording_stop",
+                "completed",
+                1
+              ]
+            ],
+            "outputs": [
+              [
+                "authorized",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "authorized",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "readback_verified",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "readback_verified",
+                20.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "requested",
+                10.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                15.0,
+                "none",
+                1
+              ],
+              [
+                "requested",
+                20.0,
+                "none",
+                1
+              ],
+              [
+                "revoked",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_readback_verified",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "safe_requested",
+                null,
+                "none",
+                1
+              ],
+              [
+                "safe_send_started",
+                0.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                10.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                15.0,
+                "virtual_simulation",
+                1
+              ],
+              [
+                "send_started",
+                20.0,
+                "virtual_simulation",
+                1
+              ]
+            ],
+            "measurements": [
+              [
+                "good",
+                42,
+                20.0,
+                22.606930333555805
+              ]
+            ],
+            "runs": [
+              [
+                "sealed",
+                "complete"
+              ]
+            ],
+            "boots": [
+              [
+                "sealed"
+              ]
+            ],
+            "gaps": 0,
+            "status": "PASS"
+          }
+        }
+      ],
+      "extracted_package_smoke": {
+        "command": [
+          "/tmp/lab-runtime-next-verify-20261016/dist/unpacked-linux/lab-runtime-v0.1.0-preview.6-linux-x86_64/lab-runtime",
+          "--serve",
+          "--profile",
+          "virtual-demo",
+          "--port",
+          "0",
+          "--record-db",
+          "/tmp/lab-runtime-next-verify-20261016/target/extraction-checks/package-smoke/history.sqlite",
+          "--record-policy",
+          "required"
+        ],
+        "cwd": "/tmp/lab-runtime-next-verify-20261016/dist/unpacked-linux/lab-runtime-v0.1.0-preview.6-linux-x86_64",
+        "ready": {
+          "boot_id": "7c4db2b75199920795dab7402475fd49",
+          "port": 37577,
+          "state": "ready"
+        },
+        "latest": {
+          "failure": null,
+          "generation": "1",
+          "observed_at": "401446400",
+          "observed_at_ns": "401446400",
+          "quality": "good",
+          "signal": {
+            "instrument": "1",
+            "parameter": "1"
+          },
+          "source_at_ns": "401446400",
+          "status": "available",
+          "unit": {
+            "id": "degC",
+            "symbol": "\u00b0C"
+          },
+          "value": 20.0
+        },
+        "recording": {
+          "completion": {
+            "accepted_facts_drained": true,
+            "archive_boot_sealed": false,
+            "interval_sealed": true,
+            "run_sealed": true,
+            "transaction_committed": true,
+            "writer_closed": false
+          },
+          "database_id": "b849b443dc428ace47f952b12317f23c",
+          "interval_id": {
+            "boot_id": "7c4db2b75199920795dab7402475fd49",
+            "interval_no": "1"
+          },
+          "run_id": {
+            "boot_id": "7c4db2b75199920795dab7402475fd49",
+            "run_no": "1"
+          }
+        },
+        "shutdown": {
+          "cleanup_complete": true,
+          "exit_success": true,
+          "fatal_error": false,
+          "outputs": [
+            {
+              "fault_latched": false,
+              "instrument": "1",
+              "lease_present": false,
+              "parameter": "2",
+              "readback": {
+                "at": "504456400",
+                "value": 0.0
+              },
+              "safe_confirmed": true,
+              "state": "disarmed"
+            }
+          ],
+          "recorder_error": false,
+          "recorder_flushed": true,
+          "recorder_unfinished": false,
+          "safe_confirmed": true,
+          "transports_closed": true,
+          "unfinished_transports": 0,
+          "unfinished_workers": 0
+        },
+        "exit": 0,
+        "status": "PASS",
+        "sqlite": "integrity ok; sealed boot/run; complete; zero gaps",
+        "recorder_flushed": true
+      },
+      "build_provenance": {
+        "package": "lab-runtime-v0.1.0-preview.6-linux-x86_64",
+        "target": "x86_64-unknown-linux-gnu",
+        "commit": "6c73cf20db5db6c8bbc444c15bac97487080f0d1",
+        "preview_version": "v0.1.0-preview.6",
+        "cargo_package_version": "0.1.0",
+        "dirty_status": "",
+        "source_changes": [],
+        "build_host": {
+          "system": "Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.44",
+          "machine": "x86_64"
+        },
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+        "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+        "cargo_lock_sha256": "238d63cd56183a0e1eca5ee561e5a90d6ee9ed40d34cd572862640aca6b7042b",
+        "binary_sha256": "7f7df58ac3f345aa3be72228b719864cdad1fccd887aaacbd6c33dcbcd5ea942",
+        "ldd": "linux-vdso.so.1 (0x00007b57dd0f0000)\n\tlibgcc_s.so.1 => /usr/lib/libgcc_s.so.1 (0x00007b57dd0b5000)\n\tlibm.so.6 => /usr/lib/libm.so.6 (0x00007b57dcf7e000)\n\tlibc.so.6 => /usr/lib/libc.so.6 (0x00007b57dc400000)\n\t/lib64/ld-linux-x86-64.so.2 => /usr/lib64/ld-linux-x86-64.so.2 (0x00007b57dd0f2000)",
+        "required_glibc_symbol_version": "2.34",
+        "artifacts": {
+          "lab-runtime-v0.1.0-preview.6-linux-x86_64.tar.gz": "8ea74482f8de6fa44f30f8a69e30adc92f7327dcf516cd7c3d909377d26ede36",
+          "lab-runtime-v0.1.0-preview.6-linux-x86_64.licenses.tar.gz": "a2c73ee5b0adaa11871969a17c32a55e3681d4c93edff8eb19ff537977820ee5"
+        }
+      },
+      "gate_logs": {
+        "build.log": "ece6aef225d300e55b32237e4636048846e423041b46e4ac63b6bc782b593ad1",
+        "clippy.log": "dc86f7c9042b70b4984bd4ed78cfeec02a85fa7a0ee59831eefd1242497723be",
+        "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "licenses.log": "b3afbd25a8f05b3ee4be49f40fa7fc1516d3ea1e8ee90777a7ff0dd5141b3284",
+        "package-final.log": "5cc0607575c9d9bd1e0cd119d473f1fe32dd4d6e9c5dac1ae29f7e248363555f",
+        "package-smoke.log": "4c12068dfe1986fe35815f1b7c8a5060c47c6b488553ddbf17251a4a509e4c52",
+        "package.log": "f143088dd68a8f00b7129ed765cc48b76fbbc8f93b14483656577522e44d030e",
+        "test.log": "25c8bfb60feb6c553f8732aa48a16c1f4b3fc6a9e8b68763cd5791115ae15706"
+      }
+    }
+  },
+  "physical_arduino": "not performed",
+  "published_release": false,
+  "source_equivalence": {
+    "source_commit": "7f91e715051f2b0d0ba1cde24a61d7135e15c0fc",
+    "import_commit": "b0250581aa7a14d1a047011efb138743c61611b7",
+    "imported_files": 262,
+    "unchanged_files": 231,
+    "adapted_or_relocated": [
+      ".gitattributes",
+      ".gitignore",
+      "Cargo.lock",
+      "Cargo.toml",
+      "docs/api/README.md",
+      "docs/api/errors-and-limits.md",
+      "docs/api/events-mutations-and-recovery.md",
+      "docs/api/manual-output.md",
+      "docs/api/protocol-and-sessions.md",
+      "docs/application-api.md",
+      "docs/architecture.md",
+      "docs/configuration.md",
+      "docs/developer/full-driver-tutorial.md",
+      "docs/developer/runtime-manual-output-evidence/check_archive.py",
+      "docs/developer/runtime-manual-output-evidence/run_e2e.py",
+      "docs/developer/simple-device-tutorial.md",
+      "docs/extending-runtime.md",
+      "docs/linux-runtime.md",
+      "docs/recorder-sqlite.md",
+      "docs/recording.md",
+      "docs/recovery-and-faults.md",
+      "docs/reference/configuration.md",
+      "docs/reference/transports.md",
+      "docs/simple-device.md",
+      "scripts/package-developer-preview.ps1",
+      "scripts/package_user_documentation.py",
+      "scripts/release_license_evidence.py",
+      "scripts/test_release_license_evidence.py",
+      "scripts/user-package-files.json",
+      "third-party-licenses/release/NOTICE.txt",
+      "third-party-licenses/release/evidence.json"
+    ],
+    "lock_packages_before": 468,
+    "lock_packages_after": 109,
+    "new_dependency_identities": [],
+    "implementation_and_fixtures": "unchanged",
+    "status": "PASS"
+  },
+  "raw_evidence": {
+    "file": "extraction-evidence-6c73cf2.zip",
+    "sha256": "0f740bb0ab4e3a883a47b0497357258d54d2bac4e905e2982ac22233d002f153",
+    "bytes": 417581,
+    "entries": 134,
+    "retention": "Local dist/ artifact and original fixture directories; no historical donor experiment was copied"
+  }
+}

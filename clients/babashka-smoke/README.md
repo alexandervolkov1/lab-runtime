@@ -12,7 +12,17 @@ Runtime with `cargo build -p lab-runtime --locked`, then from the repository roo
 python scripts/run_manual_output.py debug
 ```
 
-On Linux use `python3`. The bounded runner starts the built-in virtual plant with
+On Linux use `python3`. To select a local evidence/database directory explicitly,
+add `--output-root PATH`. For the reviewed Windows C: storage run:
+
+```powershell
+python scripts/run_manual_output.py debug --output-root "$env:TEMP/lab-runtime-next-review"
+```
+
+The default D: checkout path failed Required Recorder progress on the extraction
+host; see the [qualification and retained failures](../../docs/extraction-review.md).
+Do not weaken Recorder policy or automatically retry uncertain operations.
+The bounded runner starts the built-in virtual plant with
 Required Recorder on an ephemeral loopback port and starts this external client.
 It discovers/describes the instrument, obtains temperature, explicitly acquires
 authority, writes 10%, 20%, 15%, renews the lease, requests safe, verifies evidence,
