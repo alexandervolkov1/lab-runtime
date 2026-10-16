@@ -29,9 +29,9 @@ external automation lifetime != experiment lifetime.
 Closing, crashing, or disconnecting a client does not shut down Runtime, stop the
 Recorder, pause a controller, or roll back work already admitted by Runtime.
 
-## Product processes
+## Runtime process
 
-### lab-runtime.exe
+### lab-runtime
 
 Runtime is the sole authoritative mutable experiment owner. It owns:
 
@@ -116,7 +116,7 @@ The canonical API reference starts at [Application API](api/README.md).
 
 TCP defaults to IPv4 loopback. Both startup modes allow an explicit
 `--bind IPv4 --allow-remote-tcp` on a selected trusted LAN interface; remote
-Workbench TCP also requires `--allow-remote-tcp`. This plaintext transport provides
+Remote clients must deliberately select the trusted-LAN endpoint. TCP provides
 no authentication or TLS and must not be exposed on the public Internet. Listener
 selection is startup-only and deployment reload cannot widen it. Each complete
 frame is one UTF-8 JSON object followed by LF; CRLF input is accepted. Framing is
@@ -137,7 +137,7 @@ The JSON body is the same Application message used inside an NDJSON frame. See
 
 For public access, Tuna terminates WSS with `X-Token` authentication and forwards
 Upgrade to Runtime's loopback WS listener with the required Host rewrite.
-Workbench validates the certificate and hostname and never downgrades WSS.
+WSS clients must validate the certificate and hostname and must never downgrade.
 Tuna is inside the trust boundary; tunnel authentication does not add Runtime
 per-operation roles. The proxy does not change Application semantics.
 

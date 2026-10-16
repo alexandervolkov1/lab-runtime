@@ -2,8 +2,7 @@
 
 This is the operator and client guide for lost continuity, uncertain operations,
 Recorder faults, resource reconnects, and retry decisions. The exact Runtime wire
-shapes remain in the [Application API reference](api/README.md); the separate
-[Workbench API reference](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench-api.md) defines its local boundary.
+shapes remain in the [Application API reference](api/README.md).
 
 The governing rule is:
 
@@ -20,8 +19,6 @@ proof that an output-affecting action did not occur.
   output authority, and Recorder.
 - A direct client owns its connection correlation and retains any exact request it
   may deliberately need to reconcile.
-- Workbench owns presentation and a bounded durable client recovery journal. That
-  journal is evidence about its Runtime client; it is not Runtime authority.
 - SQLite contains Runtime-written scientific/audit history. It is not a live control
   surface.
 
@@ -213,12 +210,10 @@ Keep these evidence domains separate:
 | Loss | What survives | What does not survive |
 |---|---|---|
 | Direct Runtime client socket | Runtime experiment, admitted operations, Recorder, and retained scope/outcomes within their finite TTL/bounds. | Connection `msg_id`, subscriptions, snapshot/history pages and history cursors. |
-| Runtime process restart | SQLite committed archive prefix; external client/Workbench evidence kept outside Runtime. | Old boot's in-memory scopes, subscriptions, event replay window, operation store, controller authority, and freshness. |
-| External Workbench caller socket | Workbench process, presentation, its Runtime client, journal, and admitted Runtime work. | Caller-local `call_id` correlation and undelivered caller results. |
-| Workbench process restart | Runtime experiment and Recorder; persisted workspace and bounded recovery journal if valid. | Old `workbench_id`, external caller sessions/call IDs, process-local presentation/recovery generations, live projections. |
+| Runtime process restart | SQLite committed archive prefix; external client evidence kept outside Runtime. | Old boot's in-memory scopes, subscriptions, event replay window, operation store, controller authority, and freshness. |
 
-After Runtime restart, old observations are not Fresh. After Workbench restart, a
-caller performs a new hello and initial `recovery_get` with `expected:null`.
+After Runtime restart, old observations are not fresh. Rebuild from the new Runtime
+while preserving uncertain requests under their original boot/scope identities.
 
 ## Shutdown
 
@@ -231,8 +226,8 @@ Abnormal process death is different. SQLite may recover a committed WAL prefix, 
 active runs/intervals reopen as interrupted with conservative unknown-tail coverage.
 Ctrl+C or process exit is not proof that every external physical action was reversed.
 
-Workbench shutdown first stops its external endpoint and then its existing Runtime
-client. It never synthesizes `runtime_shutdown`; Runtime and its experiment continue.
+Client disconnect never synthesizes `runtime_shutdown`; Runtime and its experiment
+continue under the configured finite authority and Recorder policies.
 
 ## Operator playbook
 
@@ -273,13 +268,6 @@ client. It never synthesizes `runtime_shutdown`; Runtime and its experiment cont
   device evidence, or an operator procedure.
 - **Readback mismatch.** Observed state differs from required evidence; ACK did not
   prove effect. Keep authority failed closed and investigate.
-- **Workbench record quarantined.** The evidence belongs to another continuity
-  boundary and grants no current-session status/retry authority. Preserve and resolve
-  it separately; do not transplant identity.
-- **Presentation `revision_conflict`.** The Workbench document changed since the
-  expected revision; this is not Runtime mutation failure. Fetch `presentation_get`
-  and reapply the intent to the current document if still desired.
-
 ## Retry and resynchronization taxonomy
 
 The public `retryable` bit classifies an error; it is not permission to replay a
@@ -309,15 +297,7 @@ Runtime synchronous failures use the public Application error envelope. For exam
 {"v":1,"msg_id":"hello-2","type":"error","accepted":false,"code":"instance_changed","category":"protocol_error","retryable":false,"resync_required":true,"message":"Incremental client state is no longer valid; resynchronization is required."}
 ```
 
-Workbench has its own envelope and codes. A stale UI edit is correlated by
-`call_id`, for example:
-
-```json
-{"v":1,"type":"error","call_id":"ui-2","error":{"domain":"workbench","code":"revision_conflict","message":"presentation expectation is stale","retryable":false,"resync_required":true}}
-```
-
-Do not compare Runtime and Workbench error text. Use the code/category/fences defined
-by their respective API references.
+Use Runtime code/category/fences rather than comparing human-readable error text.
 
 ## Related documentation
 
@@ -325,7 +305,5 @@ by their respective API references.
 - [Safety and failure behavior](safety-and-failures.md)
 - [Runtime mutation, event, and recovery protocol](api/events-mutations-and-recovery.md)
 - [Runtime errors and limits](api/errors-and-limits.md)
-- [Workbench recovery UI](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench.md#loss-of-connection-and-recovery)
-- [Workbench external recovery API](https://github.com/alexandervolkov1/lab-runtime/blob/7f91e715051f2b0d0ba1cde24a61d7135e15c0fc/docs/workbench-api.md#recovery-get)
 - [SimpleDevice reconnect/output rules](simple-device.md#reconnect-and-stale-evidence)
 - [Native-driver fault obligations](https://github.com/alexandervolkov1/lab-runtime-next/blob/main/docs/developer/full-driver-tutorial.md#step-12-failure-cleanup)
