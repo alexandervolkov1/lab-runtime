@@ -4,7 +4,7 @@
          '[babashka.cli :as cli]
          '[babashka.http-client.websocket :as ws])
 (import '[java.net Socket InetSocketAddress URI]
-        '[java.io BufferedReader InputStreamReader OutputStreamWriter]
+        '[java.io BufferedInputStream ByteArrayOutputStream OutputStreamWriter]
         '[java.util.concurrent ArrayBlockingQueue TimeUnit])
 
 (defn check [ok message] (when-not ok (throw (ex-info message {}))))
@@ -15,6 +15,19 @@
     (check (pos? ns) "Timed out; command outcome may be unknown. Do not repeat it automatically.")
     (max 1 (quot ns 1000000))))
 
+(defn read-tcp-line [socket input deadline]
+  (let [line (ByteArrayOutputStream.)]
+    ;; Read bytes under one absolute deadline, then decode the complete UTF-8
+    ;; frame. A reader/decoder must not hide repeated blocking reads from us.
+    (loop []
+      (.setSoTimeout socket (int (remaining-ms deadline)))
+      (let [byte (.read input)]
+        (remaining-ms deadline)
+        (check (not= -1 byte) "Runtime disconnected; preserve the last request identity")
+        (if (= 10 byte)
+          (.toString line "UTF-8")
+          (do (.write line byte) (recur)))))))
+
 (defn connect [{:keys [url origin timeout-ms]}]
   (let [uri (URI. url) scheme (.getScheme uri)]
     (check (and (.getHost uri) (nil? (.getUserInfo uri)) (nil? (.getQuery uri))
@@ -23,13 +36,10 @@
       "tcp"
       (let [socket (Socket.)]
         (.connect socket (InetSocketAddress. (.getHost uri) (.getPort uri)) timeout-ms)
-        (let [reader (BufferedReader. (InputStreamReader. (.getInputStream socket) "UTF-8"))
+        (let [input (BufferedInputStream. (.getInputStream socket))
               writer (OutputStreamWriter. (.getOutputStream socket) "UTF-8")]
           {:send (fn [text] (.write writer (str text "\n")) (.flush writer))
-           :receive (fn [deadline]
-                      (.setSoTimeout socket (int (remaining-ms deadline)))
-                      (let [line (.readLine reader)]
-                        (check line "Runtime disconnected; preserve the last request identity") line))
+           :receive (fn [deadline] (read-tcp-line socket input deadline))
            :close #(.close socket)}))
       ("ws" "wss")
       (let [inbox (ArrayBlockingQueue. 128) failure (atom nil) fragments (atom "")

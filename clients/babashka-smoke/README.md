@@ -27,3 +27,9 @@ Use a fresh furnace process for each complete check.
 WSS uses the normal certificate and hostname validation of the HTTP client.
 `LAB_RUNTIME_ACCESS_KEY`, when set, supplies tuna's `X-Token` header; the script
 does not log it. A key is sent only over WSS or loopback WS.
+
+The optional transport regression needs Python 3 and the same Babashka version:
+`python clients/babashka-smoke/test_tcp_deadline.py` from the repository root.
+It checks the absolute TCP deadline against a trickling loopback endpoint, socket
+closure without retry, and fragmented UTF-8 with interleaved events/responses.
+It is not part of ordinary Cargo tests, builds or application startup.
