@@ -243,7 +243,7 @@
     },
     {
       "path": "NOTICE.txt",
-      "sha256": "dc5c3c030d04627eff99c2ec0778f42dbe8586aa4f54fbe63dbb2c98cdf1dc5b",
+      "sha256": "836a5a2583db2842f77d4c6d870146eb0d012348126d0d47eb25fd3e1355c87c",
       "source": "Runtime-only authored notice adapted from source 7f91e715051f2b0d0ba1cde24a61d7135e15c0fc",
       "targets": [
         "windows",

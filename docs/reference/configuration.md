@@ -1,7 +1,7 @@
 # Configuration and command-line reference
 
 Technical reference for deployment authors and integrators. For ordinary setup,
-start with the [Configuration Guide](../configuration.md). This page retains the
+start with the [user guide](../README.md#конфигурация-и-прибор). This page retains the
 complete command-line grammar, deployment fields, limits and path rules.
 
 ## Runtime startup modes
@@ -194,7 +194,7 @@ Schema-v1 keeps the same resource kind strings on Linux. Linux `/dev/...` paths
 preserve case, have a 4096-byte limit, and reject control characters, empty segments
 and `.`/`..` segments. Validation does not open the device or resolve symlink aliases.
 Duplicate normalized port strings are rejected. See the
-[Linux Runtime guide](../linux-runtime.md#serial-deployment) for device permissions.
+[user guide](../README.md#конфигурация-и-прибор) for device permissions.
 
 A resource cannot be shared between a SimpleDevice adapter and the native Metakon
 adapter. Declaring a physical resource is an instruction to open real hardware during

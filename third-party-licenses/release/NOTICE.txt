@@ -25,7 +25,7 @@ SHA-256 (also the application's Cargo.lock checksum):
 Linux recipients: keep the matching .licenses.tar.gz companion from the same
 release as the Runtime archive. First extract the Runtime archive, then extract
 the license companion into the directory containing the lab-runtime executable.
-Use the exact filenames and commands in the packaged docs/linux-runtime.md guide.
+Follow the installation instructions in the packaged docs/README.md guide.
 The companion contains this notice, the full MPL license and the offline source.
 Do not redistribute the executable alone without these accompanying materials.
 

@@ -1,8 +1,8 @@
 # Runtime agent rules
 
 The current user request defines scope. This repository contains only the headless
-`lab-runtime` application and platform-neutral `lab-core`. Read README.md,
-ORIGIN.md and docs/extraction-review.md for provenance and actual qualification.
+`lab-runtime` application and platform-neutral `lab-core`. Read README.md and docs/README.md for use, and ORIGIN.md for provenance.
+Record task-specific qualification and limitations in the PR.
 Historical reports and client/GUI milestones are not standing tasks.
 
 ## Ownership and contracts

@@ -224,4 +224,3 @@
   (catch Exception error
     (binding [*out* *err*] (println "FAIL:" (.getMessage error)))
     (System/exit 1)))
-
